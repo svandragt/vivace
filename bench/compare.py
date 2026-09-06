@@ -6,7 +6,8 @@ Usage:
     bench/compare.py --self-test
 
 Fails (exit 1) when `viv`'s warm or noop mean regresses past
-baseline * (1 + tolerance). Cold is printed as informational only, since it's
+baseline * (1 + tolerance). Cold and update-warm are informational only: both
+wait on the network (downloads, and 304 revalidations of every metadata file), so their
 dominated by network variance (see bench/results/README.md). With
 --write-baseline, writes the measured means as the new baseline instead of
 comparing.
@@ -17,7 +18,7 @@ import sys
 
 TOLERANCE_DEFAULT = 0.15
 SCENARIOS = ("cold", "warm", "noop", "update-warm")
-CHECKED_SCENARIOS = ("warm", "noop", "update-warm")
+CHECKED_SCENARIOS = ("warm", "noop")
 
 
 def means_from_hyperfine(paths):
