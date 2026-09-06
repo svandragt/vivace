@@ -116,3 +116,43 @@ script, which we copy. Presto has no tests.
 
 Working method from here: copy the failing test in first, watch it fail, make
 it pass, commit.
+
+## 2026-09-06, afternoon: from lock to vendor tree
+
+**How the work runs.** Code is written by role agents against the plan, red
+test first, then reviewed by a separate agent before commit. Two reviews so
+far paid for themselves. The version normaliser sliced a string at byte four
+and would have panicked on a branch name such as `café-dev`. The natural sort
+port stripped leading zeros where PHP does not. The second review's own
+expectations turned out wrong too: the coder ran real PHP and found that
+`strnatcasecmp("0", "00")` is equal, because PHP strips a string's leading
+zeros once before comparing. The test table now records what PHP does, not
+what either of us assumed.
+
+**Modules landed.** Version normalisation and the package sorter pass the
+upstream tables. The lock parser keeps each package's raw entry with key
+order intact for `installed.json`, lowercases names, accepts `bin` as a string
+or an array, and trims `vendor-dir`. The class scanner passes
+class-map-generator's fixture tree, including a file that is not valid UTF-8,
+and after review matches exclusion patterns against both the literal and the
+canonical path, survives directory symlink cycles, and skips broken links
+with a warning instead of aborting.
+
+The store, fetch, link and plan modules take a lock to a `vendor/` tree.
+Archives are keyed by the sha256 of their bytes, so identical zips under
+different references share one extracted tree; a per-package pointer under
+`dists-v0/` names the archive. Extraction goes into a temporary directory and
+is renamed into place, with the loser of a race adopting the winner's copy.
+Files end up read-only, executables at 0555. Linking builds a temporary
+sibling of the package directory and renames it over the old one, so a
+package install is atomic where Riff's is not. One design change from the
+plan: the download stream yields completed archives to the caller rather than
+taking a callback, because storing an archive is blocking work that the async
+loop wants to hand to a worker thread.
+
+**Quota.** A spend limit on the Fable pool killed three coders mid-task. The
+one with real progress resumed from its transcript; the others restarted.
+
+**Next.** The autoloader generator against Composer's 27 golden cases,
+`installed.json`, `installed.php` and `platform_check.php`, then the CLI and
+the end-to-end byte-diff on the monolog fixture.
