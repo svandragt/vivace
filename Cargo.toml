@@ -35,6 +35,7 @@ futures = "0.3.34"
 md5 = "0.8.1"
 regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "stream", "gzip"] }
+semver-php = "0.1.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha1 = "0.11.0"

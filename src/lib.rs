@@ -7,5 +7,6 @@ pub mod link;
 pub mod lock;
 pub mod normalize;
 pub mod plan;
+pub mod semver;
 pub mod store;
 pub mod version;

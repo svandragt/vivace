@@ -329,12 +329,82 @@ fn content_hash(root_json: &[u8]) -> Result<String> {
             );
         }
     }
-    // ponytail: PHP's json_encode escapes `/`; serde_json doesn't. Harmless
-    // for the freshness comparison below (both sides go through this same
-    // function), but a hash computed here won't match a real Composer one
-    // byte-for-byte if a value contains a literal slash.
-    let encoded = serde_json::to_string(&relevant)?;
+    let encoded = php_json_encode(&Value::Object(
+        relevant.into_iter().collect::<Map<String, Value>>(),
+    ));
     Ok(format!("{:x}", md5::compute(encoded)))
+}
+
+/// PHP's `json_encode($value, 0)`: like `serde_json`'s compact encoding, but
+/// `/` is escaped as `\/` and non-ASCII characters are escaped as `\uXXXX`
+/// (UTF-16 code units, surrogate pairs above `U+FFFF`). Key order within an
+/// object is left untouched; the caller sorts before calling this.
+fn php_json_encode(value: &Value) -> String {
+    let mut out = String::new();
+    write_php_json(value, &mut out);
+    out
+}
+
+fn write_php_json(value: &Value, out: &mut String) {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        // serde_json's `Number` already renders the shortest round-trip form
+        // PHP's `serialize_precision = -1` produces (e.g. `1.0`), so reuse it.
+        Value::Number(n) => out.push_str(&n.to_string()),
+        Value::String(s) => write_php_json_string(s, out),
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_php_json(item, out);
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            out.push('{');
+            for (i, (key, item)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_php_json_string(key, out);
+                out.push(':');
+                write_php_json(item, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+fn write_php_json_string(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '/' => out.push_str("\\/"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write as _;
+                write!(out, "\\u{:04x}", c as u32).expect("write! to String never fails");
+            }
+            c if c.is_ascii() => out.push(c),
+            c => {
+                let mut units = [0u16; 2];
+                for unit in c.encode_utf16(&mut units) {
+                    use std::fmt::Write as _;
+                    write!(out, "\\u{unit:04x}").expect("write! to String never fails");
+                }
+            }
+        }
+    }
+    out.push('"');
 }
 
 /// Composer's `Locker::isFresh`: does `lock`'s `content-hash` still match
@@ -633,5 +703,73 @@ mod tests {
 
         let lock = read_lock(file.path()).unwrap();
         lock.packages(true).next().unwrap().validate_dist().unwrap();
+    }
+
+    /// `Locker::getContentHash` on real `composer.json` files, values taken
+    /// from a devbox PHP run of the exact same logic (see
+    /// `docs/resolver-design.md`'s content-hash section).
+    #[test]
+    fn content_hash_matches_composer() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let file_cases = [
+            (
+                "tests/fixtures/monolog/composer.json",
+                "23cc364856190039acdde2f5f07291f9",
+            ),
+            (
+                "tests/fixtures/legacy/composer.json",
+                "0493df0e1b7e8e3a9030a96ba7aa67ca",
+            ),
+            (
+                "bench/laravel/composer.json",
+                "65e3f5fe6eb7c640ae15bbb9ab9071b9",
+            ),
+        ];
+        for (relative, expected) in file_cases {
+            let bytes = fs_err::read(manifest.join(relative)).unwrap();
+            assert_eq!(super::content_hash(&bytes).unwrap(), expected, "{relative}");
+        }
+
+        // A non-ASCII value in `require` and `extra`, including a character
+        // outside the BMP (surrogate pair) and a slash in the package name.
+        let unicode_json = r#"{
+            "name": "vivace/fixture-hash-unicode",
+            "require": {
+                "acme/héllo": "^1.0",
+                "psr/log": "^3.0"
+            },
+            "extra": {
+                "note": "café 😀 emoji"
+            }
+        }"#;
+        assert_eq!(
+            super::content_hash(unicode_json.as_bytes()).unwrap(),
+            "36a6bd7eab755fa44e566d6f484f3006"
+        );
+
+        // Nested `extra`/`config.platform` values: nested keys keep their
+        // original order even though the top level is ksorted, and numbers
+        // (int, float, array) round-trip.
+        let nested_json = br#"{
+            "name": "vivace/fixture-hash-nested",
+            "version": "2.3.1",
+            "require": { "monolog/monolog": "^3.0" },
+            "conflict": { "foo/bar": "<1.0" },
+            "minimum-stability": "dev",
+            "prefer-stable": true,
+            "extra": {
+                "zeta": "z",
+                "alpha": { "nested-b": 2, "nested-a": 1.5 },
+                "beta": [1, 2, 3]
+            },
+            "config": {
+                "platform": { "php": "8.2.0", "ext-mbstring": "1.0" },
+                "sort-packages": true
+            }
+        }"#;
+        assert_eq!(
+            super::content_hash(nested_json).unwrap(),
+            "91715c32a7cd35f43be62e33f01ba1a0"
+        );
     }
 }
