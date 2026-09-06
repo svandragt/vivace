@@ -86,6 +86,18 @@ it isn't first on `PATH`.
 
 ## Scope
 
+viv aims to replace Composer for the commands people run every day, not the
+whole command reference. Covered, byte for byte where output is a file:
+`install`, `update`, `require`, `remove`, `dump-autoload`, `normalize`, the
+lifecycle scripts, and the cache commands; on the way: `audit`, `show`,
+`outdated`, `validate`, private Composer repositories. Everything else
+(`create-project`, `init`, `search`, `config`, `global`, `self-update`,
+`diagnose`, `licenses`, `depends` and friends) stays with Composer, and the
+`composer` shim hands those through unchanged.
+
+### What is in and out
+
+
 In: zip and tar dists, path repositories, git sources without a dist,
 credentials from `auth.json` and `COMPOSER_AUTH`, sha1 verification, PSR-4,
 PSR-0, classmap and files autoloading, `--optimize-autoloader` and
