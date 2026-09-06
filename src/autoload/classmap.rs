@@ -365,7 +365,7 @@ pub fn scan_paths(path: &Path, exclude: Option<&Regex>) -> Result<ClassMap> {
         vec![path.to_path_buf()]
     } else if metadata.is_dir() {
         let mut files = Vec::new();
-        walk_dir(path, &mut files)?;
+        walk_dir(path, &mut HashSet::new(), &mut files)?;
         files.sort();
         files
     } else {
@@ -384,14 +384,23 @@ pub fn scan_paths(path: &Path, exclude: Option<&Regex>) -> Result<ClassMap> {
     let mut seen = HashSet::new();
 
     for file in files {
+        // Composer scans a file reachable through two symlinks twice and
+        // reports it ambiguous with itself. vivace dedups on the canonical
+        // path instead: the output is deterministic and a file cannot be
+        // ambiguous with itself.
         let canonical = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
         if !seen.insert(canonical.clone()) {
             continue;
         }
 
         if let Some(exclude) = exclude {
-            let absolute = canonical.to_string_lossy().replace('\\', "/");
-            if exclude.is_match(&absolute) {
+            // Both the realpath and the literal path, as upstream does, so a
+            // symlinked directory can be excluded by its project path.
+            let literal = std::path::absolute(&file).unwrap_or_else(|_| file.clone());
+            let excluded = [canonical.as_path(), literal.as_path()]
+                .iter()
+                .any(|p| exclude.is_match(&p.to_string_lossy().replace('\\', "/")));
+            if excluded {
                 continue;
             }
         }
@@ -412,15 +421,29 @@ fn does_not_exist(path: &Path) -> anyhow::Error {
     )
 }
 
-fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+/// `visited` holds canonical directory paths so a symlink cycle
+/// (`a/b/self -> ../..`) terminates instead of recursing until ELOOP.
+fn walk_dir(dir: &Path, visited: &mut HashSet<PathBuf>, out: &mut Vec<PathBuf>) -> Result<()> {
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(canonical) {
+        return Ok(());
+    }
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         // `metadata` (not `symlink_metadata`) follows symlinks, matching
-        // Symfony Finder's `followLinks()`.
-        let metadata = std::fs::metadata(&path)?;
+        // Symfony Finder's `followLinks()`. A broken link or unreadable
+        // entry is skipped, not fatal: one stray symlink must not abort
+        // the whole install.
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                tracing::warn!("skipping {}: {err}", path.display());
+                continue;
+            }
+        };
         if metadata.is_dir() {
-            walk_dir(&path, out)?;
+            walk_dir(&path, visited, out)?;
         } else if metadata.is_file() {
             out.push(path);
         }

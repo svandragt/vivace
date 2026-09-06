@@ -88,7 +88,9 @@ Only `classmap` entries are scanned on a plain install (PSR dirs only with
    cut the name at the last `:`. Emit `ltrim(prefix.name, '\\')`.
 
 The lookbehind rejects `Foo::class`, `$class`, `->class`; `\b` rejects
-`subclass`. First occurrence of a class wins.
+`subclass`. First occurrence of a class wins. vivace visits files in sorted
+path order, so which occurrence is first is deterministic; Composer's Finder
+order depends on the filesystem.
 
 ## installed.json
 

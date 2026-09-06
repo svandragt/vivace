@@ -261,3 +261,46 @@ fn create_map_with_directory_excluded() {
 
     assert_eq!(actual, expected);
 }
+
+#[cfg(unix)]
+#[test]
+fn exclude_matches_the_uncanonicalised_symlink_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(dir.path().join("real")).unwrap();
+    std::fs::create_dir(dir.path().join("proj")).unwrap();
+    std::fs::write(dir.path().join("real/Foo.php"), "<?php\nclass Foo {}").unwrap();
+    std::os::unix::fs::symlink("../real", dir.path().join("proj/linked")).unwrap();
+
+    let proj = dir.path().join("proj");
+    let prefix = regex::escape(&proj.to_string_lossy().replace('\\', "/"));
+    let exclude = Regex::new(&format!("^{prefix}/linked/")).unwrap();
+    let result = scan_paths(&proj, Some(&exclude)).expect("scan should succeed");
+
+    assert!(result.map.is_empty(), "got {:?}", result.map);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_cycle_terminates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("loop/a/b")).unwrap();
+    std::fs::write(dir.path().join("loop/a/A.php"), "<?php\nclass A {}").unwrap();
+    std::os::unix::fs::symlink("../..", dir.path().join("loop/a/b/self")).unwrap();
+
+    let result = scan_paths(&dir.path().join("loop"), None).expect("scan should succeed");
+
+    assert!(result.map.contains_key("A"));
+}
+
+#[cfg(unix)]
+#[test]
+fn broken_symlink_is_skipped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("Ok.php"), "<?php\nclass Ok {}").unwrap();
+    std::os::unix::fs::symlink("/nonexistent", dir.path().join("Ghost.php")).unwrap();
+
+    let result = scan_paths(dir.path(), None).expect("scan should succeed");
+
+    assert!(result.map.contains_key("Ok"));
+    assert_eq!(result.map.len(), 1);
+}
