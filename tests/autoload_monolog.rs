@@ -26,7 +26,28 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
+/// The fixture's `vendor/` is gitignored and only populated locally by
+/// `make fixtures` (needs devbox composer), so skip instead of panicking
+/// when it's missing, e.g. on a fresh CI checkout.
+#[allow(clippy::print_stderr, reason = "test skip notice, not app logging")]
+fn fixture_vendor_missing() -> bool {
+    if fixture()
+        .join("vendor/composer/installed.json")
+        .try_exists()
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    eprintln!(
+        "skipping: run `make fixtures` (needs devbox composer) to populate tests/fixtures/monolog/vendor"
+    );
+    true
+}
+
 fn check(dev_mode: bool, expected_dir: &str) {
+    if fixture_vendor_missing() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path().canonicalize().unwrap();
     for name in ["composer.json", "composer.lock"] {

@@ -17,6 +17,8 @@ jobs:
       - run: devbox run -- cargo fmt --check
       - run: devbox run -- cargo clippy --all-targets -- -D warnings
       - run: devbox run -- cargo nextest run
+        env:
+          VIVACE_TEST_NETWORK: "1"
       - run: devbox run -- cargo deny check
 
   bench:
