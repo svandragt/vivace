@@ -1,7 +1,7 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install build test check bench bench-check hooks fixtures fmt record-packagist compat compat-refresh dist
+.PHONY: install build test check bench bench-check hooks fixtures fmt record-packagist compat compat-refresh dist fuzz coverage
 
 install:
 	cargo install --path . --locked
@@ -71,3 +71,23 @@ compat:
 
 compat-refresh:
 	devbox run -- compat/refresh.sh
+
+# `cargo fuzz` needs a nightly toolchain (sanitizer flags stable Rust
+# doesn't accept): `rustup toolchain install nightly` once, devbox doesn't
+# carry one. 30s per target, matching what CI runs before the nightly job's
+# longer 120s: enough to prove a target still builds and finds nothing new.
+fuzz:
+	cd fuzz && for target in classmap_find_classes store_extract_archive lock_content_hash \
+			repository_expand_minified require_manipulator semver_parse_constraint; do \
+		echo "==> $$target"; \
+		devbox run -- cargo +nightly fuzz run "$$target" -- -max_total_time=30 \
+			"corpus/$$target" "seeds/$$target" || exit 1; \
+	done
+
+# Report only, no threshold: `docs/composer-contract.md`'s pipeline modules
+# (the solver port, the lock writer) are what this is meant to surface gaps
+# in, not a number to chase.
+coverage:
+	mkdir -p target/coverage
+	devbox run -- cargo llvm-cov nextest --no-fail-fast --lcov --output-path target/coverage/lcov.info
+	devbox run -- cargo llvm-cov report --summary-only

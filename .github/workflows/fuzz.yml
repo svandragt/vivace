@@ -1,0 +1,47 @@
+name: Fuzz
+
+# #44: fuzz the hand-written parsers (classmap, the zip/tar path sanitiser,
+# the PHP-compatible JSON encoder behind content_hash, expand_minified, the
+# require.rs JSON scanner, parse_constraint). A nightly run gives each
+# target real wall-clock time; workflow_dispatch lets a maintainer re-run
+# after a fix without waiting for the schedule.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - classmap_find_classes
+          - store_extract_archive
+          - lock_content_hash
+          - repository_expand_minified
+          - require_manipulator
+          - semver_parse_constraint
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz -> target
+      # cargo-fuzz needs nightly (sanitizer flags stable Rust rejects);
+      # devbox has no dated-nightly package, so this comes from rustup
+      # directly rather than devbox.json.
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+        with:
+          enable-cache: true
+      - run: |
+          devbox run -- cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=120 \
+            "corpus/${{ matrix.target }}" "seeds/${{ matrix.target }}"
+        working-directory: fuzz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/

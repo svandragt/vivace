@@ -22,6 +22,8 @@ make check                         # fmt --check, clippy -D warnings, nextest, c
 make bench                         # hyperfine: composer vs riff vs viv on bench/laravel
 make hooks                         # install the pre-commit hook that runs `make check`
 make fixtures                      # regenerate the monolog fixture's expected Composer output
+make fuzz                          # cargo-fuzz, 30s per target (#44); nightly toolchain required
+make coverage                      # cargo-llvm-cov via nextest, per-file report, no threshold (#45)
 ```
 
 Fallback, or for anything not wrapped:

@@ -285,7 +285,7 @@ impl Auth {
 
     /// Make sure a fresh Bitbucket bearer token is cached for `host`'s
     /// canonical `bitbucket.org` entry, exchanging the consumer key/secret at
-    /// [`BITBUCKET_TOKEN_URL`] if the cache is empty or expired. A no-op when
+    /// `BITBUCKET_TOKEN_URL` if the cache is empty or expired. A no-op when
     /// `host` has no `bitbucket-oauth` entry, or the cache is already fresh
     /// (an unexpired `access-token` from `auth.json`, or an earlier
     /// exchange). Errors are the caller's to decide whether to surface;

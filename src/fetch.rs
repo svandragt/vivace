@@ -28,7 +28,7 @@ const STREAM_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
 /// One package's downloaded dist archive: buffered in memory when small, or
 /// spilled to a temp file (in the store's temp area, so the eventual
 /// `add_archive_from_file` rename stays on one filesystem) when larger than
-/// [`STREAM_THRESHOLD_BYTES`].
+/// `STREAM_THRESHOLD_BYTES`.
 pub enum Downloaded {
     Bytes(Vec<u8>),
     File(tempfile::TempPath),
@@ -154,7 +154,7 @@ impl Fetcher {
     }
 
     /// Download one package's dist archive and check its `shasum` when set.
-    /// `temp_dir` is where a download larger than [`STREAM_THRESHOLD_BYTES`]
+    /// `temp_dir` is where a download larger than `STREAM_THRESHOLD_BYTES`
     /// spills to (#21), rather than growing an ever-larger `Vec<u8>`.
     pub async fn fetch(&self, pkg: &Package, temp_dir: &Path) -> Result<Downloaded> {
         pkg.validate_dist()?;

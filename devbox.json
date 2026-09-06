@@ -6,7 +6,9 @@
     "cargo-nextest@latest",
     "cargo-deny@latest",
     "cargo-insta@latest",
-    "cargo-machete@latest"
+    "cargo-machete@latest",
+    "cargo-fuzz@latest",
+    "cargo-llvm-cov@latest"
   ],
   "shell": {
     "scripts": {
