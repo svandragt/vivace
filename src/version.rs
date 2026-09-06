@@ -50,7 +50,10 @@ pub fn normalize(version: &str) -> Result<String> {
         master = format!("dev-{version}");
         version = &master;
     }
-    if version.len() >= 4 && version[..4].eq_ignore_ascii_case("dev-") {
+    if version
+        .get(..4)
+        .is_some_and(|s| s.eq_ignore_ascii_case("dev-"))
+    {
         return Ok(format!("dev-{}", &version[4..]));
     }
     if let Some(m) = BUILD_META.captures(version) {
@@ -263,5 +266,13 @@ mod tests {
                 "expected {input:?} to be rejected"
             );
         }
+    }
+
+    // A multi-byte char straddling the `version[..4]` slice point must be
+    // rejected, not panic.
+    #[test]
+    fn dev_prefix_check_is_byte_boundary_safe() {
+        assert!(normalize("café-dev").is_err());
+        assert_eq!(normalize("dev-café").unwrap(), "dev-café");
     }
 }

@@ -8,16 +8,19 @@
   },
   "phases": {
     "plan": {
-      "model": "opus",
-      "rationale": "Greenfield: cache layout, atomicity and compatibility decisions are cheap to plan and expensive to redo. Opus suffices; no distributed-systems complexity to justify fable."
+      "model": "fable",
+      "rationale": "Greenfield: cache layout, atomicity and compatibility decisions are cheap to plan and expensive to redo. Opus suffices; no distributed-systems complexity to justify fable. Routed to fable (pinned 2026-09-06): Fable has its own quota pool with headroom, while non-Fable subagents draw on the constrained shared pool.",
+      "pinned": true
     },
     "code": {
-      "model": "sonnet",
-      "rationale": "Byte-diff goldens and Composer's own fixture tables catch emulation mistakes, so mid-tier is safe for TDD steps against an approved plan."
+      "model": "fable",
+      "rationale": "Byte-diff goldens and Composer's own fixture tables catch emulation mistakes, so mid-tier is safe for TDD steps against an approved plan. Routed to fable (pinned 2026-09-06): Fable has its own quota pool with headroom, while non-Fable subagents draw on the constrained shared pool.",
+      "pinned": true
     },
     "review": {
-      "model": "sonnet",
-      "rationale": "Small per-step diffs with clippy -D warnings and nextest in the gate; filesystem-mutating paths escalate below."
+      "model": "fable",
+      "rationale": "Small per-step diffs with clippy -D warnings and nextest in the gate; filesystem-mutating paths escalate below. Routed to fable (pinned 2026-09-06): Fable has its own quota pool with headroom, while non-Fable subagents draw on the constrained shared pool.",
+      "pinned": true
     },
     "explore": {
       "model": "haiku",
@@ -25,9 +28,13 @@
     }
   },
   "escalations": [
-    { "when": "paths:src/store.rs", "action": "review uses opus (extracts untrusted zips into a shared cache; path sanitising and atomic rename)" },
-    { "when": "paths:src/link.rs", "action": "review uses opus (deletes and replaces vendor package dirs; hardlinks share inodes with the cache)" },
-    { "when": "paths:src/plan.rs", "action": "review uses opus (decides which vendor dirs are removed)" },
-    { "when": "tests_failed_twice", "action": "raise code one tier for this task" }
+    {
+      "when": "paths:src/store.rs,src/link.rs,src/plan.rs",
+      "action": "review at high effort (extracts untrusted zips into a shared cache, deletes and replaces vendor dirs, hardlinks share inodes with the cache)"
+    },
+    {
+      "when": "tests_failed_twice",
+      "action": "raise code one tier for this task"
+    }
   ]
 }

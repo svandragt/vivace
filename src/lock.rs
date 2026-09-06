@@ -27,8 +27,9 @@ impl Lock {
 }
 
 /// A lock entry's `dist` block.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Dist {
+    #[serde(rename = "type")]
     pub r#type: String,
     pub url: String,
     pub reference: Option<String>,
@@ -36,20 +37,29 @@ pub struct Dist {
 }
 
 /// One package from `packages` or `packages-dev`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Package {
+    #[serde(deserialize_with = "deserialize_lowercase")]
     pub name: String,
     pub version: String,
     pub dist: Option<Dist>,
     pub autoload: Option<Value>,
+    #[serde(default)]
     pub require: Map<String, Value>,
+    #[serde(default)]
     pub provide: Map<String, Value>,
+    #[serde(default)]
     pub replace: Map<String, Value>,
+    #[serde(rename = "type", default = "default_type")]
     pub r#type: String,
+    #[serde(rename = "target-dir")]
     pub target_dir: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_bin")]
     pub bin: Vec<String>,
+    #[serde(skip)]
     pub dev: bool,
     /// The untouched lock entry, key order preserved.
+    #[serde(skip)]
     pub raw: Value,
 }
 
@@ -76,32 +86,22 @@ fn default_type() -> String {
     "library".to_string()
 }
 
-#[derive(Debug, Deserialize)]
-struct RawDist {
-    r#type: String,
-    url: String,
-    reference: Option<String>,
-    shasum: Option<String>,
-}
+/// Composer's `bin` schema allows a single string or an array of strings.
+fn deserialize_bin<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        String(String),
+        Vec(Vec<String>),
+    }
 
-#[derive(Debug, Deserialize)]
-struct RawPackage {
-    name: String,
-    version: String,
-    dist: Option<RawDist>,
-    autoload: Option<Value>,
-    #[serde(default)]
-    require: Map<String, Value>,
-    #[serde(default)]
-    provide: Map<String, Value>,
-    #[serde(default)]
-    replace: Map<String, Value>,
-    #[serde(rename = "type", default = "default_type")]
-    r#type: String,
-    #[serde(rename = "target-dir")]
-    target_dir: Option<String>,
-    #[serde(default)]
-    bin: Vec<String>,
+    Ok(match StringOrVec::deserialize(deserializer)? {
+        StringOrVec::String(s) => vec![s],
+        StringOrVec::Vec(v) => v,
+    })
 }
 
 /// Read and parse a `composer.lock` file.
@@ -118,7 +118,7 @@ pub fn read_lock(path: &Path) -> Result<Lock> {
     let mut packages = Vec::new();
     for (key, dev) in [("packages", false), ("packages-dev", true)] {
         for entry in raw.get(key).and_then(Value::as_array).into_iter().flatten() {
-            packages.push(parse_package(entry, dev)?);
+            packages.push(parse_package(entry, dev, path)?);
         }
     }
 
@@ -128,32 +128,20 @@ pub fn read_lock(path: &Path) -> Result<Lock> {
     })
 }
 
-fn parse_package(raw: &Value, dev: bool) -> Result<Package> {
+fn parse_package(raw: &Value, dev: bool, lock_path: &Path) -> Result<Package> {
     let name = raw
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("<unknown>");
-    let parsed: RawPackage = serde_json::from_value(raw.clone())
-        .with_context(|| format!("parsing composer.lock package entry \"{name}\""))?;
-    Ok(Package {
-        name: parsed.name,
-        version: parsed.version,
-        dist: parsed.dist.map(|dist| Dist {
-            r#type: dist.r#type,
-            url: dist.url,
-            reference: dist.reference,
-            shasum: dist.shasum,
-        }),
-        autoload: parsed.autoload,
-        require: parsed.require,
-        provide: parsed.provide,
-        replace: parsed.replace,
-        r#type: parsed.r#type,
-        target_dir: parsed.target_dir,
-        bin: parsed.bin,
-        dev,
-        raw: raw.clone(),
-    })
+    let mut package: Package = serde_json::from_value(raw.clone()).with_context(|| {
+        format!(
+            "parsing composer.lock package entry \"{name}\" in {}",
+            lock_path.display()
+        )
+    })?;
+    package.dev = dev;
+    package.raw = raw.clone();
+    Ok(package)
 }
 
 /// `config.platform-check`: `"php-only"` (default), `true` (all platform
@@ -182,6 +170,34 @@ impl<'de> Deserialize<'de> for PlatformCheck {
     }
 }
 
+/// Composer does `rtrim($vendorDir, '/')` on `config.vendor-dir`.
+fn deserialize_vendor_dir<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(String::deserialize(deserializer)?
+        .trim_end_matches('/')
+        .to_string())
+}
+
+/// Composer lowercases package names throughout.
+fn deserialize_lowercase<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(String::deserialize(deserializer)?.to_lowercase())
+}
+
+/// Composer lowercases package names throughout.
+fn deserialize_lowercase_option<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.map(|s| s.to_lowercase()))
+}
+
 /// The root `composer.json`'s `config` block (the subset vivace reads).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -190,7 +206,7 @@ pub struct Config {
     pub autoloader_suffix: Option<String>,
     #[serde(rename = "platform-check")]
     pub platform_check: PlatformCheck,
-    #[serde(rename = "vendor-dir")]
+    #[serde(rename = "vendor-dir", deserialize_with = "deserialize_vendor_dir")]
     pub vendor_dir: String,
     #[serde(rename = "prepend-autoloader")]
     pub prepend_autoloader: bool,
@@ -210,6 +226,7 @@ impl Default for Config {
 /// The root `composer.json`, typed for the fields vivace needs.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Root {
+    #[serde(default, deserialize_with = "deserialize_lowercase_option")]
     pub name: Option<String>,
     pub version: Option<String>,
     #[serde(rename = "type", default = "default_type")]
@@ -232,6 +249,7 @@ pub fn read_root(path: &Path) -> Result<Root> {
 #[cfg(test)]
 mod tests {
     use super::{PlatformCheck, read_lock, read_root};
+    use serde_json::Value;
     use std::io::Write as _;
     use std::path::Path;
 
@@ -322,6 +340,90 @@ mod tests {
         assert!(root.config.prepend_autoloader);
         assert!(root.autoload.is_some());
         assert!(root.autoload_dev.is_none());
+    }
+
+    #[test]
+    fn bin_accepts_string_or_array() {
+        let lock_json = r#"{
+            "packages": [
+                {
+                    "name": "acme/tool",
+                    "version": "1.0.0",
+                    "bin": "bin/foo"
+                }
+            ],
+            "packages-dev": []
+        }"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(lock_json.as_bytes()).unwrap();
+
+        let lock = read_lock(file.path()).unwrap();
+        let package = lock.packages(true).next().unwrap();
+        assert_eq!(package.bin, ["bin/foo"]);
+    }
+
+    #[test]
+    fn vendor_dir_trims_trailing_slashes() {
+        let json = r#"{"config": {"vendor-dir": "vendor/"}}"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let root = read_root(file.path()).unwrap();
+        assert_eq!(root.config.vendor_dir, "vendor");
+    }
+
+    #[test]
+    fn root_name_is_lowercased() {
+        let json = r#"{"name": "Vendor/Package"}"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let root = read_root(file.path()).unwrap();
+        assert_eq!(root.name.as_deref(), Some("vendor/package"));
+    }
+
+    #[test]
+    fn lock_package_name_is_lowercased_but_raw_is_untouched() {
+        let lock_json = r#"{
+            "packages": [
+                {
+                    "name": "Vendor/Package",
+                    "version": "1.0.0"
+                }
+            ],
+            "packages-dev": []
+        }"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(lock_json.as_bytes()).unwrap();
+
+        let lock = read_lock(file.path()).unwrap();
+        let package = lock.packages(true).next().unwrap();
+        assert_eq!(package.name, "vendor/package");
+        assert_eq!(
+            package.raw.get("name").and_then(Value::as_str),
+            Some("Vendor/Package")
+        );
+    }
+
+    #[test]
+    fn package_parse_error_includes_lock_path() {
+        let lock_json = r#"{
+            "packages": [
+                {
+                    "name": "acme/tool",
+                    "version": 1
+                }
+            ],
+            "packages-dev": []
+        }"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(lock_json.as_bytes()).unwrap();
+
+        let err = read_lock(file.path()).unwrap_err();
+        assert!(
+            err.to_string().contains(&file.path().display().to_string()),
+            "{err}"
+        );
     }
 
     #[test]

@@ -58,46 +58,135 @@ fn importance<'u>(
     weight
 }
 
-/// PHP `strnatcasecmp`: case-insensitive, digit runs compared numerically.
-pub fn natcasecmp(a: &str, b: &str) -> Ordering {
-    let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
-    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
+/// PHP `strnatcasecmp`, ported from `strnatcmp_ex` in
+/// `ext/standard/strnatcmp.c` (whitespace-skipping omitted: package names
+/// don't carry it). A digit run is compared byte-by-byte, left-aligned
+/// (`compare_left`) whenever either side's current digit is `0`, otherwise
+/// numerically by run length then value (`compare_right`) — `strnatcmp_ex`
+/// also strips a string's own leading zeros once up front, which is why e.g.
+/// `"0"` vs `"00"` is Equal, not Less.
+pub fn natcasecmp(left: &str, right: &str) -> Ordering {
+    let (left, right) = (left.to_ascii_lowercase(), right.to_ascii_lowercase());
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    let mut pos_l = skip_leading_zeros(left, 0);
+    let mut pos_r = skip_leading_zeros(right, 0);
     loop {
-        match (a.first(), b.first()) {
+        match (left.get(pos_l), right.get(pos_r)) {
             (None, None) => return Ordering::Equal,
             (None, Some(_)) => return Ordering::Less,
             (Some(_), None) => return Ordering::Greater,
-            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
-                let na = a.iter().take_while(|c| c.is_ascii_digit()).count();
-                let nb = b.iter().take_while(|c| c.is_ascii_digit()).count();
-                let (da, db) = (&a[..na], &b[..nb]);
-                let (ta, tb) = (trim_zeros(da), trim_zeros(db));
-                let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
+            (Some(l), Some(r)) if l.is_ascii_digit() && r.is_ascii_digit() => {
+                let fractional = *l == b'0' || *r == b'0';
+                let (ord, next_l, next_r) = if fractional {
+                    compare_left(left, pos_l, right, pos_r)
+                } else {
+                    compare_right(left, pos_l, right, pos_r)
+                };
                 if ord != Ordering::Equal {
                     return ord;
                 }
-                a = &a[na..];
-                b = &b[nb..];
+                (pos_l, pos_r) = (next_l, next_r);
             }
-            (Some(x), Some(y)) => {
-                if x != y {
-                    return x.cmp(y);
+            (Some(l), Some(r)) => {
+                if l != r {
+                    return l.cmp(r);
                 }
-                a = &a[1..];
-                b = &b[1..];
+                (pos_l, pos_r) = (pos_l + 1, pos_r + 1);
             }
         }
     }
 }
 
-fn trim_zeros(d: &[u8]) -> &[u8] {
-    let n = d.iter().take_while(|c| **c == b'0').count();
-    &d[n.min(d.len().saturating_sub(1))..]
+/// A string's own leading zeros are only significant relative to the digits
+/// that follow, so a run of them collapses to the last one before the loop
+/// even starts.
+fn skip_leading_zeros(bytes: &[u8], mut pos: usize) -> usize {
+    while bytes.get(pos) == Some(&b'0') && bytes.get(pos + 1).is_some_and(u8::is_ascii_digit) {
+        pos += 1;
+    }
+    pos
+}
+
+/// The longest digit run wins; equal-length runs fall back to the first
+/// differing byte.
+fn compare_right(
+    left: &[u8],
+    mut pos_l: usize,
+    right: &[u8],
+    mut pos_r: usize,
+) -> (Ordering, usize, usize) {
+    let mut bias = Ordering::Equal;
+    loop {
+        match (digit_at(left, pos_l), digit_at(right, pos_r)) {
+            (None, None) => return (bias, pos_l, pos_r),
+            (None, Some(_)) => return (Ordering::Less, pos_l, pos_r),
+            (Some(_), None) => return (Ordering::Greater, pos_l, pos_r),
+            (Some(l), Some(r)) => {
+                bias = bias.then(l.cmp(&r));
+                (pos_l, pos_r) = (pos_l + 1, pos_r + 1);
+            }
+        }
+    }
+}
+
+/// Left-aligned, byte-by-byte: the first differing digit wins.
+fn compare_left(
+    left: &[u8],
+    mut pos_l: usize,
+    right: &[u8],
+    mut pos_r: usize,
+) -> (Ordering, usize, usize) {
+    loop {
+        match (digit_at(left, pos_l), digit_at(right, pos_r)) {
+            (None, None) => return (Ordering::Equal, pos_l, pos_r),
+            (None, Some(_)) => return (Ordering::Less, pos_l, pos_r),
+            (Some(_), None) => return (Ordering::Greater, pos_l, pos_r),
+            (Some(l), Some(r)) if l != r => return (l.cmp(&r), pos_l, pos_r),
+            _ => (pos_l, pos_r) = (pos_l + 1, pos_r + 1),
+        }
+    }
+}
+
+fn digit_at(bytes: &[u8], pos: usize) -> Option<u8> {
+    bytes.get(pos).copied().filter(u8::is_ascii_digit)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::sort_packages;
+    use std::cmp::Ordering;
+
+    use super::{natcasecmp, sort_packages};
+
+    // PHP strnatcasecmp, verified against PHP 8.4 (php -r 'var_dump(strnatcasecmp(...))')
+    // and ext/standard/strnatcmp.c: a leading-zero digit run is only special
+    // ("fractional", compared left-aligned byte-by-byte) relative to where the
+    // comparison currently stands, not by total digit-run length, so e.g.
+    // "0" vs "00" and "010" vs "0010" are Equal (both fully consumed as the
+    // same left-aligned digits), not Less/Greater.
+    #[test]
+    fn natcasecmp_matches_php() {
+        let cases: &[(&str, &str, Ordering)] = &[
+            ("0", "00", Ordering::Equal),
+            ("00", "0", Ordering::Equal),
+            ("010", "0010", Ordering::Equal),
+            ("bar2", "bar10", Ordering::Less),
+            ("Bar2", "bar10", Ordering::Less),
+            ("a", "b", Ordering::Less),
+            ("x10", "x9", Ordering::Greater),
+        ];
+        for (a, b, expected) in cases {
+            assert_eq!(natcasecmp(a, b), *expected, "natcasecmp({a:?}, {b:?})");
+        }
+    }
+
+    // The actual bug: a digit run with a leading zero *mid-string* (not at
+    // the very start) must dispatch to a left-aligned, byte-by-byte compare,
+    // not "strip leading zeros then compare digit-run lengths".
+    #[test]
+    fn natcasecmp_leading_zero_mid_string() {
+        assert_eq!(natcasecmp("a01b", "a1b"), Ordering::Less);
+        assert_eq!(natcasecmp("a1b", "a01b"), Ordering::Greater);
+    }
 
     fn check(input: &[(&str, &[&str])], expected: &[&str], weights: &[(&str, i64)]) {
         assert_eq!(sort_packages(input, weights), expected);
