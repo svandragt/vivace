@@ -1,12 +1,13 @@
 # vivace
 
-`viv install` installs PHP dependencies from an existing `composer.lock` and
-produces a `vendor/` directory that is byte for byte what Composer would
-write. It is to Composer what uv's `pip sync` was to pip: no dependency
-solving yet, all the speed comes from how packages are stored and linked.
+`viv` installs PHP dependencies from `composer.lock` and produces a `vendor/`
+directory that is byte for byte what Composer would write. Since 0.3 it also
+resolves: `viv update`, `viv require` and `viv remove` write a `composer.lock`
+that Composer accepts unchanged, using a port of Composer's own solver.
 
-Status: proof of concept, v0.1. Linux and macOS (both tested in CI). Not a Composer replacement for
-`update`, `require`, plugins or scripts.
+Status: proof of concept, v0.3. Linux and macOS, both tested in CI. Before
+each release a [compatibility sweep](compat/README.md) byte-diffs `vendor/`
+against Composer on pinned popular projects and a random Packagist sample.
 
 ## Numbers
 
@@ -17,7 +18,7 @@ raw data in [`bench/results/`](bench/results/README.md).
 |---|---|---|---|
 | composer 2.10.2 | 8.28 s | 1.69 s | 0.50 s |
 | riff 0.0.7 | 1.75 s | 0.26 s | 0.23 s |
-| viv 0.1.0 | 2.22 s | 0.146 s | 0.010 s |
+| viv 0.3.0 | 2.2 s | 0.140 s | 0.007 s |
 
 ## How it works
 
@@ -47,10 +48,20 @@ target/release/viv install            # in a project with composer.json and comp
 target/release/viv install --no-dev
 target/release/viv install --dry-run  # show the plan, change nothing
 target/release/viv install --link-mode copy
+target/release/viv update                # full update, writes composer.lock
+target/release/viv update psr/log -w     # partial update with dependencies
+target/release/viv require psr/container # edits composer.json, updates the lock
+target/release/viv remove psr/container
+target/release/viv dump-autoload -o
+target/release/viv normalize --check     # composer.json is also normalised on install
+target/release/viv cache prune
 ```
 
-`update`, `require`, `remove` and `dump-autoload` exit with a message
-pointing at Composer.
+`install` runs the root's lifecycle scripts (`pre-install-cmd`,
+`post-autoload-dump`, `post-install-cmd`) like Composer; `--no-scripts` skips
+them. Composer plugins cannot run natively: `composer/installers` and the
+WordPress core installers are applied natively, anything else is refused
+unless you pass `--no-plugins`. See [`docs/plugin-strategy.md`](docs/plugin-strategy.md).
 
 ## Using viv as a drop-in composer
 
@@ -63,13 +74,17 @@ it isn't first on `PATH`.
 
 ## Scope
 
-In: zip dists from any URL the lock names, credentials from `auth.json` and
-`COMPOSER_AUTH`, sha1 verification when the lock carries a checksum, PSR-4,
-PSR-0, classmap and files autoloading, root `autoload` and `autoload-dev`,
-`platform_check.php`, `vendor/bin` proxies, `--no-dev`.
+In: zip and tar dists, path repositories, git sources without a dist,
+credentials from `auth.json` and `COMPOSER_AUTH`, sha1 verification, PSR-4,
+PSR-0, classmap and files autoloading, `--optimize-autoloader` and
+`--classmap-authoritative`, `platform_check.php`, `vendor/bin` proxies,
+lifecycle scripts, `composer/installers` paths, full and partial `update`,
+`require`, `remove`, Packagist v2 metadata with a revalidating cache.
 
-Out for now: dependency resolution, plugins, scripts, git and path
-repositories, tar dists, `--optimize-autoloader`.
+Out for now: other Composer plugins (refused, see the plugin strategy),
+`preferred-install: source`, `--minimal-changes`, private repositories that
+are not Packagist-compatible, and Composer's condensed multi-cause problem
+messages.
 
 ## Development
 
