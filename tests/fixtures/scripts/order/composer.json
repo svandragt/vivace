@@ -1,0 +1,17 @@
+{
+    "name": "vivace/scripts-order-fixture",
+    "scripts": {
+        "pre-install-cmd": [
+            "echo pre-install-cmd >> events.log"
+        ],
+        "pre-autoload-dump": [
+            "echo pre-autoload-dump >> events.log"
+        ],
+        "post-autoload-dump": [
+            "echo post-autoload-dump >> events.log"
+        ],
+        "post-install-cmd": [
+            "echo post-install-cmd >> events.log"
+        ]
+    }
+}

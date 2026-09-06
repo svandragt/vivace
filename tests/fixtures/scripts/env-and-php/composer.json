@@ -1,0 +1,9 @@
+{
+    "name": "vivace/scripts-env-fixture",
+    "scripts": {
+        "pre-autoload-dump": [
+            "echo \"dev=$COMPOSER_DEV_MODE path=$PATH\" > env.marker",
+            "@php -r \"file_put_contents('php.marker', 'php-ran');\""
+        ]
+    }
+}

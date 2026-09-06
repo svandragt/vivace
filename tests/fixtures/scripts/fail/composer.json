@@ -1,0 +1,9 @@
+{
+    "name": "vivace/scripts-fail-fixture",
+    "scripts": {
+        "pre-autoload-dump": [
+            "echo failing >> events.log",
+            "exit 3"
+        ]
+    }
+}

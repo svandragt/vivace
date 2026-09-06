@@ -1,0 +1,9 @@
+{
+    "name": "vivace/scripts-warn-fixture",
+    "scripts": {
+        "pre-autoload-dump": [
+            "App\\Installer::postInstall",
+            "echo continued >> events.log"
+        ]
+    }
+}

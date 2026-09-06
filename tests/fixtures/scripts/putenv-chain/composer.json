@@ -1,0 +1,12 @@
+{
+    "name": "vivace/scripts-putenv-fixture",
+    "scripts": {
+        "pre-autoload-dump": [
+            "@putenv SCRIPTS_TEST_VAR=hello",
+            "@read-var"
+        ],
+        "read-var": [
+            "echo \"var=$SCRIPTS_TEST_VAR\" > putenv.marker"
+        ]
+    }
+}

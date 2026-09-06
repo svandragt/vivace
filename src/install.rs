@@ -28,6 +28,7 @@ use crate::fetch;
 use crate::link::{LinkMode, link_tree};
 use crate::lock::{Lock, Package, Root, read_lock, read_root};
 use crate::plan::{self, Plan};
+use crate::scripts;
 use crate::store::{Store, hex};
 
 /// Fetch requests in flight at once (`fetch::fetch_all`'s concurrency).
@@ -77,6 +78,10 @@ pub struct InstallArgs {
     /// (`config.apcu-autoloader-prefix`); implies `--apcu-autoloader`.
     #[arg(long = "apcu-autoloader-prefix", value_name = "PREFIX")]
     pub apcu_autoloader_prefix: Option<String>,
+    /// Skip `pre-install-cmd`/`post-install-cmd`/`post-autoload-dump` and
+    /// every other root `scripts` listener.
+    #[arg(long)]
+    pub no_scripts: bool,
 }
 
 /// `viv dump-autoload` flags: same autoload-shaping knobs as `install`, minus
@@ -108,6 +113,10 @@ pub struct DumpAutoloadArgs {
     /// (`config.apcu-autoloader-prefix`); implies `--apcu-autoloader`.
     #[arg(long = "apcu-autoloader-prefix", value_name = "PREFIX")]
     pub apcu_autoloader_prefix: Option<String>,
+    /// Skip `pre-autoload-dump`/`post-autoload-dump` and every other root
+    /// `scripts` listener.
+    #[arg(long)]
+    pub no_scripts: bool,
 }
 
 /// The autoload-shaping flags `install` and `dump-autoload` both accept,
@@ -197,10 +206,25 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         dev,
         composer_json_sha256: hex(Sha256::digest(&composer_json)),
     };
-    if plan.is_noop() && read_state(&state_path).as_ref() == Some(&state) {
+    let composer_json_value: Value =
+        serde_json::from_slice(&composer_json).context("parsing composer.json")?;
+    let mut scripts = scripts::Runner::new(
+        &composer_json_value,
+        &project_dir,
+        &root.config.bin_dir,
+        dev,
+        args.no_scripts,
+    );
+    // Composer still dispatches every event on a no-op install (and its
+    // autoloader regeneration is a plain re-dump, cheap because
+    // `write_atomic` only rewrites bytes that changed); vivace's no-op fast
+    // path skips all of that for speed, which is only safe when there is no
+    // `scripts` listener relying on running anyway.
+    if plan.is_noop() && read_state(&state_path).as_ref() == Some(&state) && !scripts.enabled() {
         out("Nothing to install, update or remove");
         return Ok(());
     }
+    scripts.dispatch("pre-install-cmd")?;
 
     let start = Instant::now();
     fs_err::create_dir_all(&vendor_dir)?;
@@ -273,6 +297,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         dev,
         &state,
         &state_path,
+        &mut scripts,
     )?;
 
     out(&format!(
@@ -287,6 +312,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
              `viv install --adopt` to relink them from the store.",
         );
     }
+    scripts.dispatch("post-install-cmd")?;
     Ok(())
 }
 
@@ -305,6 +331,7 @@ fn regenerate_vendor_metadata(
     dev: bool,
     state: &State,
     state_path: &Path,
+    scripts: &mut scripts::Runner,
 ) -> Result<()> {
     let bin_dir = project_dir.join(&root.config.bin_dir);
     let bin_packages: Vec<(&Package, PathBuf)> = packages
@@ -321,7 +348,16 @@ fn regenerate_vendor_metadata(
     );
 
     let autoload_started = Instant::now();
-    write_autoload(flags, root, lock, vendor_dir, project_dir, packages, dev)?;
+    write_autoload(
+        flags,
+        root,
+        lock,
+        vendor_dir,
+        project_dir,
+        packages,
+        dev,
+        scripts,
+    )?;
     tracing::debug!(
         elapsed_ms = autoload_started.elapsed().as_millis(),
         "generated autoload files"
@@ -386,6 +422,16 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
     };
     let state_path = vendor_dir.join("composer/.vivace-state");
 
+    let composer_json_value: Value =
+        serde_json::from_slice(&composer_json).context("parsing composer.json")?;
+    let mut scripts = scripts::Runner::new(
+        &composer_json_value,
+        &project_dir,
+        &root.config.bin_dir,
+        dev,
+        args.no_scripts,
+    );
+
     let flags = AutoloadFlags::from(args);
     regenerate_vendor_metadata(
         &flags,
@@ -397,6 +443,7 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
         dev,
         &state,
         &state_path,
+        &mut scripts,
     )?;
 
     out("Generated autoload files");
@@ -406,6 +453,7 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
 /// Build the generator's `Input` from the root and the packages that will
 /// end up in `vendor/`, generate the autoload files, then write
 /// `platform_check.php` (or delete it) beside them.
+#[expect(clippy::too_many_arguments, reason = "install's tail, no bundling win")]
 fn write_autoload(
     flags: &AutoloadFlags,
     root: &Root,
@@ -414,7 +462,9 @@ fn write_autoload(
     project_dir: &Path,
     packages: &[&Package],
     dev: bool,
+    scripts: &mut scripts::Runner,
 ) -> Result<()> {
+    scripts.dispatch("pre-autoload-dump")?;
     let suffix = resolve_suffix(root, lock, vendor_dir)?;
     let classmap_authoritative = flags.classmap_authoritative || root.config.classmap_authoritative;
     let scan_psr =
@@ -497,6 +547,7 @@ fn write_autoload(
         None if platform_check_path.exists() => fs_err::remove_file(&platform_check_path)?,
         None => {}
     }
+    scripts.dispatch("post-autoload-dump")?;
     Ok(())
 }
 
