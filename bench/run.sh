@@ -4,6 +4,7 @@
 # Scenarios: cold (no cache, no vendor), warm (cache kept, no vendor), noop (vendor present).
 # Run inside devbox (`devbox run -- bench/run.sh bench/laravel`) so php/composer/hyperfine resolve.
 set -eu
+root=$(pwd)
 proj=$(cd "$1" && pwd); shift
 tools=${*:-"composer riff viv"}
 work=${BENCH_WORK:-/tmp/vivace-bench}
@@ -15,7 +16,7 @@ cmd_for() {
     composer) echo "composer install --no-interaction --no-progress --quiet" ;;
     riff)     echo "${RIFF:-riff} install --no-interaction" ;;
     presto)   echo "${PRESTO:-presto} install" ;;
-    viv)      echo "${VIV:-target/release/viv} install" ;;
+    viv)      echo "${VIV:-$root/target/release/viv} install" ;;
   esac
 }
 cache_for() {
