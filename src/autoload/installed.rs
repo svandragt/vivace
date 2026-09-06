@@ -166,6 +166,9 @@ fn dump_package(package: &Package) -> Result<Value> {
             // as an archive (zip/tar/path — a path repo's package still has
             // a `dist` block, just `type: path`), `source` for the dist-less
             // git-source packages `Package::validate_dist` accepts (#13).
+            // A metapackage is never downloaded, so Composer leaves its
+            // installation source null and the dumper drops the key.
+            "installation-source" if package.r#type == "metapackage" => continue,
             "installation-source" => Value::String(
                 if package.dist.is_none() {
                     "source"
@@ -985,6 +988,7 @@ mod tests {
         assert_eq!(req_keys, ["a/a", "z/z"]);
         let meta_out = &parsed["packages"][1];
         assert_eq!(meta_out["install-path"], serde_json::Value::Null);
+        assert!(meta_out.get("installation-source").is_none());
         assert_eq!(meta_out["version_normalized"], "2.0.0.0");
         assert!(out.ends_with("}\n"));
     }
