@@ -1,0 +1,18 @@
+{
+    "bin": [
+        "bin/zeta",
+        "bin/alpha"
+    ],
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "zeta/plugin": true,
+            "alpha/plugin": true
+        },
+        "optimize-autoloader": true
+    },
+    "require": {
+        "psr/log": ">=1.0.0  ||  >=2.0.0"
+    },
+    "name": "acme/messy2"
+}

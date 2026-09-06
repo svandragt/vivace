@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use vivace::install::{self, DumpAutoloadArgs, InstallArgs};
+use vivace::normalize::{self, NormalizeArgs};
 
 #[derive(Parser)]
 #[command(
@@ -39,6 +40,9 @@ enum Command {
     /// Regenerate the autoload files and `vendor/bin` from an already
     /// installed `vendor/`, without fetching or linking.
     DumpAutoload(DumpAutoloadArgs),
+    /// Normalize composer.json's key order and formatting, a native
+    /// `composer normalize` (ergebnis/composer-normalize).
+    Normalize(NormalizeArgs),
 }
 
 fn main() -> ExitCode {
@@ -56,6 +60,13 @@ fn main() -> ExitCode {
         Command::Require => stub("require"),
         Command::Remove => stub("remove"),
         Command::DumpAutoload(args) => match install::dump_autoload(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::Normalize(args) => match normalize::run(&args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 err_out(&format!("{err:#}"));

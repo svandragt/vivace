@@ -1,0 +1,10 @@
+---
+source: tests/normalize.rs
+assertion_line: 67
+expression: snapshot
+---
+success: true
+exit_code: 0
+----- stdout -----
+
+----- stderr -----

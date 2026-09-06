@@ -1,0 +1,27 @@
+{
+    "name": "acme/messy3",
+    "require": {
+        "monolog/monolog": "^2.0",
+        "lib-icu": "*",
+        "psr/log": "^1.0",
+        "php": ">=7.4",
+        "ext-json": "*"
+    },
+    "conflict": {
+        "acme/old": "<1.0"
+    },
+    "replace": {
+        "acme/legacy": "self.version"
+    },
+    "provide": {
+        "psr/log-implementation": "1.0.0"
+    },
+    "suggest": {
+        "ext-redis": "For caching"
+    },
+    "config": {
+        "platform-check": false,
+        "sort-packages": true
+    },
+    "license": "MIT"
+}

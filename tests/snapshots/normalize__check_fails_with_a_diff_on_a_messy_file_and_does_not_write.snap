@@ -1,0 +1,27 @@
+---
+source: tests/normalize.rs
+assertion_line: 78
+expression: snapshot
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+[PROJECT]/composer.json is not normalized:
+-    "require-dev": {
+-        "phpunit/phpunit": "^9.0"
+-    },
++    "name": "acme/messy",
++    "license": "MIT",
+-        "psr/log": "^1.0",
+-        "ext-json": "*",
+-        "monolog/monolog": "^2.0"
++        "ext-json": "*",
++        "monolog/monolog": "^2.0",
++        "psr/log": "^1.0"
+-    "name": "acme/messy",
+-    "license": "MIT"
++    "require-dev": {
++        "phpunit/phpunit": "^9.0"
++    }
