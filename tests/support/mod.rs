@@ -15,9 +15,10 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
-use serde_json::Value;
-use vivace::lock::{Lock, Root, missing_requirements, read_lock, read_root, validate_against_root};
+use serde_json::{Map, Value};
+use vivace::lock::{Lock, Root, read_lock, read_root, validate_against_root};
 use vivace::plan::{self, Plan};
+use vivace::semver;
 use vivace::version::{normalize, normalize_branch};
 
 struct Fixture {
@@ -179,11 +180,13 @@ pub(crate) fn run(src: &str) {
 ///   phrase only, since content-hash staleness is by itself just a warning
 ///   in real Composer, and the fixture's actual abort reason may be a
 ///   deeper solver problem this planner can't see either.
-/// - a root requirement whose package name is entirely absent from the
-///   lock (a "lock missing packages" fixture) — checked against the exact
-///   set of "- Required package ..." lines in EXPECT-OUTPUT, so a fixture
-///   that *also* needs constraint checking (version doesn't satisfy, not
-///   just "missing") correctly fails here rather than passing by accident.
+/// - a root requirement the lock can't satisfy, whether the package is
+///   entirely absent or merely locked at (or replaced/provided at) a
+///   version that doesn't meet the root's constraint — checked against
+///   the exact set of "- Required package ..." lines in EXPECT-OUTPUT via
+///   [`unsatisfied_requirements`], so a fixture whose rejection needs
+///   something deeper (a solver "Problem N", a policy-engine block)
+///   correctly fails here rather than passing by accident.
 fn assert_rejected(fixture: &Fixture, lock: &Lock, root: &Root, composer_bytes: &[u8]) {
     assert!(
         fixture.expect.is_empty(),
@@ -208,20 +211,168 @@ fn assert_rejected(fixture: &Fixture, lock: &Lock, root: &Root, composer_bytes: 
         .filter(|line| line.starts_with("- Required package"))
         .collect();
     assert!(
-        !expected.is_empty()
-            && expected
-                .iter()
-                .all(|l| l.contains("is not present in the lock file")),
-        "this fixture's rejection needs constraint checking (\"does not satisfy\"), \
-         which vivace's planner doesn't implement (no dependency solver); \
-         EXPECT-OUTPUT's \"Required package\" lines: {expected:?}"
+        !expected.is_empty(),
+        "this fixture's rejection needs something deeper than a requirement check \
+         (a solver \"Problem N\", a policy-engine block) — no \"Required package\" \
+         lines in EXPECT-OUTPUT to compare against"
     );
 
-    let missing: std::collections::BTreeSet<String> = missing_requirements(lock, root, fixture.dev)
-        .into_iter()
-        .collect();
-    let missing: std::collections::BTreeSet<&str> = missing.iter().map(String::as_str).collect();
-    assert_eq!(missing, expected);
+    let actual: std::collections::BTreeSet<String> =
+        unsatisfied_requirements(lock, root, fixture.dev)
+            .into_iter()
+            .collect();
+    let actual: std::collections::BTreeSet<&str> = actual.iter().map(String::as_str).collect();
+    assert_eq!(actual, expected);
+}
+
+/// Port of Composer's `Locker::getMissingRequirementInfo` (2.10.2): for each
+/// of `root`'s requirements (and, when `dev`, its require-dev too), is there
+/// a locked package — or a locked package's `replace`/`provide` entry, or
+/// the root package's own `replace`/`provide` entry — whose name matches
+/// and whose version (or replace/provide constraint) satisfies the
+/// requirement? `self.version` requirements and platform packages are
+/// never checked, matching upstream exactly.
+///
+/// This is `vivace::lock::missing_requirements` widened with the
+/// constraint check that function's doc comment says vivace's planner
+/// deliberately skips (v0.1 has no dependency solver); it lives here,
+/// duplicating that function's platform-package filter, because this
+/// fixture harness owns no `src/**` file and the check is only ever needed
+/// to grade a fixture's `EXPECT-OUTPUT`, never by `viv` itself.
+fn unsatisfied_requirements(lock: &Lock, root: &Root, dev: bool) -> Vec<String> {
+    struct Candidate<'a> {
+        name: String,
+        version: &'a str,
+        provide: &'a Map<String, Value>,
+        replace: &'a Map<String, Value>,
+    }
+
+    fn is_platform_package(name: &str) -> bool {
+        name == "php"
+            || name.starts_with("php-")
+            || name == "hhvm"
+            || name.starts_with("ext-")
+            || name.starts_with("lib-")
+            || name.starts_with("composer-")
+    }
+
+    /// `InstalledRepository::findPackagesWithReplacersAndProviders`: does
+    /// `candidate` satisfy `target`, either by being it (at a version
+    /// matching `constraint`, if any) or by replacing/providing it (at a
+    /// constraint overlapping `constraint`, if any)? `None` finds any
+    /// candidate for `target` at all, ignoring versions/constraints.
+    fn candidate_matches(
+        candidate: &Candidate<'_>,
+        target: &str,
+        constraint: Option<&semver::Constraint>,
+    ) -> bool {
+        if candidate.name.to_lowercase() == target {
+            return match constraint {
+                None => true,
+                Some(c) => semver::normalize(candidate.version).is_ok_and(|v| c.matches(&v)),
+            };
+        }
+        candidate
+            .provide
+            .iter()
+            .chain(candidate.replace.iter())
+            .any(|(link_name, link_constraint)| {
+                link_name.to_lowercase() == target
+                    && match (constraint, link_constraint.as_str()) {
+                        (None, Some(_)) => true,
+                        (Some(c), Some(spec)) => semver::parse_constraint(spec)
+                            .is_ok_and(|link_c| semver::have_intersections(c, &link_c)),
+                        (_, None) => false,
+                    }
+            })
+    }
+
+    let root_name = root.name.clone().unwrap_or_else(|| "__root__".to_string());
+    let root_version = root.version.as_deref().unwrap_or("1.0.0");
+
+    let mut sets: Vec<(&str, &Map<String, Value>, bool)> = vec![("Required", &root.require, false)];
+    if dev {
+        sets.push(("Required (in require-dev)", &root.require_dev, true));
+    }
+
+    let mut out = Vec::new();
+    for (description, requires, dev_repo) in sets {
+        let candidates: Vec<Candidate<'_>> = lock
+            .packages(dev_repo)
+            .map(|p| Candidate {
+                name: p.name.clone(),
+                version: p.version.as_str(),
+                provide: &p.provide,
+                replace: &p.replace,
+            })
+            .chain(std::iter::once(Candidate {
+                name: root_name.clone(),
+                version: root_version,
+                provide: &root.provide,
+                replace: &root.replace,
+            }))
+            .collect();
+
+        for (name, raw_constraint) in requires {
+            if is_platform_package(name) {
+                continue;
+            }
+            let Some(pretty_constraint) = raw_constraint.as_str() else {
+                continue;
+            };
+            if pretty_constraint == "self.version" {
+                continue;
+            }
+            let Ok(constraint) = semver::parse_constraint(pretty_constraint) else {
+                continue;
+            };
+            let target = name.to_lowercase();
+
+            if candidates
+                .iter()
+                .any(|c| candidate_matches(c, &target, Some(&constraint)))
+            {
+                continue;
+            }
+
+            let description_text = match candidates
+                .iter()
+                .find(|c| candidate_matches(c, &target, None))
+            {
+                None => {
+                    out.push(format!(
+                        "- {description} package \"{name}\" is not present in the lock file."
+                    ));
+                    continue;
+                }
+                Some(provider) if provider.name.to_lowercase() == target => {
+                    provider.version.to_string()
+                }
+                Some(provider) => provider
+                    .replace
+                    .iter()
+                    .map(|link| ("replaced", link))
+                    .chain(provider.provide.iter().map(|link| ("provided", link)))
+                    .find(|(_, (link_name, _))| link_name.to_lowercase() == target)
+                    .map_or_else(
+                        || provider.version.to_string(),
+                        |(verb, (_, link_constraint))| {
+                            format!(
+                                "{verb} as {} by {} {}",
+                                link_constraint.as_str().unwrap_or(""),
+                                provider.name,
+                                provider.version
+                            )
+                        },
+                    ),
+            };
+            out.push(format!(
+                "- {description} package \"{name}\" is in the lock file as \"{description_text}\" \
+                 but that does not satisfy your constraint \"{pretty_constraint}\"."
+            ));
+        }
+    }
+    out
 }
 
 /// A pre-existing `installed.json` package, enough to derive

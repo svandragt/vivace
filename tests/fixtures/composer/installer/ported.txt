@@ -12,24 +12,27 @@ install-policy-malware-block-scope-update-noop-on-install
 install-security-advisory-matching-dependency
 outdated-lock-file-fails-install
 outdated-lock-file-with-new-platform-reqs-fails
+root-requirements-do-not-affect-locked-versions
 suggest-prod
+updating-dev-from-lock-removes-old-deps
 
-# Not ported — each needs a feature vivace's planner deliberately doesn't
-# have (no dependency solving, v0.1 is zip-dist only):
-#
-# root-requirements-do-not-affect-locked-versions
-#   The reject is a semver constraint mismatch (locked 1.0.0 vs required
-#   2.0.0, and two provide/replace-satisfied-but-wrong-version cases) —
-#   needs a real constraint evaluator, not just presence-in-lock.
+# Not ported — each needs a feature vivace still doesn't have. The solver
+# added under src/solver only solves `viv update` (full update against
+# Packagist, docs/resolver-design.md stage 3-4); it has no "install from
+# lock" mode (a solve fixed to exactly the locked packages, to verify they
+# still satisfy the root and one another) and its Problem formatting is a
+# deliberately blunt stand-in (`solver::problem`'s doc comment: the full,
+# Composer-wording port is stage 5, composer/composer#42). The three
+# fixtures below all expect that exact wording:
 #
 # replaced-packages-should-not-be-installed-when-installing-from-lock
 #   A replace/require conflict Composer's SAT solver resolves
-#   ("Problem 1"); vivace has no solver.
+#   ("Problem 1"); needs the fixed-pool install-from-lock solve above.
 #
 # conflict-with-alias-in-lock-does-prevents-install
 # root-alias-change-with-circular-dep
 #   Same: a solver "Problem 1" conflict, here via a branch alias / root
-#   alias. No solver, no root-alias modelling.
+#   alias. Needs the same fixed-pool solve, plus root-alias modelling.
 #
 # install-policy-malware-block-direct-dependency
 # install-policy-malware-block-scope-install
@@ -41,15 +44,3 @@ suggest-prod
 #   vivace's planner installs unconditionally, which happens to be the
 #   correct behaviour for those, since Composer's policy engine is a
 #   no-op for a plain `install` in those specific configurations too.)
-#
-# updating-dev-from-lock-removes-old-deps
-#   a/devpackage is a git-sourced dev package (composer.lock `source`, no
-#   `dist`); its VCS ref moves from oldref to newref between the old
-#   installed.json and the new lock. vivace's planner only compares
-#   `dist.reference` (v0.1 supports zip dists only, see
-#   `Package::validate_dist`), so it can't see the ref bump and treats
-#   a/devpackage as unchanged (kept) instead of "Upgrading". Needs
-#   source.reference-aware diffing, i.e. git package support, out of
-#   v0.1 scope. (The alias-marking half of this fixture, on a/dependency,
-#   does work — see install-missing-alias-from-lock for that path ported
-#   on its own.)
