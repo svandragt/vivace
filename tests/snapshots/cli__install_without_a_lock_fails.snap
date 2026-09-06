@@ -1,0 +1,10 @@
+---
+source: tests/cli.rs
+expression: snapshot
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+composer.lock not found; vivace v0.1 installs from an existing lock, run `composer update` first

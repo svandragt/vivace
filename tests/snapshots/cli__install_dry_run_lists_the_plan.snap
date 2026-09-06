@@ -1,0 +1,13 @@
+---
+source: tests/cli.rs
+expression: snapshot
+---
+success: true
+exit_code: 0
+----- stdout -----
+install 3 / keep 0 / remove 0
+  install monolog/monolog (3.11.0)
+  install psr/log (3.0.2)
+  install psr/container (2.0.2)
+
+----- stderr -----
