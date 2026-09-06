@@ -1,0 +1,28 @@
+{
+  "packages": [
+    "php@8.4",
+    "php84Packages.composer@2.10",
+    "hyperfine@1.20",
+    "cargo-nextest@latest",
+    "cargo-deny@latest"
+  ],
+  "shell": {
+    "scripts": {
+      "check": [
+        "cargo fmt --check",
+        "cargo clippy --all-targets -- -D warnings",
+        "cargo nextest run",
+        "cargo deny check"
+      ],
+      "test": [
+        "cargo nextest run"
+      ],
+      "bench": [
+        "bench/run.sh bench/laravel composer riff viv"
+      ],
+      "hooks": [
+        "printf \"#!/bin/sh\\nexec devbox run check\\n\" > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit"
+      ]
+    }
+  }
+}

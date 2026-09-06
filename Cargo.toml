@@ -1,0 +1,49 @@
+[package]
+name = "vivace"
+version = "0.1.0"
+edition = "2024"
+description = "Fast composer install from composer.lock"
+license = "MIT"
+
+[[bin]]
+name = "viv"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -2 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+too_many_lines = "allow"
+must_use_candidate = "allow"
+print_stdout = "warn"
+print_stderr = "warn"
+dbg_macro = "warn"
+exit = "warn"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+fs-err = "3.3.1"
+futures = "0.3.34"
+md5 = "0.8.1"
+regex = "1.13.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "stream", "gzip"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+sha1 = "0.11.0"
+sha2 = "0.11.0"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+insta = "1.48.0"
+predicates = "3.1.4"
+tempfile = "3.27.0"
