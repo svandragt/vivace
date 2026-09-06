@@ -197,3 +197,40 @@ warning is being deduplicated.
 
 **Tooling.** A Makefile fronts the devbox commands, CI runs the gate on
 every push, and the README carries the table above.
+
+## 2026-09-06, night: a real project
+
+**First contact.** Sander pointed `viv` at a work project: 105 packages,
+private GitHub repositories, a private Composer repository, everything
+locked to dev branches. The first run failed in a quarter of a second with
+a 404: `viv` sent no credentials. Composer reads `auth.json` from the
+project and from its home directory, plus `COMPOSER_AUTH`, and sends a
+token per host. That was out of scope for v0.1 and lasted until the first
+real project. It is in now, with one wrinkle worth knowing: reqwest strips
+the Authorization header on a cross-host redirect, and GitHub's API
+redirects zipball requests from api.github.com to codeload.github.com, so
+`viv` follows redirects itself and re-applies the credential for each host.
+
+**Then the diff.** Installing the same lock with both tools side by side
+found four differences the fixtures had never exercised. Packages whose
+vendor name is `composer` live in `vendor/composer/`, the directory that
+holds `installed.json`, and Composer's shortest-path rule writes their
+`install-path` as `./installers` where `viv` wrote `../composer/installers`.
+Dev-branch packages carry an alias in `installed.php`: the `branch-alias`
+from `extra` if there is one, normalised and with `.9999999` runs collapsed
+back to `.x`, or `9999999-dev` for a default branch with no alias, and
+nothing for numeric branches such as `1.x-dev`. Two provided virtual
+packages named `php-http/...` vanished because the platform-package filter
+matched `php` as a prefix; Composer's rule is an exact regex. And an earlier
+review "fix" that deleted a package's top-level `.DS_Store` was wrong:
+Composer ignores that file only when deciding whether an archive has a
+single top directory, it does not delete it.
+
+After those fixes the two trees are byte-identical apart from `vendor/bin`.
+Warm install on 47,270 files: 0.61 s against Composer's 3.19 s. A second
+run is a no-op.
+
+**Lesson.** The golden corpora caught the generator's logic. The real
+project caught the assumptions around it: credentials, the `composer/`
+vendor name, dev-branch aliases, a too-broad regex. One afternoon with a
+real lock file was worth more than another fixture.

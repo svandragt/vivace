@@ -2,14 +2,31 @@
 //! Composer's `FilesystemRepository::write` and `ArrayDumper`.
 
 use std::fmt::Write as _;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
+use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::autoload::generator::find_shortest_path;
 use crate::autoload::sort::natcasecmp;
 use crate::lock::{Package, Root};
 use crate::version;
+
+/// `PlatformRepository::PLATFORM_PACKAGE_REGEX`: an exact match against the
+/// whole package name, not a prefix — `php-http/client-implementation` looks
+/// like it starts with `php` but doesn't match this.
+static PLATFORM_PACKAGE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(?:php(?:-64bit|-ipv6|-zts|-debug)?|hhvm|(?:ext|lib)-[a-z0-9](?:[_.-]?[a-z0-9]+)*|composer(?:-(?:plugin|runtime)-api)?)$",
+    )
+    .unwrap()
+});
+
+/// `preg_replace('{(\.9999999)+}', '.x', $alias)`: every run of one or more
+/// consecutive `.9999999` segments collapses to a single `.x`.
+static BRANCH_ALIAS_WILDCARD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:\.9999999)+").unwrap());
 
 /// `ArrayDumper::dump` key order. Anything the lock carries that is not in
 /// this list (`version_normalized` from an older lock, say) is dropped.
@@ -314,11 +331,19 @@ fn branch_alias(package: &Package) -> Option<String> {
             let Some(target) = target.as_str() else {
                 continue;
             };
+            if !target.ends_with("-dev") || !source.eq_ignore_ascii_case(version) {
+                continue;
+            }
             // ponytail: skips the numeric-alias-prefix cross-check between
             // source and target branches; untested by the fixtures, add if
             // a numeric `branch-alias` key ever needs it.
-            if target.ends_with("-dev") && source.eq_ignore_ascii_case(version) {
-                return Some(target.to_owned());
+            let validated = if target == "9999999-dev" {
+                target.to_owned()
+            } else {
+                version::normalize_branch(&target[..target.len() - "-dev".len()])
+            };
+            if validated.ends_with("-dev") {
+                return Some(collapse_branch_alias(&validated));
             }
         }
     }
@@ -345,12 +370,11 @@ fn is_numeric_branch(version: &str) -> bool {
 
 /// `PlatformRepository::isPlatformPackage`.
 fn is_platform_package(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.starts_with("php")
-        || lower.starts_with("ext-")
-        || lower.starts_with("lib-")
-        || lower.starts_with("composer")
-        || lower == "hhvm"
+    PLATFORM_PACKAGE.is_match(name)
+}
+
+fn collapse_branch_alias(alias: &str) -> String {
+    BRANCH_ALIAS_WILDCARD.replace_all(alias, ".x").into_owned()
 }
 
 /// `FilesystemRepository::dumpToPhpCode`.
@@ -656,6 +680,49 @@ mod tests {
         );
     }
 
+    /// `ArrayLoader::getBranchAlias` validates the alias through
+    /// `normalizeBranch(substr($alias, 0, -4))`; the pretty alias collapses
+    /// every `.9999999` run in that normalised string back to `.x`, so a
+    /// two-part branch like `1.8-dev` becomes `1.8.x-dev`, not `1.8-dev`.
+    #[test]
+    fn installed_php_alias_pretty_form_collapses_normalized_branch() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut pkg = package("acme/lib", "dev-master", Some("abc"));
+        pkg.raw = json!({
+            "name": "acme/lib",
+            "version": "dev-master",
+            "extra": {"branch-alias": {"dev-master": "1.8-dev"}},
+        });
+        let packages = [&pkg];
+        let out = installed_php(&root, &packages, false).unwrap();
+        let start = out.find("'acme/lib' => array(\n").unwrap();
+        let block = &out[start..start + 400];
+        assert!(
+            block.contains(
+                "'aliases' => array(\n                0 => '1.8.x-dev',\n            ),\n"
+            ),
+            "{block}"
+        );
+    }
+
+    /// An `extra.branch-alias` target that isn't itself `-dev`-suffixed
+    /// isn't a valid alias and is ignored.
+    #[test]
+    fn installed_php_alias_ignored_when_target_not_dev_suffixed() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut pkg = package("acme/lib", "dev-master", Some("abc"));
+        pkg.raw = json!({
+            "name": "acme/lib",
+            "version": "dev-master",
+            "extra": {"branch-alias": {"dev-master": "1.8"}},
+        });
+        let packages = [&pkg];
+        let out = installed_php(&root, &packages, false).unwrap();
+        let start = out.find("'acme/lib' => array(\n").unwrap();
+        let block = &out[start..start + 400];
+        assert!(block.contains("'aliases' => array(),\n"), "{block}");
+    }
+
     /// `default-branch: true` with no matching `branch-alias` falls back to
     /// Composer's `DEFAULT_BRANCH_ALIAS`.
     #[test]
@@ -712,6 +779,61 @@ mod tests {
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(block.contains("'aliases' => array(),\n"), "{block}");
+    }
+
+    /// `PlatformRepository::isPlatformPackage` is an exact, case-insensitive
+    /// regex match, not a name prefix: `php-http/client-implementation`
+    /// looks like a platform package by prefix but isn't one, so it must
+    /// stay a virtual `provided` entry, natural-sorted (`*` before `1.0`).
+    #[test]
+    fn installed_php_virtual_package_survives_php_prefix_false_positive() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut a = package("a/provider", "1.0", Some("abc"));
+        a.provide = links(&[("php-http/client-implementation", "1.0")]);
+        let mut b = package("b/provider", "1.0", Some("def"));
+        b.provide = links(&[("php-http/client-implementation", "*")]);
+        let packages = [&a, &b];
+        let out = installed_php(&root, &packages, false).unwrap();
+        let start = out
+            .find("'php-http/client-implementation' => array(\n")
+            .unwrap();
+        let end = out[start..].find("\n        ),\n").unwrap() + start;
+        assert_eq!(
+            &out[start..end],
+            "'php-http/client-implementation' => array(\n            'dev_requirement' => false,\n            'provided' => array(\n                0 => '*',\n                1 => '1.0',\n            ),"
+        );
+    }
+
+    /// Real platform packages (`php`, `php-64bit`, `ext-json`, `lib-curl`,
+    /// `composer-plugin-api`, `composer-runtime-api`) are skipped as
+    /// `provided`/`replaced` virtual entries.
+    #[test]
+    fn installed_php_skips_real_platform_packages() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut pkg = package("a/lib", "1.0", Some("abc"));
+        pkg.provide = links(&[
+            ("php", "*"),
+            ("php-64bit", "*"),
+            ("ext-json", "*"),
+            ("lib-curl", "*"),
+            ("composer-plugin-api", "*"),
+            ("composer-runtime-api", "*"),
+        ]);
+        let packages = [&pkg];
+        let out = installed_php(&root, &packages, false).unwrap();
+        for name in [
+            "php",
+            "php-64bit",
+            "ext-json",
+            "lib-curl",
+            "composer-plugin-api",
+            "composer-runtime-api",
+        ] {
+            assert!(
+                !out.contains(&format!("'{name}' => array(\n")),
+                "{name} should be skipped"
+            );
+        }
     }
 
     #[test]

@@ -36,3 +36,20 @@ Notes
 - Filesystem dominates install numbers, as uv's benchmark notes warn.
 
 Raw hyperfine JSON: `composer.json`, `riff.json`, `viv.json`, `presto.json`.
+
+## Real project: 105 packages, private repositories
+
+A WordPress project with private GitHub dists and a private Composer
+repository, 381 MB and 47,270 files in `vendor/`. Credentials from
+`auth.json`. Same filesystem for vendor and cache, three runs each.
+
+| Tool | Warm (cache, no vendor) |
+|---|---|
+| composer 2.10.2 (`--no-scripts --no-plugins`) | 3.19 s |
+| viv 0.1.0 | 0.61 s |
+
+viv's warm time is 526 ms of system time: one `link()` per file. The rerun
+with `vendor/` present is a no-op. Cold install 8.3 s, dominated by the
+private downloads. Output: every file under `vendor/composer` and the whole
+package tree byte-identical to Composer's; `vendor/bin` is still the one
+omission.
