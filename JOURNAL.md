@@ -156,3 +156,44 @@ one with real progress resumed from its transcript; the others restarted.
 **Next.** The autoloader generator against Composer's 27 golden cases,
 `installed.json`, `installed.php` and `platform_check.php`, then the CLI and
 the end-to-end byte-diff on the monolog fixture.
+
+## 2026-09-06, evening: `viv install` works, and the numbers
+
+**End to end.** The CLI wires lock, plan, store, fetch, link and autoloader
+together. On the monolog fixture `vendor/` is byte-identical to Composer
+2.10.2 in dev and no-dev mode, PHP autoloads every class the fixture
+declares, a second run is a no-op, and vendor files are read-only hardlinks
+into the store. On the 101-package Laravel lock all thirteen generated files
+match Composer's output exactly and the package trees are identical apart
+from `vendor/bin`, which v0.1 does not write.
+
+**Benchmark.** Same lock, vendor and cache on one filesystem, three runs
+each.
+
+| Tool | Cold | Warm | No-op |
+|---|---|---|---|
+| composer 2.10.2 | 8.28 s | 1.69 s | 0.50 s |
+| riff 0.0.7 | 1.75 s | 0.26 s | 0.23 s |
+| viv 0.1.0 | 2.22 s | 0.146 s | 0.010 s |
+
+Warm is where the store pays: 107 ms of system time linking against 258 ms
+for Riff inflating. No-op is where not spawning PHP pays: ten milliseconds.
+Cold is half a second behind Riff and that is the download layer, tracked
+as the next piece of work.
+
+**Reviews that mattered.** The store, link and plan review found twelve
+things, five of them real: lock names and references went into store paths
+unsanitised, a duplicate zip entry failed against an already read-only file,
+replacing a package deleted the old tree before the new one was in place,
+copy mode still produced read-only files, and the plan compared only the
+dist reference so a reference-less package bumped in version was never
+reinstalled. All fixed with a failing test first.
+
+**A mistake worth recording.** The first run against the Laravel lock
+happened with the project on a different filesystem from the cache. Every
+package fell back to copying, and the warning meant to fire once fired a
+hundred and one times. The benchmark was rerun on one filesystem; the
+warning is being deduplicated.
+
+**Tooling.** A Makefile fronts the devbox commands, CI runs the gate on
+every push, and the README carries the table above.

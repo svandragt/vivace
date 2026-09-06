@@ -1,27 +1,38 @@
-# Baseline: install from lock, 101 packages (bench/laravel)
+# Install from lock, 101 packages (bench/laravel)
 
-Machine: AMD Ryzen 9 7900X3D, ext4, Linux 7.0, 2026-09-06. PHP 8.4.24.
-`bench/run.sh bench/laravel composer riff presto`, 3 runs each, means.
+Machine: AMD Ryzen 9 7900X3D, ext4, Linux 7.0, PHP 8.4.24, 2026-09-06.
+`bench/run.sh bench/laravel composer riff viv`, three runs each, means.
+Vendor directory and caches on the same filesystem (hardlinks need that;
+across filesystems `viv` falls back to copying with a warning).
 
-| Tool | Cold (no cache, no vendor) | Warm (cache, no vendor) | No-op (vendor present) |
+Scenarios: cold is no cache and no `vendor/`; warm is cache present, no
+`vendor/`; no-op is `vendor/` present and up to date.
+
+| Tool | Cold | Warm | No-op |
 |---|---|---|---|
-| composer 2.10.2 | 7.30 s | 1.09 s | 0.50 s |
-| riff 0.0.7 | 1.74 s | 0.23 s | 0.23 s |
-| presto 0.1.12 | 6.46 s | 6.33 s | 3.41 s |
+| composer 2.10.2 | 8.28 s | 1.69 s | 0.50 s |
+| riff 0.0.7 | 1.75 s | 0.26 s | 0.23 s |
+| viv 0.1.0 | 2.22 s | 0.146 s | 0.010 s |
+| presto 0.1.12 (earlier run) | 6.46 s | 6.33 s | 3.41 s |
+
+Output check for the same lock: every file in `vendor/composer/` and
+`vendor/autoload.php` that `viv` writes is byte-identical to Composer's, and
+the package trees match. `viv` does not yet write `vendor/bin`.
 
 Notes
 
-- Presto has no download cache despite its README, so warm equals cold. It
-  also rewrites `composer.lock` and emits a non-Composer autoloader with no
-  classmap and stubbed `ClassLoader`/`InstalledVersions`.
-- Riff's warm and no-op times are the same. `--no-audit` brings no-op to
-  157 ms. strace shows 25 `php` processes spawned during a no-op install
-  (platform detection), which is most of the remaining floor. Warm time is
-  dominated by system calls from unzipping every archive into `vendor/`.
-- Riff's `vendor/composer/*` differs from Composer's on this lock only in:
-  ignoring `config.autoloader-suffix` (uses the lock content-hash),
-  `provide` placed after `require-dev` in `installed.json`, `NULL` instead of
-  `null` in `installed.php`, and an `InstalledVersions.php` from a newer
-  Composer commit. Everything else is byte-identical.
+- Warm: `viv` hardlinks each file from an extracted store, Riff and Composer
+  unzip every archive into `vendor/`. System time tells the story: 107 ms
+  against 258 ms for Riff.
+- No-op: `viv` compares the lock with `installed.json` and a small state
+  file, spawns no PHP and touches no network. Riff regenerates the
+  autoloader and spawns `php` for platform detection (157 ms with
+  `--no-audit`); Composer boots PHP and does the same.
+- Cold: downloads dominate. `viv` is half a second behind Riff here; the
+  download layer (concurrency, streaming) is the next thing to tune.
+- Presto has no download cache despite its README and rewrites
+  `composer.lock`; its autoloader is not Composer-compatible. Numbers kept
+  for the record from the study run.
+- Filesystem dominates install numbers, as uv's benchmark notes warn.
 
-Raw hyperfine JSON: `composer.json`, `riff.json`, `presto.json`.
+Raw hyperfine JSON: `composer.json`, `riff.json`, `viv.json`, `presto.json`.
