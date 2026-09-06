@@ -12,7 +12,7 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -150,6 +150,82 @@ var_dump(Fixture\Legacy\Mode::On->value, fixture_helper());"#,
         "php autoload smoke test failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// A `vendor/` Composer wrote (or an older viv, pre-adopt) has
+/// `installed.json` but no `.vivace-state`: a plain install must notice and
+/// warn instead of silently claiming it, and `--adopt` must relink every
+/// package from the store on request.
+#[test]
+fn adopts_a_composer_written_vendor_tree() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping install_e2e: set VIVACE_TEST_NETWORK=1 to fetch real dists over the network"
+        );
+        return;
+    }
+
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_monolog_sources(project);
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 3 packages"));
+
+    let target = project.join("vendor/monolog/monolog/composer.json");
+    let store_ino = fs::metadata(&target).unwrap().ino();
+
+    // Simulate a tree Composer (or a pre-adopt viv) wrote: drop the state
+    // marker and replace one hardlink with a plain writable copy, same as
+    // `composer install` would leave behind.
+    fs::remove_file(project.join("vendor/composer/.vivace-state")).unwrap();
+    let content = fs::read(&target).unwrap();
+    fs::remove_file(&target).unwrap();
+    fs::write(&target, &content).unwrap();
+    assert_ne!(fs::metadata(&target).unwrap().ino(), store_ino);
+
+    let plain = ctx.viv().arg("install").output().unwrap();
+    assert!(
+        plain.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&plain.stderr).contains(
+            "vendor/ was not installed by viv; packages are plain copies. Run \
+             `viv install --adopt` to relink them from the store."
+        ),
+        "stderr: {}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    assert_ne!(
+        fs::metadata(&target).unwrap().ino(),
+        store_ino,
+        "a plain install must not touch files it only keeps"
+    );
+
+    let adopted = ctx.viv().args(["install", "--adopt"]).output().unwrap();
+    assert!(
+        adopted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&adopted.stderr)
+    );
+    assert!(String::from_utf8_lossy(&adopted.stdout).contains("Installed 3 packages"));
+    assert!(
+        !String::from_utf8_lossy(&adopted.stderr).contains("was not installed by viv"),
+        "adopting should not repeat the notice: {}",
+        String::from_utf8_lossy(&adopted.stderr)
+    );
+    let relinked = fs::metadata(&target).unwrap();
+    assert_eq!(
+        relinked.ino(),
+        store_ino,
+        "adopt should relink from the store"
+    );
+    assert!(relinked.nlink() > 1, "adopt should hardlink, not copy");
 }
 
 /// Autoload shapes the monolog fixture doesn't reach: old-style PSR-0

@@ -53,6 +53,13 @@ pub struct InstallArgs {
     /// How store files reach `vendor/`.
     #[arg(long, value_enum, default_value = "hardlink")]
     pub link_mode: LinkMode,
+    /// Reinstall every locked package from the store even if `installed.json`
+    /// already matches it, e.g. to relink a `vendor/` Composer (or an older
+    /// viv) wrote as plain copies.
+    // ponytail: adopts unconditionally, no interactive confirmation; add a
+    // TTY prompt here if adopting silently ever bites someone.
+    #[arg(long)]
+    pub adopt: bool,
     /// Project directory holding `composer.json`/`composer.lock`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
@@ -168,7 +175,16 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     }
 
     let vendor_dir = project_dir.join(&root.config.vendor_dir);
-    let plan = plan::plan(&lock, dev, &vendor_dir)?;
+    let mut plan = plan::plan(&lock, dev, &vendor_dir)?;
+
+    let state_path = vendor_dir.join("composer/.vivace-state");
+    // installed.json exists but viv never wrote a state file: vendor/ came
+    // from Composer (or a pre-adopt viv) as plain copies, not store links.
+    let composer_written =
+        vendor_dir.join("composer/installed.json").is_file() && !state_path.is_file();
+    if args.adopt {
+        plan.install.append(&mut plan.keep);
+    }
 
     if args.dry_run {
         print_plan(&plan);
@@ -181,7 +197,6 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         dev,
         composer_json_sha256: hex(Sha256::digest(&composer_json)),
     };
-    let state_path = vendor_dir.join("composer/.vivace-state");
     if plan.is_noop() && read_state(&state_path).as_ref() == Some(&state) {
         out("Nothing to install, update or remove");
         return Ok(());
@@ -265,6 +280,12 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         plan.remove.len(),
         start.elapsed().as_secs_f64()
     ));
+    if composer_written && !args.adopt {
+        warn_out(
+            "vendor/ was not installed by viv; packages are plain copies. Run \
+             `viv install --adopt` to relink them from the store.",
+        );
+    }
     Ok(())
 }
 
@@ -625,4 +646,9 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
 /// stdout via `writeln!`, not `println!`, to satisfy the `print_stdout` lint.
 fn out(message: &str) {
     let _ = writeln!(std::io::stdout().lock(), "{message}");
+}
+
+/// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint.
+fn warn_out(message: &str) {
+    let _ = writeln!(std::io::stderr().lock(), "{message}");
 }
