@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use vivace::install::{self, InstallArgs};
+use vivace::install::{self, DumpAutoloadArgs, InstallArgs};
 
 #[derive(Parser)]
 #[command(
@@ -36,8 +36,9 @@ enum Command {
     Require,
     /// Not implemented in vivace v0.1: use `composer remove`.
     Remove,
-    /// Not implemented in vivace v0.1: use `composer dump-autoload`.
-    DumpAutoload,
+    /// Regenerate the autoload files and `vendor/bin` from an already
+    /// installed `vendor/`, without fetching or linking.
+    DumpAutoload(DumpAutoloadArgs),
 }
 
 fn main() -> ExitCode {
@@ -54,12 +55,18 @@ fn main() -> ExitCode {
         Command::Update => stub("update"),
         Command::Require => stub("require"),
         Command::Remove => stub("remove"),
-        Command::DumpAutoload => stub("dump-autoload"),
+        Command::DumpAutoload(args) => match install::dump_autoload(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
     }
 }
 
 /// The stub subcommands vivace v0.1 does not implement: no resolver, so no
-/// `update`/`require`/`remove`, and no `--optimize` classmap dump to redo.
+/// `update`/`require`/`remove`.
 fn stub(name: &str) -> ExitCode {
     err_out(&format!(
         "viv {name} is not implemented in vivace v0.1: use composer {name}"

@@ -72,6 +72,69 @@ pub struct InstallArgs {
     pub apcu_autoloader_prefix: Option<String>,
 }
 
+/// `viv dump-autoload` flags: same autoload-shaping knobs as `install`, minus
+/// `--dry-run`/`--link-mode`, which only make sense when fetching and
+/// linking.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Composer's dump-autoload flags"
+)]
+#[derive(Args, Debug, Clone)]
+pub struct DumpAutoloadArgs {
+    /// Skip `require-dev` packages.
+    #[arg(long)]
+    pub no_dev: bool,
+    /// Project directory holding `composer.json`/`composer.lock`.
+    #[arg(short = 'd', long = "project-dir", default_value = ".")]
+    pub project_dir: PathBuf,
+    /// Also classmap-scan PSR-0/PSR-4 directories (`config.optimize-autoloader`).
+    #[arg(short = 'o', long = "optimize-autoloader")]
+    pub optimize_autoloader: bool,
+    /// Classmap-only autoloading, no PSR-0/PSR-4 fallback at runtime
+    /// (`config.classmap-authoritative`); implies `-o`.
+    #[arg(short = 'a', long = "classmap-authoritative")]
+    pub classmap_authoritative: bool,
+    /// Cache classmap lookups in `APCu` (`config.apcu-autoloader`).
+    #[arg(long = "apcu-autoloader")]
+    pub apcu_autoloader: bool,
+    /// Fixed `APCu` cache-key prefix, instead of one generated per run
+    /// (`config.apcu-autoloader-prefix`); implies `--apcu-autoloader`.
+    #[arg(long = "apcu-autoloader-prefix", value_name = "PREFIX")]
+    pub apcu_autoloader_prefix: Option<String>,
+}
+
+/// The autoload-shaping flags `install` and `dump-autoload` both accept,
+/// decoupled from either's `clap::Args` so `write_autoload` takes one shared
+/// type instead of `InstallArgs` only.
+struct AutoloadFlags {
+    optimize_autoloader: bool,
+    classmap_authoritative: bool,
+    apcu_autoloader: bool,
+    apcu_autoloader_prefix: Option<String>,
+}
+
+impl From<&InstallArgs> for AutoloadFlags {
+    fn from(args: &InstallArgs) -> Self {
+        AutoloadFlags {
+            optimize_autoloader: args.optimize_autoloader,
+            classmap_authoritative: args.classmap_authoritative,
+            apcu_autoloader: args.apcu_autoloader,
+            apcu_autoloader_prefix: args.apcu_autoloader_prefix.clone(),
+        }
+    }
+}
+
+impl From<&DumpAutoloadArgs> for AutoloadFlags {
+    fn from(args: &DumpAutoloadArgs) -> Self {
+        AutoloadFlags {
+            optimize_autoloader: args.optimize_autoloader,
+            classmap_authoritative: args.classmap_authoritative,
+            apcu_autoloader: args.apcu_autoloader,
+            apcu_autoloader_prefix: args.apcu_autoloader_prefix.clone(),
+        }
+    }
+}
+
 /// What a repeat run compares against to recognise a no-op without a
 /// network round-trip or a full `installed.json` diff: the lock's
 /// `content-hash`, the `--no-dev` flag, and a hash of the root
@@ -183,42 +246,18 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     );
 
     let all: Vec<&Package> = plan.keep.iter().chain(&plan.install).collect();
-
-    let bin_dir = project_dir.join(&root.config.bin_dir);
-    let bin_packages: Vec<(&Package, PathBuf)> = all
-        .iter()
-        .map(|p| (*p, package_dir(&vendor_dir, p)))
-        .collect();
-    let bin_started = Instant::now();
-    for warning in bin::generate(&vendor_dir, &bin_dir, root.config.bin_compat, &bin_packages)? {
-        tracing::warn!("{warning}");
-    }
-    tracing::debug!(
-        elapsed_ms = bin_started.elapsed().as_millis(),
-        "generated vendor/bin"
-    );
-
-    let autoload_started = Instant::now();
-    write_autoload(args, &root, &lock, &vendor_dir, &project_dir, &all, dev)?;
-    tracing::debug!(
-        elapsed_ms = autoload_started.elapsed().as_millis(),
-        "generated autoload files"
-    );
-
-    let installed_started = Instant::now();
-    write_atomic(
-        &vendor_dir.join("composer/installed.json"),
-        installed_json(&all, dev)?.as_bytes(),
+    let flags = AutoloadFlags::from(args);
+    regenerate_vendor_metadata(
+        &flags,
+        &root,
+        &lock,
+        &vendor_dir,
+        &project_dir,
+        &all,
+        dev,
+        &state,
+        &state_path,
     )?;
-    write_atomic(
-        &vendor_dir.join("composer/installed.php"),
-        installed_php(&root, &all, dev)?.as_bytes(),
-    )?;
-    write_atomic(&state_path, &serde_json::to_vec(&state)?)?;
-    tracing::debug!(
-        elapsed_ms = installed_started.elapsed().as_millis(),
-        "wrote installed.json/php and state"
-    );
 
     out(&format!(
         "Installed {} packages ({from_cache} from cache), removed {}, in {:.2}s",
@@ -229,11 +268,124 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// The tail `install` runs after fetch/link, and all `dump-autoload` runs:
+/// `vendor/bin` proxies, the autoload files, `installed.json`/`installed.php`
+/// and the `.vivace-state` marker, all derived from `packages` alone (no
+/// fetching or linking here).
+#[expect(clippy::too_many_arguments, reason = "install's tail, no bundling win")]
+fn regenerate_vendor_metadata(
+    flags: &AutoloadFlags,
+    root: &Root,
+    lock: &Lock,
+    vendor_dir: &Path,
+    project_dir: &Path,
+    packages: &[&Package],
+    dev: bool,
+    state: &State,
+    state_path: &Path,
+) -> Result<()> {
+    let bin_dir = project_dir.join(&root.config.bin_dir);
+    let bin_packages: Vec<(&Package, PathBuf)> = packages
+        .iter()
+        .map(|p| (*p, package_dir(vendor_dir, p)))
+        .collect();
+    let bin_started = Instant::now();
+    for warning in bin::generate(vendor_dir, &bin_dir, root.config.bin_compat, &bin_packages)? {
+        tracing::warn!("{warning}");
+    }
+    tracing::debug!(
+        elapsed_ms = bin_started.elapsed().as_millis(),
+        "generated vendor/bin"
+    );
+
+    let autoload_started = Instant::now();
+    write_autoload(flags, root, lock, vendor_dir, project_dir, packages, dev)?;
+    tracing::debug!(
+        elapsed_ms = autoload_started.elapsed().as_millis(),
+        "generated autoload files"
+    );
+
+    let installed_started = Instant::now();
+    write_atomic(
+        &vendor_dir.join("composer/installed.json"),
+        installed_json(packages, dev)?.as_bytes(),
+    )?;
+    write_atomic(
+        &vendor_dir.join("composer/installed.php"),
+        installed_php(root, packages, dev)?.as_bytes(),
+    )?;
+    write_atomic(state_path, &serde_json::to_vec(state)?)?;
+    tracing::debug!(
+        elapsed_ms = installed_started.elapsed().as_millis(),
+        "wrote installed.json/php and state"
+    );
+    Ok(())
+}
+
+/// `viv dump-autoload`: reread `composer.json`/`composer.lock` and regenerate
+/// `vendor/autoload.php`, `vendor/composer/*` and `vendor/bin` from the
+/// packages already linked into `vendor/` — no fetch, no link, no remove.
+pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
+    let project_dir = fs_err::canonicalize(&args.project_dir)
+        .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
+
+    let lock_path = project_dir.join("composer.lock");
+    if !lock_path.is_file() {
+        bail!(
+            "composer.lock not found; vivace v0.1 installs from an existing lock, run \
+             `composer update` first"
+        );
+    }
+    let root = read_root(&project_dir.join("composer.json")).context("reading composer.json")?;
+    let lock = read_lock(&lock_path)?;
+    let dev = !args.no_dev;
+
+    let vendor_dir = project_dir.join(&root.config.vendor_dir);
+    if !vendor_dir.is_dir() {
+        bail!(
+            "{} not found; run `viv install` first",
+            vendor_dir.display()
+        );
+    }
+
+    let selected: Vec<&Package> = lock.packages(dev).collect();
+    for package in &selected {
+        let dir = package_dir(&vendor_dir, package);
+        if package.r#type != "metapackage" && !dir.is_dir() {
+            bail!("{} not found; run `viv install` first", dir.display());
+        }
+    }
+
+    let composer_json = fs_err::read(project_dir.join("composer.json"))?;
+    let state = State {
+        content_hash: lock.content_hash.clone(),
+        dev,
+        composer_json_sha256: hex(Sha256::digest(&composer_json)),
+    };
+    let state_path = vendor_dir.join("composer/.vivace-state");
+
+    let flags = AutoloadFlags::from(args);
+    regenerate_vendor_metadata(
+        &flags,
+        &root,
+        &lock,
+        &vendor_dir,
+        &project_dir,
+        &selected,
+        dev,
+        &state,
+        &state_path,
+    )?;
+
+    out("Generated autoload files");
+    Ok(())
+}
+
 /// Build the generator's `Input` from the root and the packages that will
 /// end up in `vendor/`, generate the autoload files, then write
 /// `platform_check.php` (or delete it) beside them.
 fn write_autoload(
-    args: &InstallArgs,
+    flags: &AutoloadFlags,
     root: &Root,
     lock: &Lock,
     vendor_dir: &Path,
@@ -242,15 +394,15 @@ fn write_autoload(
     dev: bool,
 ) -> Result<()> {
     let suffix = resolve_suffix(root, lock, vendor_dir)?;
-    let classmap_authoritative = args.classmap_authoritative || root.config.classmap_authoritative;
+    let classmap_authoritative = flags.classmap_authoritative || root.config.classmap_authoritative;
     let scan_psr =
-        args.optimize_autoloader || classmap_authoritative || root.config.optimize_autoloader;
-    let apcu_prefix_override = args
+        flags.optimize_autoloader || classmap_authoritative || root.config.optimize_autoloader;
+    let apcu_prefix_override = flags
         .apcu_autoloader_prefix
         .clone()
         .or_else(|| root.config.apcu_autoloader_prefix.clone());
-    let apcu_autoloader = args.apcu_autoloader
-        || args.apcu_autoloader_prefix.is_some()
+    let apcu_autoloader = flags.apcu_autoloader
+        || flags.apcu_autoloader_prefix.is_some()
         || root.config.apcu_autoloader
         || apcu_prefix_override.is_some();
     let apcu_prefix = apcu_autoloader.then_some(apcu_prefix_override);
