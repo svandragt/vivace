@@ -131,10 +131,11 @@ pub async fn build<T: Transport>(repo: &Repository<T>, root: &Value) -> Result<B
     let mut requires = Vec::with_capacity(require.len() + require_dev.len());
     for (name, value) in require.iter().chain(require_dev.iter()) {
         let raw = value.as_str().expect("checked as_str above");
-        requires.push((
-            name.to_ascii_lowercase(),
-            Some(semver::parse_constraint(raw)?),
-        ));
+        requires.push(crate::solver::request::RootRequire {
+            name: name.to_ascii_lowercase(),
+            constraint: Some(semver::parse_constraint(raw)?),
+            pretty_constraint: raw.to_string(),
+        });
     }
 
     Ok(BuildResult {
@@ -149,6 +150,231 @@ pub async fn build<T: Transport>(repo: &Repository<T>, root: &Value) -> Result<B
         platform_dev_reqs: extract_platform_requirements(&require_dev),
         platform_overrides,
     })
+}
+
+/// A partial update's allow-list mode (`Request::UPDATE_*`), deciding how
+/// far an explicitly listed package's transitive dependencies are allowed
+/// to move off their locked version.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UpdateAllowMode {
+    /// `UPDATE_ONLY_LISTED`: only the named packages themselves.
+    OnlyListed,
+    /// `UPDATE_LISTED_WITH_TRANSITIVE_DEPS_NO_ROOT_REQUIRE`: the named
+    /// packages plus their locked dependency closure, except a name also
+    /// directly required by root (that one stays locked).
+    WithTransitiveDepsNoRootRequire,
+    /// `UPDATE_LISTED_WITH_TRANSITIVE_DEPS`: the named packages plus their
+    /// full locked dependency closure, root-required or not.
+    WithTransitiveDeps,
+}
+
+/// `PoolBuilder::isUpdateAllowed`'s expansion, done once up front against
+/// the *locked* dependency graph rather than Composer's own live
+/// `unlockPackage` cascade during pool building
+/// (`PoolBuilder.php:680-760`).
+///
+/// ponytail: this does not re-run when an allow-listed package's freshly
+/// fetched version turns out to need a dependency version the locked graph
+/// doesn't have recorded (Composer's `unlockPackage` reacts to that
+/// mid-build); it only walks the *existing* lock's requires. A fixture that
+/// needs the live cascade should widen this rather than the acceptance
+/// tests reaching for it silently.
+pub(crate) fn expand_allow_list(
+    initial: &[String],
+    locked_requires: &HashMap<String, Vec<String>>,
+    root_require_names: &HashSet<String>,
+    mode: UpdateAllowMode,
+) -> HashSet<String> {
+    let mut allowed: HashSet<String> = initial.iter().cloned().collect();
+    if mode == UpdateAllowMode::OnlyListed {
+        return allowed;
+    }
+
+    let mut queue: std::collections::VecDeque<String> = initial.iter().cloned().collect();
+    while let Some(name) = queue.pop_front() {
+        let Some(requires) = locked_requires.get(&name) else {
+            continue;
+        };
+        for target in requires {
+            if mode == UpdateAllowMode::WithTransitiveDepsNoRootRequire
+                && root_require_names.contains(target)
+                && !initial.contains(target)
+            {
+                continue;
+            }
+            if allowed.insert(target.clone()) {
+                queue.push_back(target.clone());
+            }
+        }
+    }
+    allowed
+}
+
+/// `Installer::doUpdate`'s partial-update pool: like [`build`], except a
+/// name in the current lock but outside `allow_names` is loaded straight
+/// from its lock entry (`package_from_lock_entry`) rather than fetched
+/// fresh, matching `PoolBuilder::buildPool`'s `getFixedOrLockedPackages`
+/// loop (a locked-out name only ever has its one recorded version in the
+/// pool, so the solver has nothing else to pick). `allow_names` and every
+/// key of `locked_by_name` are already lowercased.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, only ever called with the default hasher"
+)]
+pub async fn build_partial<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    locked_by_name: &HashMap<String, Value>,
+    allow_names: &HashSet<String>,
+) -> Result<BuildResult> {
+    let require = string_map(root, "require");
+    let require_dev = string_map(root, "require-dev");
+
+    let minimum_stability = root
+        .get("minimum-stability")
+        .and_then(Value::as_str)
+        .map_or("stable", normalize_stability);
+
+    let mut stability_flags: HashMap<String, &'static str> = HashMap::new();
+    let mut root_aliases: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    for (name, value) in require.iter().chain(require_dev.iter()) {
+        let raw = value
+            .as_str()
+            .with_context(|| format!("require {name}: constraint is not a string"))?;
+        extract_alias(name, raw, &mut root_aliases)?;
+        extract_stability_flag(name, raw, minimum_stability, &mut stability_flags);
+    }
+
+    let acceptable: HashSet<&'static str> = STABILITIES
+        .iter()
+        .copied()
+        .filter(|s| stability_rank(s) <= stability_rank(minimum_stability))
+        .collect();
+    let dev_acceptance =
+        if acceptable.contains("dev") || stability_flags.values().any(|&s| s == "dev") {
+            DevAcceptance::Both
+        } else {
+            DevAcceptance::NonDevOnly
+        };
+
+    let skip: HashSet<String> = locked_by_name
+        .keys()
+        .filter(|name| !allow_names.contains(*name))
+        .cloned()
+        .collect();
+
+    let roots = [ClosureRoot {
+        require: &require,
+        require_dev: &require_dev,
+    }];
+    let closure = repo
+        .load_closure_skipping(&roots, dev_acceptance, &skip)
+        .await?;
+
+    let platform_overrides = root
+        .pointer("/config/platform")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut packages = platform_packages(&platform_overrides)?;
+    let fixed: Vec<usize> = (0..packages.len()).collect();
+
+    for name in &skip {
+        if let Some(entry) = locked_by_name.get(name) {
+            packages.push(package_from_lock_entry(entry)?);
+        }
+    }
+
+    for versions in closure.values() {
+        for version in versions {
+            push_package_version(
+                &mut packages,
+                version,
+                &acceptable,
+                &stability_flags,
+                &root_aliases,
+            )?;
+        }
+    }
+
+    let pool = Pool::new(packages);
+
+    let mut requires = Vec::with_capacity(require.len() + require_dev.len());
+    for (name, value) in require.iter().chain(require_dev.iter()) {
+        let raw = value.as_str().expect("checked as_str above");
+        requires.push(crate::solver::request::RootRequire {
+            name: name.to_ascii_lowercase(),
+            constraint: Some(semver::parse_constraint(raw)?),
+            pretty_constraint: raw.to_string(),
+        });
+    }
+
+    Ok(BuildResult {
+        pool,
+        request: Request { requires, fixed },
+        minimum_stability,
+        stability_flags: stability_flags
+            .into_iter()
+            .map(|(name, stability)| (name, stability_rank(stability)))
+            .collect(),
+        platform_reqs: extract_platform_requirements(&require),
+        platform_dev_reqs: extract_platform_requirements(&require_dev),
+        platform_overrides,
+    })
+}
+
+/// Turns one `composer.lock` package entry (`ArrayDumper`-shaped: the same
+/// `require`/`conflict`/`provide`/`replace` fields a provider-file version
+/// has) into a pool [`Package`], for a partial update's locked-out names.
+/// No branch-alias or root-alias reconstruction (`push_package_version`'s
+/// two extra cases): a lock entry that is itself a branch alias already
+/// carries that alias's own version/requires, and nothing in a partial
+/// update looks up a *further* alias of a package it isn't refetching.
+fn package_from_lock_entry(entry: &Value) -> Result<Package> {
+    let obj = entry
+        .as_object()
+        .context("lock package entry is not an object")?;
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .context("lock package entry missing name")?
+        .to_ascii_lowercase();
+    let pretty_version = obj
+        .get("version")
+        .and_then(Value::as_str)
+        .context("lock package entry missing version")?
+        .to_string();
+    let version = semver::normalize(&pretty_version)?;
+    let stability = semver::stability(version.as_str());
+    let is_dev = stability == "dev";
+
+    let requires = parse_links(&map_field(obj, "require"), &name, &pretty_version)?;
+    let conflicts = parse_links(&map_field(obj, "conflict"), &name, &pretty_version)?;
+    let provides = parse_links(&map_field(obj, "provide"), &name, &pretty_version)?;
+    let replaces = parse_links(&map_field(obj, "replace"), &name, &pretty_version)?;
+
+    Ok(Package {
+        name,
+        version,
+        pretty_version,
+        stability,
+        is_dev,
+        requires,
+        conflicts,
+        provides,
+        replaces,
+        alias_of: None,
+        is_root_package_alias: false,
+        has_self_version_requires: false,
+        raw: entry.clone(),
+    })
+}
+
+fn map_field(obj: &Map<String, Value>, key: &str) -> Map<String, Value> {
+    obj.get(key)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// `Installer::extractPlatformRequirements`: the root require/require-dev
@@ -173,10 +399,11 @@ pub(crate) fn require_only_request(root: &Value, fixed_count: usize) -> Result<R
         let raw = value
             .as_str()
             .with_context(|| format!("require {name}: constraint is not a string"))?;
-        requires.push((
-            name.to_ascii_lowercase(),
-            Some(semver::parse_constraint(raw)?),
-        ));
+        requires.push(crate::solver::request::RootRequire {
+            name: name.to_ascii_lowercase(),
+            constraint: Some(semver::parse_constraint(raw)?),
+            pretty_constraint: raw.to_string(),
+        });
     }
     Ok(Request {
         requires,

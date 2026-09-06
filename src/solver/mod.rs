@@ -108,6 +108,68 @@ pub async fn solve_update<T: Transport>(
     prefer_lowest: bool,
 ) -> Result<UpdateResult> {
     let built = pool_builder::build(repo, root).await?;
+    resolve(built, root, prefer_stable, prefer_lowest)
+}
+
+/// A partial update: `pkg...`'s allow list, expanded per `mode`
+/// (`pool_builder::expand_allow_list`), then the same merged-solve/dev-split
+/// pipeline as [`solve_update`] over `pool_builder::build_partial`'s pool.
+/// `locked_by_name` is the current lock's `packages`+`packages-dev`,
+/// lowercased-name-keyed.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, only ever called with the default hasher"
+)]
+pub async fn solve_partial_update<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    prefer_lowest: bool,
+    locked_by_name: &HashMap<String, Value>,
+    allow_list: &[String],
+    mode: pool_builder::UpdateAllowMode,
+) -> Result<UpdateResult> {
+    let locked_requires: HashMap<String, Vec<String>> = locked_by_name
+        .iter()
+        .map(|(name, entry)| {
+            let requires = entry
+                .get("require")
+                .and_then(Value::as_object)
+                .map(|m| m.keys().map(|k| k.to_ascii_lowercase()).collect())
+                .unwrap_or_default();
+            (name.clone(), requires)
+        })
+        .collect();
+    let root_require_names: HashSet<String> = root
+        .get("require")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|m| m.keys())
+        .chain(
+            root.get("require-dev")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|m| m.keys()),
+        )
+        .map(|k| k.to_ascii_lowercase())
+        .collect();
+    let allow_list: Vec<String> = allow_list.iter().map(|n| n.to_ascii_lowercase()).collect();
+    let allow_names =
+        pool_builder::expand_allow_list(&allow_list, &locked_requires, &root_require_names, mode);
+
+    let built = pool_builder::build_partial(repo, root, locked_by_name, &allow_names).await?;
+    resolve(built, root, prefer_stable, prefer_lowest)
+}
+
+/// The merged-solve-then-dev-split pipeline shared by [`solve_update`] and
+/// [`solve_partial_update`]: only how `built`'s pool/request came to be
+/// differs between a full and a partial update.
+fn resolve(
+    built: pool_builder::BuildResult,
+    root: &Value,
+    prefer_stable: bool,
+    prefer_lowest: bool,
+) -> Result<UpdateResult> {
     let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
     let installed =
         solver::solve(&policy, &built.pool, &built.request).map_err(anyhow::Error::from)?;

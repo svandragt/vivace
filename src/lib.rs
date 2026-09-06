@@ -10,6 +10,7 @@ pub mod normalize;
 pub mod plan;
 pub mod plugins;
 pub mod repository;
+pub mod require;
 pub mod scripts;
 pub mod semver;
 pub mod solver;

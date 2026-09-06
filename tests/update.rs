@@ -155,6 +155,78 @@ async fn update_reproduces_the_legacy_lock() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// Resolver stage 5: a partial `viv update psr/log` against
+/// `tests/fixtures/partial-update`'s `lock-before.json` (psr/log rolled
+/// back to 3.0.0, monolog/monolog untouched) must keep monolog/monolog at
+/// its locked version and refetch only psr/log, landing back on the same
+/// `composer.lock` `tests/fixtures/monolog` already has (root
+/// `composer.json` there requires psr/log `^3.0` directly, so the newest
+/// match is deterministic and happens to be the version already committed).
+#[tokio::test]
+async fn partial_update_keeps_the_unlisted_package_locked() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/partial-update");
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
+    let root: Value = serde_json::from_slice(&composer_json).unwrap();
+    let lock_before: Value =
+        serde_json::from_slice(&fs_err::read(fixture.join("lock-before.json")).unwrap()).unwrap();
+
+    let mut locked_by_name = std::collections::HashMap::new();
+    for key in ["packages", "packages-dev"] {
+        for entry in lock_before[key].as_array().unwrap() {
+            locked_by_name.insert(
+                entry["name"].as_str().unwrap().to_ascii_lowercase(),
+                entry.clone(),
+            );
+        }
+    }
+
+    let result = vivace::solver::solve_partial_update(
+        &repo,
+        &root,
+        false,
+        false,
+        &locked_by_name,
+        &["psr/log".to_string()],
+        vivace::solver::pool_builder::UpdateAllowMode::OnlyListed,
+    )
+    .await
+    .unwrap();
+
+    // monolog/monolog was not in the allow list: it must come back exactly
+    // as `lock-before.json` recorded it, not refetched.
+    let monolog = result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "monolog/monolog")
+        .unwrap();
+    assert_eq!(monolog.pretty_version, "3.11.0");
+    let psr_log = result.non_dev.iter().find(|p| p.name == "psr/log").unwrap();
+    assert_eq!(psr_log.pretty_version, "3.0.2");
+
+    let options = vivace::lock_writer::LockOptions {
+        minimum_stability: result.minimum_stability,
+        stability_flags: &result.stability_flags,
+        prefer_stable: result.prefer_stable,
+        prefer_lowest: result.prefer_lowest,
+        platform_reqs: &result.platform_reqs,
+        platform_dev_reqs: &result.platform_dev_reqs,
+        platform_overrides: &result.platform_overrides,
+        aliases: &result.aliases,
+    };
+    let got =
+        vivace::lock_writer::write(&result.non_dev, Some(&result.dev), &options, &composer_json)
+            .unwrap();
+    assert_matches_expected(&got, &fixture.join("composer.lock"));
+}
+
 /// End-to-end: the real `viv update` binary against real Packagist,
 /// byte-diffed the same way, then validated with Composer itself.
 /// Gated on `VIVACE_TEST_NETWORK=1` so a bare `cargo nextest run` stays
@@ -239,4 +311,69 @@ fn viv_update_matches_composer_and_validates() {
         before, after,
         "composer update --lock changed the lock viv update wrote"
     );
+}
+
+/// `viv update --lock`: re-derives the lock from itself with no solving
+/// (`update::lock_only`, never reaches `Repository::load`), so this needs
+/// no network and no recorded Packagist fixture. The monolog fixture's
+/// committed lock is already canonical, so round-tripping it must be a
+/// byte-identical no-op.
+#[test]
+fn update_lock_only_reproduces_an_already_canonical_lock() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    fs_err::copy(fixture.join("composer.lock"), project.join("composer.lock")).unwrap();
+
+    ctx.viv().args(["update", "--lock"]).assert().success();
+
+    let got = fs_err::read_to_string(project.join("composer.lock")).unwrap();
+    assert_matches_expected(&got, &fixture.join("composer.lock"));
+}
+
+/// Resolver stage 5's `Problem`/`SolverProblemsException` port
+/// (`src/solver/problem.rs`): a root require for a package that plain does
+/// not exist matches Composer's exact wording (verified against a real,
+/// live `composer update` on this exact requirement: a nonexistent name
+/// stays nonexistent, so there is no drift risk in trusting the captured
+/// text as a hermetic golden). `viv update`'s own stub composer.json here
+/// never resolves anything real, so this needs no recorded Packagist
+/// fixture: `monolog/this-package-does-not-exist-xyz` 404s against the
+/// same `FixtureTransport` every other hermetic test in this file uses.
+#[tokio::test]
+async fn unsatisfiable_root_require_matches_composers_message() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let root: Value = serde_json::json!({
+        "name": "vivace/fixture-unsatisfiable",
+        "require": { "monolog/this-package-does-not-exist-xyz": "^1.0" }
+    });
+
+    let Err(err) = solver::solve_update(&repo, &root, false, false).await else {
+        panic!("expected an unsatisfiable request to fail")
+    };
+    let solver_error = err
+        .downcast_ref::<vivace::solver::problem::SolverError>()
+        .expect("solve_update's error is a SolverError for an unsatisfiable request");
+
+    // Captured verbatim (ANSI-free: `--no-ansi`) from `composer update
+    // --no-ansi` on this exact `composer.json`, Composer 2.10.2.
+    let want = "Your requirements could not be resolved to an installable set of packages.\n\n  \
+                Problem 1\n    - Root composer.json requires \
+                monolog/this-package-does-not-exist-xyz, it could not be found in any version, \
+                there may be a typo in the package name.\n\nPotential causes:\n - A typo in the \
+                package name\n - The package is not available in a stable-enough version \
+                according to your minimum-stability setting\n   see \
+                <https://getcomposer.org/doc/04-schema.md#minimum-stability> for more details.\n \
+                - It's a private package and you forgot to add a custom repository to find \
+                it\n\nRead <https://getcomposer.org/doc/articles/troubleshooting.md> for further \
+                common problems.\n";
+    assert_eq!(format!("{solver_error}"), want);
 }

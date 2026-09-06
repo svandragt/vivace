@@ -9,6 +9,8 @@ use tracing_subscriber::EnvFilter;
 
 use vivace::install::{self, CacheArgs, DumpAutoloadArgs, InstallArgs};
 use vivace::normalize::{self, NormalizeArgs};
+use vivace::require::{self, RemoveArgs, RequireArgs};
+use vivace::solver::problem::SolverError;
 use vivace::update::{self, UpdateArgs};
 
 #[derive(Parser)]
@@ -32,12 +34,15 @@ struct Cli {
 enum Command {
     /// Install packages from composer.lock.
     Install(InstallArgs),
-    /// Resolve composer.json and write a composer.lock (full update only).
+    /// Resolve composer.json and write a composer.lock (full or partial
+    /// update).
     Update(UpdateArgs),
-    /// Not implemented in vivace v0.1: use `composer require`.
-    Require,
-    /// Not implemented in vivace v0.1: use `composer remove`.
-    Remove,
+    /// Add a dependency to composer.json and resolve it. Stops at the
+    /// lock: run `viv install` afterwards (vivace does not chain into
+    /// install the way `composer require` does).
+    Require(RequireArgs),
+    /// Remove a dependency from composer.json and resolve the rest.
+    Remove(RemoveArgs),
     /// Regenerate the autoload files and `vendor/bin` from an already
     /// installed `vendor/`, without fetching or linking.
     DumpAutoload(DumpAutoloadArgs),
@@ -61,13 +66,16 @@ fn main() -> ExitCode {
         },
         Command::Update(args) => match update::run(&args, cli.cache_dir.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                err_out(&format!("{err:#}"));
-                ExitCode::from(1)
-            }
+            Err(err) => resolver_error(&err),
         },
-        Command::Require => stub("require"),
-        Command::Remove => stub("remove"),
+        Command::Require(args) => match require::run_require(&args, cli.cache_dir.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => resolver_error(&err),
+        },
+        Command::Remove(args) => match require::run_remove(&args, cli.cache_dir.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => resolver_error(&err),
+        },
         Command::DumpAutoload(args) => match install::dump_autoload(&args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
@@ -92,13 +100,18 @@ fn main() -> ExitCode {
     }
 }
 
-/// The stub subcommands vivace v0.1 does not implement: no resolver, so no
-/// `update`/`require`/`remove`.
-fn stub(name: &str) -> ExitCode {
-    err_out(&format!(
-        "viv {name} is not implemented in vivace v0.1: use composer {name}"
-    ));
-    ExitCode::from(2)
+/// `update`/`require`/`remove`'s shared error path: a [`SolverError`]
+/// prints its own Composer-shaped message with no extra context wrapping
+/// and exits `2`, matching `Installer::ERROR_DEPENDENCY_RESOLUTION_FAILED`'s
+/// exit code; anything else (a missing file, a bad `composer.json`, ...)
+/// keeps the plain `{err:#}` chain and exit `1`.
+fn resolver_error(err: &anyhow::Error) -> ExitCode {
+    if let Some(solver_error) = err.downcast_ref::<SolverError>() {
+        err_out(&format!("{solver_error}"));
+        return ExitCode::from(2);
+    }
+    err_out(&format!("{err:#}"));
+    ExitCode::from(1)
 }
 
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint.

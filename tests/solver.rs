@@ -107,16 +107,20 @@ async fn unsatisfiable_root_require_names_the_package() {
         .await
         .unwrap_err();
 
-    // The blunt `Problem` port names the package and prints *some*
-    // rendering of its constraint; matching the exact original `^99.0`
-    // syntax is `Problem.php`'s job (stage 5, composer/composer#42), not
-    // this stage's.
+    // Resolver stage 5 (composer/composer#42) ported `Problem.php`'s
+    // wording for this exact case: a name that doesn't exist at all gets
+    // no constraint text in the message (verified against a real
+    // `composer update` on this requirement, `tests/update.rs`'s
+    // `unsatisfiable_root_require_matches_composers_message`), unlike the
+    // "found but the constraint doesn't match" branch, which does.
     let message = format!("{err}");
     assert!(
-        message.contains("monolog/this-package-does-not-exist"),
+        message.contains(
+            "Root composer.json requires monolog/this-package-does-not-exist, it could not be \
+             found in any version, there may be a typo in the package name."
+        ),
         "{message}"
     );
-    assert!(message.contains("99.0"), "{message}");
 }
 
 // --- Hand-built pool tests: one per `DefaultPolicy` tie-break, plus a
@@ -159,7 +163,11 @@ fn package(name: &str, pretty_version: &str) -> Package {
 
 fn require(name: &str) -> Request {
     Request {
-        requires: vec![(name.to_string(), None)],
+        requires: vec![vivace::solver::request::RootRequire {
+            name: name.to_string(),
+            constraint: None,
+            pretty_constraint: "*".to_string(),
+        }],
         fixed: Vec::new(),
     }
 }

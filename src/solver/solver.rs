@@ -76,9 +76,7 @@ pub fn solve(
     solver.run_sat();
 
     if !solver.problems.is_empty() {
-        return Err(SolverError {
-            problems: solver.problems,
-        });
+        return Err(SolverError::from_problems(&solver.problems, pool));
     }
 
     let mut installed: Vec<i32> = solver
@@ -95,18 +93,16 @@ pub fn solve(
 impl Solver<'_> {
     /// `Solver::checkForRootRequireProblems`.
     fn check_for_root_require_problems(&mut self, request: &Request) {
-        for (name, constraint) in &request.requires {
+        for require in &request.requires {
             if self
                 .pool
-                .what_provides(name, constraint.as_ref())
+                .what_provides(&require.name, require.constraint.as_ref())
                 .is_empty()
             {
                 let mut problem = Problem::new();
                 problem.add_reason(Reason::RootRequire {
-                    package_name: name.clone(),
-                    pretty_constraint: constraint
-                        .as_ref()
-                        .map_or_else(|| "*".to_string(), ToString::to_string),
+                    package_name: require.name.clone(),
+                    pretty_constraint: require.pretty_constraint.clone(),
                 });
                 self.problems.push(problem);
             }

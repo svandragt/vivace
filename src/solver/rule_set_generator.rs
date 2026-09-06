@@ -72,8 +72,8 @@ fn add_rules_for_request(
         );
     }
 
-    for (name, constraint) in &request.requires {
-        let packages = pool.what_provides(name, constraint.as_ref());
+    for require in &request.requires {
+        let packages = pool.what_provides(&require.name, require.constraint.as_ref());
         if packages.is_empty() {
             continue;
         }
@@ -90,10 +90,8 @@ fn add_rules_for_request(
         create_install_one_of_rule(
             &packages,
             Reason::RootRequire {
-                package_name: name.clone(),
-                pretty_constraint: constraint
-                    .as_ref()
-                    .map_or_else(|| "*".to_string(), ToString::to_string),
+                package_name: require.name.clone(),
+                pretty_constraint: require.pretty_constraint.clone(),
             },
             rules,
             RuleType::Request,
@@ -234,6 +232,7 @@ fn add_conflict_rules(
                         conflict_id,
                         Reason::PackageConflict {
                             source_index: pool::index_of(package_id),
+                            target_index: pool::index_of(conflict_id),
                             target: link.target.clone(),
                             pretty_constraint: link.pretty_constraint().to_string(),
                         },

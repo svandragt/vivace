@@ -387,7 +387,24 @@ impl<T: Transport> Repository<T> {
         roots: &[ClosureRoot<'_>],
         dev: DevAcceptance,
     ) -> Result<HashMap<String, Vec<PackageVersion>>> {
-        let mut discovered = HashSet::new();
+        self.load_closure_skipping(roots, dev, &HashSet::new())
+            .await
+    }
+
+    /// Same breadth-first closure walk as [`Repository::load_closure`], but
+    /// a name in `skip` (already lowercased) is never fetched or queued:
+    /// `PoolBuilder::loadPackage`'s `if (isset($this->loadedPackages[$name]))
+    /// continue;` fast path, which is how a partial update's locked-out
+    /// packages (`solver::pool_builder::build_partial`, already loaded
+    /// straight from the lock) stop the closure walk from re-fetching them
+    /// or their own requirements' remote alternatives.
+    pub async fn load_closure_skipping(
+        &self,
+        roots: &[ClosureRoot<'_>],
+        dev: DevAcceptance,
+        skip: &HashSet<String>,
+    ) -> Result<HashMap<String, Vec<PackageVersion>>> {
+        let mut discovered: HashSet<String> = skip.clone();
         let mut queue = VecDeque::new();
         for root in roots {
             for name in root.require.keys().chain(root.require_dev.keys()) {

@@ -32,6 +32,11 @@ pub enum Reason {
     /// `RULE_PACKAGE_CONFLICT`.
     PackageConflict {
         source_index: usize,
+        /// The other package in this specific rule (`create_rule2_literals`'s
+        /// `conflict_id`), so `Problem::pretty_string` can name it without
+        /// needing the rule's literals: `Rule::getPrettyString`'s
+        /// `$package2` (`Problem.php`, stage 5).
+        target_index: usize,
         target: String,
         pretty_constraint: String,
     },

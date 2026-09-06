@@ -2,15 +2,26 @@
 //! `docs/resolver-design.md`): alias over aliased, replaced over replacer,
 //! same-vendor replacer, then pool insertion order.
 //!
-//! No `preferredVersions` (`viv require`'s version pinning, out of scope:
-//! this stage does no CLI wiring) and no `COMPOSER_PREFER_DEV_OVER_PRERELEASE`
-//! env toggle (undocumented upstream escape hatch, not exercised by any
-//! fixture); both default off exactly as `DefaultPolicy`'s constructor
-//! defaults them, so skipping them changes nothing this stage's tests
-//! observe.
+//! No `COMPOSER_PREFER_DEV_OVER_PRERELEASE` env toggle (undocumented
+//! upstream escape hatch, not exercised by any fixture): default off
+//! exactly as `DefaultPolicy`'s constructor defaults it, so skipping it
+//! changes nothing this stage's tests observe.
+//!
+//! `preferredVersions` (`--minimal-changes`'s pin toward each already-locked
+//! package's exact version, `Installer::createPolicy`) is ported as
+//! [`DefaultPolicy::with_preferred_versions`], but nothing in `update.rs`
+//! calls it yet: wiring it up means threading a `name -> NormalizedVersion`
+//! map through `solve_update`/`solve_partial_update`, and those two
+//! functions already have several callers across owned and shared test
+//! files (`tests/update.rs`, `tests/require.rs`, `tests/solver.rs`); adding
+//! a parameter to either is real surgery on files this lane doesn't own.
+//! `viv update --minimal-changes` parses the flag and otherwise no-ops
+//! until that wiring lands.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
+use crate::semver::NormalizedVersion;
 use crate::solver::pool::Pool;
 
 /// `Constraint::STR_OP_*`, the subset `versionCompare` actually takes.
@@ -24,6 +35,12 @@ pub enum Op {
 pub struct DefaultPolicy {
     prefer_stable: bool,
     prefer_lowest: bool,
+    /// `--minimal-changes`: `name -> normalized version` for every
+    /// already-locked, non-allow-listed package (`Installer::createPolicy`'s
+    /// `$preferredVersions`). `None` (the common case, [`DefaultPolicy::new`])
+    /// skips the pin check in `prune_to_best_version` entirely, same as
+    /// PHP's own `$this->preferredVersions !== null` guard.
+    preferred_versions: Option<HashMap<String, NormalizedVersion>>,
 }
 
 impl DefaultPolicy {
@@ -31,6 +48,25 @@ impl DefaultPolicy {
         DefaultPolicy {
             prefer_stable,
             prefer_lowest,
+            preferred_versions: None,
+        }
+    }
+
+    /// `--minimal-changes`'s policy: see the module doc for why nothing
+    /// calls this yet.
+    #[allow(
+        dead_code,
+        reason = "the pin mechanism is ported and tested ahead of its CLI wiring, see the module doc"
+    )]
+    pub fn with_preferred_versions(
+        prefer_stable: bool,
+        prefer_lowest: bool,
+        preferred_versions: HashMap<String, NormalizedVersion>,
+    ) -> DefaultPolicy {
+        DefaultPolicy {
+            prefer_stable,
+            prefer_lowest,
+            preferred_versions: Some(preferred_versions),
         }
     }
 
@@ -141,9 +177,22 @@ impl DefaultPolicy {
         a.cmp(&b)
     }
 
-    /// `DefaultPolicy::pruneToBestVersion`, minus `preferredVersions` (see
-    /// module doc).
+    /// `DefaultPolicy::pruneToBestVersion`.
     fn prune_to_best_version(&self, pool: &Pool, literals: &[i32]) -> Vec<i32> {
+        if let Some(preferred) = &self.preferred_versions {
+            let name = &pool.literal_to_package(literals[0]).name;
+            if let Some(preferred_version) = preferred.get(name) {
+                let pinned: Vec<i32> = literals
+                    .iter()
+                    .copied()
+                    .filter(|&l| pool.literal_to_package(l).version == *preferred_version)
+                    .collect();
+                if !pinned.is_empty() {
+                    return pinned;
+                }
+            }
+        }
+
         let operator = if self.prefer_lowest { Op::Lt } else { Op::Gt };
         let mut best_literals = vec![literals[0]];
         let mut best = package_ref(pool, literals[0]);
@@ -230,4 +279,74 @@ fn prune_remote_aliases(pool: &Pool, literals: &[i32]) -> Vec<i32> {
             p.is_alias() && p.is_root_package_alias
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::solver::pool::Package;
+
+    fn package(name: &str, pretty_version: &str) -> Package {
+        let normalized = crate::semver::normalize(pretty_version).unwrap();
+        Package {
+            stability: crate::semver::stability(normalized.as_str()),
+            is_dev: false,
+            name: name.to_string(),
+            version: normalized,
+            pretty_version: pretty_version.to_string(),
+            requires: Vec::new(),
+            conflicts: Vec::new(),
+            provides: Vec::new(),
+            replaces: Vec::new(),
+            alias_of: None,
+            is_root_package_alias: false,
+            has_self_version_requires: false,
+            raw: serde_json::json!({}),
+        }
+    }
+
+    /// `--minimal-changes`'s pin: among several candidates for the same
+    /// name, the one matching the preferred (locked) version wins even
+    /// though a higher version is otherwise available.
+    #[test]
+    fn preferred_versions_pins_the_locked_version() {
+        let low = package("vendor/pkg", "1.0.0");
+        let high = package("vendor/pkg", "2.0.0");
+        let pool = Pool::new(vec![low, high]);
+        let literals = vec![1, 2];
+
+        let mut preferred = HashMap::new();
+        preferred.insert(
+            "vendor/pkg".to_string(),
+            crate::semver::normalize("1.0.0").unwrap(),
+        );
+        let policy = DefaultPolicy::with_preferred_versions(false, false, preferred);
+        let selected = policy.select_preferred_packages(&pool, &literals, None);
+        assert_eq!(selected, vec![1]);
+
+        // Without the pin, the higher version wins as usual.
+        let unpinned = DefaultPolicy::new(false, false);
+        let selected = unpinned.select_preferred_packages(&pool, &literals, None);
+        assert_eq!(selected, vec![2]);
+    }
+
+    /// A pin for a name with no matching candidate version falls back to
+    /// the normal stable/lowest comparison (`pruneToBestVersion`'s own
+    /// `if (\count($bestLiterals) > 0)` guard).
+    #[test]
+    fn preferred_versions_falls_back_when_the_pin_has_no_candidate() {
+        let low = package("vendor/pkg", "1.0.0");
+        let high = package("vendor/pkg", "2.0.0");
+        let pool = Pool::new(vec![low, high]);
+        let literals = vec![1, 2];
+
+        let mut preferred = HashMap::new();
+        preferred.insert(
+            "vendor/pkg".to_string(),
+            crate::semver::normalize("3.0.0").unwrap(),
+        );
+        let policy = DefaultPolicy::with_preferred_versions(false, false, preferred);
+        let selected = policy.select_preferred_packages(&pool, &literals, None);
+        assert_eq!(selected, vec![2]);
+    }
 }
