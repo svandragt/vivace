@@ -7,8 +7,8 @@ Usage:
 
 Fails (exit 1) when `viv`'s warm or noop mean regresses past
 baseline * (1 + tolerance). Cold and update-warm are informational only: both
-wait on the network (downloads, and 304 revalidations of every metadata file), so their
-dominated by network variance (see bench/results/README.md). With
+wait on the network (downloads, and 304 revalidations of every metadata file),
+so their variance is not ours (see bench/results/README.md). With
 --write-baseline, writes the measured means as the new baseline instead of
 comparing.
 """
