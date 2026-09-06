@@ -66,6 +66,16 @@ pub fn generate(
     packages: &[(&Package, PathBuf)],
 ) -> Result<Vec<String>> {
     let mut warnings = Vec::new();
+    if packages.iter().all(|(package, _)| package.bin.is_empty()) {
+        if bin_dir.is_dir() {
+            let bin_dir = fs_err::canonicalize(bin_dir)?;
+            let vendor_dir_real =
+                fs_err::canonicalize(vendor_dir).unwrap_or_else(|_| vendor_dir.to_path_buf());
+            remove_stale(&bin_dir, &vendor_dir_real, &HashSet::new())?;
+        }
+        return Ok(warnings);
+    }
+
     fs_err::create_dir_all(bin_dir)?;
     let bin_dir = fs_err::canonicalize(bin_dir)?;
     let vendor_dir_real =
