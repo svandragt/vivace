@@ -24,6 +24,8 @@ pub fn client() -> Result<reqwest::Client> {
 pub async fn fetch(client: &reqwest::Client, pkg: &Package) -> Result<Vec<u8>> {
     pkg.validate_dist()?;
     let dist = pkg.dist.as_ref().expect("validate_dist checked");
+    // ponytail: the whole zip lives in memory at once (fine at Composer's
+    // typical archive sizes); stream to a temp file if that stops being true.
     let bytes = client
         .get(&dist.url)
         .send()

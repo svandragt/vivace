@@ -34,6 +34,11 @@ pub struct Store {
 
 impl Store {
     /// Create `root` if needed and take the shared lock.
+    ///
+    /// One `Store` per process is expected: the shared lock is per-`File`
+    /// handle, not per-process, so a second `Store` opened on the same root
+    /// in this process would also hold the shared lock and block `prune`'s
+    /// exclusive one forever.
     pub fn open(root: &Path) -> Result<Store> {
         fs_err::create_dir_all(root)?;
         let lock = fs_err::OpenOptions::new()
@@ -57,18 +62,31 @@ impl Store {
 
     /// `dists-v0/<vendor>/<name>/<reference>`. Falls back to Composer's own
     /// cache key (sha1 of the dist URL) when the lock has no reference.
-    fn pointer(&self, pkg: &Package) -> Option<PathBuf> {
-        let dist = pkg.dist.as_ref()?;
+    ///
+    /// `Ok(None)` means the package has no dist entry; an `Err` means the
+    /// name or reference is not safe to join into a store path.
+    fn pointer(&self, pkg: &Package) -> Result<Option<PathBuf>> {
+        let Some(dist) = pkg.dist.as_ref() else {
+            return Ok(None);
+        };
+        // ponytail: two names differing only by case collide on a
+        // case-insensitive filesystem (macOS default, Windows); Composer
+        // hits the same wall, fold and disambiguate if it ever bites here.
+        sanitise_path_component("package name", &pkg.name)?;
         let reference = match dist.reference.as_deref().filter(|r| !r.is_empty()) {
             Some(reference) => reference.to_owned(),
             None => hex(sha1::Sha1::digest(dist.url.as_bytes())),
         };
-        Some(self.root.join(DISTS_BUCKET).join(&pkg.name).join(reference))
+        sanitise_path_component("dist reference", &reference)?;
+        Ok(Some(
+            self.root.join(DISTS_BUCKET).join(&pkg.name).join(reference),
+        ))
     }
 
     /// The archive dir a package's dist pointer resolves to, if any.
     pub fn lookup(&self, pkg: &Package) -> Option<PathBuf> {
-        let target = fs_err::read_link(self.pointer(pkg)?).ok()?;
+        let pointer = self.pointer(pkg).ok().flatten()?;
+        let target = fs_err::read_link(pointer).ok()?;
         let dir = self.archive_dir().join(target.file_name()?);
         dir.is_dir().then_some(dir)
     }
@@ -76,7 +94,7 @@ impl Store {
     /// Extract `zip_bytes` into the archive bucket (unless an identical archive
     /// is already there) and point `pkg`'s dist pointer at it.
     pub fn add_zip(&self, pkg: &Package, zip_bytes: &[u8]) -> Result<PathBuf> {
-        let Some(pointer) = self.pointer(pkg) else {
+        let Some(pointer) = self.pointer(pkg)? else {
             bail!("{}: no dist entry", pkg.name);
         };
         let id = hex(Sha256::digest(zip_bytes));
@@ -90,12 +108,14 @@ impl Store {
                 .with_context(|| format!("extracting {} ({})", pkg.name, id))?;
             let temp = temp.keep();
             if let Err(err) = fs_err::rename(&temp, &dest) {
-                // Another process finished the same archive first: theirs is
-                // byte-identical, so drop ours.
-                if !dest.is_dir() {
+                if dest.is_dir() {
+                    // Another process finished the same archive first:
+                    // theirs is byte-identical, so drop ours.
+                    fs_err::remove_dir_all(&temp)?;
+                } else {
+                    let _ = fs_err::remove_dir_all(&temp);
                     return Err(err.into());
                 }
-                fs_err::remove_dir_all(&temp)?;
             }
         }
 
@@ -111,9 +131,14 @@ impl Store {
         let target = PathBuf::from("../".repeat(depth))
             .join(ARCHIVE_BUCKET)
             .join(&id);
-        let temp_link = parent.join(format!(".tmp-{}", std::process::id()));
-        fs_err::os::unix::fs::symlink(&target, &temp_link)?;
-        fs_err::rename(&temp_link, &pointer)?;
+        // ponytail: a random suffix per call rather than a per-process one so
+        // concurrent add_zip calls on the same process never share a path
+        // (tempfile's Builder retries on a name collision).
+        tempfile::Builder::new()
+            .prefix(".tmp-")
+            .make_in(parent, |p| fs_err::os::unix::fs::symlink(&target, p))?
+            .into_temp_path()
+            .persist(&pointer)?;
         Ok(dest)
     }
 
@@ -144,8 +169,41 @@ impl Store {
                 fs_err::remove_file(entry.path())?;
             }
         }
+        // Stray `.tmp*` dirs from an add_zip that never reached its rename
+        // (crash, or a losing race with another process on the same archive).
+        let archive_dir = self.archive_dir();
+        if archive_dir.is_dir() {
+            for entry in fs_err::read_dir(&archive_dir)? {
+                let entry = entry?;
+                if entry.file_name().to_string_lossy().starts_with(".tmp") {
+                    fs_err::remove_dir_all(entry.path())?;
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// Reject a package name or dist reference that would escape the store when
+/// joined into a pointer path: only Composer's own charset, no leading `/`,
+/// no `..` component.
+fn sanitise_path_component(kind: &str, value: &str) -> Result<()> {
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c))
+    {
+        bail!("{kind} {value:?} contains characters other than [A-Za-z0-9._-/]");
+    }
+    if value.starts_with('/') {
+        bail!("{kind} {value:?} is an absolute path");
+    }
+    if Path::new(value)
+        .components()
+        .any(|c| c == Component::ParentDir)
+    {
+        bail!("{kind} {value:?} contains a `..` component");
+    }
+    Ok(())
 }
 
 /// Lowercase hex of a digest.
@@ -195,6 +253,8 @@ fn sanitise(name: &str) -> Result<PathBuf> {
 /// rule. Files become 0444, or 0555 when the entry carried any exec bit; the
 /// rest of the zip mode is ignored. Symlink entries are skipped.
 fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
+    // ponytail: no cap on inflated size (a zip bomb fills the disk), add a
+    // running total checked against a limit if that ever shows up for real.
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
@@ -212,6 +272,11 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
         }
         if let Some(parent) = path.parent() {
             mkdir_755(parent)?;
+        }
+        // A repeated entry name would otherwise hit EACCES: the first pass
+        // already chmod'd the file read-only.
+        if path.is_file() {
+            fs_err::remove_file(&path)?;
         }
         let mut file = fs_err::File::create(&path)?;
         std::io::copy(&mut entry, &mut file)
@@ -250,6 +315,11 @@ fn strip_single_top_dir(dest: &Path) -> Result<()> {
         fs_err::rename(child.path(), dest.join(child.file_name()))?;
     }
     fs_err::remove_dir(&staging)?;
+    // Composer drops a top-level `.DS_Store` once the single dir is hoisted.
+    let ds_store = dest.join(".DS_Store");
+    if ds_store.is_file() {
+        fs_err::remove_file(ds_store)?;
+    }
     Ok(())
 }
 
@@ -388,6 +458,83 @@ mod tests {
         assert_eq!(store.lookup(&pkg), None);
         let dir = store.add_zip(&pkg, &zip_of(&[("f", b"1", None)])).unwrap();
         assert_eq!(store.lookup(&pkg), Some(dir));
+    }
+
+    #[test]
+    fn rejects_reference_that_escapes_the_store() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let zip = zip_of(&[("f", b"1", None)]);
+        let err = format!(
+            "{:#}",
+            store
+                .add_zip(&package("acme/pkg", "../../evil"), &zip)
+                .unwrap_err()
+        );
+        assert!(
+            err.contains("../../evil"),
+            "error should name the reference: {err}"
+        );
+        assert!(!root.path().parent().unwrap().join("evil").exists());
+    }
+
+    #[test]
+    fn rejects_absolute_reference() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let zip = zip_of(&[("f", b"1", None)]);
+        let err = format!(
+            "{:#}",
+            store.add_zip(&package("acme/pkg", "/x"), &zip).unwrap_err()
+        );
+        assert!(err.contains("/x"), "error should name the reference: {err}");
+        assert!(!Path::new("/x").exists());
+    }
+
+    #[test]
+    fn duplicate_entry_name_uses_the_last_entry() {
+        // The `zip` writer refuses to build an archive with a repeated name,
+        // so exercise the exact code path a duplicate entry would hit
+        // instead: extracting into a dest where the file already exists and
+        // is already chmod'd 0444 by the earlier pass.
+        let dest = tempfile::tempdir().unwrap();
+        extract_zip(&zip_of(&[("A.php", b"first", None)]), dest.path()).unwrap();
+        extract_zip(&zip_of(&[("A.php", b"second", None)]), dest.path()).unwrap();
+        assert_eq!(
+            fs_err::read_to_string(dest.path().join("A.php")).unwrap(),
+            "second"
+        );
+    }
+
+    #[test]
+    fn strips_top_level_ds_store() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let zip = zip_of(&[
+            ("pkg-abc/", b"", None),
+            ("pkg-abc/composer.json", b"{}", None),
+            (".DS_Store", b"junk", None),
+        ]);
+        let dir = store.add_zip(&package("acme/pkg", "abc"), &zip).unwrap();
+        assert!(!dir.join(".DS_Store").exists());
+    }
+
+    #[test]
+    fn prune_removes_stray_temp_archives() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        store
+            .add_zip(&package("acme/pkg", "abc"), &zip_of(&[("f", b"1", None)]))
+            .unwrap();
+        fs_err::create_dir(root.path().join("archive-v0/.tmpstray")).unwrap();
+        store.prune().unwrap();
+        assert!(!root.path().join("archive-v0/.tmpstray").exists());
+        assert_eq!(
+            fs_err::read_dir(root.path().join("archive-v0"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[test]

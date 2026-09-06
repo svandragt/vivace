@@ -14,6 +14,7 @@ use crate::lock::{Lock, Package};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledEntry {
     pub name: String,
+    pub version: String,
     pub reference: Option<String>,
     /// Absolute path of the package dir.
     pub install_path: PathBuf,
@@ -34,16 +35,20 @@ impl Plan {
 }
 
 /// A locked package is kept when `installed.json` has an entry with the same
-/// name, `dist.reference` and dev flag; otherwise it is (re)installed.
-/// Installed entries without a locked counterpart are removed. No
-/// `installed.json` means a fresh install of everything.
+/// name, `version`, `dist.reference` and dev flag; otherwise it is
+/// (re)installed. Installed entries without a locked counterpart are
+/// removed. No `installed.json` means a fresh install of everything.
 pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path) -> Result<Plan> {
-    let mut installed = read_installed(&vendor_dir.join("composer/installed.json"))?;
+    let mut installed = read_installed(&vendor_dir.join("composer/installed.json"), vendor_dir)?;
     let mut plan = Plan::default();
     for package in lock.packages(dev) {
         let reference = package.dist.as_ref().and_then(|d| d.reference.clone());
         match installed.remove(&package.name) {
-            Some((entry, was_dev)) if entry.reference == reference && was_dev == package.dev => {
+            Some((entry, was_dev))
+                if entry.reference == reference
+                    && entry.version == package.version
+                    && was_dev == package.dev =>
+            {
                 plan.keep.push(package.clone());
             }
             // A stale entry's dir is replaced by the install itself, so it
@@ -58,7 +63,10 @@ pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path) -> Result<Plan> {
 
 /// Installed entries by name, with their dev flag. Entries without an
 /// `install-path` (metapackages) own no directory and are skipped.
-fn read_installed(path: &Path) -> Result<HashMap<String, (InstalledEntry, bool)>> {
+fn read_installed(
+    path: &Path,
+    vendor_dir: &Path,
+) -> Result<HashMap<String, (InstalledEntry, bool)>> {
     let content = match fs_err::read_to_string(path) {
         Ok(content) => content,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -74,14 +82,26 @@ fn read_installed(path: &Path) -> Result<HashMap<String, (InstalledEntry, bool)>
         let Some(install_path) = entry.install_path else {
             continue;
         };
-        let dev = file.dev_package_names.contains(&entry.name);
+        // Composer lowercases package names throughout; installed.json
+        // written by an older Composer version might not have.
+        let name = entry.name.to_lowercase();
+        let dev = file.dev_package_names.contains(&name);
+        let install_path = normalise(&composer_dir.join(install_path));
+        if !install_path.starts_with(vendor_dir) {
+            anyhow::bail!(
+                "{name}: install-path escapes {} ({})",
+                vendor_dir.display(),
+                install_path.display()
+            );
+        }
         installed.insert(
-            entry.name.clone(),
+            name.clone(),
             (
                 InstalledEntry {
-                    name: entry.name,
+                    name,
+                    version: entry.version,
                     reference: entry.dist.and_then(|d| d.reference),
-                    install_path: normalise(&composer_dir.join(install_path)),
+                    install_path,
                 },
                 dev,
             ),
@@ -117,6 +137,7 @@ struct InstalledFile {
 #[derive(Deserialize)]
 struct InstalledPackage {
     name: String,
+    version: String,
     dist: Option<InstalledDist>,
     #[serde(rename = "install-path")]
     install_path: Option<String>,
@@ -246,6 +267,7 @@ mod tests {
             plan.remove,
             [InstalledEntry {
                 name: "gone/gone".into(),
+                version: "1.0.0".into(),
                 reference: Some("r9".into()),
                 install_path: vendor.path().join("gone/gone"),
             }]
@@ -288,5 +310,64 @@ mod tests {
         let plan = plan(&lock, true, vendor.path()).unwrap();
         assert!(plan.is_noop());
         assert!(plan.remove.is_empty());
+    }
+
+    /// A package with no dist reference (e.g. a path repo) bumped to a new
+    /// version must reinstall: comparing only `reference` would see two
+    /// `None`s and wrongly call that a match.
+    #[test]
+    fn version_bump_with_unchanged_null_reference_reinstalls() {
+        let vendor = tempfile::tempdir().unwrap();
+        fs_err::create_dir_all(vendor.path().join("composer")).unwrap();
+        fs_err::write(
+            vendor.path().join("composer/installed.json"),
+            serde_json::to_string_pretty(&json!({
+                "packages": [{
+                    "name": "a/a",
+                    "version": "1.0.0",
+                    "dist": {"type": "zip", "url": "u", "reference": null, "shasum": ""},
+                    "install-path": "../a/a",
+                }],
+                "dev": true,
+                "dev-package-names": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let raw = json!({
+            "name": "a/a",
+            "version": "2.0.0",
+            "dist": {"type": "zip", "url": "https://example.test/a.zip", "reference": null, "shasum": ""},
+        });
+        let mut package: Package = serde_json::from_value(raw.clone()).unwrap();
+        package.raw = raw;
+        let lock = Lock {
+            content_hash: None,
+            packages: vec![package],
+        };
+
+        let plan = plan(&lock, true, vendor.path()).unwrap();
+        assert_eq!(names(&plan.install), ["a/a"]);
+        assert!(plan.keep.is_empty());
+    }
+
+    #[test]
+    fn install_path_escaping_vendor_errors() {
+        let vendor = tempfile::tempdir().unwrap();
+        installed(vendor.path(), &[("a/a", "r1", false, Some("../../../"))]);
+        let lock = lock(&[("a/a", "r1", false)]);
+        let err = plan(&lock, true, vendor.path()).unwrap_err().to_string();
+        assert!(err.contains("a/a"), "error should name the entry: {err}");
+    }
+
+    #[test]
+    fn installed_json_name_is_lowercased() {
+        let vendor = tempfile::tempdir().unwrap();
+        installed(vendor.path(), &[("A/A", "r1", false, Some("../a/a"))]);
+        let lock = lock(&[("a/a", "r1", false)]);
+        let plan = plan(&lock, true, vendor.path()).unwrap();
+        assert_eq!(names(&plan.keep), ["a/a"]);
+        assert!(plan.install.is_empty());
     }
 }

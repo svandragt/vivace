@@ -51,9 +51,10 @@ magnitude cheaper than inflating and writing it. The same store serves every
 project on the machine.
 
 Hardlinks share inodes, so an edit to a vendor file would change the store.
-Store files are therefore read-only (0444), which makes vendor files read-only
-too. Editing fails loudly rather than corrupting other projects. Projects that
-patch vendor use `--link-mode copy`.
+Store files are therefore read-only (0444), which makes hardlinked vendor
+files read-only too. Editing fails loudly rather than corrupting other
+projects. Projects that patch vendor use `--link-mode copy`, which adds the
+owner write bit back so the copied files can be edited directly.
 
 ## The no-op path
 

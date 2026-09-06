@@ -32,10 +32,25 @@ pub fn link_tree(src: &Path, dest: &Path, mode: LinkMode) -> Result<LinkMode> {
         linked_any: false,
     };
     linker.walk(src, temp.path())?;
-    if dest.symlink_metadata().is_ok() {
-        fs_err::remove_dir_all(dest)?;
-    }
+
+    // Swap the old tree aside before the new one takes its place, so a
+    // crash between the two renames still leaves one of them recoverable
+    // instead of deleting `dest` before its replacement is ready.
+    let old = if dest.symlink_metadata().is_ok() {
+        let slot = tempfile::Builder::new()
+            .prefix(".old-")
+            .tempdir_in(parent)?;
+        let slot = slot.keep();
+        fs_err::remove_dir(&slot)?;
+        fs_err::rename(dest, &slot)?;
+        Some(slot)
+    } else {
+        None
+    };
     fs_err::rename(temp.keep(), dest)?;
+    if let Some(old) = old {
+        fs_err::remove_dir_all(old)?;
+    }
     Ok(linker.mode)
 }
 
@@ -76,8 +91,8 @@ impl Linker {
                 Err(err) if err.kind() == ErrorKind::TooManyLinks => {}
                 Err(err) if !self.linked_any => {
                     tracing::warn!(
-                        "hardlinking {} failed ({err}); falling back to copying for this and \
-                         later packages. Pass --link-mode copy to silence this warning.",
+                        "hardlinking {} failed ({err}); falling back to copying for this \
+                         package. Pass --link-mode copy to silence this warning.",
                         src.display()
                     );
                     self.mode = LinkMode::Copy;
@@ -86,6 +101,13 @@ impl Linker {
             }
         }
         fs_err::copy(src, dest)?;
+        if self.mode == LinkMode::Copy {
+            // A hardlinked file stays read-only so an edit can't corrupt the
+            // store; a copy shares no inode, so add the owner write bit back
+            // (0444 -> 0644, 0555 -> 0755) so patching vendor works.
+            let mode = fs_err::metadata(dest)?.permissions().mode() & 0o777;
+            fs_err::set_permissions(dest, PermissionsExt::from_mode(mode | 0o200))?;
+        }
         Ok(())
     }
 }
@@ -132,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_makes_independent_files_with_same_mode() {
+    fn copy_adds_owner_write_bit_so_vendor_is_patchable() {
         let src = source();
         let vendor = tempfile::tempdir().unwrap();
         let dest = vendor.path().join("acme/pkg");
@@ -141,7 +163,7 @@ mod tests {
         let a = dest.join("src/A.php");
         assert_ne!(ino(&a), ino(&src.path().join("src/A.php")));
         assert_eq!(fs_err::read_to_string(&a).unwrap(), "<?php");
-        assert_eq!(mode(&dest.join("composer.json")), 0o444);
+        assert_eq!(mode(&dest.join("composer.json")), 0o644);
     }
 
     #[test]
@@ -154,13 +176,11 @@ mod tests {
         link_tree(src.path(), &dest, LinkMode::Hardlink).unwrap();
         assert!(!dest.join("old").exists());
         assert!(dest.join("src/A.php").exists());
-        assert!(
-            fs_err::read_dir(vendor.path().join("acme"))
-                .unwrap()
-                .count()
-                == 1,
-            "no temp dir left behind"
-        );
+        let siblings: Vec<_> = fs_err::read_dir(vendor.path().join("acme"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(siblings, ["pkg"], "no .old-*/.tmp* sibling left behind");
     }
 
     #[test]
