@@ -1,7 +1,7 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install build test check bench bench-check hooks fixtures fmt
+.PHONY: install build test check bench bench-check hooks fixtures fmt record-packagist
 
 install:
 	cargo install --path . --locked
@@ -47,3 +47,6 @@ fixtures:
 
 fmt:
 	devbox run -- cargo fmt
+
+record-packagist:
+	./tests/fixtures/packagist/record.sh

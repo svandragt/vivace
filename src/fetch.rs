@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures::stream::{Stream, StreamExt};
+use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{StatusCode, Url};
 use sha1::{Digest, Sha1};
 
@@ -21,6 +22,19 @@ const MAX_REDIRECTS: u8 = 10;
 /// timeout, or a 429/5xx response); Composer and Riff both retry dist
 /// downloads up to this many times.
 const MAX_RETRIES: u32 = 3;
+
+/// Outcome of [`Fetcher::get_conditional`].
+pub enum Conditional {
+    /// A body arrived (first fetch, or the cache was stale).
+    Fresh {
+        body: Vec<u8>,
+        last_modified: Option<String>,
+    },
+    /// The server confirmed the cached body is still current.
+    NotModified,
+    /// The resource does not exist (a 404, not a transport error).
+    NotFound,
+}
 
 /// A client with vivace's User-Agent and a per-request timeout long enough
 /// for a large zip on a slow link.
@@ -150,6 +164,47 @@ impl Fetcher {
             .buffer_unordered(concurrency)
     }
 
+    /// Outcome of a conditional GET (`If-Modified-Since`), for the
+    /// repository client's HTTP cache: a fresh body to cache, confirmation
+    /// the cached body is still current (304), or confirmation the
+    /// resource is genuinely absent (404, which the repository client
+    /// treats as "no versions", not an error).
+    pub async fn get_conditional(
+        &self,
+        label: &str,
+        url: &Url,
+        if_modified_since: Option<&str>,
+    ) -> Result<Conditional> {
+        require_https(label, url, self.secure_http)?;
+        let mut headers = Vec::new();
+        if let Some(since) = if_modified_since {
+            headers.push((
+                reqwest::header::IF_MODIFIED_SINCE,
+                HeaderValue::from_str(since).context("invalid If-Modified-Since value")?,
+            ));
+        }
+        let response = self.send_with_retries(label, url, &headers).await?;
+        match response.status() {
+            StatusCode::NOT_MODIFIED => Ok(Conditional::NotModified),
+            StatusCode::NOT_FOUND => Ok(Conditional::NotFound),
+            _ => {
+                let response = response
+                    .error_for_status()
+                    .with_context(|| format!("fetching {}", redact(url)))?;
+                let last_modified = response
+                    .headers()
+                    .get(reqwest::header::LAST_MODIFIED)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                let body = response.bytes().await?.to_vec();
+                Ok(Conditional::Fresh {
+                    body,
+                    last_modified,
+                })
+            }
+        }
+    }
+
     /// `GET start_url`, following redirects by hand so each hop gets the
     /// credential for *its* host rather than reusing (or losing) the first
     /// hop's.
@@ -164,7 +219,7 @@ impl Fetcher {
             hops += 1;
             let host = url.host_str().unwrap_or("").to_string();
             let hop_started = std::time::Instant::now();
-            let response = self.send_with_retries(pkg_name, &url).await?;
+            let response = self.send_with_retries(pkg_name, &url, &[]).await?;
             if response.status().is_redirection() {
                 let elapsed = hop_started.elapsed();
                 self.record_hop(&host, elapsed);
@@ -224,11 +279,19 @@ impl Fetcher {
     /// timeout, or 429/5xx) up to `MAX_RETRIES` times with backoff; a
     /// redirect response is returned as-is, since `get` needs to decide the
     /// next hop's URL before it can be retried.
-    async fn send_with_retries(&self, pkg_name: &str, url: &Url) -> Result<reqwest::Response> {
+    async fn send_with_retries(
+        &self,
+        pkg_name: &str,
+        url: &Url,
+        extra_headers: &[(HeaderName, HeaderValue)],
+    ) -> Result<reqwest::Response> {
         let mut attempt = 0u32;
         loop {
             let mut request = self.client.get(url.clone());
             if let Some((name, value)) = self.auth.header_for(url) {
+                request = request.header(name, value);
+            }
+            for (name, value) in extra_headers {
                 request = request.header(name, value);
             }
             let outcome = request.send().await;
