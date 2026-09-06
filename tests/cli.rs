@@ -153,6 +153,30 @@ fn install_no_plugins_downgrades_the_refusal_to_a_warning() {
     viv_snapshot!(ctx, cmd);
 }
 
+/// #23: `--offline` with nothing in the store fails fast, naming every
+/// missing package in one message rather than the first one a fetch
+/// attempt happens to reach.
+#[test]
+fn install_offline_reports_every_missing_package_in_one_message() {
+    let ctx = TestContext::new();
+    copy_monolog_sources(ctx.project.path());
+    let mut cmd = ctx.viv();
+    cmd.args(["install", "--offline"]);
+    viv_snapshot!(ctx, cmd);
+}
+
+/// `COMPOSER_DISABLE_NETWORK=1` is Composer's own spelling of the same
+/// thing, and must behave identically to `--offline`.
+#[test]
+fn install_composer_disable_network_env_behaves_like_offline() {
+    let ctx = TestContext::new();
+    copy_monolog_sources(ctx.project.path());
+    let mut cmd = ctx.viv();
+    cmd.env("COMPOSER_DISABLE_NETWORK", "1");
+    cmd.arg("install");
+    viv_snapshot!(ctx, cmd);
+}
+
 #[test]
 fn dump_autoload_without_a_lock_fails() {
     let ctx = TestContext::new();

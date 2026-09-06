@@ -26,8 +26,47 @@ struct Cli {
     /// Store location (default `$XDG_CACHE_HOME/vivace`, or `~/.cache/vivace`).
     #[arg(long, global = true)]
     cache_dir: Option<PathBuf>,
+    /// Fail fast on any request instead of connecting: install errors,
+    /// naming every package not already in the store; update solves from
+    /// cached repository metadata only, erroring on an uncached package.
+    /// Also set by `COMPOSER_DISABLE_NETWORK` (any value but unset, empty or
+    /// `0`; Composer's own git-priming `prime` value is not special-cased
+    /// here, since neither `install` nor `update` touch a git source).
+    #[arg(long, global = true)]
+    offline: bool,
     #[command(subcommand)]
     command: Command,
+}
+
+/// Composer's own `(bool) Platform::getEnv('COMPOSER_DISABLE_NETWORK')` cast:
+/// unset or empty is `false` (`getenv` returns `false`, PHP's `(bool)` of
+/// that or `""` is `false`), the literal `"0"` is `false` too (PHP's numeric
+/// string special case), anything else — including `"1"` and `"prime"` — is
+/// `true`.
+fn network_disabled_by_env() -> bool {
+    network_disabled(std::env::var("COMPOSER_DISABLE_NETWORK").ok().as_deref())
+}
+
+fn network_disabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::network_disabled;
+
+    #[test]
+    fn network_disabled_reads_composer_disable_networks_bool_cast() {
+        assert!(!network_disabled(None), "unset");
+        assert!(!network_disabled(Some("")), "empty");
+        assert!(!network_disabled(Some("0")), "the literal \"0\" is falsy");
+        assert!(network_disabled(Some("1")));
+        assert!(
+            network_disabled(Some("prime")),
+            "HttpDownloader's own (bool) cast doesn't special-case \"prime\" \
+             the way Git.php does"
+        );
+    }
 }
 
 #[derive(Subcommand)]
@@ -56,15 +95,16 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     init_logging(cli.verbose);
+    let offline = cli.offline || network_disabled_by_env();
     match cli.command {
-        Command::Install(args) => match install::run(&args, cli.cache_dir.as_deref()) {
+        Command::Install(args) => match install::run(&args, cli.cache_dir.as_deref(), offline) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 err_out(&format!("{err:#}"));
                 ExitCode::from(1)
             }
         },
-        Command::Update(args) => match update::run(&args, cli.cache_dir.as_deref()) {
+        Command::Update(args) => match update::run(&args, cli.cache_dir.as_deref(), offline) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => resolver_error(&err),
         },

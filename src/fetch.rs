@@ -95,6 +95,15 @@ pub struct Fetcher {
     /// Composer's `config.secure-http` (default `true`): reject a plain
     /// `http://` dist URL or redirect target rather than following it.
     secure_http: bool,
+    /// `--offline`/`COMPOSER_DISABLE_NETWORK` (#23): mirrors
+    /// `HttpDownloader`'s `disabled` flag, checked before every request
+    /// instead of connecting and letting it time out or fail. Composer's own
+    /// `startJob` special-cases a conditional (`If-Modified-Since`) request
+    /// while disabled by synthesizing a 304 rather than erroring, so a warm
+    /// disk cache still serves normally; only a request with nothing cached
+    /// to fall back on is rejected. `get_conditional` mirrors that; `fetch`
+    /// (dist downloads, never conditional) always rejects.
+    offline: bool,
 }
 
 impl Fetcher {
@@ -105,6 +114,7 @@ impl Fetcher {
             backoff,
             hop_timings: Mutex::new(HashMap::new()),
             secure_http: true,
+            offline: false,
         })
     }
 
@@ -114,6 +124,13 @@ impl Fetcher {
     #[must_use]
     pub fn secure_http(mut self, secure_http: bool) -> Self {
         self.secure_http = secure_http;
+        self
+    }
+
+    /// `--offline`/`COMPOSER_DISABLE_NETWORK` (#23).
+    #[must_use]
+    pub fn offline(mut self, offline: bool) -> Self {
+        self.offline = offline;
         self
     }
 
@@ -161,6 +178,13 @@ impl Fetcher {
         let dist = pkg.dist.as_ref().expect("validate_dist checked");
         let url = Url::parse(&dist.url)
             .with_context(|| format!("{}: invalid dist URL {}", pkg.name, dist.url))?;
+        if self.offline {
+            bail!(
+                "{}: Network disabled, request canceled: {}",
+                pkg.name,
+                redact(&url)
+            );
+        }
         let started = std::time::Instant::now();
         let (downloaded, actual_sha1) = self
             .get(&pkg.name, url.clone(), temp_dir)
@@ -205,6 +229,21 @@ impl Fetcher {
         if_modified_since: Option<&str>,
     ) -> Result<Conditional> {
         require_https(label, url, self.secure_http)?;
+        if self.offline {
+            // Composer's `HttpDownloader::startJob` while `disabled`: a
+            // conditional request (a `Last-Modified` cached to revalidate
+            // with) is answered with a synthetic 304 instead of erroring, so
+            // a warm cache still works offline; nothing to revalidate from
+            // means there's nothing to serve, so that case errors.
+            return if if_modified_since.is_some() {
+                Ok(Conditional::NotModified)
+            } else {
+                bail!(
+                    "{label}: Network disabled, request canceled: {}",
+                    redact(url)
+                )
+            };
+        }
         let mut headers = Vec::new();
         if let Some(since) = if_modified_since {
             headers.push((
@@ -765,5 +804,75 @@ mod tests {
     fn credential_hint_absent_for_other_statuses() {
         assert!(credential_hint(500, "example.com", false).is_none());
         assert!(credential_hint(200, "example.com", false).is_none());
+    }
+
+    /// A minimal package with a dist, for the offline tests below; every
+    /// field `fetch` never reads is left at a cheap default.
+    fn dist_package(name: &str, url: &str) -> Package {
+        Package {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            dist: Some(crate::lock::Dist {
+                r#type: "zip".to_string(),
+                url: url.to_string(),
+                reference: None,
+                shasum: None,
+            }),
+            source: None,
+            transport_options: crate::lock::TransportOptions::default(),
+            autoload: None,
+            require: serde_json::Map::new(),
+            provide: serde_json::Map::new(),
+            replace: serde_json::Map::new(),
+            r#type: "library".to_string(),
+            target_dir: None,
+            include_path: Vec::new(),
+            bin: Vec::new(),
+            dev: false,
+            raw: serde_json::Value::Null,
+            install_dir: None,
+            install_from_source: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_fetch_fails_fast_and_names_the_package() {
+        let fetcher = Fetcher::new(Auth::default()).unwrap().offline(true);
+        let pkg = dist_package("acme/pkg", "https://example.test/a.zip");
+        let temp = tempfile::tempdir().unwrap();
+        let err = fetcher
+            .fetch(&pkg, temp.path())
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("acme/pkg"), "{err}");
+        assert!(err.contains("Network disabled, request canceled"), "{err}");
+        assert!(err.contains("example.test/a.zip"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn offline_get_conditional_without_a_cached_body_errors() {
+        let fetcher = Fetcher::new(Auth::default()).unwrap().offline(true);
+        let url = Url::parse("https://repo.packagist.org/p2/acme/pkg.json").unwrap();
+        let err = fetcher
+            .get_conditional("acme/pkg", &url, None)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("Network disabled, request canceled"), "{err}");
+        assert!(err.contains("repo.packagist.org"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn offline_get_conditional_with_a_cached_last_modified_serves_not_modified() {
+        let fetcher = Fetcher::new(Auth::default()).unwrap().offline(true);
+        let url = Url::parse("https://repo.packagist.org/p2/acme/pkg.json").unwrap();
+        let result = fetcher
+            .get_conditional("acme/pkg", &url, Some("Mon, 01 Jan 2024 00:00:00 GMT"))
+            .await
+            .unwrap();
+        assert!(matches!(result, Conditional::NotModified));
     }
 }

@@ -79,7 +79,7 @@ pub struct UpdateArgs {
 
 const PACKAGIST_URL: &str = "https://repo.packagist.org";
 
-pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>) -> Result<()> {
+pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
@@ -93,7 +93,14 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>) -> Result<()> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        let result = runtime.block_on(solve(args, &project_dir, &root, &lock_path, cache_dir))?;
+        let result = runtime.block_on(solve(
+            args,
+            &project_dir,
+            &root,
+            &lock_path,
+            cache_dir,
+            offline,
+        ))?;
         lock_json(&result, &composer_json)?
     };
 
@@ -115,6 +122,7 @@ async fn solve(
     root: &Value,
     lock_path: &Path,
     cache_dir: Option<&Path>,
+    offline: bool,
 ) -> Result<solver::UpdateResult> {
     let secure_http = root
         .pointer("/config/secure-http")
@@ -131,7 +139,9 @@ async fn solve(
         None => default_cache_dir()?,
     };
     let auth = Auth::load(project_dir)?;
-    let fetcher = Fetcher::new(auth)?.secure_http(secure_http);
+    let fetcher = Fetcher::new(auth)?
+        .secure_http(secure_http)
+        .offline(offline);
     let transport = HttpTransport { fetcher: &fetcher };
     let repo = Repository::load(PACKAGIST_URL, &cache_dir, transport).await?;
 

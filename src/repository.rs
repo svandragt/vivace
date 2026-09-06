@@ -251,15 +251,16 @@ impl<T: Transport> Repository<T> {
         let packages_url = base_url
             .join("packages.json")
             .context("joining packages.json to the repository URL")?;
-        let body = match transport.get(&packages_url, None).await? {
-            Conditional::Fresh { body, .. } => body,
-            Conditional::NotModified => {
-                bail!("{packages_url}: server sent 304 for an unconditional request")
-            }
-            Conditional::NotFound => bail!("{packages_url}: not found"),
+        // Cached the same way a provider file is (below): offline (#23),
+        // this is what lets a warm cache serve `packages.json` itself
+        // without a request, rather than failing before a single provider
+        // file is even reached.
+        let cache_dir = cache_root.join("repo").join(&host);
+        let packages_cache_path = cache_dir.join("packages.json");
+        let root = match get_cached_json(&transport, &packages_url, &packages_cache_path).await? {
+            CachedJson::NotFound => bail!("{packages_url}: not found"),
+            CachedJson::Data(data) => data,
         };
-        let root: Value = serde_json::from_slice(&body)
-            .with_context(|| format!("{packages_url}: not valid JSON"))?;
         let metadata_url = root
             .get("metadata-url")
             .and_then(Value::as_str)
@@ -290,7 +291,7 @@ impl<T: Transport> Repository<T> {
             notify_url,
             available_packages,
             available_package_patterns,
-            cache_dir: cache_root.join("repo").join(host),
+            cache_dir,
             loaded: Mutex::new(HashMap::new()),
         })
     }
@@ -344,25 +345,10 @@ impl<T: Transport> Repository<T> {
         };
         let url = self.provider_url(&file_name)?;
         let cache_path = self.cache_path(&file_name);
-        let cached = read_cache_file(&cache_path)?;
-        let since = cached.as_ref().and_then(|(_, lm)| lm.as_deref());
-        let data = match self.transport.get(&url, since).await? {
-            Conditional::NotFound => return Ok(Vec::new()),
-            Conditional::NotModified => cached.context("server sent 304 but nothing is cached")?.0,
-            Conditional::Fresh {
-                body,
-                last_modified,
-            } => {
-                let mut data: Value = serde_json::from_slice(&body)
-                    .with_context(|| format!("{url}: not valid JSON"))?;
-                if let (Some(lm), Value::Object(obj)) = (&last_modified, &mut data) {
-                    obj.insert("last-modified".to_string(), Value::String(lm.clone()));
-                }
-                write_cache_file(&cache_path, &data)?;
-                data
-            }
-        };
-        parse_provider_versions(&data, name)
+        match get_cached_json(&self.transport, &url, &cache_path).await? {
+            CachedJson::NotFound => Ok(Vec::new()),
+            CachedJson::Data(data) => parse_provider_versions(&data, name),
+        }
     }
 
     fn provider_url(&self, file_name: &str) -> Result<Url> {
@@ -523,6 +509,50 @@ fn write_cache_file(path: &Path, data: &Value) -> Result<()> {
     }
     fs_err::write(path, serde_json::to_vec(data)?)
         .with_context(|| format!("writing {}", path.display()))
+}
+
+/// [`get_cached_json`]'s outcome: either the resource doesn't exist (a 404;
+/// the caller decides what that means for it), or its current body, from the
+/// network or the disk cache.
+enum CachedJson {
+    NotFound,
+    Data(Value),
+}
+
+/// The conditional-GET-against-a-disk-cache dance `packages.json` and every
+/// provider file share: read a cached body and its `Last-Modified`, send
+/// that back as `If-Modified-Since`, and cache a fresh response before
+/// returning it. Offline (#23), this is also what serves a warm cache
+/// without a request: [`Fetcher::get_conditional`]'s own offline branch
+/// answers a conditional request (`since` is `Some`) with a synthetic
+/// "not modified" instead of erroring, so the cached body here is used as
+/// read, and only a truly uncached URL (`since` is `None`) surfaces that
+/// transport's "network disabled" error.
+async fn get_cached_json<T: Transport>(
+    transport: &T,
+    url: &Url,
+    cache_path: &Path,
+) -> Result<CachedJson> {
+    let cached = read_cache_file(cache_path)?;
+    let since = cached.as_ref().and_then(|(_, lm)| lm.as_deref());
+    match transport.get(url, since).await? {
+        Conditional::NotFound => Ok(CachedJson::NotFound),
+        Conditional::NotModified => Ok(CachedJson::Data(
+            cached.context("server sent 304 but nothing is cached")?.0,
+        )),
+        Conditional::Fresh {
+            body,
+            last_modified,
+        } => {
+            let mut data: Value =
+                serde_json::from_slice(&body).with_context(|| format!("{url}: not valid JSON"))?;
+            if let (Some(lm), Value::Object(obj)) = (&last_modified, &mut data) {
+                obj.insert("last-modified".to_string(), Value::String(lm.clone()));
+            }
+            write_cache_file(cache_path, &data)?;
+            Ok(CachedJson::Data(data))
+        }
+    }
 }
 
 #[cfg(test)]
