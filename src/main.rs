@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use vivace::install::{self, CacheArgs, DumpAutoloadArgs, InstallArgs};
 use vivace::normalize::{self, NormalizeArgs};
+use vivace::update::{self, UpdateArgs};
 
 #[derive(Parser)]
 #[command(
@@ -31,8 +32,8 @@ struct Cli {
 enum Command {
     /// Install packages from composer.lock.
     Install(InstallArgs),
-    /// Not implemented in vivace v0.1: use `composer update`.
-    Update,
+    /// Resolve composer.json and write a composer.lock (full update only).
+    Update(UpdateArgs),
     /// Not implemented in vivace v0.1: use `composer require`.
     Require,
     /// Not implemented in vivace v0.1: use `composer remove`.
@@ -58,7 +59,13 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Command::Update => stub("update"),
+        Command::Update(args) => match update::run(&args, cli.cache_dir.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
         Command::Require => stub("require"),
         Command::Remove => stub("remove"),
         Command::DumpAutoload(args) => match install::dump_autoload(&args) {

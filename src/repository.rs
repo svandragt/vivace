@@ -36,8 +36,10 @@ static PLATFORM_PACKAGE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// `PlatformRepository::isPlatformPackage`.
-fn is_platform_package(name: &str) -> bool {
+/// `PlatformRepository::isPlatformPackage`. `pub(crate)`: the lock writer
+/// (`Installer::extractPlatformRequirements`, `pool_builder.rs`'s
+/// `config.platform` handling) needs the same check.
+pub(crate) fn is_platform_package(name: &str) -> bool {
     PLATFORM_PACKAGE.is_match(name)
 }
 
@@ -214,6 +216,14 @@ pub struct Repository<T: Transport> {
     /// name -> version label -> version object, the same shape a v1
     /// `providers` file uses. Cheap to support, so it's supported.
     inline_packages: Map<String, Value>,
+    /// `packages.json`'s `notify-batch` (falling back to the older `notify`),
+    /// canonicalized against `base_url` (`ComposerRepository::canonicalizeUrl`):
+    /// every loaded version without its own `notification-url` gets this one
+    /// (`ComposerRepository.php:1709-1710`), which is how a lock's package
+    /// entries end up with `"notification-url":
+    /// "https://packagist.org/downloads/"` despite no provider-file version
+    /// entry carrying it.
+    notify_url: Option<String>,
     /// Parsed but never acted on; `PoolBuilder`'s optimisation, not a
     /// correctness concern at this stage.
     #[allow(dead_code)]
@@ -267,11 +277,17 @@ impl<T: Transport> Repository<T> {
             .unwrap_or_default();
         let available_packages = string_list(&root, "available-packages");
         let available_package_patterns = string_list(&root, "available-package-patterns");
+        let notify_url = root
+            .get("notify-batch")
+            .or_else(|| root.get("notify"))
+            .and_then(Value::as_str)
+            .map(|url| canonicalize_url(&base_url, url));
         Ok(Repository {
             transport,
             base_url,
             metadata_url,
             inline_packages,
+            notify_url,
             available_packages,
             available_package_patterns,
             cache_dir: cache_root.join("repo").join(host),
@@ -297,6 +313,18 @@ impl<T: Transport> Repository<T> {
         }
         if dev.wants_dev() {
             versions.extend(self.fetch_provider(&key, true).await?);
+        }
+        if let Some(notify_url) = &self.notify_url {
+            for version in &mut versions {
+                if let Value::Object(obj) = &mut version.raw
+                    && !obj.contains_key("notification-url")
+                {
+                    obj.insert(
+                        "notification-url".to_string(),
+                        Value::String(notify_url.clone()),
+                    );
+                }
+            }
         }
         self.loaded
             .lock()
@@ -399,6 +427,17 @@ fn queue_name(name: &str, discovered: &mut HashSet<String>, queue: &mut VecDeque
     if discovered.insert(name.clone()) {
         queue.push_back(name);
     }
+}
+
+/// `ComposerRepository::canonicalizeUrl`: a root-relative `notify-batch`
+/// (rare; Packagist's own is already absolute) resolves against `base`'s
+/// scheme and host, everything else is returned unchanged.
+fn canonicalize_url(base: &Url, url: &str) -> String {
+    if !url.starts_with('/') {
+        return url.to_string();
+    }
+    base.join(url)
+        .map_or_else(|_| url.to_string(), |u| u.to_string())
 }
 
 fn string_list(root: &Value, key: &str) -> Option<Vec<String>> {

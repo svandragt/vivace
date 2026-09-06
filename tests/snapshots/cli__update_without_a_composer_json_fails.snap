@@ -1,0 +1,11 @@
+---
+source: tests/cli.rs
+assertion_line: 45
+expression: snapshot
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+reading composer.json: failed to open file `[PROJECT]/composer.json`: No such file or directory (os error 2)

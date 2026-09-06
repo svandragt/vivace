@@ -39,12 +39,15 @@ pub mod solver;
 pub mod transaction;
 pub mod watch_graph;
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::Result;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::repository::{Repository, Transport};
 use policy::DefaultPolicy;
-use transaction::ResolvedPackage;
+use pool::Pool;
+use transaction::{AliasEntry, ResolvedPackage};
 
 /// Builds a pool from `root`'s `require`/`require-dev` (merged, matching
 /// `Installer::doUpdate`'s first solve) against everything `repo`'s
@@ -67,4 +70,104 @@ pub async fn solve_full_update<T: Transport>(
         &installed,
         &built.request,
     ))
+}
+
+/// `viv update`'s full result: the first solve's packages
+/// (`require`+`require-dev` merged) split into `non_dev`/`dev` by a second,
+/// `require`-only solve (`Installer::doUpdate`'s `extractDevPackages`), plus
+/// everything `src/lock_writer.rs` needs to reproduce `Locker::setLockData`'s
+/// other keys.
+pub struct UpdateResult {
+    pub non_dev: Vec<ResolvedPackage>,
+    pub dev: Vec<ResolvedPackage>,
+    pub aliases: Vec<AliasEntry>,
+    /// The combined `prefer-stable`/`prefer-lowest` this solve actually ran
+    /// with (`solve_update`'s caller already OR'd the CLI flag with
+    /// `composer.json`'s own `prefer-stable`, `Installer::doUpdate`'s
+    /// `$this->preferStable || $this->package->getPreferStable()`),
+    /// returned so the lock writer doesn't need its own copy.
+    pub prefer_stable: bool,
+    pub prefer_lowest: bool,
+    pub minimum_stability: &'static str,
+    pub stability_flags: HashMap<String, u8>,
+    pub platform_reqs: Map<String, Value>,
+    pub platform_dev_reqs: Map<String, Value>,
+    pub platform_overrides: Map<String, Value>,
+}
+
+/// `Installer::doUpdate`'s full pipeline: the merged first solve, then
+/// `extractDevPackages`'s require-only second solve against a pool built
+/// from nothing but the first solve's own result (`pool_builder::clone_package`
+/// stands in for the dump/reload round-trip `$resultRepo` does in PHP).
+/// Skips the second solve when `require-dev` is empty, matching
+/// `extractDevPackages`'s own early return (every package stays `non_dev`).
+pub async fn solve_update<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    prefer_lowest: bool,
+) -> Result<UpdateResult> {
+    let built = pool_builder::build(repo, root).await?;
+    let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
+    let installed =
+        solver::solve(&policy, &built.pool, &built.request).map_err(anyhow::Error::from)?;
+    let aliases = transaction::used_aliases(&built.pool, &installed);
+    let first_solve = transaction::resolved_packages(&built.pool, &installed, &built.request);
+
+    let require_dev_empty = root
+        .get("require-dev")
+        .and_then(Value::as_object)
+        .is_none_or(Map::is_empty);
+
+    let (non_dev, dev) = if require_dev_empty {
+        (first_solve, Vec::new())
+    } else {
+        let fixed_count = built.request.fixed.len();
+        let fixed_ids: HashSet<i32> = built
+            .request
+            .fixed
+            .iter()
+            .map(|&index| pool::id_of(index))
+            .collect();
+        let mut second_packages = Vec::with_capacity(fixed_count + installed.len());
+        for index in 0..fixed_count {
+            second_packages.push(pool_builder::clone_package(
+                built.pool.package_by_id(pool::id_of(index)),
+            )?);
+        }
+        for &id in &installed {
+            if fixed_ids.contains(&id) {
+                continue;
+            }
+            let package = built.pool.package_by_id(id);
+            if package.is_alias() {
+                continue;
+            }
+            second_packages.push(pool_builder::clone_package(package)?);
+        }
+        let second_pool = Pool::new(second_packages);
+        let second_request = pool_builder::require_only_request(root, fixed_count)?;
+        let installed2 =
+            solver::solve(&policy, &second_pool, &second_request).map_err(anyhow::Error::from)?;
+        let non_dev = transaction::resolved_packages(&second_pool, &installed2, &second_request);
+        let non_dev_names: HashSet<&str> = non_dev.iter().map(|p| p.name.as_str()).collect();
+        let dev = first_solve
+            .into_iter()
+            .filter(|p| !non_dev_names.contains(p.name.as_str()))
+            .collect();
+        (non_dev, dev)
+    };
+
+    Ok(UpdateResult {
+        non_dev,
+        dev,
+        aliases,
+        prefer_stable,
+        prefer_lowest,
+        minimum_stability: built.minimum_stability,
+        stability_flags: built.stability_flags,
+        platform_reqs: built.platform_reqs,
+        platform_dev_reqs: built.platform_dev_reqs,
+        platform_overrides: built.platform_overrides,
+    })
 }

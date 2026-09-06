@@ -1,5 +1,6 @@
 {
     "name": "vivace/fixture-legacy",
+    "license": "proprietary",
     "type": "project",
     "version": "1.0.0",
     "require": {

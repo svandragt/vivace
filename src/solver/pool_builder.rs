@@ -42,6 +42,20 @@ const STABILITIES: [&str; 5] = ["stable", "RC", "beta", "alpha", "dev"];
 pub struct BuildResult {
     pub pool: Pool,
     pub request: Request,
+    /// `RootPackage::getMinimumStability`.
+    pub minimum_stability: &'static str,
+    /// `RootPackage::getStabilityFlags`, `BasePackage::STABILITIES`-ranked
+    /// (`stability_rank`'s scale: 0 stable .. 20 dev) for direct reuse as
+    /// the lock's `stability-flags` values.
+    pub stability_flags: HashMap<String, u8>,
+    /// Root `require`/`require-dev` platform-package pretty constraints, for
+    /// the lock's `platform`/`platform-dev` keys
+    /// (`Installer::extractPlatformRequirements`).
+    pub platform_reqs: Map<String, Value>,
+    pub platform_dev_reqs: Map<String, Value>,
+    /// `config.platform` verbatim, for the lock's `platform-overrides` key
+    /// (only emitted there when non-empty).
+    pub platform_overrides: Map<String, Value>,
 }
 
 /// `Installer::doUpdate`'s first solve: root `require` and `require-dev`
@@ -92,7 +106,12 @@ pub async fn build<T: Transport>(repo: &Repository<T>, root: &Value) -> Result<B
     }];
     let closure = repo.load_closure(&roots, dev_acceptance).await?;
 
-    let mut packages = platform_packages();
+    let platform_overrides = root
+        .pointer("/config/platform")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut packages = platform_packages(&platform_overrides)?;
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
     for versions in closure.values() {
@@ -121,6 +140,47 @@ pub async fn build<T: Transport>(repo: &Repository<T>, root: &Value) -> Result<B
     Ok(BuildResult {
         pool,
         request: Request { requires, fixed },
+        minimum_stability,
+        stability_flags: stability_flags
+            .into_iter()
+            .map(|(name, stability)| (name, stability_rank(stability)))
+            .collect(),
+        platform_reqs: extract_platform_requirements(&require),
+        platform_dev_reqs: extract_platform_requirements(&require_dev),
+        platform_overrides,
+    })
+}
+
+/// `Installer::extractPlatformRequirements`: the root require/require-dev
+/// entries that target a platform package, pretty constraint text
+/// unchanged, for the lock's `platform`/`platform-dev` keys.
+fn extract_platform_requirements(links: &Map<String, Value>) -> Map<String, Value> {
+    links
+        .iter()
+        .filter(|(name, _)| crate::repository::is_platform_package(name))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+/// The dev-split second solve's request (`Installer::requirePackagesForUpdate`
+/// with `$requireDevSection = false`): root `require` only, against the
+/// same `fixed_count` platform packages the first solve's pool starts with
+/// (`clone_package` copies them verbatim, so their pool indices line up).
+pub(crate) fn require_only_request(root: &Value, fixed_count: usize) -> Result<Request> {
+    let require = string_map(root, "require");
+    let mut requires = Vec::with_capacity(require.len());
+    for (name, value) in &require {
+        let raw = value
+            .as_str()
+            .with_context(|| format!("require {name}: constraint is not a string"))?;
+        requires.push((
+            name.to_ascii_lowercase(),
+            Some(semver::parse_constraint(raw)?),
+        ));
+    }
+    Ok(Request {
+        requires,
+        fixed: (0..fixed_count).collect(),
     })
 }
 
@@ -309,6 +369,33 @@ fn clone_links(links: &[Link]) -> Result<Vec<Link>> {
         .collect()
 }
 
+/// Clones one [`Package`] into a pool built from scratch (the dev-split
+/// second solve's pool: `Installer::extractDevPackages`'s `$resultRepo`,
+/// re-dumping and reloading each first-solve package; vivace clones the
+/// already-built `Package` instead of round-tripping through the array
+/// dumper/loader, an equivalent transform since nothing about the package
+/// changes). Drops any alias wrapping (`alias_of` reset to `None`): the
+/// second solve's repository never carries `AliasPackage` entries either
+/// (`LockTransaction::getNewLockPackages` skips them before `$resultRepo` is
+/// built), so this is only ever called on a non-alias package.
+pub(crate) fn clone_package(package: &Package) -> Result<Package> {
+    Ok(Package {
+        name: package.name.clone(),
+        version: package.version.clone(),
+        pretty_version: package.pretty_version.clone(),
+        stability: package.stability,
+        is_dev: package.is_dev,
+        requires: clone_links(&package.requires)?,
+        conflicts: clone_links(&package.conflicts)?,
+        provides: clone_links(&package.provides)?,
+        replaces: clone_links(&package.replaces)?,
+        alias_of: None,
+        is_root_package_alias: false,
+        has_self_version_requires: package.has_self_version_requires,
+        raw: package.raw.clone(),
+    })
+}
+
 fn parse_links(
     map: &Map<String, Value>,
     own_name: &str,
@@ -325,10 +412,16 @@ fn parse_links(
             .with_context(|| format!("{own_name}: link constraint for {target} is not a string"))?;
         // `self.version`, resolved to the package's own version like
         // `AliasPackage::replaceSelfVersionDependencies` (an exact-version
-        // constraint, not a range parse); not exercised by any fixture in
-        // this stage's corpus, so this leans on `parse_constraint` treating
-        // a bare version string as `== version` rather than constructing
-        // that constraint directly.
+        // constraint, not a range parse, leaning on `parse_constraint`
+        // treating a bare version string as `== version` rather than
+        // constructing that constraint directly). `pretty_constraint` gets
+        // the resolved text too, matching `replaceSelfVersionDependencies`'s
+        // own `$constraint->setPrettyString($prettyVersion)`: this Link is
+        // solver-internal (the lock writer reads `Package::raw`'s untouched
+        // JSON instead, which keeps the literal `"self.version"` string),
+        // but `clone_links` reparses `pretty_constraint` verbatim for a
+        // branch-alias/root-alias copy or the dev-split second solve, and a
+        // literal `"self.version"` isn't parseable on that second pass.
         let text = if raw == "self.version" {
             own_pretty_version
         } else {
@@ -337,7 +430,7 @@ fn parse_links(
         links.push(Link {
             target,
             constraint: Some(semver::parse_constraint(text)?),
-            pretty_constraint: Some(raw.to_string()),
+            pretty_constraint: Some(text.to_string()),
         });
     }
     Ok(links)
@@ -385,10 +478,13 @@ fn push_package_version(
             replaces: clone_links(&replaces)?,
             alias_of: Some(real_index),
             is_root_package_alias: false,
-            // Not detected (see `parse_links`'s module doc): would only
-            // matter for a `self.version` require inside a dev branch,
-            // which no fixture here has.
+            // Not detected: `RuleSetGenerator`/`Problem` are the only
+            // readers (a nicer conflict message), neither in this stage's
+            // scope. `clone_links` still resolves a `self.version` link
+            // correctly (`parse_links`'s doc comment) even though this flag
+            // doesn't track it.
             has_self_version_requires: false,
+            raw: pv.raw.clone(),
         });
         packages.push(Package {
             name: name.clone(),
@@ -403,6 +499,7 @@ fn push_package_version(
             alias_of: None,
             is_root_package_alias: false,
             has_self_version_requires: false,
+            raw: pv.raw.clone(),
         });
         real_index
     } else {
@@ -420,6 +517,7 @@ fn push_package_version(
             alias_of: None,
             is_root_package_alias: false,
             has_self_version_requires: false,
+            raw: pv.raw.clone(),
         });
         index
     };
@@ -442,6 +540,7 @@ fn push_package_version(
             let conflicts = clone_links(&real.conflicts)?;
             let provides = clone_links(&real.provides)?;
             let replaces = clone_links(&real.replaces)?;
+            let raw = real.raw.clone();
             packages.push(Package {
                 name: name.clone(),
                 version: semver::normalize(alias_normalized)?,
@@ -455,6 +554,7 @@ fn push_package_version(
                 alias_of: Some(real_index),
                 is_root_package_alias: true,
                 has_self_version_requires: false,
+                raw,
             });
         }
     }
@@ -473,23 +573,22 @@ fn push_package_version(
 /// reproduced; a `composer.json` pinning one of those (`"lib-openssl":
 /// "^1.1"`, rather than the common `"ext-openssl": "*"`) will not resolve.
 /// Widen `extension_package` if a fixture needs it.
-fn platform_packages() -> Vec<Package> {
+///
+/// `overrides` is `config.platform` verbatim (`Installer::doUpdate`'s
+/// `$this->config->get('platform')`): a name -> pretty-version string pins
+/// that platform package's version instead of detecting it from the host,
+/// and a name -> `false` removes it outright (`PlatformRepository`'s own
+/// `platform-overrides`/`platform` handling). Hermetic tests use this to
+/// avoid depending on the host `php` build; a name not already detected on
+/// the host is not added (ponytail: only pinning an existing platform
+/// package is supported, not inventing a new one).
+fn platform_packages(overrides: &Map<String, Value>) -> Result<Vec<Package>> {
     let php_pretty = detect_php_version().unwrap_or_else(|| "8.3.0".to_string());
-    let php_version =
-        semver::normalize(&php_pretty).unwrap_or_else(|_| semver::normalize("8.3.0").unwrap());
 
-    let mut packages = vec![
-        platform_package("php", &php_pretty, php_version.clone()),
-        platform_package(
-            "composer-plugin-api",
-            "2.9.0",
-            semver::normalize("2.9.0").unwrap(),
-        ),
-        platform_package(
-            "composer-runtime-api",
-            "2.2.2",
-            semver::normalize("2.2.2").unwrap(),
-        ),
+    let mut pretty: Vec<(String, String)> = vec![
+        ("php".to_string(), php_pretty.clone()),
+        ("composer-plugin-api".to_string(), "2.9.0".to_string()),
+        ("composer-runtime-api".to_string(), "2.2.2".to_string()),
     ];
 
     for extension in detect_extensions() {
@@ -498,14 +597,30 @@ fn platform_packages() -> Vec<Package> {
             continue;
         }
         let package_name = format!("ext-{}", lower.replace(' ', "-"));
-        packages.push(platform_package(
-            &package_name,
-            &php_pretty,
-            php_version.clone(),
-        ));
+        pretty.push((package_name, php_pretty.clone()));
     }
 
-    packages
+    for (name, value) in overrides {
+        match value {
+            Value::String(version) => {
+                if let Some(entry) = pretty.iter_mut().find(|(n, _)| n == name) {
+                    entry.1.clone_from(version);
+                } else {
+                    pretty.push((name.clone(), version.clone()));
+                }
+            }
+            Value::Bool(false) => pretty.retain(|(n, _)| n != name),
+            _ => {}
+        }
+    }
+
+    pretty
+        .into_iter()
+        .map(|(name, version)| {
+            let normalized = semver::normalize(&version)?;
+            Ok(platform_package(&name, &version, normalized))
+        })
+        .collect()
 }
 
 fn platform_package(
@@ -526,6 +641,7 @@ fn platform_package(
         alias_of: None,
         is_root_package_alias: false,
         has_self_version_requires: false,
+        raw: serde_json::json!({ "name": name, "version": pretty_version }),
     }
 }
 

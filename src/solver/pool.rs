@@ -9,6 +9,8 @@
 //! index in [`Pool::packages`], added immediately after it (mirroring the
 //! insertion order above), rather than wrapping a nested object.
 
+use serde_json::Value;
+
 use crate::semver::{self, Constraint, NormalizedVersion};
 
 /// `Package\Link`: a require/conflict/provide/replace edge. Only the fields
@@ -52,6 +54,13 @@ pub struct Package {
     pub is_root_package_alias: bool,
     /// `AliasPackage::hasSelfVersionRequires`.
     pub has_self_version_requires: bool,
+    /// The provider-file version entry this package came from, untouched
+    /// (`Repository::PackageVersion::raw`): stage 4's lock writer re-emits
+    /// its fields in `ArrayDumper` order rather than the pool/solver reading
+    /// them again. Platform packages carry a synthetic stand-in (never
+    /// reached: `transaction::resolved_packages` drops fixed packages
+    /// before a lock ever sees them).
+    pub raw: Value,
 }
 
 impl Package {
