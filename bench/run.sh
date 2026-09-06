@@ -29,7 +29,7 @@ cache_for() {
 
 for tool in $tools; do
   dir="$work/$tool"; rm -rf "$dir"; mkdir -p "$dir"
-  cp "$proj/composer.json" "$proj/composer.lock" "$dir/"
+  cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"
   cmd="cd $dir && cp $proj/composer.lock . && $(cmd_for "$tool") >/dev/null 2>&1"
   cache=$(cache_for "$tool")
   hyperfine --warmup 0 --runs "$runs" --export-json "$out/$tool.json" \
