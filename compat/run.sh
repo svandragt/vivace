@@ -179,13 +179,13 @@ process_project() {
 # reader for ten records.
 parse_corpus() {
   awk '
-    /^\[\[project\]\]/ { if (name != "") print name "\t" repo "\t" commit "\t" version
+    /^\[\[project\]\]/ { if (name != "") print name "|" repo "|" commit "|" version
                           name = ""; repo = ""; commit = ""; version = ""; next }
     /^name *=/    { v = $0; sub(/^name *= *"/, "", v); sub(/" *$/, "", v); name = v }
     /^repo *=/    { v = $0; sub(/^repo *= *"/, "", v); sub(/" *$/, "", v); repo = v }
     /^commit *=/  { v = $0; sub(/^commit *= *"/, "", v); sub(/" *$/, "", v); commit = v }
     /^version *=/ { v = $0; sub(/^version *= *"/, "", v); sub(/" *$/, "", v); version = v }
-    END { if (name != "") print name "\t" repo "\t" commit "\t" version }
+    END { if (name != "") print name "|" repo "|" commit "|" version }
   ' "$corpus"
 }
 
@@ -193,7 +193,7 @@ run_pinned() {
   echo "## Pinned corpus" >> "$report"
   table_header
   local name repo commit version safe srcdir
-  while IFS=$'\t' read -r name repo commit version; do
+  while IFS="|" read -r name repo commit version; do
     wanted "$name" || continue
     safe=$(echo "$name" | tr '/' '_')
     srcdir="$scratch/src/$safe"
