@@ -3,8 +3,17 @@
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
+
+/// uv's `warn_user_once!`: a large install falls back to copy on the first
+/// file and stays there, but that's one `link_tree` call per package, so
+/// without this the same warning prints once per package.
+static WARNED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+static WARN_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// How store files reach `vendor/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
@@ -90,11 +99,14 @@ impl Linker {
                 // and carry on linking the rest.
                 Err(err) if err.kind() == ErrorKind::TooManyLinks => {}
                 Err(err) if !self.linked_any => {
-                    tracing::warn!(
-                        "hardlinking {} failed ({err}); falling back to copying for this \
-                         package. Pass --link-mode copy to silence this warning.",
-                        src.display()
-                    );
+                    if !WARNED.swap(true, Ordering::Relaxed) {
+                        #[cfg(test)]
+                        WARN_COUNT.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            "hardlinking into vendor failed ({err}); copying instead for this \
+                             and later packages. Pass --link-mode copy to silence this warning."
+                        );
+                    }
                     self.mode = LinkMode::Copy;
                 }
                 Err(err) => return Err(err.into()),
@@ -190,5 +202,49 @@ mod tests {
         let dest = vendor.path().join("acme/pkg");
         link_tree(src.path(), &dest, LinkMode::Hardlink).unwrap();
         assert_eq!(mode(&dest.join("composer.json")), 0o444);
+    }
+
+    /// uv's `warn_user_once!`: a 101-package install shouldn't print 101
+    /// identical "falling back to copy" warnings, one per call to
+    /// `link_tree`.
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn cross_filesystem_fallback_warns_once_across_calls() {
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        let probe_src = tempfile::NamedTempFile::new().unwrap();
+        let probe_dest = home.join(format!(".vivace-link-test-{}", std::process::id()));
+        let cross_fs = fs_err::hard_link(probe_src.path(), &probe_dest).is_err();
+        let _ = fs_err::remove_file(&probe_dest);
+        if !cross_fs {
+            eprintln!(
+                "skipping cross_filesystem_fallback_warns_once_across_calls: \
+                 /tmp and $HOME are on the same filesystem here"
+            );
+            return;
+        }
+
+        WARN_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+
+        let src = source();
+        let vendor = tempfile::TempDir::new_in(&home).unwrap();
+        link_tree(
+            src.path(),
+            &vendor.path().join("acme/pkg1"),
+            LinkMode::Hardlink,
+        )
+        .unwrap();
+        link_tree(
+            src.path(),
+            &vendor.path().join("acme/pkg2"),
+            LinkMode::Hardlink,
+        )
+        .unwrap();
+
+        assert_eq!(
+            WARN_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "warning should fire once per process, not once per link_tree call"
+        );
     }
 }

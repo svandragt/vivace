@@ -4,7 +4,8 @@
     "php84Packages.composer@2.10",
     "hyperfine@1.20",
     "cargo-nextest@latest",
-    "cargo-deny@latest"
+    "cargo-deny@latest",
+    "cargo-insta@latest"
   ],
   "shell": {
     "scripts": {
