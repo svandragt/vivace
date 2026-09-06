@@ -322,24 +322,41 @@ impl Store {
         let referenced = self.referenced_archive_ids()?;
         let archive_dir = self.archive_dir();
         if archive_dir.is_dir() {
-            for entry in fs_err::read_dir(&archive_dir)? {
-                let entry = entry?;
-                let name = entry.file_name().to_string_lossy().into_owned();
+            // Snapshot the whole listing (and which names are archive dirs)
+            // before removing anything, so a marker/sidecar is judged
+            // orphaned by *this* listing rather than by re-stat-ing the
+            // filesystem after its dir may already be gone: readdir order
+            // isn't guaranteed, and a marker visited after its dir's own
+            // entry was removed would otherwise error on a vanished file.
+            let names: Vec<String> = fs_err::read_dir(&archive_dir)?
+                .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+                .collect::<Result<_>>()?;
+            let dirs: HashSet<&str> = names
+                .iter()
+                .filter(|name| archive_dir.join(name).is_dir())
+                .map(String::as_str)
+                .collect();
+            for name in &names {
+                let path = archive_dir.join(name);
                 if name.starts_with(".tmp") || name.starts_with(".stale-") {
-                    report.add(&entry.path())?;
-                    fs_err::remove_dir_all(entry.path())?;
-                } else if let Some(id) = name.strip_suffix(".ok") {
-                    if !archive_dir.join(id).is_dir() {
-                        report.add(&entry.path())?;
-                        fs_err::remove_file(entry.path())?;
+                    report.add(&path)?;
+                    fs_err::remove_dir_all(&path)?;
+                } else if let Some(id) = name
+                    .strip_suffix(".ok")
+                    .or_else(|| name.strip_suffix(".classmap-v0"))
+                {
+                    if !dirs.contains(id) {
+                        report.add(&path)?;
+                        fs_err::remove_file(&path)?;
                     }
-                } else if entry.file_type()?.is_dir() && !referenced.contains(&name) {
-                    report.add(&entry.path())?;
-                    fs_err::remove_dir_all(entry.path())?;
-                    let marker = archive_marker(&entry.path());
-                    if marker.is_file() {
-                        report.add(&marker)?;
-                        fs_err::remove_file(&marker)?;
+                } else if dirs.contains(name.as_str()) && !referenced.contains(name) {
+                    report.add(&path)?;
+                    fs_err::remove_dir_all(&path)?;
+                    for sidecar in [archive_marker(&path), archive_classmap_sidecar(&path)] {
+                        if sidecar.is_file() {
+                            report.add(&sidecar)?;
+                            fs_err::remove_file(&sidecar)?;
+                        }
                     }
                 }
             }
@@ -1313,6 +1330,30 @@ mod tests {
         assert_eq!(report.bytes, "files=0 bytes=0\n".len() as u64);
         assert!(!orphan.exists());
         assert!(archive_marker(&dir).is_file(), "the real marker survives");
+    }
+
+    #[test]
+    fn prune_removes_unreferenced_archive_with_marker_and_sidecar() {
+        // Readdir order isn't guaranteed, so an unreferenced archive dir and
+        // its `.ok`/`.classmap-v0` siblings must all be resolvable from one
+        // listing snapshot, whichever entry is visited first — a marker
+        // visited after its dir's entry already vanished from the
+        // filesystem used to `?`-propagate a NotFound error (see CI vs.
+        // local readdir order divergence).
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let dir = store
+            .add_zip(&package("acme/pkg", "abc"), &zip_of(&[("f", b"1", None)]))
+            .unwrap();
+        let sidecar = archive_classmap_sidecar(&dir);
+        fs_err::write(&sidecar, "cached").unwrap();
+        // Drop the only dist pointer so the archive is unreferenced.
+        fs_err::remove_dir_all(store.dists_dir()).unwrap();
+        let report = store.prune(None).unwrap();
+        assert!(!dir.exists());
+        assert!(!archive_marker(&dir).exists());
+        assert!(!sidecar.exists());
+        assert_eq!(report.entries, 3, "dir, marker, sidecar");
     }
 
     #[test]
