@@ -1,17 +1,29 @@
 {
-  "packages": [
-    "php@8.4",
-    "php84Packages.composer@2.10",
-    "hyperfine@1.20",
-    "cargo-nextest@latest",
-    "cargo-deny@latest",
-    "cargo-insta@latest",
-    "cargo-machete@latest",
-    "cargo-fuzz@latest",
-    "cargo-llvm-cov@latest",
-    "linuxPackages.perf@latest",
-    "cargo-flamegraph@latest"
-  ],
+  "packages": {
+    "php": "8.4",
+    "php84Packages.composer": "2.10",
+    "hyperfine": "1.20",
+    "cargo-nextest": "latest",
+    "cargo-deny": "latest",
+    "cargo-insta": "latest",
+    "cargo-machete": "latest",
+    "cargo-fuzz": "latest",
+    "cargo-llvm-cov": "latest",
+    "linuxPackages.perf": {
+      "version": "latest",
+      "platforms": [
+        "x86_64-linux",
+        "aarch64-linux"
+      ]
+    },
+    "cargo-flamegraph": {
+      "version": "latest",
+      "platforms": [
+        "x86_64-linux",
+        "aarch64-linux"
+      ]
+    }
+  },
   "shell": {
     "scripts": {
       "check": [
