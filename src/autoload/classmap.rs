@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use anyhow::{Result, anyhow};
 use regex::Regex;
 use regex::bytes::Regex as BytesRegex;
+use serde::{Deserialize, Serialize};
 
 /// Extensions Composer scans for classmap entries.
 const EXTENSIONS: [&str; 3] = ["php", "inc", "hh"];
@@ -435,6 +436,103 @@ pub fn scan_paths(path: &Path, exclude: Option<&Regex>) -> Result<ClassMap> {
     }
 
     Ok(class_map)
+}
+
+/// Scan parameters that affect a [`ClassMap`] result beyond an archive's own
+/// (immutable) content: matched against a cached result before it's reused,
+/// so a change to any of them is a cache miss rather than a wrong classmap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanKey {
+    /// The scanned directory's path relative to the archive root (empty for
+    /// the package root itself).
+    pub subpath: String,
+    /// The exclusion regex's own source, if any was built for this scan.
+    pub exclude: Option<String>,
+    /// `(namespace, "psr-0"|"psr-4")` for a PSR scan, `None` for a plain
+    /// `classmap` entry.
+    pub psr: Option<(String, String)>,
+}
+
+/// [`ClassMap`] as written to an archive's cache sidecar: paths relative to
+/// the scanned root, so a cached scan applies wherever that root is linked
+/// next (a rebuilt `vendor/`, or another project's) — the `canonical` map
+/// only earns its keep mid-scan, deduping symlinks a cache hit never walks.
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedClassMap {
+    key: ScanKey,
+    /// `(hex-encoded class name, path relative to the scanned root)`: a JSON
+    /// object needs string keys, and a class name is raw bytes.
+    classes: Vec<(String, PathBuf)>,
+    ambiguous: Vec<(String, PathBuf, PathBuf)>,
+}
+
+fn to_hex(class: &[u8]) -> String {
+    crate::store::hex(class)
+}
+
+fn from_hex(s: &str) -> Option<Vec<u8>> {
+    s.len().is_multiple_of(2).then_some(())?;
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+/// Read a cached scan from `sidecar`, re-rooting its relative paths onto
+/// `dir`. A missing file, corrupt content, or a `key` mismatch (a different
+/// exclude/subpath/PSR rule scanning the same archive) is a cache miss, not
+/// an error: the caller always has [`scan_paths`] to fall back to.
+pub fn read_cached_scan(sidecar: &Path, key: &ScanKey, dir: &Path) -> Option<ClassMap> {
+    let bytes = fs_err::read(sidecar).ok()?;
+    let cached: CachedClassMap = serde_json::from_slice(&bytes).ok()?;
+    if cached.key != *key {
+        return None;
+    }
+    let mut class_map = ClassMap::default();
+    for (class, path) in cached.classes {
+        class_map.map.insert(from_hex(&class)?, dir.join(path));
+    }
+    for (class, a, b) in cached.ambiguous {
+        class_map
+            .ambiguous
+            .push((from_hex(&class)?, dir.join(a), dir.join(b)));
+    }
+    Some(class_map)
+}
+
+/// Write a fresh [`scan_paths`] result for `dir` to `sidecar`, for
+/// [`read_cached_scan`] to pick up on a later scan of the same archive.
+/// Temp file plus rename, like [`crate::store`]'s `.ok` marker, so a
+/// concurrent reader never observes a partial write.
+pub fn write_cached_scan(
+    sidecar: &Path,
+    key: &ScanKey,
+    dir: &Path,
+    found: &ClassMap,
+) -> Result<()> {
+    let relative = |p: &Path| p.strip_prefix(dir).unwrap_or(p).to_path_buf();
+    let cached = CachedClassMap {
+        key: key.clone(),
+        classes: found
+            .map
+            .iter()
+            .map(|(class, path)| (to_hex(class), relative(path)))
+            .collect(),
+        ambiguous: found
+            .ambiguous
+            .iter()
+            .map(|(class, a, b)| (to_hex(class), relative(a), relative(b)))
+            .collect(),
+    };
+    let parent = sidecar
+        .parent()
+        .expect("sidecar is nested under the archive dir");
+    let mut temp = tempfile::Builder::new()
+        .prefix(".tmp-classmap-")
+        .tempfile_in(parent)?;
+    serde_json::to_writer(&mut temp, &cached)?;
+    temp.persist(sidecar)?;
+    Ok(())
 }
 
 fn does_not_exist(path: &Path) -> anyhow::Error {

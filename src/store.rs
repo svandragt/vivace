@@ -584,6 +584,15 @@ fn archive_marker(dir: &Path) -> PathBuf {
     dir.with_extension("ok")
 }
 
+/// The classmap-scan cache sidecar for an archive dir: a sibling file, same
+/// shape as [`archive_marker`]'s `.ok` but for a cached
+/// `autoload::classmap` result rather than "extraction finished" — reused by
+/// [`crate::autoload::generator`] so a scan survives `vendor/` being rebuilt
+/// from scratch, keyed by the archive's own content hash (its dir name).
+pub fn archive_classmap_sidecar(dir: &Path) -> PathBuf {
+    dir.with_extension("classmap-v0")
+}
+
 /// Write `manifest` into `marker` via a temp file in the same directory, then
 /// rename it into place, so a reader never observes a partially written
 /// marker.

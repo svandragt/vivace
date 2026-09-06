@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
-use vivace::autoload::classmap::scan_paths;
+use vivace::autoload::classmap::{ScanKey, read_cached_scan, scan_paths, write_cached_scan};
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/composer/classmap")
@@ -330,4 +330,61 @@ fn class_name_with_non_utf8_byte_is_kept_raw() {
 
     assert_eq!(result.map.len(), 1);
     assert!(result.map.contains_key(b"\xA9".as_slice()));
+}
+
+/// A scan cached from one root re-roots onto a different directory: the
+/// point of caching by archive sha rather than by vendor path is that a
+/// rebuilt `vendor/` (or another project's) gets the same result back.
+#[test]
+fn cached_scan_reroots_onto_a_different_directory() {
+    let archive = tempfile::tempdir().expect("tempdir");
+    std::fs::write(archive.path().join("A.php"), "<?php\nclass A {}").unwrap();
+    let found = scan_paths(archive.path(), None).expect("scan should succeed");
+
+    let key = ScanKey {
+        subpath: String::new(),
+        exclude: None,
+        psr: None,
+    };
+    let sidecar = archive.path().with_extension("classmap-v0");
+    write_cached_scan(&sidecar, &key, archive.path(), &found).expect("write should succeed");
+
+    let vendor = tempfile::tempdir().expect("tempdir");
+    let hit = read_cached_scan(&sidecar, &key, vendor.path()).expect("a matching key should hit");
+    assert_eq!(
+        hit.map.get(b"A".as_slice()),
+        Some(&vendor.path().join("A.php"))
+    );
+}
+
+#[test]
+fn cached_scan_misses_on_a_different_key() {
+    let archive = tempfile::tempdir().expect("tempdir");
+    std::fs::write(archive.path().join("A.php"), "<?php\nclass A {}").unwrap();
+    let found = scan_paths(archive.path(), None).expect("scan should succeed");
+    let key = ScanKey {
+        subpath: String::new(),
+        exclude: None,
+        psr: None,
+    };
+    let sidecar = archive.path().with_extension("classmap-v0");
+    write_cached_scan(&sidecar, &key, archive.path(), &found).expect("write should succeed");
+
+    let different = ScanKey {
+        subpath: "src".to_string(),
+        exclude: None,
+        psr: None,
+    };
+    assert!(read_cached_scan(&sidecar, &different, archive.path()).is_none());
+}
+
+#[test]
+fn read_cached_scan_is_none_for_a_missing_sidecar() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = ScanKey {
+        subpath: String::new(),
+        exclude: None,
+        psr: None,
+    };
+    assert!(read_cached_scan(&dir.path().join("missing"), &key, dir.path()).is_none());
 }

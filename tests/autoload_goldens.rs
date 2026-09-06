@@ -194,6 +194,7 @@ fn run(case: &Case) {
             }),
             is_dev: false,
             include_path: owned(p.include_path),
+            archive_dir: None,
         })
         .collect();
 
@@ -1534,6 +1535,7 @@ fn files_autoload_generation_remove_extra_entities() {
             install_path: install_path("a/a", None),
             is_dev: false,
             include_path: vec!["lib1".to_string(), "src1".to_string()],
+            archive_dir: None,
         },
         Package {
             name: "b/b".to_string(),
@@ -1545,6 +1547,7 @@ fn files_autoload_generation_remove_extra_entities() {
             install_path: install_path("b/b", None),
             is_dev: false,
             include_path: vec!["lib2".to_string()],
+            archive_dir: None,
         },
         Package {
             name: "c/c".to_string(),
@@ -1556,6 +1559,7 @@ fn files_autoload_generation_remove_extra_entities() {
             install_path: install_path("c/c", Some("foo/bar")),
             is_dev: false,
             include_path: vec!["lib3".to_string()],
+            archive_dir: None,
         },
     ];
     let packages_without_autoload: Vec<Package> = ["a/a", "b/b", "c/c"]
@@ -1570,6 +1574,7 @@ fn files_autoload_generation_remove_extra_entities() {
             install_path: install_path(name, None),
             is_dev: false,
             include_path: Vec::new(),
+            archive_dir: None,
         })
         .collect();
 

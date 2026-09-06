@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::{Map, Value};
 
-use super::classmap::{ClassName, scan_paths};
+use super::classmap::{ClassName, ScanKey, read_cached_scan, scan_paths, write_cached_scan};
 use super::php::{Key, Php, export_bytes, export_static, export_str, loader_properties};
 use super::sort::sort_packages;
 
@@ -42,6 +42,12 @@ pub struct Package {
     pub install_path: Option<PathBuf>,
     pub is_dev: bool,
     pub include_path: Vec<String>,
+    /// The store archive dir `install_path` was hardlinked from (its own dir
+    /// name is the archive's content hash, the classmap cache key) —
+    /// `None` for the root package, a path/git-source/from-source install,
+    /// or one the store had no cache hit for. Lets a classmap scan survive
+    /// `vendor/` being rebuilt from scratch instead of always rescanning.
+    pub archive_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +236,7 @@ pub fn generate(input: &Input) -> Result<Generated> {
         base: &base,
         vendor: &vendor,
         excluded: &autoloads.exclude,
+        archives: ArchiveIndex::build(&input.packages),
         map: BTreeMap::new(),
         scanned: HashSet::new(),
         warnings: Vec::new(),
@@ -743,6 +750,7 @@ struct Scanner<'a> {
     base: &'a str,
     vendor: &'a str,
     excluded: &'a [String],
+    archives: ArchiveIndex,
     map: BTreeMap<ClassName, String>,
     scanned: HashSet<PathBuf>,
     warnings: Vec<String>,
@@ -751,6 +759,46 @@ struct Scanner<'a> {
     /// autoload with no vendor-dir overlap trimming) share one `Regex::new`
     /// instead of paying to compile it again per directory.
     regex_cache: HashMap<String, Regex>,
+}
+
+/// Maps an absolute, normalised scan directory back to the store archive dir
+/// its package's install path was hardlinked from, plus the directory's own
+/// offset from that install path — the two pieces [`ScanKey`] and
+/// `store::archive_classmap_sidecar` need to cache a scan by content rather
+/// than by (rebuildable) vendor path.
+struct ArchiveIndex {
+    /// `(install path, archive dir)`, longest install path first so a
+    /// package nested under another's install path (target-dir) still
+    /// resolves to its own entry rather than the outer one.
+    entries: Vec<(String, PathBuf)>,
+}
+
+impl ArchiveIndex {
+    fn build(packages: &[Package]) -> Self {
+        let mut entries: Vec<(String, PathBuf)> = packages
+            .iter()
+            .filter_map(|p| {
+                let install_path = p.install_path.as_ref()?;
+                let archive_dir = p.archive_dir.as_ref()?;
+                Some((normalize_path(&path_str(install_path)), archive_dir.clone()))
+            })
+            .collect();
+        entries.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
+        ArchiveIndex { entries }
+    }
+
+    fn locate(&self, abs_dir: &str) -> Option<(&Path, String)> {
+        self.entries.iter().find_map(|(install_path, archive_dir)| {
+            if abs_dir == install_path {
+                Some((archive_dir.as_path(), String::new()))
+            } else {
+                abs_dir
+                    .strip_prefix(install_path.as_str())
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .map(|rest| (archive_dir.as_path(), rest.to_string()))
+            }
+        })
+    }
 }
 
 impl Scanner<'_> {
@@ -770,7 +818,36 @@ impl Scanner<'_> {
             excluded.push(regex::escape(&format!("{}/", self.vendor)));
         }
         let exclusion = build_exclusion_regex(&abs_dir, &excluded, &mut self.regex_cache)?;
-        let found = scan_paths(Path::new(&abs_dir), exclusion.as_ref())?;
+
+        // Only a directory hardlinked from the store (never the root
+        // package, a path/git-source install, or one the store had no
+        // pointer for) has an archive to key a cache on.
+        let cache = self
+            .archives
+            .locate(&abs_dir)
+            .map(|(archive_dir, subpath)| {
+                let key = ScanKey {
+                    subpath,
+                    exclude: exclusion.as_ref().map(|r| r.as_str().to_string()),
+                    psr: psr.map(|(ns, kind)| (ns.to_string(), kind.to_string())),
+                };
+                (crate::store::archive_classmap_sidecar(archive_dir), key)
+            });
+        let cached = cache
+            .as_ref()
+            .and_then(|(sidecar, key)| read_cached_scan(sidecar, key, Path::new(&abs_dir)));
+        let found = if let Some(found) = cached {
+            found
+        } else {
+            let found = scan_paths(Path::new(&abs_dir), exclusion.as_ref())?;
+            if let Some((sidecar, key)) = &cache {
+                // Best-effort: a failed write (read-only cache, permissions)
+                // must not fail the install that triggered it, only cost it
+                // a cache miss next time.
+                let _ = write_cached_scan(sidecar, key, Path::new(&abs_dir), &found);
+            }
+            found
+        };
 
         let mut per_file: BTreeMap<PathBuf, Vec<ClassName>> = BTreeMap::new();
         for (class, path) in &found.map {

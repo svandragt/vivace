@@ -83,6 +83,7 @@ fn check(dev_mode: bool, expected_dir: &str) {
                 install_path: (p.r#type != "metapackage").then(|| vendor_dir.join(&p.name)),
                 is_dev: p.dev,
                 include_path: Vec::new(),
+                archive_dir: None,
             })
             .collect(),
         dev_mode,
