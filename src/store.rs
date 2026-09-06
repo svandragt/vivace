@@ -315,11 +315,6 @@ fn strip_single_top_dir(dest: &Path) -> Result<()> {
         fs_err::rename(child.path(), dest.join(child.file_name()))?;
     }
     fs_err::remove_dir(&staging)?;
-    // Composer drops a top-level `.DS_Store` once the single dir is hoisted.
-    let ds_store = dest.join(".DS_Store");
-    if ds_store.is_file() {
-        fs_err::remove_file(ds_store)?;
-    }
     Ok(())
 }
 
@@ -507,7 +502,9 @@ mod tests {
     }
 
     #[test]
-    fn strips_top_level_ds_store() {
+    fn keeps_top_level_ds_store() {
+        // Composer only ignores `.DS_Store` when deciding whether the
+        // archive has a single top-level directory; it does not delete it.
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path()).unwrap();
         let zip = zip_of(&[
@@ -516,7 +513,7 @@ mod tests {
             (".DS_Store", b"junk", None),
         ]);
         let dir = store.add_zip(&package("acme/pkg", "abc"), &zip).unwrap();
-        assert!(!dir.join(".DS_Store").exists());
+        assert!(dir.join(".DS_Store").is_file());
     }
 
     #[test]

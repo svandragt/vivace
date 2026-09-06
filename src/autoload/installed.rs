@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 
+use crate::autoload::generator::find_shortest_path;
 use crate::autoload::sort::natcasecmp;
 use crate::lock::{Package, Root};
 use crate::version;
@@ -65,17 +66,20 @@ const KSORTED: &[&str] = &[
 const NO_VERSION_SET: &str = "1.0.0+no-version-set";
 
 /// `install-path` relative to `vendor/composer`; `None` for metapackages,
-/// which have no directory.
+/// which have no directory. Composer's own packages (`vendor/composer/name`)
+/// share `vendor/composer` as their parent with `installed.json`/`.php`
+/// themselves, so `findShortestPath` gives `./name` there instead of the
+/// `../name` every other vendor gets.
 fn install_path(package: &Package) -> Option<String> {
     if package.r#type == "metapackage" {
         return None;
     }
-    let mut path = format!("../{}", package.name);
+    let mut to = format!("vendor/{}", package.name);
     if let Some(dir) = &package.target_dir {
-        path.push('/');
-        path.push_str(dir);
+        to.push('/');
+        to.push_str(dir);
     }
-    Some(path)
+    Some(find_shortest_path("vendor/composer", &to, true))
 }
 
 /// The `installed.json` body: lock entries in `ArrayDumper` key order plus
@@ -197,7 +201,10 @@ pub fn installed_php(root: &Root, packages: &[&Package], dev: bool) -> Result<St
             "install_path".into(),
             install_path(package).map_or(Value::Null, Value::String),
         );
-        entry.insert("aliases".into(), Value::Array(vec![]));
+        entry.insert(
+            "aliases".into(),
+            Value::Array(branch_alias(package).map_or_else(Vec::new, |a| vec![a.into()])),
+        );
         entry.insert("dev_requirement".into(), package.dev.into());
         versions.insert(package.name.clone(), Value::Object(entry));
     }
@@ -286,6 +293,54 @@ pub fn installed_php(root: &Root, packages: &[&Package], dev: bool) -> Result<St
     );
 
     Ok(format!("<?php return {};\n", dump_to_php_code(&top, 0)))
+}
+
+/// `ArrayLoader::getBranchAlias`: a `dev-*` package following a matching
+/// `extra.branch-alias` entry, or `default-branch: true` with a non-numeric
+/// branch name, is loaded as an `AliasPackage` whose pretty alias shows up
+/// in `installed.php`'s `aliases`. Composer's `9999999-dev` stand-in for
+/// "no explicit alias" is `VersionParser::DEFAULT_BRANCH_ALIAS`.
+fn branch_alias(package: &Package) -> Option<String> {
+    let version = &package.version;
+    if !version.starts_with("dev-") && !version.ends_with("-dev") {
+        return None;
+    }
+    if let Some(map) = package
+        .raw
+        .pointer("/extra/branch-alias")
+        .and_then(Value::as_object)
+    {
+        for (source, target) in map {
+            let Some(target) = target.as_str() else {
+                continue;
+            };
+            // ponytail: skips the numeric-alias-prefix cross-check between
+            // source and target branches; untested by the fixtures, add if
+            // a numeric `branch-alias` key ever needs it.
+            if target.ends_with("-dev") && source.eq_ignore_ascii_case(version) {
+                return Some(target.to_owned());
+            }
+        }
+    }
+    if package.raw.get("default-branch") == Some(&Value::Bool(true)) && !is_numeric_branch(version)
+    {
+        return Some("9999999-dev".into());
+    }
+    None
+}
+
+/// `VersionParser::parseNumericAliasPrefix`: matches `1.x-dev`, `2.0.x-dev`,
+/// `1.2.3-dev`, but not `dev-main`.
+fn is_numeric_branch(version: &str) -> bool {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let Some(digits) = version.strip_suffix("-dev") else {
+        return false;
+    };
+    let digits = digits.strip_suffix(".x").unwrap_or(digits);
+    !digits.is_empty()
+        && digits
+            .split('.')
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// `PlatformRepository::isPlatformPackage`.
@@ -517,6 +572,146 @@ mod tests {
         // b/replacer has neither dist nor source: reference null.
         assert!(block(&out, "b/replacer").contains("'reference' => null,"));
         assert!(out.starts_with("<?php return array(\n    'root' => array(\n        'name' => '__root__',\n        'pretty_version' => 'dev-master',\n        'version' => 'dev-master',\n"));
+    }
+
+    #[test]
+    fn installed_json_uses_dot_slash_install_path_for_composer_vendor() {
+        // vendor/composer/installers lives in the same directory as
+        // installed.json itself (vendor/composer), so the shortest path is
+        // `./installers`, not `../composer/installers`.
+        let mut installers = package("composer/installers", "1.0", Some("abc"));
+        installers.raw = json!({"name": "composer/installers", "version": "1.0"});
+        let mut normal = package("psr/log", "1.0", Some("def"));
+        normal.raw = json!({"name": "psr/log", "version": "1.0"});
+        let out = installed_json(&[&installers, &normal], false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let packages = parsed["packages"].as_array().unwrap();
+        let by_name = |name: &str| {
+            packages
+                .iter()
+                .find(|p| p["name"] == name)
+                .unwrap_or_else(|| panic!("{name} missing"))
+        };
+        assert_eq!(
+            by_name("composer/installers")["install-path"],
+            "./installers"
+        );
+        assert_eq!(by_name("psr/log")["install-path"], "../psr/log");
+    }
+
+    #[test]
+    fn installed_php_uses_dot_slash_install_path_for_composer_vendor() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let installers = package("composer/installers", "1.0", Some("abc"));
+        let normal = package("psr/log", "1.0", Some("def"));
+        let packages = [&installers, &normal];
+        let out = installed_php(&root, &packages, false).unwrap();
+        assert!(out.contains("'install_path' => __DIR__ . '/./installers',"));
+        assert!(out.contains("'install_path' => __DIR__ . '/../psr/log',"));
+    }
+
+    /// Port of Composer's `ArrayLoader::getBranchAlias`: a `dev-*` package
+    /// whose `extra.branch-alias` maps its own branch to a `-dev` target
+    /// gets that alias verbatim in `installed.php`.
+    #[test]
+    fn installed_php_aliases_dev_branch_from_branch_alias() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut pkg = package("acme/lib", "dev-main", Some("abc"));
+        pkg.raw = json!({
+            "name": "acme/lib",
+            "version": "dev-main",
+            "extra": {"branch-alias": {"dev-main": "3.x-dev"}},
+        });
+        let packages = [&pkg];
+        let out = installed_php(&root, &packages, false).unwrap();
+        assert!(out.contains("        'acme/lib' => array(\n"));
+        let start = out.find("'acme/lib' => array(\n").unwrap();
+        let block = &out[start..start + 400];
+        assert!(
+            block
+                .contains("'aliases' => array(\n                0 => '3.x-dev',\n            ),\n"),
+            "{block}"
+        );
+    }
+
+    /// Several `branch-alias` keys: only the one matching the package's own
+    /// version applies.
+    #[test]
+    fn installed_php_aliases_picks_the_matching_branch_alias_key() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut pkg = package("nesbot/carbon", "dev-master", Some("abc"));
+        pkg.raw = json!({
+            "name": "nesbot/carbon",
+            "version": "dev-master",
+            "extra": {"branch-alias": {"dev-2.x": "2.x-dev", "dev-master": "3.x-dev"}},
+        });
+        let packages = [&pkg];
+        let out = installed_php(&root, &packages, false).unwrap();
+        let start = out.find("'nesbot/carbon' => array(\n").unwrap();
+        let block = &out[start..start + 400];
+        assert!(
+            block
+                .contains("'aliases' => array(\n                0 => '3.x-dev',\n            ),\n"),
+            "{block}"
+        );
+    }
+
+    /// `default-branch: true` with no matching `branch-alias` falls back to
+    /// Composer's `DEFAULT_BRANCH_ALIAS`.
+    #[test]
+    fn installed_php_aliases_default_branch_without_branch_alias() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut pkg = package("acme/lib", "dev-main", Some("abc"));
+        pkg.raw = json!({
+            "name": "acme/lib",
+            "version": "dev-main",
+            "default-branch": true,
+        });
+        let packages = [&pkg];
+        let out = installed_php(&root, &packages, false).unwrap();
+        let start = out.find("'acme/lib' => array(\n").unwrap();
+        let block = &out[start..start + 400];
+        assert!(
+            block.contains(
+                "'aliases' => array(\n                0 => '9999999-dev',\n            ),\n"
+            ),
+            "{block}"
+        );
+    }
+
+    /// A numeric branch (`1.x-dev`) is never eligible for
+    /// `DEFAULT_BRANCH_ALIAS`, default-branch or not.
+    #[test]
+    fn installed_php_no_alias_for_numeric_default_branch() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut pkg = package("acme/lib", "1.x-dev", Some("abc"));
+        pkg.raw = json!({
+            "name": "acme/lib",
+            "version": "1.x-dev",
+            "default-branch": true,
+        });
+        let packages = [&pkg];
+        let out = installed_php(&root, &packages, false).unwrap();
+        let start = out.find("'acme/lib' => array(\n").unwrap();
+        let block = &out[start..start + 400];
+        assert!(block.contains("'aliases' => array(),\n"), "{block}");
+    }
+
+    /// Non-dev versions never get an alias.
+    #[test]
+    fn installed_php_no_alias_for_non_dev_version() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut pkg = package("acme/lib", "1.2.3", Some("abc"));
+        pkg.raw = json!({
+            "name": "acme/lib",
+            "version": "1.2.3",
+            "extra": {"branch-alias": {"dev-main": "3.x-dev"}},
+        });
+        let packages = [&pkg];
+        let out = installed_php(&root, &packages, false).unwrap();
+        let start = out.find("'acme/lib' => array(\n").unwrap();
+        let block = &out[start..start + 400];
+        assert!(block.contains("'aliases' => array(),\n"), "{block}");
     }
 
     #[test]

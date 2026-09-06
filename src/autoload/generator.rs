@@ -1162,7 +1162,7 @@ fn basename(path: &str) -> &str {
 }
 
 /// `Filesystem::findShortestPath` (`preferRelative` false).
-fn find_shortest_path(from: &str, to: &str, directories: bool) -> String {
+pub(crate) fn find_shortest_path(from: &str, to: &str, directories: bool) -> String {
     let mut from = normalize_path(from);
     let to = normalize_path(to);
     if directories {
