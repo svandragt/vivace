@@ -227,6 +227,92 @@ async fn partial_update_keeps_the_unlisted_package_locked() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// #79: `psr/log` is only a transitive requirement, reached solely through
+/// `monolog/monolog` (root `composer.json` there never mentions `psr/log`
+/// directly, unlike `tests/fixtures/partial-update`). Before the fix,
+/// `build_partial`'s closure walk only seeded from root `require`, so an
+/// allow-listed name reachable only through a locked-out parent's own
+/// `require` was never fetched (`PoolBuilder::loadPackage` still marks a
+/// locked package's requires for loading regardless, `PoolBuilder.php:520-551`).
+/// `psr/log` has no locked requires of its own, so `-w`/`-W`
+/// (`UpdateAllowMode::With*`) land on the exact same lock as a plain
+/// listed-only update; all three are asserted here against the same
+/// recorded `composer update psr/log --no-install` output.
+#[tokio::test]
+async fn partial_update_finds_a_transitive_allow_listed_package() {
+    for mode in [
+        vivace::solver::pool_builder::UpdateAllowMode::OnlyListed,
+        vivace::solver::pool_builder::UpdateAllowMode::WithTransitiveDepsNoRootRequire,
+        vivace::solver::pool_builder::UpdateAllowMode::WithTransitiveDeps,
+    ] {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/partial-update-transitive");
+        let cache = tempfile::tempdir().unwrap();
+        let transport = FixtureTransport {
+            root: fixtures_root(),
+        };
+        let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+            .await
+            .unwrap();
+
+        let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
+        let root: Value = serde_json::from_slice(&composer_json).unwrap();
+        let lock_before: Value =
+            serde_json::from_slice(&fs_err::read(fixture.join("lock-before.json")).unwrap())
+                .unwrap();
+
+        let mut locked_by_name = std::collections::HashMap::new();
+        for key in ["packages", "packages-dev"] {
+            for entry in lock_before[key].as_array().unwrap() {
+                locked_by_name.insert(
+                    entry["name"].as_str().unwrap().to_ascii_lowercase(),
+                    entry.clone(),
+                );
+            }
+        }
+
+        let result = vivace::solver::solve_partial_update(
+            &repo,
+            &root,
+            false,
+            false,
+            &locked_by_name,
+            &["psr/log".to_string()],
+            mode,
+        )
+        .await
+        .unwrap();
+
+        let monolog = result
+            .non_dev
+            .iter()
+            .find(|p| p.name == "monolog/monolog")
+            .unwrap();
+        assert_eq!(monolog.pretty_version, "3.11.0", "{mode:?}");
+        let psr_log = result.non_dev.iter().find(|p| p.name == "psr/log").unwrap();
+        assert_eq!(psr_log.pretty_version, "3.0.2", "{mode:?}");
+
+        let options = vivace::lock_writer::LockOptions {
+            minimum_stability: result.minimum_stability,
+            stability_flags: &result.stability_flags,
+            prefer_stable: result.prefer_stable,
+            prefer_lowest: result.prefer_lowest,
+            platform_reqs: &result.platform_reqs,
+            platform_dev_reqs: &result.platform_dev_reqs,
+            platform_overrides: &result.platform_overrides,
+            aliases: &result.aliases,
+        };
+        let got = vivace::lock_writer::write(
+            &result.non_dev,
+            Some(&result.dev),
+            &options,
+            &composer_json,
+        )
+        .unwrap();
+        assert_matches_expected(&got, &fixture.join("composer.lock"));
+    }
+}
+
 /// End-to-end: the real `viv update` binary against real Packagist,
 /// byte-diffed the same way, then validated with Composer itself.
 /// Gated on `VIVACE_TEST_NETWORK=1` so a bare `cargo nextest run` stays

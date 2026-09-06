@@ -1,0 +1,8 @@
+{
+    "name": "vivace/fixture-transitive-psr-log",
+    "license": "proprietary",
+    "type": "project",
+    "require": {
+        "monolog/monolog": "^3.0"
+    }
+}

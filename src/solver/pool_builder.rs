@@ -263,10 +263,36 @@ pub async fn build_partial<T: Transport>(
         .cloned()
         .collect();
 
-    let roots = [ClosureRoot {
-        require: &require,
-        require_dev: &require_dev,
-    }];
+    // `PoolBuilder::buildPool`'s `getFixedOrLockedPackages` loop calls
+    // `loadPackage` on every locked-out package too (`propagateUpdate =
+    // false`), and that still runs `markPackageNameForLoading` over its own
+    // `require` links (`PoolBuilder.php:520-551`) unless the required name is
+    // itself locked-out. So an allow-listed name reachable only through a
+    // locked parent's require (`psr/log` behind `laravel/framework`, #79)
+    // still needs discovering: seed the closure walk with every locked-out
+    // package's own requires as a second root, alongside the real one. Names
+    // already in `skip` are pre-seeded into `discovered`
+    // (`Repository::load_closure_skipping`), so a locked-out require of
+    // another locked-out package is silently deduplicated, matching the real
+    // `isset($this->skippedLoad[$require])` no-op branch.
+    let mut locked_out_requires: Map<String, Value> = Map::new();
+    for name in &skip {
+        if let Some(entry) = locked_by_name.get(name).and_then(Value::as_object) {
+            locked_out_requires.extend(map_field(entry, "require"));
+        }
+    }
+
+    let empty_require_dev = Map::new();
+    let roots = [
+        ClosureRoot {
+            require: &require,
+            require_dev: &require_dev,
+        },
+        ClosureRoot {
+            require: &locked_out_requires,
+            require_dev: &empty_require_dev,
+        },
+    ];
     let closure = repo
         .load_closure_skipping(&roots, dev_acceptance, &skip)
         .await?;
