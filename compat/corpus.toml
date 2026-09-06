@@ -1,0 +1,59 @@
+# Pinned corpus for the release compatibility sweep (compat/run.sh).
+#
+# `make compat-refresh` rewrites each `commit` to the repo's current
+# default-branch head (`git ls-remote <repo> HEAD`), so a refresh always
+# tests the latest tree; commit them again to make a new run reproducible.
+#
+# drupal/recommended-project has no installable git checkout (its docroot
+# is assembled by Composer, not committed), so it's built with
+# `composer create-project --no-install` from a pinned released `version`
+# instead of `repo`/`commit`.
+
+[[project]]
+name = "laravel/laravel"
+repo = "https://github.com/laravel/laravel.git"
+commit = "aa0cf127fc365a56ee016867144ddffabc2290ae"
+
+[[project]]
+name = "symfony/demo"
+repo = "https://github.com/symfony/demo.git"
+commit = "920d86dc809f837543cb519d3df5b364a2c36577"
+
+[[project]]
+name = "drupal/recommended-project"
+version = "11.4.6"
+
+[[project]]
+name = "roots/bedrock"
+repo = "https://github.com/roots/bedrock.git"
+commit = "fb226251bf6d7aab1b7be632f769c0aa6afe4782"
+
+[[project]]
+name = "composer/composer"
+repo = "https://github.com/composer/composer.git"
+commit = "85ae0251528d5f155548868e637ef6c68ed5be6b"
+
+[[project]]
+name = "phpunit/phpunit"
+repo = "https://github.com/sebastianbergmann/phpunit.git"
+commit = "2c534d37d8a5edfc6cc885ef483d4a22db6a1d6e"
+
+[[project]]
+name = "slimphp/Slim-Skeleton"
+repo = "https://github.com/slimphp/Slim-Skeleton.git"
+commit = "0ef01549870b3234a3a9f602904a39c3ed73f44c"
+
+[[project]]
+name = "yiisoft/yii2-app-basic"
+repo = "https://github.com/yiisoft/yii2-app-basic.git"
+commit = "575120b0949c357c911f28b38ba9d4b6c978a15c"
+
+[[project]]
+name = "statamic/statamic"
+repo = "https://github.com/statamic/statamic.git"
+commit = "d819487a4ce0ead2648dea32328060742ef5fbb4"
+
+[[project]]
+name = "craftcms/craft"
+repo = "https://github.com/craftcms/craft.git"
+commit = "a1747d5be2a3d3045711c135938e1945fe754884"

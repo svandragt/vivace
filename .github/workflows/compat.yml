@@ -1,0 +1,33 @@
+name: Compatibility sweep
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Random sample seed (default: today's date)"
+        required: false
+      random:
+        description: "Random sample size"
+        required: false
+        default: "10"
+
+jobs:
+  compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+        with:
+          enable-cache: true
+      - run: make compat
+        env:
+          COMPAT_SEED: ${{ inputs.seed }}
+          COMPAT_RANDOM: ${{ inputs.random }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: compat-results
+          path: compat/results/*.md
