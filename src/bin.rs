@@ -157,7 +157,7 @@ fn install_one(
         return Ok(Some(name));
     }
 
-    let content = unixy_proxy_code(&target, &link, vendor_dir_real)?;
+    let content = unixy_proxy_code(&canonical_target, &link, vendor_dir_real)?;
     write_proxy(&link, content.as_bytes(), mode)?;
     Ok(Some(name))
 }
