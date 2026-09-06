@@ -32,6 +32,8 @@ exit = "warn"
 
 [dependencies]
 anyhow = "1.0.104"
+bzip2-rs = "0.1.2"
+filetime = "0.2.29"
 clap = { version = "4.6.6", features = ["derive"] }
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 fs-err = "3.3.1"

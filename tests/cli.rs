@@ -200,6 +200,48 @@ fn cache_clean_refuses_a_directory_with_foreign_content() {
     assert!(ctx.cache.path().join("not-ours.txt").exists());
 }
 
+/// Lay down one archive (`content`) and a dist pointer symlinking to it,
+/// mirroring `Store`'s own layout, without needing a network fetch.
+fn seed_archive(cache: &Path, content: &[u8]) -> PathBuf {
+    let id = "deadbeefcafe";
+    let archive_dir = cache.join("archive-v0").join(id);
+    fs::create_dir_all(&archive_dir).unwrap();
+    fs::write(archive_dir.join("file"), content).unwrap();
+    fs::write(cache.join("archive-v0").join(format!("{id}.ok")), "files=1").unwrap();
+    let pointer_dir = cache.join("dists-v0/acme/pkg");
+    fs::create_dir_all(&pointer_dir).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&archive_dir, pointer_dir.join("ref")).unwrap();
+    archive_dir
+}
+
+/// #20: `viv cache size` reports archive bytes, and archive/pointer counts.
+#[test]
+fn cache_size_reports_archives_and_pointers() {
+    let ctx = TestContext::new();
+    seed_archive(ctx.cache.path(), b"12345");
+
+    let mut cmd = ctx.viv();
+    cmd.args(["cache", "size"]);
+    viv_snapshot!(ctx, cmd);
+}
+
+/// #20: `viv cache prune --older-than 0` removes every dist pointer (none
+/// can be less than zero days old) and, with no pointer left referencing it,
+/// the archive it pointed to.
+#[test]
+fn cache_prune_older_than_removes_the_pointer_and_its_orphaned_archive() {
+    let ctx = TestContext::new();
+    let archive_dir = seed_archive(ctx.cache.path(), b"12345");
+
+    let mut cmd = ctx.viv();
+    cmd.args(["cache", "prune", "--older-than", "0"]);
+    cmd.assert().success();
+
+    assert!(!ctx.cache.path().join("dists-v0/acme/pkg/ref").exists());
+    assert!(!archive_dir.exists());
+}
+
 /// The fixture's `vendor/` is gitignored and only populated locally by
 /// `make fixtures` (needs devbox composer), so skip instead of panicking
 /// when it's missing, e.g. on a fresh CI checkout.

@@ -1,6 +1,8 @@
 //! Concurrent dist downloads with sha1 verification.
 
 use std::collections::HashMap;
+use std::io::Write as _;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -17,6 +19,29 @@ use crate::store::hex;
 /// Redirect hops to follow before giving up (GitHub's API zipball redirect
 /// is one hop; this leaves headroom without looping forever on a bad host).
 const MAX_REDIRECTS: u8 = 10;
+
+/// Downloads at or under this size stay in memory, exactly as before #21;
+/// larger ones spill to a temp file so `CONCURRENCY` (64) downloads in
+/// flight at once don't each hold their own multi-hundred-MB `Vec<u8>`.
+const STREAM_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
+
+/// One package's downloaded dist archive: buffered in memory when small, or
+/// spilled to a temp file (in the store's temp area, so the eventual
+/// `add_archive_from_file` rename stays on one filesystem) when larger than
+/// [`STREAM_THRESHOLD_BYTES`].
+pub enum Downloaded {
+    Bytes(Vec<u8>),
+    File(tempfile::TempPath),
+}
+
+impl Downloaded {
+    fn len(&self) -> Result<u64> {
+        Ok(match self {
+            Downloaded::Bytes(bytes) => bytes.len() as u64,
+            Downloaded::File(path) => fs_err::metadata(path)?.len(),
+        })
+    }
+}
 
 /// Attempts after the first for a transient failure (connection error,
 /// timeout, or a 429/5xx response); Composer and Riff both retry dist
@@ -128,28 +153,31 @@ impl Fetcher {
             .push(elapsed);
     }
 
-    /// Download one package's dist zip and check its `shasum` when set.
-    pub async fn fetch(&self, pkg: &Package) -> Result<Vec<u8>> {
+    /// Download one package's dist archive and check its `shasum` when set.
+    /// `temp_dir` is where a download larger than [`STREAM_THRESHOLD_BYTES`]
+    /// spills to (#21), rather than growing an ever-larger `Vec<u8>`.
+    pub async fn fetch(&self, pkg: &Package, temp_dir: &Path) -> Result<Downloaded> {
         pkg.validate_dist()?;
         let dist = pkg.dist.as_ref().expect("validate_dist checked");
         let url = Url::parse(&dist.url)
             .with_context(|| format!("{}: invalid dist URL {}", pkg.name, dist.url))?;
         let started = std::time::Instant::now();
-        // ponytail: the whole zip lives in memory at once (fine at
-        // Composer's typical archive sizes); stream to a temp file if that
-        // stops being true.
-        let bytes = self
-            .get(&pkg.name, url.clone())
+        let (downloaded, actual_sha1) = self
+            .get(&pkg.name, url.clone(), temp_dir)
             .await
             .with_context(|| format!("{}: downloading {}", pkg.name, redact(&url)))?;
-        verify_shasum(&pkg.name, dist.shasum.as_deref().unwrap_or(""), &bytes)?;
+        verify_shasum(
+            &pkg.name,
+            dist.shasum.as_deref().unwrap_or(""),
+            &actual_sha1,
+        )?;
         tracing::debug!(
             package = %pkg.name,
-            bytes = bytes.len(),
+            bytes = downloaded.len()?,
             elapsed_ms = started.elapsed().as_millis(),
             "downloaded dist"
         );
-        Ok(bytes)
+        Ok(downloaded)
     }
 
     /// Download every package with at most `concurrency` requests in
@@ -158,9 +186,10 @@ impl Fetcher {
         &'a self,
         packages: impl IntoIterator<Item = &'a Package> + 'a,
         concurrency: usize,
-    ) -> impl Stream<Item = (&'a Package, Result<Vec<u8>>)> + 'a {
+        temp_dir: &'a Path,
+    ) -> impl Stream<Item = (&'a Package, Result<Downloaded>)> + 'a {
         futures::stream::iter(packages)
-            .map(move |pkg| async move { (pkg, self.fetch(pkg).await) })
+            .map(move |pkg| async move { (pkg, self.fetch(pkg, temp_dir).await) })
             .buffer_unordered(concurrency)
     }
 
@@ -208,7 +237,12 @@ impl Fetcher {
     /// `GET start_url`, following redirects by hand so each hop gets the
     /// credential for *its* host rather than reusing (or losing) the first
     /// hop's.
-    async fn get(&self, pkg_name: &str, start_url: Url) -> Result<Vec<u8>> {
+    async fn get(
+        &self,
+        pkg_name: &str,
+        start_url: Url,
+        temp_dir: &Path,
+    ) -> Result<(Downloaded, String)> {
         require_https(pkg_name, &start_url, self.secure_http)?;
         let mut url = start_url;
         let mut hops = 0u8;
@@ -259,7 +293,9 @@ impl Fetcher {
             // number is comparable to the redirect hop above and reflects
             // what actually holds up the fetch: a GitHub zipball's headers
             // arrive quickly, the archive bytes behind them do not.
-            let bytes = response.bytes().await?.to_vec();
+            let (downloaded, sha1_hex) = read_body(response, temp_dir)
+                .await
+                .with_context(|| format!("reading response body from {}", redact(&url)))?;
             let elapsed = hop_started.elapsed();
             self.record_hop(&host, elapsed);
             tracing::debug!(
@@ -267,11 +303,11 @@ impl Fetcher {
                 host,
                 hop = hops,
                 status = status.as_u16(),
-                bytes = bytes.len(),
+                bytes = downloaded.len()?,
                 elapsed_ms = elapsed.as_millis(),
                 "fetch hop (body complete)"
             );
-            return Ok(bytes);
+            return Ok((downloaded, sha1_hex));
         }
     }
 
@@ -335,6 +371,65 @@ impl Fetcher {
             tokio::time::sleep(delay).await;
         }
     }
+}
+
+/// Read a successful response's body, hashing it (sha1, for the `shasum`
+/// check) as bytes arrive rather than re-reading it afterward. Spills to a
+/// temp file in `temp_dir` once the body turns out larger than
+/// [`STREAM_THRESHOLD_BYTES`] — checked against `Content-Length` up front
+/// when the server sent one, or against the running total as chunks arrive
+/// otherwise (a `Content-Length`-less or lying response still gets caught,
+/// just after buffering the first few MiB instead of before the first byte).
+///
+/// ponytail: each chunk is written with a blocking `std::io::Write` call on
+/// the async task rather than `spawn_blocking`; only large downloads spill
+/// to a file at all, and archives at Composer's typical sizes stay well
+/// under a few hundred writes. Move the writes to a blocking task if a
+/// profile ever shows this contending with other in-flight downloads.
+async fn read_body(response: reqwest::Response, temp_dir: &Path) -> Result<(Downloaded, String)> {
+    let spill_now = response
+        .content_length()
+        .is_some_and(|len| len > STREAM_THRESHOLD_BYTES);
+    let mut hasher = Sha1::new();
+    let mut stream = response.bytes_stream();
+
+    if spill_now {
+        let mut file = tempfile::Builder::new()
+            .prefix(".dl-")
+            .tempfile_in(temp_dir)?;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("reading response body")?;
+            hasher.update(&chunk);
+            file.write_all(&chunk)?;
+        }
+        return Ok((
+            Downloaded::File(file.into_temp_path()),
+            hex(hasher.finalize()),
+        ));
+    }
+
+    let mut buf = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("reading response body")?;
+        hasher.update(&chunk);
+        buf.extend_from_slice(&chunk);
+        if buf.len() as u64 > STREAM_THRESHOLD_BYTES {
+            let mut file = tempfile::Builder::new()
+                .prefix(".dl-")
+                .tempfile_in(temp_dir)?;
+            file.write_all(&buf)?;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.context("reading response body")?;
+                hasher.update(&chunk);
+                file.write_all(&chunk)?;
+            }
+            return Ok((
+                Downloaded::File(file.into_temp_path()),
+                hex(hasher.finalize()),
+            ));
+        }
+    }
+    Ok((Downloaded::Bytes(buf), hex(hasher.finalize())))
 }
 
 /// Resolve a `Location` header (relative or absolute) against the URL that
@@ -444,11 +539,10 @@ fn credential_hint(status: u16, host: &str, has_credential: bool) -> Option<Stri
 
 /// Composer's `dist.shasum` is the sha1 of the archive, or `""` (GitHub
 /// zipballs), in which case there is nothing to check.
-fn verify_shasum(name: &str, expected: &str, bytes: &[u8]) -> Result<()> {
+fn verify_shasum(name: &str, expected: &str, actual: &str) -> Result<()> {
     if expected.is_empty() {
         return Ok(());
     }
-    let actual = hex(Sha1::digest(bytes));
     if actual != expected {
         bail!("{name}: sha1 mismatch, lock says {expected} but the download is {actual}");
     }
@@ -468,12 +562,12 @@ mod tests {
 
     #[test]
     fn matching_shasum_passes() {
-        verify_shasum("acme/pkg", HELLO, b"hello").unwrap();
+        verify_shasum("acme/pkg", HELLO, &sha1_hex(b"hello")).unwrap();
     }
 
     #[test]
     fn mismatching_shasum_names_package_and_digests() {
-        let err = verify_shasum("acme/pkg", HELLO, b"hell0")
+        let err = verify_shasum("acme/pkg", HELLO, &sha1_hex(b"hell0"))
             .unwrap_err()
             .to_string();
         assert!(err.contains("acme/pkg"), "{err}");
@@ -483,7 +577,7 @@ mod tests {
 
     #[test]
     fn empty_shasum_skips_check() {
-        verify_shasum("acme/pkg", "", b"anything").unwrap();
+        verify_shasum("acme/pkg", "", &sha1_hex(b"anything")).unwrap();
     }
 
     #[test]

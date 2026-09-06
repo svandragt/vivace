@@ -1,0 +1,11 @@
+---
+source: tests/cli.rs
+assertion_line: 226
+expression: snapshot
+---
+success: true
+exit_code: 0
+----- stdout -----
+5 bytes (1 archives, 1 pointers) in [CACHE]
+
+----- stderr -----
