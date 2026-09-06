@@ -312,7 +312,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     let archive_targets: Vec<&Package> = plan
         .install
         .iter()
-        .filter(|p| !p.is_path() && !p.is_git_source())
+        .filter(|p| p.r#type != "metapackage" && !p.is_path() && !p.is_git_source())
         .collect();
 
     let mut archive_dirs: HashMap<String, PathBuf> = HashMap::new();
@@ -348,6 +348,12 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     sweep_link_litter(&vendor_dir)?;
     let link_started = Instant::now();
     for package in &plan.install {
+        // Composer's MetapackageInstaller installs nothing (no dir, no dist
+        // fetch); mirror that instead of downloading/linking a dist a
+        // metapackage happens to declare.
+        if package.r#type == "metapackage" {
+            continue;
+        }
         let dest = package_dir(&vendor_dir, &project_dir, package);
         if package.is_path() {
             source::install_path(&project_dir, package, &dest)?;
@@ -386,9 +392,13 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         &mut scripts,
     )?;
 
+    let installed_count = plan
+        .install
+        .iter()
+        .filter(|p| p.r#type != "metapackage")
+        .count();
     out(&format!(
-        "Installed {} packages ({from_cache} from cache), removed {}, in {:.2}s",
-        plan.install.len(),
+        "Installed {installed_count} packages ({from_cache} from cache), removed {}, in {:.2}s",
         plan.remove.len(),
         start.elapsed().as_secs_f64()
     ));
@@ -422,6 +432,7 @@ fn regenerate_vendor_metadata(
     let bin_dir = project_dir.join(root.config.bin_dir());
     let bin_packages: Vec<(&Package, PathBuf)> = packages
         .iter()
+        .filter(|p| p.r#type != "metapackage")
         .map(|p| (*p, package_dir(vendor_dir, project_dir, p)))
         .collect();
     let bin_started = Instant::now();

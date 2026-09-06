@@ -619,3 +619,60 @@ fn wordpress_installer_paths_and_wordpress_core_matches_composer() {
             .exists()
     );
 }
+
+/// #63: a `metapackage` still declaring a `dist` (like `roots/wordpress`)
+/// must never be fetched or linked, mirroring Composer's
+/// `MetapackageInstaller` (installs nothing, `install-path: null`). The dist
+/// URL points nowhere reachable; a fetch attempt would fail the install.
+#[test]
+fn metapackage_with_a_dist_is_never_fetched_or_linked() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+
+    let lock_path = project.join("composer.lock");
+    let mut lock: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&lock_path).unwrap()).unwrap();
+    lock["packages"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "name": "acme/meta",
+            "version": "1.0.0",
+            "type": "metapackage",
+            "dist": {
+                "type": "zip",
+                "url": "https://127.0.0.1:1/unreachable.zip",
+                "reference": "0000000000000000000000000000000000000000"
+            }
+        }));
+    fs::write(&lock_path, serde_json::to_string_pretty(&lock).unwrap()).unwrap();
+
+    let json_path = project.join("composer.json");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&json_path).unwrap()).unwrap();
+    json["require"]["acme/meta"] = serde_json::json!("1.0.0");
+    fs::write(&json_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    // acme/hello + acme/testkit only; acme/meta installs nothing and does
+    // not count.
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 2 packages"));
+
+    assert!(!project.join("vendor/acme/meta").exists());
+
+    let installed: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project.join("vendor/composer/installed.json")).unwrap(),
+    )
+    .unwrap();
+    let meta = installed["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "acme/meta")
+        .expect("acme/meta should still be recorded in installed.json");
+    assert_eq!(meta["install-path"], serde_json::Value::Null);
+}
