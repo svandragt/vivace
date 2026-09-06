@@ -644,6 +644,33 @@ fn git_source_package_checks_out_the_locked_reference() {
     assert_eq!(git_head(&checkout), reference);
 }
 
+/// For a local-path `source.url` (this test's own upstream, standing in for
+/// a real git remote so it never touches the network), real Composer's own
+/// `.git/config` doesn't reliably carry `source.url` byte-for-byte in the
+/// `composer` remote: `VcsDownloader::prepareUrls` resolves a local path
+/// with `realpath()` before cloning, and `GitDownloader::doInstall`'s
+/// trailing `updateOriginUrl` call only rewrites `origin` back to the raw
+/// `source.url`, leaving `composer` at whatever `realpath()` produced (e.g.
+/// macOS's `/var` -> `/private/var`). That's a quirk of Composer's local-path
+/// handling, not part of the `source.url`-byte-for-byte contract this test
+/// otherwise holds vivace to, so canonicalize just that one url before
+/// comparing.
+fn canonicalize_composer_remote_url(config: &str) -> String {
+    let marker = "[remote \"composer\"]\n\turl = ";
+    let Some(start) = config.find(marker) else {
+        return config.to_string();
+    };
+    let url_start = start + marker.len();
+    let url_end = config[url_start..]
+        .find('\n')
+        .map_or(config.len(), |i| url_start + i);
+    let canonical = fs::canonicalize(&config[url_start..url_end]).map_or_else(
+        |_| config[url_start..url_end].to_string(),
+        |p| p.to_string_lossy().into_owned(),
+    );
+    format!("{}{canonical}{}", &config[..url_start], &config[url_end..])
+}
+
 /// #43/#59: a package with *both* a dist and a git `source` still gets
 /// checked out from source, byte-identical `.git/config` and all, when
 /// `config.preferred-install` says so — proven against real Composer 2.10.2
@@ -770,7 +797,8 @@ fn preferred_install_source_matches_composer_git_config() {
     let checkout = project.join("vendor/acme/vcslib");
     let got_config = fs::read_to_string(checkout.join(".git/config")).unwrap();
     assert_eq!(
-        got_config, want_config,
+        canonicalize_composer_remote_url(&got_config),
+        canonicalize_composer_remote_url(&want_config),
         "vendor/acme/vcslib/.git/config differs from real Composer's"
     );
 
