@@ -44,10 +44,24 @@ pub fn install_path(project_dir: &Path, package: &Package, dest: &Path) -> Resul
 
     if package.transport_options.symlink.unwrap_or(true) {
         let link_target = if package.transport_options.relative.unwrap_or(true) {
+            // Canonicalise the parent dir (not `dest` itself, which doesn't
+            // exist yet) so both sides of `find_shortest_path` agree on
+            // symlinked ancestors, e.g. macOS's `/var` -> `/private/var`;
+            // otherwise `target`'s canonical `/private/...` and a
+            // non-canonical `/var/...` dest see different roots and the
+            // "relative" path comes out absolute.
             let absolute_dest = if dest.is_absolute() {
                 dest.to_path_buf()
             } else {
                 std::env::current_dir()?.join(dest)
+            };
+            let absolute_dest = match absolute_dest.parent() {
+                Some(parent) => fs_err::canonicalize(parent)?.join(
+                    absolute_dest
+                        .file_name()
+                        .expect("dest has a file name; caller checked dist.type == \"path\""),
+                ),
+                None => absolute_dest,
             };
             // `directories: false`, matching `PathDownloader::install`'s own
             // call: `dest` is the symlink being created, a file-like entry
@@ -287,6 +301,37 @@ mod tests {
         let dest = project.path().join("vendor/acme/hello");
         let package = path_package("packages/hello", TransportOptions::default());
         install_path(project.path(), &package, &dest).unwrap();
+
+        assert!(fs_err::symlink_metadata(&dest).unwrap().is_symlink());
+        let target = fs_err::read_link(&dest).unwrap();
+        assert!(target.is_relative(), "{}", target.display());
+        assert_eq!(
+            fs_err::read_to_string(dest.join("marker.txt")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn install_path_relative_symlink_survives_a_symlinked_ancestor() {
+        // Simulates macOS, where the system temp dir is under `/var`, itself
+        // a symlink to `/private/var`: put the whole project under an
+        // `alias -> real` symlink so `target`'s canonicalised path and
+        // `dest`'s non-canonical one disagree on the root unless `dest`'s
+        // ancestor is canonicalised too.
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        fs_err::create_dir_all(&real).unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+        let project = alias.join("project");
+        let src_dir = project.join("packages/hello");
+        fs_err::create_dir_all(&src_dir).unwrap();
+        fs_err::write(src_dir.join("marker.txt"), "hello").unwrap();
+
+        let dest = project.join("vendor/acme/hello");
+        let package = path_package("packages/hello", TransportOptions::default());
+        install_path(&project, &package, &dest).unwrap();
 
         assert!(fs_err::symlink_metadata(&dest).unwrap().is_symlink());
         let target = fs_err::read_link(&dest).unwrap();
