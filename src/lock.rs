@@ -278,6 +278,10 @@ pub struct Root {
     pub autoload_dev: Option<Value>,
     #[serde(default)]
     pub require: Map<String, Value>,
+    #[serde(default)]
+    pub replace: Map<String, Value>,
+    #[serde(default)]
+    pub provide: Map<String, Value>,
     #[serde(
         rename = "include-path",
         default,

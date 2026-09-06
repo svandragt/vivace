@@ -58,15 +58,20 @@ fn importance<'u>(
     weight
 }
 
-/// PHP `strnatcasecmp`, ported from `strnatcmp_ex` in
-/// `ext/standard/strnatcmp.c` (whitespace-skipping omitted: package names
-/// don't carry it). A digit run is compared byte-by-byte, left-aligned
+/// PHP `strnatcasecmp`: `natcmp` on lowercased copies of both strings.
+pub fn natcasecmp(left: &str, right: &str) -> Ordering {
+    let (left, right) = (left.to_ascii_lowercase(), right.to_ascii_lowercase());
+    natcmp(&left, &right)
+}
+
+/// PHP `strnatcmp`, ported from `strnatcmp_ex` in `ext/standard/strnatcmp.c`
+/// (whitespace-skipping omitted: package names and version constraints don't
+/// carry it). A digit run is compared byte-by-byte, left-aligned
 /// (`compare_left`) whenever either side's current digit is `0`, otherwise
 /// numerically by run length then value (`compare_right`) — `strnatcmp_ex`
 /// also strips a string's own leading zeros once up front, which is why e.g.
 /// `"0"` vs `"00"` is Equal, not Less.
-pub fn natcasecmp(left: &str, right: &str) -> Ordering {
-    let (left, right) = (left.to_ascii_lowercase(), right.to_ascii_lowercase());
+pub fn natcmp(left: &str, right: &str) -> Ordering {
     let (left, right) = (left.as_bytes(), right.as_bytes());
     let mut pos_l = skip_leading_zeros(left, 0);
     let mut pos_r = skip_leading_zeros(right, 0);
@@ -155,7 +160,7 @@ fn digit_at(bytes: &[u8], pos: usize) -> Option<u8> {
 mod tests {
     use std::cmp::Ordering;
 
-    use super::{natcasecmp, sort_packages};
+    use super::{natcasecmp, natcmp, sort_packages};
 
     // PHP strnatcasecmp, verified against PHP 8.4 (php -r 'var_dump(strnatcasecmp(...))')
     // and ext/standard/strnatcmp.c: a leading-zero digit run is only special
@@ -186,6 +191,24 @@ mod tests {
     fn natcasecmp_leading_zero_mid_string() {
         assert_eq!(natcasecmp("a01b", "a1b"), Ordering::Less);
         assert_eq!(natcasecmp("a1b", "a01b"), Ordering::Greater);
+    }
+
+    // PHP strnatcmp is case-sensitive: uppercase sorts before lowercase
+    // (verified with `strnatcmp` on PHP 8.4, matching `sort($x, SORT_NATURAL)`
+    // used on `installed.php`'s `provided`/`replaced`/`aliases` lists).
+    #[test]
+    fn natcmp_is_case_sensitive() {
+        let cases: &[(&str, &str, Ordering)] = &[
+            ("^1.0", "^1.0-RC", Ordering::Less),
+            ("^1.0-RC", "^1.0-rc", Ordering::Less),
+            ("^1.0-Beta", "^1.0-beta", Ordering::Less),
+            ("Bar2", "bar10", Ordering::Less),
+            ("bar2", "bar10", Ordering::Less),
+            ("dev-Main", "dev-main", Ordering::Less),
+        ];
+        for (a, b, expected) in cases {
+            assert_eq!(natcmp(a, b), *expected, "natcmp({a:?}, {b:?})");
+        }
     }
 
     fn check(input: &[(&str, &[&str])], expected: &[&str], weights: &[(&str, i64)]) {

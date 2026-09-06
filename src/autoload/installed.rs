@@ -9,7 +9,7 @@ use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::autoload::generator::find_shortest_path;
-use crate::autoload::sort::natcasecmp;
+use crate::autoload::sort::natcmp;
 use crate::lock::{Package, Root};
 use crate::version;
 
@@ -235,15 +235,19 @@ pub fn installed_php(root: &Root, packages: &[&Package], dev: bool) -> Result<St
     root_entry.insert("dev_requirement".into(), false.into());
     versions.insert(root_name.clone(), Value::Object(root_entry));
 
-    // Virtual packages: replaces first, then provides, per package.
-    // ponytail: root-level `replace`/`provide` are not in `lock::Root` yet;
-    // add them there when a fixture needs them.
-    let links = packages.iter().flat_map(|p| {
-        [
-            (&p.replace, "replaced", &p.version, p.dev),
-            (&p.provide, "provided", &p.version, p.dev),
-        ]
-    });
+    // Virtual packages: replaces first, then provides, per package, root
+    // included last like `FilesystemRepository::generateInstalledVersions`
+    // (the root package is appended to its own package list).
+    let links = packages
+        .iter()
+        .map(|p| (&p.replace, &p.provide, &p.version, p.dev))
+        .chain([(&root.replace, &root.provide, &root_pretty, false)])
+        .flat_map(|(replace, provide, version, dev)| {
+            [
+                (replace, "replaced", version, dev),
+                (provide, "provided", version, dev),
+            ]
+        });
     for (map, list_key, pretty_version, is_dev) in links {
         for (target, constraint) in map {
             if is_platform_package(target) {
@@ -280,10 +284,9 @@ pub fn installed_php(root: &Root, packages: &[&Package], dev: bool) -> Result<St
     for (_, entry) in &mut sorted {
         for key in ["aliases", "replaced", "provided"] {
             if let Some(list) = entry.get_mut(key).and_then(Value::as_array_mut) {
-                // ponytail: SORT_NATURAL is case-sensitive strnatcmp; the
-                // constraints here are versions, where case never differs.
+                // `sort($x, SORT_NATURAL)` is case-sensitive strnatcmp.
                 list.sort_by(|a, b| {
-                    natcasecmp(
+                    natcmp(
                         a.as_str().unwrap_or_default(),
                         b.as_str().unwrap_or_default(),
                     )
@@ -334,17 +337,29 @@ fn branch_alias(package: &Package) -> Option<String> {
             if !target.ends_with("-dev") || !source.eq_ignore_ascii_case(version) {
                 continue;
             }
-            // ponytail: skips the numeric-alias-prefix cross-check between
-            // source and target branches; untested by the fixtures, add if
-            // a numeric `branch-alias` key ever needs it.
             let validated = if target == "9999999-dev" {
                 target.to_owned()
             } else {
                 version::normalize_branch(&target[..target.len() - "-dev".len()])
             };
-            if validated.ends_with("-dev") {
-                return Some(collapse_branch_alias(&validated));
+            if !validated.ends_with("-dev") {
+                continue;
             }
+            // `ArrayLoader::getBranchAlias`: when both the source key and the
+            // target are numeric branches (`2.x-dev`, `2.0.x-dev`), the
+            // target's numeric prefix must extend the source's, or the alias
+            // is rejected — a `2.x-dev` package can alias `2.0.x-dev` but not
+            // `3.0.x-dev`.
+            if let (Some(source_prefix), Some(target_prefix)) = (
+                parse_numeric_alias_prefix(source),
+                parse_numeric_alias_prefix(target),
+            ) && !target_prefix
+                .to_ascii_lowercase()
+                .starts_with(&source_prefix.to_ascii_lowercase())
+            {
+                continue;
+            }
+            return Some(collapse_branch_alias(&validated));
         }
     }
     if package.raw.get("default-branch") == Some(&Value::Bool(true)) && !is_numeric_branch(version)
@@ -366,6 +381,17 @@ fn is_numeric_branch(version: &str) -> bool {
         && digits
             .split('.')
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `VersionParser::parseNumericAliasPrefix`: `2.0.x-dev` and `2.0-dev` both
+/// give `Some("2.0.")`; a non-numeric branch (`dev-main`) gives `None`.
+static NUMERIC_ALIAS_PREFIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^(?P<version>(?:[0-9]+\.)*[0-9]+)(?:\.x)?-dev$").unwrap());
+
+fn parse_numeric_alias_prefix(branch: &str) -> Option<String> {
+    NUMERIC_ALIAS_PREFIX
+        .captures(branch)
+        .map(|c| format!("{}.", &c["version"]))
 }
 
 /// `PlatformRepository::isPlatformPackage`.
@@ -549,7 +575,8 @@ mod tests {
         let root: Root = serde_json::from_value(json!({
             "name": "__root__",
             "version": "dev-master",
-            "type": "library"
+            "type": "library",
+            "provide": {"foo/impl": "2.0"}
         }))
         .unwrap();
 
@@ -579,14 +606,15 @@ mod tests {
         for name in ["foo/impl2", "foo/replaced", "meta/package"] {
             assert_eq!(block(&out, name), block(&golden, name), "{name}");
         }
-        // foo/impl: the golden's '1.4' comes from an alias package and '2.0'
-        // from the root's own `provide`, neither of which the lock model has.
+        // foo/impl: the golden's '1.4' comes from an alias package, which the
+        // lock model has no equivalent of; '2.0' comes from the root's own
+        // `provide` (wired above) and stays.
         assert_eq!(
             block(&out, "foo/impl"),
             block(&golden, "foo/impl")
                 .replace("                1 => '1.4',\n", "")
-                .replace("                2 => '2.0',\n", "")
-                .replace("3 => '^1.1'", "1 => '^1.1'")
+                .replace("2 => '2.0'", "1 => '2.0'")
+                .replace("3 => '^1.1'", "2 => '^1.1'")
         );
         // c/c: escaping of the reference, dev_requirement; install path differs.
         let c_golden = block(&golden, "c/c").replace(
@@ -701,6 +729,49 @@ mod tests {
         assert!(
             block.contains(
                 "'aliases' => array(\n                0 => '1.8.x-dev',\n            ),\n"
+            ),
+            "{block}"
+        );
+    }
+
+    /// `ArrayLoader::getBranchAlias`'s numeric-alias-prefix cross-check: a
+    /// numeric source branch (`2.0-dev`) aliasing a target whose numeric
+    /// prefix doesn't extend it (`3.0.x-dev`) is rejected.
+    #[test]
+    fn installed_php_alias_rejected_when_numeric_prefixes_conflict() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut pkg = package("acme/lib", "2.0-dev", Some("abc"));
+        pkg.raw = json!({
+            "name": "acme/lib",
+            "version": "2.0-dev",
+            "extra": {"branch-alias": {"2.0-dev": "3.0.x-dev"}},
+        });
+        let packages = [&pkg];
+        let out = installed_php(&root, &packages, false).unwrap();
+        let start = out.find("'acme/lib' => array(\n").unwrap();
+        let block = &out[start..start + 400];
+        assert!(block.contains("'aliases' => array(),\n"), "{block}");
+    }
+
+    /// Same check, but the target's numeric prefix (`2.0.x-dev` -> `2.0.`)
+    /// does extend the source's (`2.x-dev` -> `2.`), so the alias is
+    /// accepted.
+    #[test]
+    fn installed_php_alias_accepted_when_numeric_prefixes_agree() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut pkg = package("acme/lib", "2.x-dev", Some("abc"));
+        pkg.raw = json!({
+            "name": "acme/lib",
+            "version": "2.x-dev",
+            "extra": {"branch-alias": {"2.x-dev": "2.0.x-dev"}},
+        });
+        let packages = [&pkg];
+        let out = installed_php(&root, &packages, false).unwrap();
+        let start = out.find("'acme/lib' => array(\n").unwrap();
+        let block = &out[start..start + 400];
+        assert!(
+            block.contains(
+                "'aliases' => array(\n                0 => '2.0.x-dev',\n            ),\n"
             ),
             "{block}"
         );
