@@ -68,6 +68,7 @@ Tooling comes from [devbox](https://www.jetify.com/devbox): PHP, Composer
 and hyperfine for the fixtures and benchmarks.
 
 ```sh
+make install    # put viv on your PATH (~/.cargo/bin)
 make check      # fmt, clippy, tests, cargo deny
 make test
 make bench      # composer vs riff vs viv on bench/laravel

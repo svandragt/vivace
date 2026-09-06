@@ -1,7 +1,10 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: build test check bench hooks fixtures fmt
+.PHONY: install build test check bench hooks fixtures fmt
+
+install:
+	cargo install --path . --locked
 
 build:
 	devbox run -- cargo build --release
