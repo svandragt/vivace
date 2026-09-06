@@ -28,6 +28,7 @@ exit = "warn"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 fs-err = "3.3.1"
 futures = "0.3.34"
 md5 = "0.8.1"
@@ -37,6 +38,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha1 = "0.11.0"
 sha2 = "0.11.0"
+tar = { version = "0.4.46", default-features = false }
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["full"] }
 tracing = "0.1.44"

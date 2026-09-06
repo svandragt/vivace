@@ -70,16 +70,19 @@ pub struct Package {
 }
 
 impl Package {
-    /// vivace v0.1 only fetches zip dists; error clearly, naming the
-    /// package, rather than failing obscurely later in `fetch`.
+    /// vivace v0.1 only fetches zip and tar dists (tar covers `.tar`,
+    /// `.tar.gz`/`.tgz` and `.tar.bz2`: Composer's own `dist.type` is `"tar"`
+    /// for all three, distinguished by the archive bytes, not the type
+    /// string); error clearly, naming the package, rather than failing
+    /// obscurely later in `fetch`.
     pub fn validate_dist(&self) -> Result<()> {
         match &self.dist {
             None => bail!(
                 "{}: no dist entry (path/git-only packages are not supported in vivace v0.1)",
                 self.name
             ),
-            Some(dist) if dist.r#type != "zip" => bail!(
-                "{}: dist type \"{}\" is not supported in vivace v0.1 (zip only)",
+            Some(dist) if dist.r#type != "zip" && dist.r#type != "tar" => bail!(
+                "{}: dist type \"{}\" is not supported in vivace v0.1 (zip and tar only)",
                 self.name,
                 dist.r#type
             ),
@@ -582,13 +585,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_dist_rejects_non_zip() {
+    fn validate_dist_rejects_unsupported_type() {
         let lock_json = r#"{
             "packages": [
                 {
                     "name": "psr/log",
                     "version": "1.0.0",
-                    "dist": { "type": "tar", "url": "https://example.test/psr-log.tar" }
+                    "dist": { "type": "rar", "url": "https://example.test/psr-log.rar" }
                 }
             ],
             "packages-dev": []
@@ -605,7 +608,26 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "psr/log: dist type \"tar\" is not supported in vivace v0.1 (zip only)"
+            "psr/log: dist type \"rar\" is not supported in vivace v0.1 (zip and tar only)"
         );
+    }
+
+    #[test]
+    fn validate_dist_accepts_tar() {
+        let lock_json = r#"{
+            "packages": [
+                {
+                    "name": "psr/log",
+                    "version": "1.0.0",
+                    "dist": { "type": "tar", "url": "https://example.test/psr-log.tar.gz" }
+                }
+            ],
+            "packages-dev": []
+        }"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(lock_json.as_bytes()).unwrap();
+
+        let lock = read_lock(file.path()).unwrap();
+        lock.packages(true).next().unwrap().validate_dist().unwrap();
     }
 }

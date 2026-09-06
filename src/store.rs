@@ -2,7 +2,7 @@
 //!
 //! Layout under the store root (borrowed from uv's versioned cache buckets):
 //!
-//! - `archive-v0/<sha256 of the zip bytes>/` holds an extracted tree.
+//! - `archive-v0/<sha256 of the archive bytes>/` holds an extracted tree.
 //! - `dists-v0/<vendor>/<name>/<reference>` is a relative symlink to one of
 //!   those trees. A pointer that resolves means "extracted"; there are no
 //!   marker files.
@@ -91,14 +91,27 @@ impl Store {
         dir.is_dir().then_some(dir)
     }
 
-    /// Extract `zip_bytes` into the archive bucket (unless an identical archive
-    /// is already there) and point `pkg`'s dist pointer at it.
+    /// Thin wrapper kept for callers written before tar dists ([#8]); dispatch
+    /// on `pkg.dist.type` lives in [`Store::add_archive`].
     pub fn add_zip(&self, pkg: &Package, zip_bytes: &[u8]) -> Result<PathBuf> {
+        self.add_archive(pkg, zip_bytes)
+    }
+
+    /// Extract `archive_bytes` into the archive bucket (unless an identical
+    /// archive is already there) and point `pkg`'s dist pointer at it. The
+    /// archive format is `pkg.dist.type`: `zip`, or `tar` (covering `.tar`,
+    /// `.tar.gz`/`.tgz` and `.tar.bz2`, detected from the archive bytes).
+    pub fn add_archive(&self, pkg: &Package, archive_bytes: &[u8]) -> Result<PathBuf> {
         let Some(pointer) = self.pointer(pkg)? else {
             bail!("{}: no dist entry", pkg.name);
         };
+        let dist_type = &pkg
+            .dist
+            .as_ref()
+            .expect("pointer() returned Some, so dist is Some")
+            .r#type;
         let hash_started = std::time::Instant::now();
-        let id = hex(Sha256::digest(zip_bytes));
+        let id = hex(Sha256::digest(archive_bytes));
         tracing::debug!(
             package = %pkg.name,
             elapsed_ms = hash_started.elapsed().as_millis(),
@@ -111,7 +124,7 @@ impl Store {
             fs_err::create_dir_all(&archive_dir)?;
             let temp = tempfile::tempdir_in(&archive_dir)?;
             let extract_started = std::time::Instant::now();
-            extract_zip(zip_bytes, temp.path())
+            extract_archive(dist_type, archive_bytes, temp.path())
                 .with_context(|| format!("extracting {} ({})", pkg.name, id))?;
             tracing::debug!(
                 package = %pkg.name,
@@ -233,12 +246,13 @@ fn mkdir_755(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Turn a zip entry name into a path safely nested under the extraction root.
-/// Follows uv's `SanitizedArchivePath`: components are walked so `..` pops
-/// rather than escapes, and absolute or control-character names are refused.
+/// Turn an archive entry name (zip or tar) into a path safely nested under
+/// the extraction root. Follows uv's `SanitizedArchivePath`: components are
+/// walked so `..` pops rather than escapes, and absolute or
+/// control-character names are refused.
 fn sanitise(name: &str) -> Result<PathBuf> {
     if name.chars().any(char::is_control) {
-        bail!("zip entry {name:?} contains control characters");
+        bail!("archive entry {name:?} contains control characters");
     }
     let mut path = PathBuf::new();
     for component in Path::new(name).components() {
@@ -247,18 +261,88 @@ fn sanitise(name: &str) -> Result<PathBuf> {
             Component::CurDir => {}
             Component::ParentDir => {
                 if !path.pop() {
-                    bail!("zip entry {name:?} escapes the archive root");
+                    bail!("archive entry {name:?} escapes the archive root");
                 }
             }
             Component::RootDir | Component::Prefix(_) => {
-                bail!("zip entry {name:?} is an absolute path");
+                bail!("archive entry {name:?} is an absolute path");
             }
         }
     }
     if path.as_os_str().is_empty() {
-        bail!("zip entry {name:?} resolves to an empty path");
+        bail!("archive entry {name:?} resolves to an empty path");
     }
     Ok(path)
+}
+
+/// Extract `bytes` (in `dist_type`'s format: `zip` or `tar`) into `dest`.
+fn extract_archive(dist_type: &str, bytes: &[u8], dest: &Path) -> Result<()> {
+    match dist_type {
+        "zip" => extract_zip(bytes, dest),
+        "tar" => extract_tar(bytes, dest),
+        other => bail!("dist type \"{other}\" is not supported in vivace v0.1 (zip and tar only)"),
+    }
+}
+
+/// Extract a tar archive into `dest`, applying Composer's single-top-directory
+/// rule. Files become 0444, or 0555 when the entry carried any exec bit; the
+/// rest of the tar mode is ignored. Symlink and hardlink entries are skipped.
+///
+/// Composer's `dist.type` is `"tar"` for `.tar`, `.tar.gz`/`.tgz` and
+/// `.tar.bz2` alike (`TarDownloader` hands all three to `PharData`, which
+/// tells them apart by content); sniff the same way here.
+fn extract_tar(bytes: &[u8], dest: &Path) -> Result<()> {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        extract_tar_entries(flate2::read::GzDecoder::new(bytes), dest)
+    } else if bytes.starts_with(b"BZh") {
+        // ponytail: no bzip2 decoder wired in (Cargo.toml only adds `tar` and
+        // `flate2`); add the `bzip2` crate here if a tar.bz2 dist shows up.
+        bail!("tar.bz2 dists are not supported in vivace v0.1 (no bzip2 decoder wired in)");
+    } else {
+        extract_tar_entries(bytes, dest)
+    }
+}
+
+fn extract_tar_entries<R: std::io::Read>(reader: R, dest: &Path) -> Result<()> {
+    // ponytail: no cap on inflated size (a tar bomb fills the disk), same
+    // gap the zip extractor already carries.
+    let mut archive = tar::Archive::new(reader);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let name = entry
+            .path()?
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("tar entry is not valid UTF-8"))?
+            .to_owned();
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            tracing::warn!("skipping symlink entry {name} in archive");
+            continue;
+        }
+        let path = dest.join(sanitise(&name)?);
+        if entry_type.is_dir() {
+            mkdir_755(&path)?;
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            mkdir_755(parent)?;
+        }
+        // A repeated entry name would otherwise hit EACCES: the first pass
+        // already chmod'd the file read-only.
+        if path.is_file() {
+            fs_err::remove_file(&path)?;
+        }
+        let executable = entry.header().mode().unwrap_or(0) & 0o111 != 0;
+        let mut file = fs_err::File::create(&path)?;
+        std::io::copy(&mut entry, &mut file)
+            .with_context(|| format!("writing tar entry {name}"))?;
+        file.set_permissions(PermissionsExt::from_mode(if executable {
+            0o555
+        } else {
+            0o444
+        }))?;
+    }
+    strip_single_top_dir(dest)
 }
 
 /// Extract `bytes` into `dest`, applying Composer's single-top-directory
@@ -372,6 +456,46 @@ mod tests {
 
     fn mode_of(path: &Path) -> u32 {
         fs_err::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn tar_package(name: &str, reference: &str) -> Package {
+        let mut package: Package = serde_json::from_value(json!({
+            "name": name,
+            "version": "1.0.0",
+            "dist": {"type": "tar", "url": "https://example.test/a.tar", "reference": reference, "shasum": ""},
+        }))
+        .unwrap();
+        package.raw = json!({});
+        package
+    }
+
+    /// Build an uncompressed tar in memory. Names ending in `/` become
+    /// directories; a `Some(mode)` sets the unix mode bits.
+    fn tar_of(entries: &[(&str, &[u8], Option<u32>)]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, content, mode) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(name).unwrap();
+            if name.ends_with('/') {
+                header.set_entry_type(tar::EntryType::Directory);
+                header.set_size(0);
+                header.set_mode(mode.unwrap_or(0o755));
+                header.set_cksum();
+                builder.append(&header, std::io::empty()).unwrap();
+            } else {
+                header.set_size(content.len() as u64);
+                header.set_mode(mode.unwrap_or(0o644));
+                header.set_cksum();
+                builder.append(&header, *content).unwrap();
+            }
+        }
+        builder.into_inner().unwrap()
+    }
+
+    fn tar_gz_of(entries: &[(&str, &[u8], Option<u32>)]) -> Vec<u8> {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&tar_of(entries)).unwrap();
+        encoder.finish().unwrap()
     }
 
     #[test]
@@ -561,5 +685,165 @@ mod tests {
         assert!(root.path().join("archive-v0").is_dir());
         assert!(root.path().join("dists-v0").is_dir());
         assert!(root.path().join(".lock").is_file());
+    }
+
+    #[test]
+    fn tar_strips_single_top_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let tar = tar_of(&[
+            ("pkg-abc/", b"", None),
+            ("pkg-abc/composer.json", b"{}", None),
+            ("pkg-abc/src/", b"", None),
+            ("pkg-abc/src/A.php", b"<?php", None),
+        ]);
+        let dir = store
+            .add_archive(&tar_package("acme/pkg", "abc"), &tar)
+            .unwrap();
+        assert_eq!(
+            fs_err::read_to_string(dir.join("composer.json")).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            fs_err::read_to_string(dir.join("src/A.php")).unwrap(),
+            "<?php"
+        );
+        assert!(!dir.join("pkg-abc").exists());
+    }
+
+    #[test]
+    fn tar_rejects_parent_dir_escape() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        // `Header::set_path` refuses a `..` component itself, so poke the raw
+        // name bytes directly to build the malicious entry `set_path` exists
+        // to prevent in the first place.
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(1);
+        header.set_mode(0o644);
+        let name = b"../evil";
+        header.as_old_mut().name[..name.len()].copy_from_slice(name);
+        header.set_cksum();
+        builder.append(&header, &b"2"[..]).unwrap();
+        let tar = builder.into_inner().unwrap();
+        let err = format!(
+            "{:#}",
+            store
+                .add_archive(&tar_package("acme/pkg", "abc"), &tar)
+                .unwrap_err()
+        );
+        assert!(
+            err.contains("../evil"),
+            "error should name the entry: {err}"
+        );
+        assert!(!root.path().parent().unwrap().join("evil").exists());
+    }
+
+    #[test]
+    fn tar_honours_only_the_exec_bit() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let tar = tar_of(&[
+            ("bin/", b"", None),
+            ("bin/tool", b"#!/bin/sh", Some(0o764)),
+            ("plain", b"x", Some(0o666)),
+        ]);
+        let dir = store
+            .add_archive(&tar_package("acme/pkg", "abc"), &tar)
+            .unwrap();
+        assert_eq!(mode_of(&dir.join("bin/tool")), 0o555);
+        assert_eq!(mode_of(&dir.join("plain")), 0o444);
+        assert_eq!(mode_of(&dir.join("bin")), 0o755);
+    }
+
+    #[test]
+    fn tar_gz_extracts() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let tar_gz = tar_gz_of(&[
+            ("pkg-abc/", b"", None),
+            ("pkg-abc/composer.json", b"{}", None),
+        ]);
+        let dir = store
+            .add_archive(&tar_package("acme/pkg", "abc"), &tar_gz)
+            .unwrap();
+        assert_eq!(
+            fs_err::read_to_string(dir.join("composer.json")).unwrap(),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn tar_skips_symlink_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut file_header = tar::Header::new_gnu();
+        file_header.set_path("real").unwrap();
+        file_header.set_size(1);
+        file_header.set_mode(0o644);
+        file_header.set_cksum();
+        builder.append(&file_header, &b"1"[..]).unwrap();
+        let mut link_header = tar::Header::new_gnu();
+        link_header.set_path("link").unwrap();
+        link_header.set_entry_type(tar::EntryType::Symlink);
+        link_header.set_size(0);
+        link_header.set_mode(0o777);
+        link_header.set_cksum();
+        builder
+            .append_link(&mut link_header, "link", "real")
+            .unwrap();
+        let tar = builder.into_inner().unwrap();
+
+        let dir = store
+            .add_archive(&tar_package("acme/pkg", "abc"), &tar)
+            .unwrap();
+        assert!(dir.join("real").is_file());
+        assert!(!dir.join("link").exists());
+    }
+
+    #[test]
+    fn tar_bz2_errors_clearly() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let mut bytes = b"BZh".to_vec();
+        bytes.extend_from_slice(b"91AY&SY");
+        let err = format!(
+            "{:#}",
+            store
+                .add_archive(&tar_package("acme/pkg", "abc"), &bytes)
+                .unwrap_err()
+        );
+        assert!(
+            err.contains("acme/pkg"),
+            "error should name the package: {err}"
+        );
+        assert!(
+            err.contains("tar.bz2"),
+            "error should name the format: {err}"
+        );
+    }
+
+    #[test]
+    fn unsupported_dist_type_names_package_and_type() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let mut package: Package = serde_json::from_value(json!({
+            "name": "acme/pkg",
+            "version": "1.0.0",
+            "dist": {"type": "rar", "url": "https://example.test/a.rar", "reference": "abc", "shasum": ""},
+        }))
+        .unwrap();
+        package.raw = json!({});
+        let err = format!(
+            "{:#}",
+            store.add_archive(&package, b"whatever").unwrap_err()
+        );
+        assert!(
+            err.contains("acme/pkg"),
+            "error should name the package: {err}"
+        );
+        assert!(err.contains("rar"), "error should name the type: {err}");
     }
 }
