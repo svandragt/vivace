@@ -238,6 +238,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
             elapsed_ms = fetch_started.elapsed().as_millis(),
             "fetched and stored missing packages"
         );
+        fetcher.log_hop_summary();
         archive_dirs.extend(downloaded);
     }
 
@@ -499,25 +500,30 @@ fn write_autoload(
     Ok(())
 }
 
-/// Extractions (`Store::add_zip`) run on the blocking pool at once, so a slow
-/// disk cannot pile up an unbounded number of decompressed zips' worth of
-/// downloaded bytes waiting to be written.
+/// Concurrent `Store::add_zip` calls, so a slow disk cannot pile up an
+/// unbounded number of decompressed zips' worth of downloaded bytes waiting
+/// to be written.
 const EXTRACT_CONCURRENCY: usize = 8;
 
 /// Download every package not already in the store, extracting each into it
 /// as its bytes arrive.
 ///
-/// Extraction is spawned onto a bounded `JoinSet` rather than awaited inline,
-/// so it overlaps with the remaining downloads instead of stalling the
-/// stream: awaiting an extraction inline would stop `stream.next()` being
-/// polled, and `buffer_unordered`'s in-flight downloads only make progress
-/// when their stream is polled.
+/// Extraction is spawned onto an unbounded `JoinSet`, each task waiting on a
+/// `Semaphore` for its turn before doing the actual (blocking) work, rather
+/// than gating `downloads.next()` on the extraction count: gating the
+/// `select!` branch itself stops the *whole* stream being polled once
+/// `EXTRACT_CONCURRENCY` extractions are in flight, which stalls every
+/// in-flight download too, since `buffer_unordered`'s in-flight downloads
+/// only make progress while their stream is polled — the same head-of-line
+/// blocking this function's `JoinSet` was meant to avoid, just eight
+/// downloads wide instead of one (#1).
 async fn fetch_missing(
     fetcher: &fetch::Fetcher,
     store: Arc<Store>,
     packages: &[Package],
 ) -> Result<HashMap<String, PathBuf>> {
     let mut downloads = fetcher.fetch_all(packages, CONCURRENCY);
+    let extract_slots = Arc::new(tokio::sync::Semaphore::new(EXTRACT_CONCURRENCY));
     let mut extractions: tokio::task::JoinSet<Result<(String, PathBuf)>> =
         tokio::task::JoinSet::new();
     let mut result = HashMap::new();
@@ -525,14 +531,23 @@ async fn fetch_missing(
 
     while !downloads_done || !extractions.is_empty() {
         tokio::select! {
-            item = downloads.next(), if !downloads_done && extractions.len() < EXTRACT_CONCURRENCY => {
+            item = downloads.next(), if !downloads_done => {
                 match item {
                     Some((package, bytes)) => {
                         let bytes = bytes.with_context(|| format!("{}: fetching dist", package.name))?;
                         let name = package.name.clone();
                         let package = package.clone();
                         let store = Arc::clone(&store);
-                        extractions.spawn_blocking(move || Ok((name, store.add_zip(&package, &bytes)?)));
+                        let extract_slots = Arc::clone(&extract_slots);
+                        extractions.spawn(async move {
+                            let _permit = extract_slots
+                                .acquire_owned()
+                                .await
+                                .expect("extract_slots semaphore is never closed");
+                            tokio::task::spawn_blocking(move || Ok((name, store.add_zip(&package, &bytes)?)))
+                                .await
+                                .context("store worker panicked")?
+                        });
                     }
                     None => downloads_done = true,
                 }

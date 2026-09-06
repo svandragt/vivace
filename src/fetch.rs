@@ -1,5 +1,7 @@
 //! Concurrent dist downloads with sha1 verification.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -45,6 +47,12 @@ pub struct Fetcher {
     /// directly) so tests can swap in a zero-delay schedule instead of
     /// actually sleeping.
     backoff: fn(u32) -> Duration,
+    /// Elapsed time of every hop (one entry per non-redirect and per
+    /// redirect response), keyed by host, so `log_hop_summary` can report a
+    /// distribution instead of only a total — #1 needed this to see whether
+    /// the cold-path gap to Riff was one slow hop repeated or something
+    /// systemic.
+    hop_timings: Mutex<HashMap<String, Vec<Duration>>>,
 }
 
 impl Fetcher {
@@ -53,7 +61,44 @@ impl Fetcher {
             client: client()?,
             auth,
             backoff,
+            hop_timings: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Log a per-host count/min/median/max of every hop timed since this
+    /// `Fetcher` was created (debug level only; the map is cheap but not
+    /// worth building outside a debug run).
+    pub fn log_hop_summary(&self) {
+        if !tracing::enabled!(tracing::Level::DEBUG) {
+            return;
+        }
+        let timings = self.hop_timings.lock().expect("hop_timings mutex");
+        for (host, durations) in timings.iter() {
+            let mut ms: Vec<u128> = durations.iter().map(Duration::as_millis).collect();
+            ms.sort_unstable();
+            let count = ms.len();
+            let min = ms.first().copied().unwrap_or(0);
+            let max = ms.last().copied().unwrap_or(0);
+            let median = ms.get(count / 2).copied().unwrap_or(0);
+            tracing::debug!(
+                host,
+                count,
+                min_ms = min,
+                median_ms = median,
+                max_ms = max,
+                "hop timing summary"
+            );
+        }
+    }
+
+    /// Record one hop's elapsed time under its host, for `log_hop_summary`.
+    fn record_hop(&self, host: &str, elapsed: Duration) {
+        self.hop_timings
+            .lock()
+            .expect("hop_timings mutex")
+            .entry(host.to_string())
+            .or_default()
+            .push(elapsed);
     }
 
     /// Download one package's dist zip and check its `shasum` when set.
@@ -102,8 +147,20 @@ impl Fetcher {
                 bail!("{pkg_name}: too many redirects fetching {start_url}");
             }
             hops += 1;
+            let host = url.host_str().unwrap_or("").to_string();
+            let hop_started = std::time::Instant::now();
             let response = self.send_with_retries(pkg_name, &url).await?;
             if response.status().is_redirection() {
+                let elapsed = hop_started.elapsed();
+                self.record_hop(&host, elapsed);
+                tracing::debug!(
+                    package = %pkg_name,
+                    host,
+                    hop = hops,
+                    status = response.status().as_u16(),
+                    elapsed_ms = elapsed.as_millis(),
+                    "fetch hop (redirect)"
+                );
                 let location = response
                     .headers()
                     .get(reqwest::header::LOCATION)
@@ -124,7 +181,23 @@ impl Fetcher {
                 .unwrap_or_default();
                 anyhow::anyhow!("{err}{hint}")
             })?;
-            return Ok(response.bytes().await?.to_vec());
+            // Timed through the body read (not just headers), so this hop's
+            // number is comparable to the redirect hop above and reflects
+            // what actually holds up the fetch: a GitHub zipball's headers
+            // arrive quickly, the archive bytes behind them do not.
+            let bytes = response.bytes().await?.to_vec();
+            let elapsed = hop_started.elapsed();
+            self.record_hop(&host, elapsed);
+            tracing::debug!(
+                package = %pkg_name,
+                host,
+                hop = hops,
+                status = status.as_u16(),
+                bytes = bytes.len(),
+                elapsed_ms = elapsed.as_millis(),
+                "fetch hop (body complete)"
+            );
+            return Ok(bytes);
         }
     }
 

@@ -75,6 +75,76 @@ What changed, in `src/install.rs`:
 Raw hyperfine JSON for this comparison: `viv-cold-before.json`,
 `viv-cold-after.json`, `riff-cold.json`.
 
+### Closing the rest of the gap (#1, follow-up)
+
+`src/fetch.rs` now times every hop (`tracing::debug!` per redirect and per
+body-complete GET, plus a per-host count/min/median/max summary via
+`Fetcher::log_hop_summary`). Two hypotheses from the issue turned out not to
+hold, and one real bug did.
+
+**Hypothesis: Riff skips the `api.github.com` redirect hop.** False. Riff's
+`riff-core/src/downloader/archive.rs` mirrors Composer's
+`Util\Url::updateDistReference` byte for byte: it keeps rewriting to
+`https://api.github.com/repos/<owner>/<repo>/zipball/<ref>`, the same URL
+`composer.lock` already gives `viv`, and never rewrites to
+`codeload.github.com` (`strings` on the riff binary has no `codeload`
+string at all). `strace -f -e trace=connect` on both tools during a cold
+install confirms it: each opens 64 fresh connections to `api.github.com`
+(20.26.156.210) in the same sub-15ms burst, then a smaller, staggered number
+to `codeload.github.com` as redirects resolve. There is no codeload rewrite
+to adopt; both tools pay the same redirect hop, the same way.
+
+**Hypothesis: connection setup (TLS handshakes, `pool_max_idle_per_host`).**
+No difference found. Both `viv` and Riff build their `reqwest::Client` on
+`rustls-tls`, neither sets a custom `pool_max_idle_per_host`, and HTTP/2 was
+already confirmed negotiated to both hosts. Per-hop timings varied enormously
+run to run within the same session (`api.github.com` hop median from 190 ms
+to over 1.7 s, `codeload.github.com` body-complete median from 170 ms to
+900 ms+) — session-to-session (and even run-to-run) network/GitHub-side
+variance dwarfs anything attributable to connection setup; see the caveat
+below.
+
+**Real bug: `fetch_missing`'s extraction backlog stalled the whole download
+stream.** The `tokio::select!` loop only polled `downloads.next()` when
+`extractions.len() < EXTRACT_CONCURRENCY` (8). That guard doesn't just delay
+*starting* new downloads — while false, `downloads.next()` isn't polled at
+all, which means `buffer_unordered`'s up-to-64 already-in-flight downloads
+make no progress either, since they only advance while their stream is
+polled. Every time the extraction queue filled (extraction is a few ms each,
+so this happens repeatedly across 101 packages), every in-flight download
+paused. This is exactly the stall the bounded `JoinSet` above was meant to
+avoid, just eight downloads wide instead of one.
+
+Fix: `EXTRACT_CONCURRENCY` is now a `Semaphore` acquired *inside* each spawned
+extraction task, not a guard on the download branch of `select!`;
+`downloads.next()` is polled unconditionally until the stream ends, so
+in-flight downloads are never paused by the extraction backlog.
+
+A/B on this one change alone, alternating `viv` before/after in the same
+`hyperfine` invocation (six runs each, so both sides see the same network
+drift):
+
+| Binary | viv cold |
+|---|---|
+| before (extraction backlog gates `downloads.next()`) | 2.52 s ± 0.17 s |
+| after (extraction backlog is a `Semaphore` inside the task) | 2.13 s ± 0.16 s |
+
+Raw hyperfine JSON: `viv-cold-extract-semaphore-ab.json`.
+
+Caveat on same-session absolute numbers: this session's `api.github.com` and
+`codeload.github.com` hop latencies drifted by well over 1 s across repeated
+cold runs made minutes apart (visible in the per-host summary this change
+adds), almost certainly GitHub-side throttling responding to the repeated
+64-connection bursts this investigation itself generated. A `viv` vs `riff`
+`hyperfine` comparison taken after that drift set in showed `viv` and `riff`
+within noise of each other (sometimes `viv` ahead), where an earlier
+comparison in the same session had `riff` ahead by the same ~0.6 s as the
+table above — the fix's effect is real and reproducible (the A/B table),
+but a fresh absolute `viv`-vs-`riff` cold number is not trustworthy from
+inside one investigation session that hammers the same GitHub endpoints
+repeatedly. Re-run `bench/run.sh bench/laravel riff viv` cold in a fresh
+session for a comparable number.
+
 ## Real project: 105 packages, private repositories
 
 A WordPress project with private GitHub dists and a private Composer

@@ -271,3 +271,22 @@ wiped a developer's store.
 Lesson repeated: goldens catch logic, real projects catch assumptions, and
 regenerating fixtures inside a git checkout makes Composer guess the root
 version from the repository.
+
+## 2026-09-06, evening: milestone 0.2 closed
+
+The last cold-install finding was a bug of our own making. The guard that
+capped concurrent extractions sat on the `select!` branch that polls the
+download stream, so while eight archives were being unpacked none of the
+sixty-four in-flight downloads made progress. Moving the cap into a
+semaphore inside the extraction task fixed it: 2.52 s to 2.13 s in an A/B
+run, and viv and Riff now trade places between runs. Repeated cold runs
+against GitHub throttle visibly within minutes, so the honest statement is
+parity within noise, recorded as such in the results. Riff does not rewrite
+GitHub API URLs to codeload as I had assumed; it mirrors Composer exactly,
+so there was nothing to copy there.
+
+macOS passes the whole suite once the bin proxies used canonical paths
+(`/var` is a symlink on macOS), and the job now blocks like Linux. Tar and
+tar.gz dists, retries with backoff, GitLab credentials, `dump-autoload`,
+and `--adopt` for a Composer-made vendor all landed with a failing test
+first. The eight installer fixtures that need a solver moved to 0.3.
