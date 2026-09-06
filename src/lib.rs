@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod autoload;
 pub mod fetch;
 pub mod install;

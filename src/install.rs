@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::auth::Auth;
 use crate::autoload::generator::{self, Input, RootPackage};
 use crate::autoload::installed::{installed_json, installed_php};
 use crate::autoload::platform::{IgnorePlatform, PlatformInput, platform_check};
@@ -128,12 +129,13 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         .cloned()
         .collect();
     if !missing.is_empty() {
-        let client = fetch::client()?;
+        let auth = Auth::load(&project_dir)?;
+        let fetcher = fetch::Fetcher::new(auth)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        let fetched = runtime.block_on(fetch_missing(&client, Arc::clone(&store), &missing))?;
-        archive_dirs.extend(fetched);
+        let downloaded = runtime.block_on(fetch_missing(&fetcher, Arc::clone(&store), &missing))?;
+        archive_dirs.extend(downloaded);
     }
 
     for package in &plan.install {
@@ -253,11 +255,11 @@ fn write_autoload(
 /// Download every package not already in the store, extracting each into it
 /// as its bytes arrive.
 async fn fetch_missing(
-    client: &reqwest::Client,
+    fetcher: &fetch::Fetcher,
     store: Arc<Store>,
     packages: &[Package],
 ) -> Result<HashMap<String, PathBuf>> {
-    let mut stream = fetch::fetch_all(client, packages, CONCURRENCY);
+    let mut stream = fetcher.fetch_all(packages, CONCURRENCY);
     let mut result = HashMap::new();
     while let Some((package, bytes)) = stream.next().await {
         let bytes = bytes.with_context(|| format!("{}: fetching dist", package.name))?;
