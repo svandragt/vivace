@@ -36,6 +36,13 @@ devbox run bench                   # hyperfine: composer vs riff vs viv on bench
 devbox run hooks                   # install the pre-commit hook that runs `check`
 ```
 
+## Measuring
+
+Measurements and manual tests use `--cache-dir` (viv) or an isolated
+`XDG_CACHE_HOME`, never `rm -rf ~/.cache/vivace`. `bench/run.sh` follows this:
+it points every tool's cache at a directory under `$BENCH_WORK` and never
+touches the user's real cache.
+
 Regenerate a fixture's Composer reference output (only when Composer's
 behaviour changes):
 
