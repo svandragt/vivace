@@ -13,7 +13,18 @@ public engineering log: append an entry at the end of every working session.
 ## Commands
 
 PHP, Composer and hyperfine come from devbox, so run anything that needs them
-through `devbox run`.
+through `devbox run`. The `Makefile` wraps the common ones:
+
+```sh
+make build                         # cargo build --release, binary at target/release/viv
+make test                          # cargo nextest run (PHP-dependent tests skip without php)
+make check                         # fmt --check, clippy -D warnings, nextest, cargo deny
+make bench                         # hyperfine: composer vs riff vs viv on bench/laravel
+make hooks                         # install the pre-commit hook that runs `make check`
+make fixtures                      # regenerate the monolog fixture's expected Composer output
+```
+
+Fallback, or for anything not wrapped:
 
 ```sh
 cargo build --release              # binary at target/release/viv
