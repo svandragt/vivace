@@ -2,7 +2,7 @@
 name = "vivace"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.91"
 description = "Fast composer install from composer.lock"
 license = "MIT"
 
