@@ -119,7 +119,10 @@ run_mode() {
     # is an unmet platform requirement; that's a more reliable signal than
     # pattern-matching the prose around it.
     if grep -qi -- '--ignore-platform-req' <<< "$composer_out"; then
-      emit_row "$name" "$mode" "skipped" "-" "${prefix}platform: $(head -1 <<< "$composer_out")"
+      local platform_line
+      platform_line=$(grep -im1 -E 'requires php|your php version|platform' <<< "$composer_out")
+      [ -n "$platform_line" ] || platform_line=$(grep -v '^$' <<< "$composer_out" | tail -1)
+      emit_row "$name" "$mode" "skipped" "-" "${prefix}platform: $platform_line"
     else
       emit_row "$name" "$mode" "skipped" "-" "${prefix}composer failed: $(tail -3 <<< "$composer_out")"
     fi
@@ -130,7 +133,7 @@ run_mode() {
 
   local viv_out viv_ms
   start=$(date +%s%N)
-  if ! viv_out=$("$viv" install $mode_flag --no-scripts --cache-dir "$cache_dir" -d "$viv_dir" 2>&1); then
+  if ! viv_out=$("$viv" install $mode_flag --no-scripts --no-plugins --cache-dir "$cache_dir" -d "$viv_dir" 2>&1); then
     end=$(date +%s%N)
     viv_ms=$(((end - start) / 1000000))
     failures=1
@@ -141,7 +144,7 @@ run_mode() {
   viv_ms=$(((end - start) / 1000000))
 
   local diff_out
-  if diff_out=$(diff -rq --exclude=.vivace-state "$composer_dir/vendor" "$viv_dir/vendor" 2>&1); then
+  if diff_out=$(diff -rq --exclude=.vivace-state --exclude=.git "$composer_dir/vendor" "$viv_dir/vendor" 2>&1); then
     emit_row "$name" "$mode" "identical" "${viv_ms}ms" "${prefix}composer ${composer_ms}ms"
   else
     failures=1
@@ -226,6 +229,10 @@ run_pinned() {
 
 run_random() {
   echo "" >> "$report"
+  if [ "$random_n" -eq 0 ]; then
+    echo "## Random sample: disabled" >> "$report"
+    return
+  fi
   echo "## Random sample (seed \`$seed\`, n=$random_n)" >> "$report"
   table_header
 
@@ -268,9 +275,10 @@ run_random() {
 {
   echo "# Compatibility sweep — $label"
   echo ""
-  echo "Composer install flags: \`${composer_install_flags[*]}\`."
+  echo "Composer install flags: \`${composer_install_flags[*]}\`; viv gets the same plus \`--no-plugins\` (viv refuses plugin-using projects otherwise)."
   echo "Composer update flags, used only to generate a missing lock: \`${composer_update_flags[*]}\`."
   echo "A project whose platform requirements aren't met is reported as \`skipped: platform\`, not a failure."
+  echo "Git-source checkouts have their \`.git\` stripped before installing, so the vendor diff excludes \`.git\` metadata on both sides."
   echo ""
 } >> "$report"
 
