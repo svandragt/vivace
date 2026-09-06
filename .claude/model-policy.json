@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "provisional": true,
+  "calibratedAt": "2026-09-06",
+  "complexity": {
+    "score": "medium",
+    "rationale": "Single Rust crate, no code yet. Hard parts are byte-exact emulation of Composer's autoloader output and safe filesystem work (zip extraction, hardlinks into a shared cache, replacing vendor dirs); both are pinned by golden tests copied from Composer."
+  },
+  "phases": {
+    "plan": {
+      "model": "opus",
+      "rationale": "Greenfield: cache layout, atomicity and compatibility decisions are cheap to plan and expensive to redo. Opus suffices; no distributed-systems complexity to justify fable."
+    },
+    "code": {
+      "model": "sonnet",
+      "rationale": "Byte-diff goldens and Composer's own fixture tables catch emulation mistakes, so mid-tier is safe for TDD steps against an approved plan."
+    },
+    "review": {
+      "model": "sonnet",
+      "rationale": "Small per-step diffs with clippy -D warnings and nextest in the gate; filesystem-mutating paths escalate below."
+    },
+    "explore": {
+      "model": "haiku",
+      "rationale": "Small codebase, lookups are cheap."
+    }
+  },
+  "escalations": [
+    { "when": "paths:src/store.rs", "action": "review uses opus (extracts untrusted zips into a shared cache; path sanitising and atomic rename)" },
+    { "when": "paths:src/link.rs", "action": "review uses opus (deletes and replaces vendor package dirs; hardlinks share inodes with the cache)" },
+    { "when": "paths:src/plan.rs", "action": "review uses opus (decides which vendor dirs are removed)" },
+    { "when": "tests_failed_twice", "action": "raise code one tier for this task" }
+  ]
+}
