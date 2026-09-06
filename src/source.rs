@@ -113,7 +113,9 @@ fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Clone-and-checkout a dist-less, `source.type: git` package into `dest`.
+/// Clone-and-checkout a `source.type: git` package into `dest`: a dist-less
+/// lock entry (#13), or one `config.preferred-install` picked source over
+/// dist for (#43).
 ///
 /// Ports just the shape of `GitDownloader::doInstall`, not its from-cache
 /// dance: a bare mirror lives under `<cache_dir>/git-v0/<sha1 of the source
@@ -123,7 +125,11 @@ fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
 /// per-reference pointer bucket; add its own prune sweep if that
 /// unboundedness ever bites). A full clone from that mirror then checks out
 /// `reference`, leaving a real `.git` history in `vendor/`, matching
-/// Composer's `installation-source: source`.
+/// Composer's `installation-source: source` — including its `.git/config`
+/// shape (#59): an `origin` remote and a second `composer` remote, both
+/// pointing at `source.url` (Composer only leaves the two distinct when
+/// credentials get stripped for one of them; vivace has no such credential
+/// path here, so they end up identical).
 pub fn checkout_git(cache_dir: &Path, package: &Package, dest: &Path) -> Result<()> {
     let source = package
         .source
@@ -158,13 +164,35 @@ pub fn checkout_git(cache_dir: &Path, package: &Package, dest: &Path) -> Result<
         ],
     )
     .with_context(|| format!("{}: cloning from the local mirror", package.name))?;
-    run_git(Some(&checkout), ["checkout", "--detach", reference, "--"])
-        .with_context(|| format!("{}: checking out {reference}", package.name))?;
+    // Composer's `doInstall` adds a second `composer` remote and fetches it
+    // before rewriting both remotes' urls to the real `source.url` — ported
+    // here against the local mirror (not the network) so the fetch stays
+    // offline, then both remotes get the same final url `updateOriginUrl`
+    // and the trailing `set-url composer` leave them at.
+    run_git(
+        Some(&checkout),
+        ["remote", "add", "composer", "--", path_str(&mirror)?],
+    )
+    .with_context(|| format!("{}: adding the composer remote", package.name))?;
+    run_git(Some(&checkout), ["fetch", "composer"])
+        .with_context(|| format!("{}: fetching the composer remote", package.name))?;
     run_git(
         Some(&checkout),
         ["remote", "set-url", "origin", "--", &source.url],
     )
     .with_context(|| format!("{}: pointing origin back at {}", package.name, source.url))?;
+    run_git(
+        Some(&checkout),
+        ["remote", "set-url", "composer", "--", &source.url],
+    )
+    .with_context(|| {
+        format!(
+            "{}: pointing the composer remote at {}",
+            package.name, source.url
+        )
+    })?;
+    checkout_to_commit(&checkout, reference, &package.version)
+        .with_context(|| format!("{}: checking out {reference}", package.name))?;
 
     // Same crash-safe swap `link::link_tree` uses for `vendor/`: rename the
     // old dir aside before the new one takes its place, so a crash between
@@ -185,6 +213,54 @@ pub fn checkout_git(cache_dir: &Path, package: &Package, dest: &Path) -> Result<
         fs_err::remove_dir_all(old)?;
     }
     Ok(())
+}
+
+/// Port of `GitDownloader::updateToCommit`, minus the case Composer only
+/// takes when a locked reference isn't a full commit sha (it tries the
+/// reference itself as a remote branch name first) — dead here, since
+/// `composer.lock` never records anything but a full sha as `reference`.
+///
+/// Tries checking out a local/tag ref named after the version's branch
+/// (present already when it's the mirror's default branch, from the
+/// `--no-checkout` clone's own setup), falling back to a new local branch
+/// tracking `composer/<branch>`; either way `reference` is then the `reset
+/// --hard` target, not the branch tip, in case the two differ. Neither
+/// succeeding (a tagged release, most commonly) leaves `reference` checked
+/// out detached instead — matching Composer's own end state either way.
+fn checkout_to_commit(checkout: &Path, reference: &str, pretty_version: &str) -> Result<()> {
+    static DEV_MARKER: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^dev-|(?:\.x)?-dev$").unwrap());
+    let branch = DEV_MARKER.replace_all(pretty_version, "");
+
+    let on_branch = try_git(checkout, ["checkout", &branch, "--"])
+        || try_git(
+            checkout,
+            [
+                "checkout",
+                "-B",
+                &branch,
+                &format!("composer/{branch}"),
+                "--",
+            ],
+        );
+    if on_branch && try_git(checkout, ["reset", "--hard", reference, "--"]) {
+        return Ok(());
+    }
+    run_git(Some(checkout), ["checkout", reference, "--"])?;
+    run_git(Some(checkout), ["reset", "--hard", reference, "--"])
+}
+
+/// Run `git <args>`, returning whether it exited successfully; unlike
+/// [`run_git`], a non-zero exit here is an expected outcome to try a
+/// fallback on, not an error, so stderr is discarded rather than surfaced.
+fn try_git<'a>(dir: &Path, args: impl IntoIterator<Item = &'a str>) -> bool {
+    Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn sync_mirror(url: &str, mirror: &Path, reference: &str) -> Result<()> {
@@ -262,6 +338,7 @@ mod tests {
             dev: false,
             raw: serde_json::Value::Null,
             install_dir: None,
+            install_from_source: false,
         }
     }
 
@@ -480,6 +557,106 @@ mod tests {
         // (nothing to fetch, the reference is already there), and the
         // checkout is replaced cleanly.
         checkout_git(cache.path(), &package, &dest).unwrap();
+        assert_eq!(head(&dest), reference);
+    }
+
+    fn remote_url(dir: &Path, name: &str) -> String {
+        String::from_utf8(
+            Command::new("git")
+                .args(["-C"])
+                .arg(dir)
+                .args(["remote", "get-url", name])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string()
+    }
+
+    fn branch_name(dir: &Path) -> Option<String> {
+        let name = String::from_utf8(
+            Command::new("git")
+                .args(["-C"])
+                .arg(dir)
+                .args(["symbolic-ref", "--short", "-q", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        (!name.is_empty()).then_some(name)
+    }
+
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn checkout_git_sets_up_origin_and_composer_remotes() {
+        if !git_available() {
+            eprintln!("skipping checkout_git_sets_up_origin_and_composer_remotes: git not on PATH");
+            return;
+        }
+        let upstream = tempfile::tempdir().unwrap();
+        init_repo(upstream.path());
+        let reference = head(upstream.path());
+        let url = upstream.path().to_str().unwrap().to_string();
+
+        let cache = tempfile::tempdir().unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        let dest = vendor.path().join("acme/vcslib");
+
+        let package = package(
+            "acme/vcslib",
+            None,
+            Some(Source {
+                r#type: "git".into(),
+                url: url.clone(),
+                reference: Some(reference),
+            }),
+        );
+        checkout_git(cache.path(), &package, &dest).unwrap();
+
+        assert_eq!(remote_url(&dest, "origin"), url);
+        assert_eq!(remote_url(&dest, "composer"), url);
+        // A stable (non-dev) version has no matching branch/tag name to
+        // check out, so Composer (and this port) lands on a detached HEAD.
+        assert_eq!(branch_name(&dest), None);
+    }
+
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn checkout_git_checks_out_a_local_branch_for_a_dev_version() {
+        if !git_available() {
+            eprintln!(
+                "skipping checkout_git_checks_out_a_local_branch_for_a_dev_version: git not on PATH"
+            );
+            return;
+        }
+        let upstream = tempfile::tempdir().unwrap();
+        init_repo(upstream.path());
+        let reference = head(upstream.path());
+
+        let cache = tempfile::tempdir().unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        let dest = vendor.path().join("acme/vcslib");
+
+        let mut package = package(
+            "acme/vcslib",
+            None,
+            Some(Source {
+                r#type: "git".into(),
+                url: upstream.path().to_str().unwrap().into(),
+                reference: Some(reference.clone()),
+            }),
+        );
+        // Matches `init_repo`'s `-b main`: Composer's `dev-main` strips its
+        // `dev-` prefix down to the branch name it tries to check out.
+        package.version = "dev-main".into();
+        checkout_git(cache.path(), &package, &dest).unwrap();
+
+        assert_eq!(branch_name(&dest).as_deref(), Some("main"));
         assert_eq!(head(&dest), reference);
     }
 }

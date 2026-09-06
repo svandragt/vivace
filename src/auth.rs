@@ -421,7 +421,7 @@ fn private_token_header() -> HeaderName {
 
 /// Composer home on Linux: `$COMPOSER_HOME` if set, else `~/.composer` if
 /// that directory already exists, else `${XDG_CONFIG_HOME:-~/.config}/composer`.
-fn composer_home() -> Option<PathBuf> {
+pub(crate) fn composer_home() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("COMPOSER_HOME")
         && !dir.is_empty()
     {

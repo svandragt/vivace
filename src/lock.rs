@@ -7,7 +7,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -99,6 +98,13 @@ pub struct Package {
     /// package outside `vendor/`; `None` keeps the default `vendor/<name>`.
     #[serde(skip)]
     pub install_dir: Option<String>,
+    /// `config.preferred-install` (#43) picked source over dist for a
+    /// package that has both, set the same way `install_dir` is: by
+    /// `install::run`, before planning. `false` for everything else,
+    /// including the dist-less git-source packages [`Package::is_git_source`]
+    /// already always checks out from source regardless of this flag.
+    #[serde(skip)]
+    pub install_from_source: bool,
 }
 
 impl Package {
@@ -278,9 +284,200 @@ impl AllowPlugins {
 
 /// `BasePackage::packageNameToRegexp`: `*` expands to "anything", the rest of
 /// the pattern matches literally, case-insensitively.
+///
+/// Plain string matching, not a compiled regex: `preferred-install`'s
+/// pattern map runs this once per locked package on every `viv install`,
+/// including the no-op path, and `Regex::new` compiling a fresh NFA per
+/// package there was measurable (~20ms on a 101-package lock, `bench/laravel`
+/// noop) next to everything else that run does.
 fn glob_match(pattern: &str, name: &str) -> bool {
-    let escaped = regex::escape(pattern).replace(r"\*", ".*");
-    Regex::new(&format!("(?i)^{escaped}$")).is_ok_and(|re| re.is_match(name))
+    let pattern = pattern.to_lowercase();
+    let name = name.to_lowercase();
+    let mut segments = pattern.split('*');
+    let Some(first) = segments.next() else {
+        return name.is_empty();
+    };
+    let Some(rest) = name.strip_prefix(first) else {
+        return false;
+    };
+    let mut segments: Vec<&str> = segments.collect();
+    let Some(last) = segments.pop() else {
+        // No `*` in `pattern` at all: `first` must be the whole name.
+        return rest.is_empty();
+    };
+    let mut rest = rest;
+    for middle in segments {
+        let Some(at) = rest.find(middle) else {
+            return false;
+        };
+        rest = &rest[at + middle.len()..];
+    }
+    rest.ends_with(last)
+}
+
+/// `dist`/`source` install preference (`config.preferred-install`'s value,
+/// or one pattern-map entry's value): Composer's
+/// `DownloadManager::resolvePackageInstallPreference`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallPreference {
+    Dist,
+    Source,
+    Auto,
+}
+
+impl InstallPreference {
+    /// `dist` always wins; `auto` only picks `source` for a dev-stability
+    /// package (a `dev-*` branch, or `*-dev`/`*.x-dev`); anything else
+    /// (`source`, or `auto` on a non-dev version) picks `source`.
+    fn source_for(self, is_dev: bool) -> bool {
+        match self {
+            InstallPreference::Dist => false,
+            InstallPreference::Source => true,
+            InstallPreference::Auto => is_dev,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for InstallPreference {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match String::deserialize(deserializer)?.as_str() {
+            "dist" => Ok(InstallPreference::Dist),
+            "source" => Ok(InstallPreference::Source),
+            "auto" => Ok(InstallPreference::Auto),
+            other => Err(serde::de::Error::custom(format!(
+                "invalid config.preferred-install value: {other}"
+            ))),
+        }
+    }
+}
+
+/// `config.preferred-install`: a single preference for every package, or a
+/// pattern map (`BasePackage::packageNameToRegexp` glob, first match wins,
+/// falling back to Composer's own default — `source` for a dev-stability
+/// package, `dist` otherwise — when nothing matches).
+#[derive(Debug, Clone)]
+pub enum PreferredInstall {
+    All(InstallPreference),
+    Map(Vec<(String, InstallPreference)>),
+}
+
+impl Default for PreferredInstall {
+    fn default() -> Self {
+        PreferredInstall::All(InstallPreference::Dist)
+    }
+}
+
+impl PreferredInstall {
+    /// Whether `package` (a dev-stability version, or not) should be
+    /// installed from source rather than dist.
+    pub fn prefers_source(&self, package: &str, is_dev: bool) -> bool {
+        match self {
+            PreferredInstall::All(pref) => pref.source_for(is_dev),
+            PreferredInstall::Map(rules) => rules
+                .iter()
+                .find(|(pattern, _)| glob_match(pattern, package))
+                .map_or(is_dev, |(_, pref)| pref.source_for(is_dev)),
+        }
+    }
+
+    /// `Config::merge`'s `preferred-install` case: `overlay` (a higher-
+    /// precedence source, e.g. project `composer.json` over composer home's
+    /// `config.json`) replaces `self` outright when both are a single
+    /// preference; when either is a pattern map, the other is coerced to
+    /// `{"*": value}` first, entries merge key-wise (`overlay` winning ties,
+    /// new keys appended in `overlay`'s order), and `*` is moved back to the
+    /// end — Composer always evaluates the wildcard last.
+    fn merge(self, overlay: PreferredInstall) -> PreferredInstall {
+        let (PreferredInstall::All(base), PreferredInstall::All(over)) = (&self, &overlay) else {
+            let mut merged = self.into_map();
+            for (pattern, pref) in overlay.into_map() {
+                match merged.iter_mut().find(|(p, _)| *p == pattern) {
+                    Some(entry) => entry.1 = pref,
+                    None => merged.push((pattern, pref)),
+                }
+            }
+            if let Some(pos) = merged.iter().position(|(p, _)| p == "*") {
+                let wildcard = merged.remove(pos);
+                merged.push(wildcard);
+            }
+            return PreferredInstall::Map(merged);
+        };
+        let _ = base;
+        PreferredInstall::All(*over)
+    }
+
+    fn into_map(self) -> Vec<(String, InstallPreference)> {
+        match self {
+            PreferredInstall::All(pref) => vec![("*".to_string(), pref)],
+            PreferredInstall::Map(rules) => rules,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PreferredInstall {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match Value::deserialize(deserializer)? {
+            Value::Object(map) => Ok(PreferredInstall::Map(
+                map.into_iter()
+                    .map(|(name, pref)| {
+                        InstallPreference::deserialize(pref)
+                            .map(|pref| (name, pref))
+                            .map_err(serde::de::Error::custom)
+                    })
+                    .collect::<std::result::Result<_, D::Error>>()?,
+            )),
+            other => Ok(PreferredInstall::All(
+                InstallPreference::deserialize(other).map_err(serde::de::Error::custom)?,
+            )),
+        }
+    }
+}
+
+/// A dev-stability version, matching `VersionParser::parseStability`'s
+/// check on the pretty version Composer records in the lock: a `dev-`
+/// branch prefix, or a `-dev` suffix (e.g. `1.x-dev`, `9999999-dev`) — the
+/// only two shapes normalisation ever produces, so no full stability parse
+/// is needed here.
+pub fn is_dev_version(version: &str) -> bool {
+    version.starts_with("dev-") || version.ends_with("-dev")
+}
+
+/// Composer home's `config.json`, merged under the project's own
+/// `config.preferred-install` (`Config::merge`'s precedence: home config
+/// first, project `composer.json` on top). A missing or unreadable home
+/// config is not an error — same treatment as a missing `auth.json`
+/// ([`crate::auth::Auth::load`]).
+pub fn resolve_preferred_install(project: &PreferredInstall) -> Result<PreferredInstall> {
+    preferred_install_at(crate::auth::composer_home().as_deref(), project)
+}
+
+/// [`resolve_preferred_install`], with the composer-home directory passed in
+/// rather than resolved from the environment, so tests don't need to touch
+/// process-global env vars to exercise it.
+fn preferred_install_at(
+    home: Option<&Path>,
+    project: &PreferredInstall,
+) -> Result<PreferredInstall> {
+    let Some(home) = home else {
+        return Ok(project.clone());
+    };
+    let Ok(content) = fs_err::read_to_string(home.join("config.json")) else {
+        return Ok(project.clone());
+    };
+    let raw: Value = serde_json::from_str(&content)
+        .with_context(|| format!("{}: not valid JSON", home.join("config.json").display()))?;
+    let Some(value) = raw.get("config").and_then(|c| c.get("preferred-install")) else {
+        return Ok(project.clone());
+    };
+    let global = PreferredInstall::deserialize(value.clone())
+        .context("composer home's config.json: invalid preferred-install")?;
+    Ok(global.merge(project.clone()))
 }
 
 impl<'de> Deserialize<'de> for AllowPlugins {
@@ -366,6 +563,11 @@ pub struct Config {
     /// (`docs/plugin-strategy.md`'s rule 3, and the native adapters' gate).
     #[serde(rename = "allow-plugins")]
     pub allow_plugins: AllowPlugins,
+    /// `dist`/`source` per package (#43): project-level only, merged with
+    /// composer home's `config.json` by [`resolve_preferred_install`], not
+    /// here — [`Config`] only ever sees the project's own composer.json.
+    #[serde(rename = "preferred-install")]
+    pub preferred_install: PreferredInstall,
 }
 
 impl Default for Config {
@@ -384,6 +586,7 @@ impl Default for Config {
             use_include_path: false,
             secure_http: true,
             allow_plugins: AllowPlugins::None,
+            preferred_install: PreferredInstall::default(),
         }
     }
 }
@@ -646,7 +849,10 @@ pub const MISSING_REQUIREMENTS_HINT: [&str; 3] = [
 
 #[cfg(test)]
 mod tests {
-    use super::{PlatformCheck, is_fresh, missing_requirements, read_lock, read_root};
+    use super::{
+        InstallPreference, PlatformCheck, PreferredInstall, glob_match, is_dev_version, is_fresh,
+        missing_requirements, preferred_install_at, read_lock, read_root,
+    };
     use serde_json::Value;
     use std::io::Write as _;
     use std::path::Path;
@@ -1172,5 +1378,97 @@ mod tests {
             missing_requirements(&lock, &root, true),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn glob_match_covers_exact_wildcard_and_multi_wildcard_patterns() {
+        assert!(glob_match("acme/lib", "acme/lib"));
+        assert!(!glob_match("acme/lib", "acme/libx"));
+        assert!(!glob_match("acme/lib", "xacme/lib"));
+        assert!(glob_match("*", "anything/at-all"));
+        assert!(glob_match("acme/*", "acme/lib"));
+        assert!(!glob_match("acme/*", "other/lib"));
+        assert!(glob_match("a*b*c", "axbyc"));
+        assert!(!glob_match("a*b*c", "axbyd"));
+        // `packageNameToRegexp` is case-insensitive.
+        assert!(glob_match("ACME/*", "acme/lib"));
+    }
+
+    #[test]
+    fn is_dev_version_matches_dev_prefix_and_suffix() {
+        assert!(is_dev_version("dev-main"));
+        assert!(is_dev_version("1.x-dev"));
+        assert!(is_dev_version("9999999.9999999.9999999.9999999-dev"));
+        assert!(!is_dev_version("1.2.3.0"));
+        assert!(!is_dev_version("1.0.0.0-beta2"));
+    }
+
+    #[test]
+    fn preferred_install_all_dist_never_prefers_source() {
+        let pref = PreferredInstall::All(InstallPreference::Dist);
+        assert!(!pref.prefers_source("acme/lib", true));
+        assert!(!pref.prefers_source("acme/lib", false));
+    }
+
+    #[test]
+    fn preferred_install_auto_prefers_source_only_for_dev_versions() {
+        let pref = PreferredInstall::All(InstallPreference::Auto);
+        assert!(pref.prefers_source("acme/lib", true));
+        assert!(!pref.prefers_source("acme/lib", false));
+    }
+
+    #[test]
+    fn preferred_install_map_matches_first_pattern_falling_back_to_auto() {
+        let pref = PreferredInstall::Map(vec![
+            ("acme/*".to_string(), InstallPreference::Source),
+            ("*".to_string(), InstallPreference::Dist),
+        ]);
+        assert!(pref.prefers_source("acme/lib", false));
+        assert!(!pref.prefers_source("other/lib", false));
+        // No pattern matches: Composer's own default, source for dev.
+        let unmatched =
+            PreferredInstall::Map(vec![("acme/*".to_string(), InstallPreference::Dist)]);
+        assert!(unmatched.prefers_source("other/lib", true));
+        assert!(!unmatched.prefers_source("other/lib", false));
+    }
+
+    #[test]
+    fn preferred_install_at_defaults_to_project_config_without_a_home_dir() {
+        let project = PreferredInstall::All(InstallPreference::Source);
+        let resolved = preferred_install_at(None, &project).unwrap();
+        assert!(resolved.prefers_source("anything/at-all", false));
+    }
+
+    #[test]
+    fn preferred_install_at_merges_global_map_under_project_map() {
+        let home = tempfile::tempdir().unwrap();
+        fs_err::write(
+            home.path().join("config.json"),
+            r#"{"config": {"preferred-install": {"global/*": "source", "*": "dist"}}}"#,
+        )
+        .unwrap();
+        // The project only overrides one pattern; the global map's other
+        // entries, and its wildcard, still apply, with `*` moved last.
+        let project =
+            PreferredInstall::Map(vec![("project/*".to_string(), InstallPreference::Source)]);
+        let resolved = preferred_install_at(Some(home.path()), &project).unwrap();
+
+        assert!(resolved.prefers_source("global/lib", false));
+        assert!(resolved.prefers_source("project/lib", false));
+        assert!(!resolved.prefers_source("other/lib", false));
+    }
+
+    #[test]
+    fn preferred_install_at_project_string_replaces_global_string_outright() {
+        let home = tempfile::tempdir().unwrap();
+        fs_err::write(
+            home.path().join("config.json"),
+            r#"{"config": {"preferred-install": "source"}}"#,
+        )
+        .unwrap();
+        let project = PreferredInstall::All(InstallPreference::Dist);
+        let resolved = preferred_install_at(Some(home.path()), &project).unwrap();
+
+        assert!(!resolved.prefers_source("anything/at-all", true));
     }
 }

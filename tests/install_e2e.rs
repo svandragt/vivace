@@ -428,6 +428,98 @@ fn path_repository_install_matches_composer_and_is_idempotent() {
     );
 }
 
+/// #37a: removing a `target-dir` package must remove its whole install root
+/// (`vendor/symfony/yaml/`), not just the target-dir leaf `install-path`
+/// points at (`vendor/symfony/yaml/Symfony/Component/Yaml`) — Composer
+/// leaves no `Symfony/` scaffold behind either.
+#[test]
+fn removing_a_target_dir_package_clears_its_whole_install_root() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping install_e2e: set VIVACE_TEST_NETWORK=1 to fetch real dists over the network"
+        );
+        return;
+    }
+
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_legacy_sources(project);
+
+    ctx.viv().arg("install").assert().success();
+    assert!(
+        project
+            .join("vendor/symfony/yaml/Symfony/Component/Yaml")
+            .is_dir()
+    );
+
+    for (path, key) in [
+        (project.join("composer.json"), "require"),
+        (project.join("composer.lock"), "packages"),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        if key == "require" {
+            value["require"]
+                .as_object_mut()
+                .unwrap()
+                .remove("symfony/yaml");
+        } else {
+            let packages = value["packages"].as_array_mut().unwrap();
+            packages.retain(|p| p["name"] != "symfony/yaml");
+        }
+        fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+    }
+
+    ctx.viv()
+        .args(["install", "--no-normalize"])
+        .assert()
+        .success();
+
+    assert!(
+        !project.join("vendor/symfony/yaml").exists(),
+        "the whole target-dir install root should be gone, not just the leaf"
+    );
+}
+
+/// #37g: nothing to install/remove, but a `scripts` listener still forces a
+/// full run past the no-op fast path — Composer's own wording for this case
+/// ("Nothing to install, update or remove" then "Generating autoload files"),
+/// not the package-count summary, which would misleadingly read "Installed
+/// 0 packages" for a run that only regenerated the autoloader.
+#[test]
+fn autoload_only_run_uses_composers_nothing_to_install_wording() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+    let json_path = project.join("composer.json");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&json_path).unwrap()).unwrap();
+    json["scripts"] = serde_json::json!({"post-install-cmd": []});
+    fs::write(&json_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 2 packages"));
+
+    // Second run: same lock, same composer.json, so the plan is a no-op —
+    // but the `scripts` listener still forces a full run past the fast path.
+    let second = ctx.viv().arg("install").output().unwrap();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        stdout.contains("Nothing to install, update or remove"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("Generating autoload files"), "{stdout}");
+    assert!(!stdout.contains("Installed"), "stdout: {stdout}");
+}
+
 /// #13: a dist-less, `source.type: git` lock entry. Built against a throwaway
 /// local repo (no `.git` fixture ever committed), isolated from any global
 /// git hooks/config a developer machine may have (`core.hooksPath` rewrites
@@ -547,6 +639,143 @@ fn git_source_package_checks_out_the_locked_reference() {
         .success()
         .stdout(predicates::str::contains("Nothing to install"));
     assert_eq!(git_head(&checkout), reference);
+}
+
+/// #43/#59: a package with *both* a dist and a git `source` still gets
+/// checked out from source, byte-identical `.git/config` and all, when
+/// `config.preferred-install` says so — proven against real Composer 2.10.2
+/// itself, not a hand-derived expectation, resolving the same package from
+/// the same local (`file://`-free, no network) upstream repo both sides
+/// point at.
+#[test]
+fn preferred_install_source_matches_composer_git_config() {
+    if !git_available() {
+        eprintln!("skipping preferred_install_source_matches_composer_git_config: git not on PATH");
+        return;
+    }
+    if Command::new("composer").arg("--version").output().is_err() {
+        eprintln!(
+            "skipping preferred_install_source_matches_composer_git_config: composer is not on \
+             PATH"
+        );
+        return;
+    }
+
+    let upstream = tempfile::tempdir().unwrap();
+    init_upstream_repo(upstream.path());
+    // A stable release, not a `dev-*` branch: the common case for
+    // `preferred-install: source`, and the one whose `.git/config` doesn't
+    // depend on this port's branch-vs-detached-HEAD logic (covered instead
+    // by `source::tests::checkout_git_checks_out_a_local_branch_for_a_dev_version`).
+    git_run(
+        upstream.path(),
+        &["-c", "tag.gpgsign=false", "tag", "1.0.0"],
+    );
+    let reference = git_head(upstream.path());
+    let upstream_url = upstream.path().to_str().unwrap().to_string();
+
+    // Real Composer, resolving a `type: vcs` repository over that same
+    // local path (packagist explicitly disabled, so nothing here ever
+    // touches the network) with `preferred-install: source`.
+    let composer_project = tempfile::tempdir().unwrap();
+    fs::write(
+        composer_project.path().join("composer.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "name": "vivace/fixture-preferred-source",
+            "version": "1.0.0",
+            "repositories": [
+                {"type": "vcs", "url": upstream_url},
+                {"packagist.org": false},
+            ],
+            "require": {"acme/vcslib": "1.0.0"},
+            "config": {"preferred-install": "source"},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let install = Command::new("composer")
+        .args(["install", "--no-interaction"])
+        .current_dir(composer_project.path())
+        .output()
+        .unwrap();
+    assert!(
+        install.status.success(),
+        "composer install failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let want_config = fs::read_to_string(
+        composer_project
+            .path()
+            .join("vendor/acme/vcslib/.git/config"),
+    )
+    .unwrap();
+    let composer_installed: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            composer_project
+                .path()
+                .join("vendor/composer/installed.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let source = composer_installed["packages"][0]["source"].clone();
+    assert_eq!(source["reference"], reference);
+
+    // vivace, from a hand-written lock (no solver, no `repositories`):
+    // the exact `source` block Composer's own VCS driver resolved, so a
+    // byte-identical `.git/config` proves the remotes, refspec and
+    // detached state all match, not just the reference.
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs::write(
+        project.join("composer.json"),
+        r#"{"name": "vivace/fixture-preferred-source", "config": {"preferred-install": "source"}}"#,
+    )
+    .unwrap();
+    let lock = serde_json::json!({
+        "packages": [{
+            "name": "acme/vcslib",
+            "version": "1.0.0",
+            // Never fetched: `preferred-install: source` steers this
+            // package to `source::checkout_git` before the dist is ever
+            // looked at, per `install::run`'s `archive_targets` filter.
+            "dist": {
+                "type": "zip",
+                "url": "https://example.test/never-fetched.zip",
+                "reference": reference,
+                "shasum": "",
+            },
+            "source": source,
+            "type": "library",
+            "autoload": {"psr-4": {"Acme\\Vcs\\": "src/"}},
+        }],
+        "packages-dev": [],
+    });
+    fs::write(
+        project.join("composer.lock"),
+        serde_json::to_string_pretty(&lock).unwrap(),
+    )
+    .unwrap();
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 1 packages"));
+
+    let checkout = project.join("vendor/acme/vcslib");
+    let got_config = fs::read_to_string(checkout.join(".git/config")).unwrap();
+    assert_eq!(
+        got_config, want_config,
+        "vendor/acme/vcslib/.git/config differs from real Composer's"
+    );
+
+    let installed: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project.join("vendor/composer/installed.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(installed["packages"][0]["installation-source"], "source");
 }
 
 /// #51: `composer/installers` and `johnpbloch/wordpress-core-installer`

@@ -165,12 +165,14 @@ fn dump_package(package: &Package) -> Result<Value> {
             // Composer's `LibraryInstaller`: `dist` for every package fetched
             // as an archive (zip/tar/path — a path repo's package still has
             // a `dist` block, just `type: path`), `source` for the dist-less
-            // git-source packages `Package::validate_dist` accepts (#13).
+            // git-source packages `Package::validate_dist` accepts (#13), or
+            // one `config.preferred-install` picked source over dist for,
+            // despite it having both (#43, `package.install_from_source`).
             // A metapackage is never downloaded, so Composer leaves its
             // installation source null and the dumper drops the key.
             "installation-source" if package.r#type == "metapackage" => continue,
             "installation-source" => Value::String(
-                if package.dist.is_none() {
+                if package.dist.is_none() || package.install_from_source {
                     "source"
                 } else {
                     "dist"
@@ -587,6 +589,7 @@ mod tests {
             dev: false,
             raw: json!({}),
             install_dir: None,
+            install_from_source: false,
         }
     }
 
