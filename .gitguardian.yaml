@@ -1,0 +1,10 @@
+# ggshield configuration. The hosted GitGuardian dashboard does not read
+# this file; resolve dashboard incidents there as test credentials.
+version: 2
+secret:
+  ignored_paths:
+    # Unit tests parse hand-written auth.json fixtures such as
+    # {"username": "deploy", "token": "secret"} and assert the encoded
+    # header. They are not real credentials.
+    - src/auth.rs
+    - tests/fixtures/**
