@@ -1,0 +1,11 @@
+---
+source: tests/cli.rs
+assertion_line: 144
+expression: snapshot
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+[CACHE] doesn't look like a vivace cache (unexpected entries); refusing to remove it

@@ -23,6 +23,11 @@ use serde_json::{Map, Value};
 
 use crate::autoload::sort::natcmp;
 
+/// `viv normalize`'s own default, and the indent `viv install`/
+/// `viv dump-autoload` normalize with (they have no `--indent-size` flag of
+/// their own).
+const DEFAULT_INDENT_SIZE: usize = 4;
+
 /// `viv normalize` flags.
 #[derive(Args, Debug, Clone)]
 pub struct NormalizeArgs {
@@ -34,7 +39,7 @@ pub struct NormalizeArgs {
     #[arg(long)]
     pub check: bool,
     /// Spaces per indent level.
-    #[arg(long = "indent-size", default_value_t = 4)]
+    #[arg(long = "indent-size", default_value_t = DEFAULT_INDENT_SIZE)]
     pub indent_size: usize,
 }
 
@@ -125,6 +130,26 @@ pub fn run(args: &NormalizeArgs) -> Result<()> {
     write_atomic(&path, normalized.as_bytes())?;
     out(&format!("Normalized {}", path.display()));
     Ok(())
+}
+
+/// `viv install`/`viv dump-autoload`'s pre-read step (unless `--no-normalize`):
+/// rewrite `composer.json` in place if normalizing it changes any bytes,
+/// using the same default indent as a bare `viv normalize`. A file that
+/// can't be read or fails to parse is left untouched so the caller's own
+/// read/parse reports the real error instead of this one masking it.
+/// Returns whether it rewrote the file, for the caller's one stderr line.
+pub fn maybe_normalize(path: &std::path::Path) -> Result<bool> {
+    let Ok(original) = fs_err::read_to_string(path) else {
+        return Ok(false);
+    };
+    let Ok(normalized) = normalize(&original, DEFAULT_INDENT_SIZE) else {
+        return Ok(false);
+    };
+    if original == normalized {
+        return Ok(false);
+    }
+    write_atomic(path, normalized.as_bytes())?;
+    Ok(true)
 }
 
 /// stdout via `writeln!`, not `println!`, to satisfy the `print_stdout` lint.
@@ -442,5 +467,46 @@ mod tests {
     fn diff_lists_changed_lines() {
         let diff = unified_diff("a\nb\nc", "a\nx\nc");
         assert_eq!(diff, "-b\n+x");
+    }
+
+    #[test]
+    fn maybe_normalize_rewrites_only_when_it_changes_bytes() {
+        let messy = r#"{"license":"MIT","name":"a/b"}"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(messy.as_bytes()).unwrap();
+
+        assert!(maybe_normalize(file.path()).unwrap());
+        let rewritten = fs_err::read_to_string(file.path()).unwrap();
+        assert_eq!(rewritten, normalize(messy, DEFAULT_INDENT_SIZE).unwrap());
+
+        assert!(
+            !maybe_normalize(file.path()).unwrap(),
+            "already-normalized bytes should not be rewritten"
+        );
+    }
+
+    #[test]
+    fn maybe_normalize_leaves_unparsable_json_untouched() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"not json").unwrap();
+
+        assert!(!maybe_normalize(file.path()).unwrap());
+        assert_eq!(fs_err::read_to_string(file.path()).unwrap(), "not json");
+    }
+
+    /// Task #14 follow-up's premise: normalizing only reorders keys and
+    /// whitespace, and `Locker::getContentHash` is computed over a ksorted
+    /// relevant subset, so normalizing a fixture must never change its
+    /// content-hash.
+    #[test]
+    fn normalizing_does_not_change_the_content_hash() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let fixture = manifest.join("tests/fixtures/monolog");
+        let original = fs_err::read_to_string(fixture.join("composer.json")).unwrap();
+        let normalized = normalize(&original, DEFAULT_INDENT_SIZE).unwrap();
+
+        let lock = crate::lock::read_lock(&fixture.join("composer.lock")).unwrap();
+        crate::lock::validate_against_root(&lock, normalized.as_bytes())
+            .expect("normalizing changed content-hash-relevant bytes");
     }
 }

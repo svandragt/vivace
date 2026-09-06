@@ -62,12 +62,87 @@ fn install_dry_run_lists_the_plan() {
     viv_snapshot!(ctx, cmd);
 }
 
+/// #33: a stale `content-hash` is a warning, not a hard error — the lock
+/// still installs (or, here, still prints a dry-run plan).
+#[test]
+fn install_warns_when_the_lock_is_stale() {
+    let ctx = TestContext::new();
+    copy_monolog_sources(ctx.project.path());
+    // Adding a requirement without touching composer.lock changes
+    // composer.json's content-hash without changing what's locked.
+    let composer_json = ctx.project.path().join("composer.json");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&composer_json).unwrap()).unwrap();
+    json["require"]["psr/log"] = "^3.0 || ^2.0".into();
+    fs::write(&composer_json, serde_json::to_vec(&json).unwrap()).unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["install", "--dry-run", "--no-normalize"]);
+    viv_snapshot!(ctx, cmd);
+}
+
+/// #33: a requirement entirely absent from the lock is fatal
+/// (`ERROR_LOCK_FILE_INVALID` in Composer), unlike a stale hash.
+#[test]
+fn install_fails_when_a_requirement_is_missing_from_the_lock() {
+    let ctx = TestContext::new();
+    copy_monolog_sources(ctx.project.path());
+    let composer_json = ctx.project.path().join("composer.json");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&composer_json).unwrap()).unwrap();
+    json["require"]["acme/not-locked"] = "^1.0".into();
+    fs::write(&composer_json, serde_json::to_vec(&json).unwrap()).unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["install", "--dry-run", "--no-normalize"]);
+    viv_snapshot!(ctx, cmd);
+}
+
 #[test]
 fn dump_autoload_without_a_lock_fails() {
     let ctx = TestContext::new();
     let mut cmd = ctx.viv();
     cmd.arg("dump-autoload");
     viv_snapshot!(ctx, cmd);
+}
+
+/// #36: `viv cache prune` removes a stale bucket and reports what it freed.
+#[test]
+fn cache_prune_reports_what_it_removed() {
+    let ctx = TestContext::new();
+    fs::create_dir_all(ctx.cache.path().join("archive-v0")).unwrap();
+    fs::create_dir_all(ctx.cache.path().join("dists-v0")).unwrap();
+    fs::create_dir_all(ctx.cache.path().join("old-bucket-v0")).unwrap();
+    fs::write(ctx.cache.path().join("old-bucket-v0/stray"), "12345").unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["cache", "prune"]);
+    viv_snapshot!(ctx, cmd);
+    assert!(!ctx.cache.path().join("old-bucket-v0").exists());
+}
+
+/// #36: `viv cache clean` removes the whole cache dir outright.
+#[test]
+fn cache_clean_removes_the_cache_dir() {
+    let ctx = TestContext::new();
+    fs::create_dir_all(ctx.cache.path().join("archive-v0")).unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["cache", "clean"]);
+    viv_snapshot!(ctx, cmd);
+    assert!(!ctx.cache.path().exists());
+}
+
+/// #36: a directory that isn't a vivace cache is left alone.
+#[test]
+fn cache_clean_refuses_a_directory_with_foreign_content() {
+    let ctx = TestContext::new();
+    fs::write(ctx.cache.path().join("not-ours.txt"), "keep me").unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["cache", "clean"]);
+    viv_snapshot!(ctx, cmd);
+    assert!(ctx.cache.path().join("not-ours.txt").exists());
 }
 
 /// The fixture's `vendor/` is gitignored and only populated locally by

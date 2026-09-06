@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use clap::Args;
+use clap::{Args, Subcommand};
 use futures::StreamExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,10 @@ use crate::autoload::platform::{IgnorePlatform, PlatformInput, platform_check};
 use crate::bin;
 use crate::fetch;
 use crate::link::{LinkMode, link_tree};
-use crate::lock::{Lock, Package, Root, read_lock, read_root};
+use crate::lock::{
+    self, Lock, MISSING_REQUIREMENTS_HINT, Package, Root, STALE_LOCK_WARNING, read_lock,
+};
+use crate::normalize;
 use crate::plan::{self, Plan};
 use crate::scripts;
 use crate::store::{Store, hex};
@@ -82,6 +85,10 @@ pub struct InstallArgs {
     /// every other root `scripts` listener.
     #[arg(long)]
     pub no_scripts: bool,
+    /// Don't normalize `composer.json` (key order, whitespace) before
+    /// reading it.
+    #[arg(long)]
+    pub no_normalize: bool,
 }
 
 /// `viv dump-autoload` flags: same autoload-shaping knobs as `install`, minus
@@ -117,6 +124,27 @@ pub struct DumpAutoloadArgs {
     /// `scripts` listener.
     #[arg(long)]
     pub no_scripts: bool,
+    /// Don't normalize `composer.json` (key order, whitespace) before
+    /// reading it.
+    #[arg(long)]
+    pub no_normalize: bool,
+}
+
+/// `viv cache` flags: which cache maintenance operation to run.
+#[derive(Args, Debug, Clone)]
+pub struct CacheArgs {
+    #[command(subcommand)]
+    pub command: CacheCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum CacheCommand {
+    /// Remove stale buckets, orphan temp dirs and orphan `.ok` markers;
+    /// every complete, current-bucket archive is kept.
+    Prune,
+    /// Remove the whole cache after confirming it looks like a vivace cache
+    /// (only our own bucket names, or empty); refuses otherwise.
+    Clean,
 }
 
 /// The autoload-shaping flags `install` and `dump-autoload` both accept,
@@ -174,9 +202,32 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
              `composer update` first"
         );
     }
-    let root = read_root(&project_dir.join("composer.json")).context("reading composer.json")?;
+
+    // `--dry-run` promises no filesystem writes, so normalizing (which
+    // rewrites composer.json when it changes) is skipped, not just deferred.
+    let composer_json_path = project_dir.join("composer.json");
+    if !args.no_normalize && !args.dry_run && normalize::maybe_normalize(&composer_json_path)? {
+        warn_out(&format!("Normalized {}", composer_json_path.display()));
+    }
+    let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
+    let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
     let lock = read_lock(&lock_path)?;
     let dev = !args.no_dev;
+
+    // Composer's `Installer::doInstall`: a stale content-hash is only a
+    // warning, but a requirement entirely absent from the lock is fatal
+    // (`ERROR_LOCK_FILE_INVALID`) — vivace has no solver to tell "missing"
+    // from "present but doesn't satisfy the constraint", so it only catches
+    // the former, same as `missing_requirements`'s own doc comment.
+    if !lock::is_fresh(&lock, &composer_json)? {
+        warn_out(STALE_LOCK_WARNING);
+    }
+    let missing = lock::missing_requirements(&lock, &root, dev);
+    if !missing.is_empty() {
+        let mut lines = missing;
+        lines.extend(MISSING_REQUIREMENTS_HINT.iter().map(|s| (*s).to_string()));
+        bail!(lines.join("\n"));
+    }
 
     let selected: Vec<&Package> = lock.packages(dev).collect();
     for package in &selected {
@@ -200,7 +251,6 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         return Ok(());
     }
 
-    let composer_json = fs_err::read(project_dir.join("composer.json"))?;
     let state = State {
         content_hash: lock.content_hash.clone(),
         dev,
@@ -211,7 +261,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     let mut scripts = scripts::Runner::new(
         &composer_json_value,
         &project_dir,
-        &root.config.bin_dir,
+        &root.config.bin_dir(),
         dev,
         args.no_scripts,
     );
@@ -251,7 +301,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         .collect();
     if !missing.is_empty() {
         let auth = Auth::load(&project_dir)?;
-        let fetcher = fetch::Fetcher::new(auth)?;
+        let fetcher = fetch::Fetcher::new(auth)?.secure_http(root.config.secure_http);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
@@ -266,6 +316,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         archive_dirs.extend(downloaded);
     }
 
+    sweep_link_litter(&vendor_dir)?;
     let link_started = Instant::now();
     for package in &plan.install {
         let dir = archive_dirs
@@ -333,7 +384,7 @@ fn regenerate_vendor_metadata(
     state_path: &Path,
     scripts: &mut scripts::Runner,
 ) -> Result<()> {
-    let bin_dir = project_dir.join(&root.config.bin_dir);
+    let bin_dir = project_dir.join(root.config.bin_dir());
     let bin_packages: Vec<(&Package, PathBuf)> = packages
         .iter()
         .map(|p| (*p, package_dir(vendor_dir, p)))
@@ -394,7 +445,14 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
              `composer update` first"
         );
     }
-    let root = read_root(&project_dir.join("composer.json")).context("reading composer.json")?;
+    // Composer's `DumpAutoloadCommand` never checks lock freshness or
+    // missing requirements (unlike `InstallCommand`), so neither does this.
+    let composer_json_path = project_dir.join("composer.json");
+    if !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
+        warn_out(&format!("Normalized {}", composer_json_path.display()));
+    }
+    let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
+    let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
     let lock = read_lock(&lock_path)?;
     let dev = !args.no_dev;
 
@@ -414,7 +472,6 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
         }
     }
 
-    let composer_json = fs_err::read(project_dir.join("composer.json"))?;
     let state = State {
         content_hash: lock.content_hash.clone(),
         dev,
@@ -427,7 +484,7 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
     let mut scripts = scripts::Runner::new(
         &composer_json_value,
         &project_dir,
-        &root.config.bin_dir,
+        &root.config.bin_dir(),
         dev,
         args.no_scripts,
     );
@@ -447,6 +504,46 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
     )?;
 
     out("Generated autoload files");
+    Ok(())
+}
+
+/// `viv cache prune`/`viv cache clean`.
+pub fn cache(args: &CacheArgs, cache_dir: Option<&Path>) -> Result<()> {
+    let cache_dir = match cache_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => default_cache_dir()?,
+    };
+    match args.command {
+        CacheCommand::Prune => {
+            let store = Store::open(&cache_dir)?;
+            let report = store.prune()?;
+            out(&format!(
+                "Removed {} entr{} ({} bytes) from {}",
+                report.entries,
+                if report.entries == 1 { "y" } else { "ies" },
+                report.bytes,
+                cache_dir.display()
+            ));
+        }
+        CacheCommand::Clean => {
+            if !cache_dir.exists() {
+                out("Nothing to clean");
+                return Ok(());
+            }
+            if !Store::looks_like_cache(&cache_dir)? {
+                bail!(
+                    "{} doesn't look like a vivace cache (unexpected entries); refusing to \
+                     remove it",
+                    cache_dir.display()
+                );
+            }
+            Store::open(&cache_dir)?.clean()?;
+            out(&format!(
+                "Removed the vivace cache at {}",
+                cache_dir.display()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -612,6 +709,38 @@ async fn fetch_missing(
     Ok(result)
 }
 
+/// #36: an install interrupted (Ctrl-C) between `link_tree`'s two renames
+/// leaves a `.tmp*`/`.old-*` sibling next to a package dir, under
+/// `vendor/<vendor>/`; sweep every such sibling once per install, before
+/// linking, rather than leaving it there until it happens to collide with a
+/// later `link_tree`'s own temp name. Only vivace's own temp-name patterns
+/// are removed — a legitimate dotfile a package or Composer left behind is
+/// never touched.
+fn sweep_link_litter(vendor_dir: &Path) -> Result<()> {
+    if !vendor_dir.is_dir() {
+        return Ok(());
+    }
+    for namespace in fs_err::read_dir(vendor_dir)? {
+        let namespace = namespace?;
+        if !namespace.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in fs_err::read_dir(namespace.path())? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(".tmp") && !name.starts_with(".old-") {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                fs_err::remove_dir_all(entry.path())?;
+            } else {
+                fs_err::remove_file(entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `vendor/<name>`, plus the legacy `target-dir` nesting when the package
 /// still declares one.
 fn package_dir(vendor_dir: &Path, package: &Package) -> PathBuf {
@@ -717,4 +846,44 @@ fn out(message: &str) {
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint.
 fn warn_out(message: &str) {
     let _ = writeln!(std::io::stderr().lock(), "{message}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sweep_link_litter;
+
+    #[test]
+    fn sweep_link_litter_removes_only_its_own_temp_patterns() {
+        let vendor_dir = tempfile::tempdir().unwrap();
+        let acme = vendor_dir.path().join("acme");
+        fs_err::create_dir_all(acme.join("pkg")).unwrap();
+        fs_err::write(acme.join("pkg/A.php"), "<?php").unwrap();
+        fs_err::create_dir_all(acme.join(".tmpABCDEF")).unwrap();
+        fs_err::create_dir_all(acme.join(".old-123456")).unwrap();
+        fs_err::write(acme.join(".tmpfile"), "x").unwrap();
+        // Not ours: a legitimate dotfile a package left behind must survive.
+        fs_err::write(acme.join(".gitkeep"), "").unwrap();
+
+        sweep_link_litter(vendor_dir.path()).unwrap();
+
+        let remaining: Vec<String> = fs_err::read_dir(&acme)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            {
+                let mut sorted = remaining;
+                sorted.sort();
+                sorted
+            },
+            [".gitkeep", "pkg"]
+        );
+    }
+
+    #[test]
+    fn sweep_link_litter_is_a_no_op_on_a_missing_vendor_dir() {
+        let vendor_dir = tempfile::tempdir().unwrap();
+        let missing = vendor_dir.path().join("does-not-exist");
+        sweep_link_litter(&missing).unwrap();
+    }
 }

@@ -126,9 +126,18 @@ pub fn read_lock(path: &Path) -> Result<Lock> {
         .map(str::to_owned);
 
     let mut packages = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for (key, dev) in [("packages", false), ("packages-dev", true)] {
         for entry in raw.get(key).and_then(Value::as_array).into_iter().flatten() {
-            packages.push(parse_package(entry, dev, path)?);
+            let package = parse_package(entry, dev, path)?;
+            if !seen.insert(package.name.clone()) {
+                bail!(
+                    "{}: package \"{}\" appears more than once in packages/packages-dev",
+                    path.display(),
+                    package.name
+                );
+            }
+            packages.push(package);
         }
     }
 
@@ -224,10 +233,11 @@ pub struct Config {
     pub vendor_dir: String,
     #[serde(rename = "prepend-autoloader")]
     pub prepend_autoloader: bool,
-    /// `vendor/bin` by default, independent of `vendor-dir`, as Composer
-    /// has it (see `bin::generate`, `src/bin.rs`).
+    /// `None` when `composer.json` doesn't set `bin-dir`: resolved to
+    /// `{vendor-dir}/bin` by [`Config::bin_dir`], not a static
+    /// `"vendor/bin"`, since Composer derives it from `vendor-dir` too.
     #[serde(rename = "bin-dir")]
-    pub bin_dir: String,
+    pub bin_dir: Option<String>,
     #[serde(rename = "bin-compat")]
     pub bin_compat: crate::bin::BinCompat,
     /// `composer install -o`'s default: also classmap-scan PSR-0/PSR-4 dirs.
@@ -245,6 +255,10 @@ pub struct Config {
     /// `$loader->setUseIncludePath(true)` in `autoload_real.php`.
     #[serde(rename = "use-include-path")]
     pub use_include_path: bool,
+    /// `false` lets dist/repository URLs downgrade to plain `http`
+    /// (`fetch::Fetcher::secure_http`); Composer defaults this to `true`.
+    #[serde(rename = "secure-http")]
+    pub secure_http: bool,
 }
 
 impl Default for Config {
@@ -254,14 +268,27 @@ impl Default for Config {
             platform_check: PlatformCheck::PhpOnly,
             vendor_dir: "vendor".to_string(),
             prepend_autoloader: true,
-            bin_dir: "vendor/bin".to_string(),
+            bin_dir: None,
             bin_compat: crate::bin::BinCompat::Auto,
             optimize_autoloader: false,
             classmap_authoritative: false,
             apcu_autoloader: false,
             apcu_autoloader_prefix: None,
             use_include_path: false,
+            secure_http: true,
         }
+    }
+}
+
+impl Config {
+    /// `config.bin-dir`, resolved: the explicit value when set, else
+    /// `{vendor-dir}/bin` (Composer's `Config::get('bin-dir')` default,
+    /// which is defined relative to `vendor-dir`, not a literal
+    /// `"vendor/bin"`).
+    pub fn bin_dir(&self) -> String {
+        self.bin_dir
+            .clone()
+            .unwrap_or_else(|| format!("{}/bin", self.vendor_dir))
     }
 }
 
@@ -278,6 +305,8 @@ pub struct Root {
     pub autoload_dev: Option<Value>,
     #[serde(default)]
     pub require: Map<String, Value>,
+    #[serde(rename = "require-dev", default)]
+    pub require_dev: Map<String, Value>,
     #[serde(default)]
     pub replace: Map<String, Value>,
     #[serde(default)]
@@ -294,8 +323,16 @@ pub struct Root {
 
 /// Read and parse the root `composer.json`.
 pub fn read_root(path: &Path) -> Result<Root> {
-    let content = fs_err::read_to_string(path)?;
-    serde_json::from_str(&content).with_context(|| format!("parsing {} as JSON", path.display()))
+    let content = fs_err::read(path)?;
+    parse_root(&content).with_context(|| format!("parsing {} as JSON", path.display()))
+}
+
+/// Parse an already-read root `composer.json`'s bytes, for callers
+/// (`install::run`/`dump_autoload`) that need the same bytes for other
+/// checks too (lock freshness, the `.vivace-state` hash) and shouldn't read
+/// the file twice.
+pub fn parse_root(bytes: &[u8]) -> Result<Root> {
+    serde_json::from_slice(bytes).context("parsing as JSON")
 }
 
 /// Composer's `Locker::getContentHash`: an md5 of the sorted, compact JSON
@@ -410,6 +447,11 @@ fn write_php_json_string(s: &str, out: &mut String) {
 /// Composer's `Locker::isFresh`: does `lock`'s `content-hash` still match
 /// `root_json` (the root `composer.json` bytes)? A lock without a
 /// `content-hash` at all has nothing to compare, so it is treated as fresh.
+///
+/// Kept alongside [`is_fresh`] (rather than replaced by it) because a stale
+/// hash is only a warning in real Composer (`Installer::doInstall`), but
+/// `tests/support/mod.rs`'s installer-fixture rig uses this `Err`-on-stale
+/// shape to stand in for a fixture's real (solver) rejection reason.
 pub fn validate_against_root(lock: &Lock, root_json: &[u8]) -> Result<()> {
     let Some(locked_hash) = &lock.content_hash else {
         return Ok(());
@@ -424,6 +466,19 @@ pub fn validate_against_root(lock: &Lock, root_json: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// `validate_against_root` as a plain bool, for callers (`install::run`)
+/// that only need to decide whether to print Composer's exact stale-lock
+/// warning, not to bail.
+pub fn is_fresh(lock: &Lock, root_json: &[u8]) -> Result<bool> {
+    Ok(validate_against_root(lock, root_json).is_ok())
+}
+
+/// Composer's exact wording (`Installer::doInstall`) for a stale
+/// `content-hash`, printed to stderr and continued past, never fatal.
+pub const STALE_LOCK_WARNING: &str = "Warning: The lock file is not up to date with the \
+     latest changes in composer.json. You may be getting outdated dependencies. It is \
+     recommended that you run `composer update` or `composer update <package name>`.";
+
 /// Composer's root package names that are platform, not real packages
 /// (`PlatformRepository::isPlatformPackage`, the subset vivace cares about).
 fn is_platform_package(name: &str) -> bool {
@@ -436,24 +491,48 @@ fn is_platform_package(name: &str) -> bool {
 }
 
 /// Composer's `Locker::getMissingRequirementInfo`, presence-only: is each of
-/// `root`'s required packages locked at all? Whether the locked version
-/// actually *satisfies* the root constraint needs a semver solver, which
-/// vivace's no-dependency-resolution planner deliberately doesn't have; that
-/// half of Composer's check is out of scope for v0.1.
+/// `root`'s required packages (and, when `dev`, `require-dev` too) locked at
+/// all? Whether the locked version actually *satisfies* the root constraint
+/// needs a semver solver, which vivace's no-dependency-resolution planner
+/// deliberately doesn't have; that half of Composer's check is out of scope
+/// for v0.1.
 pub fn missing_requirements(lock: &Lock, root: &Root, dev: bool) -> Vec<String> {
     let locked: std::collections::HashSet<String> =
         lock.packages(dev).map(|p| p.name.clone()).collect();
-    root.require
-        .keys()
-        .filter(|name| !is_platform_package(name))
-        .filter(|name| !locked.contains(&name.to_lowercase()))
-        .map(|name| format!("- Required package \"{name}\" is not present in the lock file."))
+    let mut sets: Vec<(&str, &Map<String, Value>)> = vec![("Required", &root.require)];
+    if dev {
+        sets.push(("Required (in require-dev)", &root.require_dev));
+    }
+    sets.into_iter()
+        .flat_map(|(description, requires)| {
+            requires
+                .keys()
+                .filter(|name| !is_platform_package(name))
+                .filter(|name| !locked.contains(&name.to_lowercase()))
+                .map(move |name| {
+                    format!("- {description} package \"{name}\" is not present in the lock file.")
+                })
+        })
         .collect()
 }
 
+/// Composer's three trailing lines (`Locker::getMissingRequirementInfo`),
+/// appended after `missing_requirements`'s own lines when it isn't empty.
+/// Kept separate so `tests/support/mod.rs`'s installer-fixture rig, which
+/// compares `missing_requirements`'s raw lines against a fixture's
+/// `EXPECT-OUTPUT`, doesn't have to filter these out.
+pub const MISSING_REQUIREMENTS_HINT: [&str; 3] = [
+    "This usually happens when composer files are incorrectly merged or the composer.json \
+     file is manually edited.",
+    "Read more about correctly resolving merge conflicts \
+     https://getcomposer.org/doc/articles/resolving-merge-conflicts.md",
+    "and prefer using the \"require\" command over editing the composer.json file directly \
+     https://getcomposer.org/doc/03-cli.md#require-r",
+];
+
 #[cfg(test)]
 mod tests {
-    use super::{PlatformCheck, read_lock, read_root};
+    use super::{PlatformCheck, is_fresh, missing_requirements, read_lock, read_root};
     use serde_json::Value;
     use std::io::Write as _;
     use std::path::Path;
@@ -602,6 +681,79 @@ mod tests {
 
         let root = read_root(file.path()).unwrap();
         assert_eq!(root.config.vendor_dir, "vendor");
+    }
+
+    #[test]
+    fn read_lock_rejects_a_duplicate_package_name() {
+        let lock_json = r#"{
+            "packages": [
+                {"name": "acme/tool", "version": "1.0.0"},
+                {"name": "acme/tool", "version": "2.0.0"}
+            ],
+            "packages-dev": []
+        }"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(lock_json.as_bytes()).unwrap();
+
+        let err = read_lock(file.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("acme/tool"),
+            "error should name the duplicate package: {err}"
+        );
+    }
+
+    #[test]
+    fn read_lock_rejects_a_duplicate_across_packages_and_packages_dev() {
+        let lock_json = r#"{
+            "packages": [
+                {"name": "acme/tool", "version": "1.0.0"}
+            ],
+            "packages-dev": [
+                {"name": "Acme/Tool", "version": "2.0.0"}
+            ]
+        }"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(lock_json.as_bytes()).unwrap();
+
+        let err = read_lock(file.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("acme/tool"),
+            "error should name the duplicate package: {err}"
+        );
+    }
+
+    #[test]
+    fn secure_http_defaults_true_and_is_overridable() {
+        let root = read_root(&fixture("composer.json")).unwrap();
+        assert!(root.config.secure_http);
+
+        let json = r#"{"config": {"secure-http": false}}"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+        let root = read_root(file.path()).unwrap();
+        assert!(!root.config.secure_http);
+    }
+
+    #[test]
+    fn bin_dir_defaults_to_vendor_dir_slash_bin() {
+        // Real repro (#30): a project with a custom vendor-dir wrote bin
+        // proxies to a stray top-level vendor/bin instead of following it.
+        let json = r#"{"config": {"vendor-dir": "site/www/vendor"}}"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let root = read_root(file.path()).unwrap();
+        assert_eq!(root.config.bin_dir(), "site/www/vendor/bin");
+    }
+
+    #[test]
+    fn bin_dir_explicit_stays_project_relative() {
+        let json = r#"{"config": {"vendor-dir": "site/www/vendor", "bin-dir": "scripts/bin"}}"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let root = read_root(file.path()).unwrap();
+        assert_eq!(root.config.bin_dir(), "scripts/bin");
     }
 
     #[test]
@@ -770,6 +922,66 @@ mod tests {
         assert_eq!(
             super::content_hash(nested_json).unwrap(),
             "91715c32a7cd35f43be62e33f01ba1a0"
+        );
+    }
+
+    #[test]
+    fn is_fresh_true_when_hash_matches_and_false_on_mismatch() {
+        let root_json = fs_err::read(fixture("composer.json")).unwrap();
+        let lock = read_lock(&fixture("composer.lock")).unwrap();
+        assert!(is_fresh(&lock, &root_json).unwrap());
+
+        let mut stale = lock.clone();
+        stale.content_hash = Some("0".repeat(32));
+        assert!(!is_fresh(&stale, &root_json).unwrap());
+    }
+
+    #[test]
+    fn is_fresh_treats_a_lock_without_a_content_hash_as_fresh() {
+        let lock_json = r#"{"packages": [], "packages-dev": []}"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(lock_json.as_bytes()).unwrap();
+        let lock = read_lock(file.path()).unwrap();
+        assert!(is_fresh(&lock, b"{}").unwrap());
+    }
+
+    #[test]
+    fn missing_requirements_names_absent_root_and_dev_requires() {
+        let lock_json = r#"{
+            "packages": [{"name": "psr/log", "version": "1.0.0"}],
+            "packages-dev": []
+        }"#;
+        let mut lock_file = tempfile::NamedTempFile::new().unwrap();
+        lock_file.write_all(lock_json.as_bytes()).unwrap();
+        let lock = read_lock(lock_file.path()).unwrap();
+
+        let root_json = r#"{
+            "require": {"psr/log": "^1.0", "acme/missing": "^1.0", "php": "^8.2"},
+            "require-dev": {"acme/missing-dev": "^1.0"}
+        }"#;
+        let mut root_file = tempfile::NamedTempFile::new().unwrap();
+        root_file.write_all(root_json.as_bytes()).unwrap();
+        let root = read_root(root_file.path()).unwrap();
+
+        let no_dev = missing_requirements(&lock, &root, false);
+        assert_eq!(no_dev.len(), 1);
+        assert!(no_dev[0].contains("Required package \"acme/missing\""));
+
+        let with_dev = missing_requirements(&lock, &root, true);
+        assert!(
+            with_dev
+                .iter()
+                .any(|line| line.contains("Required (in require-dev) package \"acme/missing-dev\""))
+        );
+    }
+
+    #[test]
+    fn missing_requirements_is_empty_when_everything_is_locked() {
+        let lock = read_lock(&fixture("composer.lock")).unwrap();
+        let root = read_root(&fixture("composer.json")).unwrap();
+        assert_eq!(
+            missing_requirements(&lock, &root, true),
+            Vec::<String>::new()
         );
     }
 }

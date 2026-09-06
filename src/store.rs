@@ -191,7 +191,7 @@ impl Store {
     }
 
     /// Remove every top-level entry that is not a current bucket or `.lock`.
-    pub fn prune(&self) -> Result<()> {
+    pub fn prune(&self) -> Result<PruneReport> {
         self.lock
             .file()
             .lock()
@@ -201,7 +201,8 @@ impl Store {
         result
     }
 
-    fn prune_locked(&self) -> Result<()> {
+    fn prune_locked(&self) -> Result<PruneReport> {
+        let mut report = PruneReport::default();
         for entry in fs_err::read_dir(&self.root)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -211,6 +212,7 @@ impl Store {
             {
                 continue;
             }
+            report.add(&entry.path())?;
             if entry.file_type()?.is_dir() {
                 fs_err::remove_dir_all(entry.path())?;
             } else {
@@ -229,14 +231,80 @@ impl Store {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if name.starts_with(".tmp") || name.starts_with(".stale-") {
+                    report.add(&entry.path())?;
                     fs_err::remove_dir_all(entry.path())?;
                 } else if let Some(id) = name.strip_suffix(".ok")
                     && !archive_dir.join(id).is_dir()
                 {
+                    report.add(&entry.path())?;
                     fs_err::remove_file(entry.path())?;
                 }
             }
         }
+        Ok(report)
+    }
+
+    /// `viv cache clean`'s safety check, run before opening (and so before
+    /// touching) `dir` at all: a missing or empty directory is fine to
+    /// remove outright, but a directory holding anything other than our own
+    /// bucket names is refused, in case `--cache-dir`/`$XDG_CACHE_HOME`
+    /// points somewhere that isn't actually a vivace cache.
+    pub fn looks_like_cache(dir: &Path) -> Result<bool> {
+        if !dir.is_dir() {
+            return Ok(true);
+        }
+        for entry in fs_err::read_dir(dir)? {
+            let name = entry?.file_name();
+            if ![ARCHIVE_BUCKET, DISTS_BUCKET, LOCK_FILE]
+                .iter()
+                .any(|keep| name == *keep)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Remove everything under the store root, then the root directory
+    /// itself. Exclusive-locked like `prune`, but (there being nothing left
+    /// to open it against afterward) doesn't restore the shared lock.
+    pub fn clean(&self) -> Result<()> {
+        self.lock
+            .file()
+            .lock()
+            .with_context(|| format!("locking store {} exclusively", self.root.display()))?;
+        for entry in fs_err::read_dir(&self.root)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                fs_err::remove_dir_all(entry.path())?;
+            } else {
+                fs_err::remove_file(entry.path())?;
+            }
+        }
+        fs_err::remove_dir(&self.root)?;
+        Ok(())
+    }
+}
+
+/// What [`Store::prune`] removed, for the caller's own report line
+/// (`viv cache prune`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PruneReport {
+    pub entries: u64,
+    pub bytes: u64,
+}
+
+impl PruneReport {
+    /// Count `path` (file or dir, walked recursively for its byte total)
+    /// before it's removed, as one entry.
+    fn add(&mut self, path: &Path) -> Result<()> {
+        let bytes = if path.is_dir() {
+            count_tree(path)?.1
+        } else {
+            fs_err::metadata(path)?.len()
+        };
+        self.entries += 1;
+        self.bytes += bytes;
         Ok(())
     }
 }
@@ -772,7 +840,8 @@ mod tests {
             .add_zip(&package("acme/pkg", "abc"), &zip_of(&[("f", b"1", None)]))
             .unwrap();
         fs_err::create_dir(root.path().join("archive-v0/.tmpstray")).unwrap();
-        store.prune().unwrap();
+        let report = store.prune().unwrap();
+        assert_eq!(report.entries, 1);
         assert!(!root.path().join("archive-v0/.tmpstray").exists());
         // The one real archive dir plus its `.ok` marker survive.
         assert_eq!(
@@ -792,7 +861,9 @@ mod tests {
             .unwrap();
         let orphan = root.path().join("archive-v0/deadbeef.ok");
         fs_err::write(&orphan, "files=0 bytes=0\n").unwrap();
-        store.prune().unwrap();
+        let report = store.prune().unwrap();
+        assert_eq!(report.entries, 1);
+        assert_eq!(report.bytes, "files=0 bytes=0\n".len() as u64);
         assert!(!orphan.exists());
         assert!(archive_marker(&dir).is_file(), "the real marker survives");
     }
@@ -806,12 +877,54 @@ mod tests {
             .unwrap();
         fs_err::create_dir(root.path().join("old-bucket-v0")).unwrap();
         fs_err::write(root.path().join("stray.txt"), "x").unwrap();
-        store.prune().unwrap();
+        let report = store.prune().unwrap();
+        assert_eq!(report.entries, 2, "old-bucket-v0 and stray.txt");
+        assert_eq!(
+            report.bytes, 1,
+            "stray.txt's one byte; old-bucket-v0 is empty"
+        );
         assert!(!root.path().join("old-bucket-v0").exists());
         assert!(!root.path().join("stray.txt").exists());
         assert!(root.path().join("archive-v0").is_dir());
         assert!(root.path().join("dists-v0").is_dir());
         assert!(root.path().join(".lock").is_file());
+    }
+
+    #[test]
+    fn looks_like_cache_accepts_missing_and_empty_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("does-not-exist");
+        assert!(Store::looks_like_cache(&missing).unwrap());
+
+        let empty = root.path().join("empty");
+        fs_err::create_dir(&empty).unwrap();
+        assert!(Store::looks_like_cache(&empty).unwrap());
+    }
+
+    #[test]
+    fn looks_like_cache_accepts_our_own_buckets_and_rejects_foreign_content() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        store
+            .add_zip(&package("acme/pkg", "abc"), &zip_of(&[("f", b"1", None)]))
+            .unwrap();
+        assert!(Store::looks_like_cache(root.path()).unwrap());
+
+        fs_err::write(root.path().join("Documents.docx"), "not ours").unwrap();
+        assert!(!Store::looks_like_cache(root.path()).unwrap());
+    }
+
+    #[test]
+    fn clean_removes_the_whole_cache_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let cache_dir = root.path().join("cache");
+        let store = Store::open(&cache_dir).unwrap();
+        store
+            .add_zip(&package("acme/pkg", "abc"), &zip_of(&[("f", b"1", None)]))
+            .unwrap();
+
+        store.clean().unwrap();
+        assert!(!cache_dir.exists(), "the cache dir itself should be gone");
     }
 
     #[test]

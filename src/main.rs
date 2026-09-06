@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use vivace::install::{self, DumpAutoloadArgs, InstallArgs};
+use vivace::install::{self, CacheArgs, DumpAutoloadArgs, InstallArgs};
 use vivace::normalize::{self, NormalizeArgs};
 
 #[derive(Parser)]
@@ -43,6 +43,8 @@ enum Command {
     /// Normalize composer.json's key order and formatting, a native
     /// `composer normalize` (ergebnis/composer-normalize).
     Normalize(NormalizeArgs),
+    /// Cache maintenance: prune stale entries, or remove the cache outright.
+    Cache(CacheArgs),
 }
 
 fn main() -> ExitCode {
@@ -67,6 +69,13 @@ fn main() -> ExitCode {
             }
         },
         Command::Normalize(args) => match normalize::run(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::Cache(args) => match install::cache(&args, cli.cache_dir.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 err_out(&format!("{err:#}"));

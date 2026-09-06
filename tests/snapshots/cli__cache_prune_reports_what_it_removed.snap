@@ -1,0 +1,11 @@
+---
+source: tests/cli.rs
+assertion_line: 120
+expression: snapshot
+---
+success: true
+exit_code: 0
+----- stdout -----
+Removed 1 entry (5 bytes) from [CACHE]
+
+----- stderr -----
