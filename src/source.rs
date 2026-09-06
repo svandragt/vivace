@@ -625,6 +625,51 @@ mod tests {
         assert_eq!(branch_name(&dest), None);
     }
 
+    /// Regression: `source.url` must land in both remotes verbatim even
+    /// when it points through a symlinked ancestor, not the canonicalised
+    /// form (macOS's `/var` -> `/private/var` bit both Composer and viv,
+    /// but only viv canonicalised before writing the remote urls).
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn checkout_git_writes_remotes_verbatim_through_a_symlinked_url() {
+        if !git_available() {
+            eprintln!(
+                "skipping checkout_git_writes_remotes_verbatim_through_a_symlinked_url: git not \
+                 on PATH"
+            );
+            return;
+        }
+        let real_root = tempfile::tempdir().unwrap();
+        init_repo(real_root.path());
+        let reference = head(real_root.path());
+
+        let link_root = tempfile::tempdir().unwrap();
+        let link = link_root.path().join("alias");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(real_root.path(), &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(real_root.path(), &link).unwrap();
+        let url = link.to_str().unwrap().to_string();
+
+        let cache = tempfile::tempdir().unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        let dest = vendor.path().join("acme/vcslib");
+
+        let package = package(
+            "acme/vcslib",
+            None,
+            Some(Source {
+                r#type: "git".into(),
+                url: url.clone(),
+                reference: Some(reference),
+            }),
+        );
+        checkout_git(cache.path(), &package, &dest).unwrap();
+
+        assert_eq!(remote_url(&dest, "origin"), url);
+        assert_eq!(remote_url(&dest, "composer"), url);
+    }
+
     #[test]
     #[allow(clippy::print_stderr)]
     fn checkout_git_checks_out_a_local_branch_for_a_dev_version() {

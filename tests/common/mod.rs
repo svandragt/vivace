@@ -42,6 +42,11 @@ impl TestContext {
         filters.extend(path_filter(self.project.path(), "[PROJECT]"));
         filters.extend(path_filter(self.cache.path(), "[CACHE]"));
         filters.push((r"\d+\.\d+s".to_string(), "[TIME]".to_string()));
+        // Longest pattern first: a canonicalised path (e.g. macOS's
+        // `/private/var/...`) contains the raw path (`/var/...`) as a
+        // substring, so applying the raw filter first would match inside
+        // the canonical one and leave a stray `/private` prefix behind.
+        filters.sort_by_key(|(pattern, _)| std::cmp::Reverse(pattern.len()));
         filters
     }
 }
@@ -130,5 +135,19 @@ mod tests {
                 .0
                 .contains(&regex::escape(&canonical.display().to_string()))
         );
+
+        // Applying the filters longest-first (as `TestContext::filters`
+        // does) to the canonical path must consume it entirely, leaving no
+        // `/private`-style prefix behind.
+        let mut sorted = filters;
+        sorted.sort_by_key(|(pattern, _)| std::cmp::Reverse(pattern.len()));
+        let mut text = format!("{}/x", canonical.display());
+        for (pattern, replacement) in &sorted {
+            text = regex::Regex::new(pattern)
+                .expect("valid filter regex")
+                .replace_all(&text, replacement.as_str())
+                .into_owned();
+        }
+        assert_eq!(text, "[PROJECT]/x");
     }
 }
