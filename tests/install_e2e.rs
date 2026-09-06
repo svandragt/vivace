@@ -22,6 +22,10 @@ fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog")
 }
 
+fn legacy_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy")
+}
+
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {
@@ -41,6 +45,15 @@ fn copy_monolog_sources(project: &Path) {
     }
     for dir in ["src", "lib"] {
         copy_tree(&fixture().join(dir), &project.join(dir));
+    }
+}
+
+fn copy_legacy_sources(project: &Path) {
+    for name in ["composer.json", "composer.lock"] {
+        fs::copy(legacy_fixture().join(name), project.join(name)).unwrap();
+    }
+    for dir in ["src-psr0", "src-psr4", "tests-legacy"] {
+        copy_tree(&legacy_fixture().join(dir), &project.join(dir));
     }
 }
 
@@ -135,6 +148,122 @@ var_dump(Fixture\Legacy\Mode::On->value, fixture_helper());"#,
     assert!(
         output.status.success(),
         "php autoload smoke test failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Autoload shapes the monolog fixture doesn't reach: old-style PSR-0
+/// (`pear/console_getopt`), PSR-0 with `target-dir` (`symfony/yaml` 2.6),
+/// `files`-only packages (`swiftmailer/swiftmailer`), `files` ordered across
+/// several dependencies (the `symfony/polyfill-*` family), a large real
+/// classmap (`phpunit/phpunit`'s dependency tree), `exclude-from-classmap`
+/// (the root package's own dev classmap), and `vendor/bin` proxies
+/// (`phpunit`, `php-parse`).
+#[test]
+fn legacy_install_matches_composer_and_is_idempotent() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping install_e2e: set VIVACE_TEST_NETWORK=1 to fetch real dists over the network"
+        );
+        return;
+    }
+
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_legacy_sources(project);
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 37 packages"));
+
+    assert_matches_expected(
+        &legacy_fixture().join("expected/dev"),
+        &project.join("vendor"),
+    );
+
+    // Re-run: nothing changed, so it should take the no-op path.
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Nothing to install"));
+
+    ctx.viv().args(["install", "--no-dev"]).assert().success();
+    assert_matches_expected(
+        &legacy_fixture().join("expected/no-dev"),
+        &project.join("vendor"),
+    );
+
+    // Hardlinked vendor files share the store's read-only mode.
+    let mode = fs::metadata(project.join("vendor/pear/console_getopt/composer.json"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o444, "hardlinked vendor files should be read-only");
+
+    if Command::new("php").arg("--version").output().is_err() {
+        eprintln!("skipping php autoload smoke test: php is not on PATH");
+        return;
+    }
+
+    // --no-dev: phpunit and its vendor/bin proxies must be gone.
+    assert!(!project.join("vendor/bin/phpunit").exists());
+    let output = Command::new("php")
+        .arg("-r")
+        .arg(
+            r#"require "vendor/autoload.php";
+new Console_Getopt();
+new HTMLPurifier();
+Symfony\Component\Yaml\Yaml::parse("a: 1");
+Ramsey\Uuid\Uuid::uuid4();
+mb_strlen("hi");
+if (class_exists("PHPUnit\Framework\TestCase")) {
+    throw new Exception("phpunit should not autoload in --no-dev");
+}
+new Legacy\Thing();
+new App\Legacy\Foo();"#,
+        )
+        .current_dir(project)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "php --no-dev autoload smoke test failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Back to dev: phpunit and its bin proxies return.
+    ctx.viv().arg("install").assert().success();
+    assert_matches_expected(
+        &legacy_fixture().join("expected/dev"),
+        &project.join("vendor"),
+    );
+
+    let output = Command::new("php")
+        .arg("-r")
+        .arg(
+            r#"require "vendor/autoload.php";
+new Console_Getopt();
+new Swift_Message();
+new HTMLPurifier();
+Symfony\Component\Yaml\Yaml::parse("a: 1");
+Ramsey\Uuid\Uuid::uuid4();
+mb_strlen("hi");
+if (!class_exists("PHPUnit\Framework\TestCase")) {
+    throw new Exception("phpunit should autoload in dev mode");
+}
+new Legacy\Thing();
+new App\Legacy\Foo();"#,
+        )
+        .current_dir(project)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "php dev autoload smoke test failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

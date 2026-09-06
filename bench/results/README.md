@@ -37,6 +37,44 @@ Notes
 
 Raw hyperfine JSON: `composer.json`, `riff.json`, `viv.json`, `presto.json`.
 
+## Cold install: closing the gap to Riff (#1)
+
+Debug timings (`RUST_LOG=vivace=debug`) on the cold path showed the fetch
+phase completely dominating: hashing and extraction together summed to under
+300 ms across all 101 packages, while summed download time was tens of
+seconds, spread over only `CONCURRENCY` (16) requests in flight. `viv` was
+concurrency-bound, not CPU-bound.
+
+Two changes, `bench/run.sh bench/laravel riff viv`, three runs each, same
+session (network conditions vary between sessions, so compare cold numbers
+within this table, not against the one above):
+
+| Change | viv cold |
+|---|---|
+| before (concurrency 16, extraction inline in the download loop) | 3.98 s ± 0.12 s |
+| after (concurrency 64, extraction overlapped via a bounded `JoinSet`) | 2.29 s ± 0.08 s |
+| riff 0.0.7 (same session) | 1.69 s ± 0.11 s |
+
+What changed, in `src/install.rs`:
+
+- `CONCURRENCY` 16 → 64: downloads are a GitHub zipball round-trip each, not
+  CPU work, so more requests in flight shortens the cold path close to
+  linearly until the host's own limits take over; 64 measured near that knee
+  with low run-to-run variance (128 measured about the same but noisier).
+- `fetch_missing` spawns each `Store::add_zip` extraction onto a bounded
+  `JoinSet` (8 concurrent) instead of awaiting it inline: awaiting extraction
+  inline stalls `stream.next()`, and `buffer_unordered`'s in-flight downloads
+  only make progress while their stream is polled, so every extraction (a few
+  ms each, ~300 ms total) was serialising onto the critical path for no
+  reason.
+- HTTP/2 is already negotiated to both `api.github.com` and
+  `codeload.github.com` (`RUST_LOG=h2=trace` shows the client SETTINGS
+  handshake), and sha256 hashing was already negligible, so neither needed
+  touching.
+
+Raw hyperfine JSON for this comparison: `viv-cold-before.json`,
+`viv-cold-after.json`, `riff-cold.json`.
+
 ## Real project: 105 packages, private repositories
 
 A WordPress project with private GitHub dists and a private Composer

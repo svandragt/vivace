@@ -97,15 +97,27 @@ impl Store {
         let Some(pointer) = self.pointer(pkg)? else {
             bail!("{}: no dist entry", pkg.name);
         };
+        let hash_started = std::time::Instant::now();
         let id = hex(Sha256::digest(zip_bytes));
+        tracing::debug!(
+            package = %pkg.name,
+            elapsed_ms = hash_started.elapsed().as_millis(),
+            "hashed dist"
+        );
         let archive_dir = self.archive_dir();
         let dest = archive_dir.join(&id);
 
         if !dest.is_dir() {
             fs_err::create_dir_all(&archive_dir)?;
             let temp = tempfile::tempdir_in(&archive_dir)?;
+            let extract_started = std::time::Instant::now();
             extract_zip(zip_bytes, temp.path())
                 .with_context(|| format!("extracting {} ({})", pkg.name, id))?;
+            tracing::debug!(
+                package = %pkg.name,
+                elapsed_ms = extract_started.elapsed().as_millis(),
+                "extracted dist"
+            );
             let temp = temp.keep();
             if let Err(err) = fs_err::rename(&temp, &dest) {
                 if dest.is_dir() {

@@ -35,6 +35,7 @@ fn package(name: &str, bin: &[&str]) -> Package {
         replace: Map::new(),
         r#type: "library".to_string(),
         target_dir: None,
+        include_path: Vec::new(),
         bin: bin.iter().copied().map(str::to_string).collect(),
         dev: false,
         raw: Value::Null,
@@ -125,4 +126,85 @@ fn matches_composer_2_10_2_byte_for_byte() {
             "{name}: mode should be 0777 & ~umask()"
         );
     }
+}
+
+fn legacy_expected(name: &str) -> Vec<u8> {
+    fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/legacy/expected/dev/bin")
+            .join(name),
+    )
+    .unwrap()
+}
+
+/// `bin/phpunit` (from Composer 2.10.2, `phpunit/phpunit` 9.6.36) is the
+/// only one of the eight legacy goldens that carries the `PHPUnit` process
+/// isolation workaround (`generateUnixyProxyCode`'s `$binContents ===
+/// $vendorDir.'/phpunit/phpunit/phpunit'` branch): an extra `$GLOBALS`
+/// line, and inside `BinProxyWrapper` a `phpvfscomposer://`-prefixed
+/// `$opened_path` plus two `__DIR__`/`__FILE__`-rewriting `str_replace`
+/// calls in `stream_read`. The workaround keys on the target's path, not
+/// its contents, so a stub target reproduces it byte for byte.
+#[test]
+fn phpunit_bin_gets_process_isolation_workaround() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vendor_dir = tmp.path().join("vendor");
+    let bin_dir = vendor_dir.join("bin");
+    let install_path = vendor_dir.join("phpunit/phpunit");
+    fs::create_dir_all(&install_path).unwrap();
+    fs::write(
+        install_path.join("phpunit"),
+        b"#!/usr/bin/env php\n<?php\n\necho \"stub\\n\";\n".as_slice(),
+    )
+    .unwrap();
+
+    let pkg = package("phpunit/phpunit", &["phpunit"]);
+    let warnings = generate(
+        &vendor_dir,
+        &bin_dir,
+        BinCompat::Auto,
+        &[(&pkg, install_path)],
+    )
+    .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    assert_eq!(
+        fs::read(bin_dir.join("phpunit")).unwrap(),
+        legacy_expected("phpunit"),
+        "phpunit: content differs from Composer's"
+    );
+}
+
+/// `bin/php-parse` (`nikic/php-parser` 5.6.1) needs the shebang-stripping
+/// stream wrapper like `phpunit` does, but its path doesn't match
+/// `vendor/phpunit/phpunit/phpunit`, so none of the process-isolation extras
+/// apply.
+#[test]
+fn php_parse_bin_gets_no_process_isolation_workaround() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vendor_dir = tmp.path().join("vendor");
+    let bin_dir = vendor_dir.join("bin");
+    let install_path = vendor_dir.join("nikic/php-parser");
+    fs::create_dir_all(install_path.join("bin")).unwrap();
+    fs::write(
+        install_path.join("bin/php-parse"),
+        b"#!/usr/bin/env php\n<?php\n\necho \"stub\\n\";\n".as_slice(),
+    )
+    .unwrap();
+
+    let pkg = package("nikic/php-parser", &["bin/php-parse"]);
+    let warnings = generate(
+        &vendor_dir,
+        &bin_dir,
+        BinCompat::Auto,
+        &[(&pkg, install_path)],
+    )
+    .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    assert_eq!(
+        fs::read(bin_dir.join("php-parse")).unwrap(),
+        legacy_expected("php-parse"),
+        "php-parse: content differs from Composer's"
+    );
 }

@@ -17,7 +17,9 @@ use anyhow::{Context, Result};
 use regex::bytes::Regex;
 use serde::Deserialize;
 
-use crate::autoload::generator::{find_shortest_path, find_shortest_path_code, path_str};
+use crate::autoload::generator::{
+    find_shortest_path, find_shortest_path_code, normalize_path, path_str,
+};
 use crate::lock::Package;
 
 /// `config.bin-compat`. Composer's `full` also writes a `.bat` proxy for
@@ -186,15 +188,29 @@ fn unixy_proxy_code(target: &Path, link: &Path, vendor_dir_real: &Path) -> Resul
     let bin_path_exported = find_shortest_path_code(&link_s, &target_s, false, true);
     let autoload_path = format!("{}/autoload.php", path_str(vendor_dir_real));
     let autoload_code = find_shortest_path_code(&link_s, &autoload_path, false, true);
-    let globals = format!(
+    let mut globals = format!(
         "$GLOBALS['_composer_bin_dir'] = __DIR__;\n\
          $GLOBALS['_composer_autoload_path'] = {autoload_code};\n"
     );
+    // PHPUnit process isolation workaround: keyed on the target's own path
+    // matching `<vendor>/phpunit/phpunit/phpunit`, not the package name or
+    // bin basename (`generateUnixyProxyCode`'s `$this->filesystem->normalizePath($bin)
+    // === ... normalizePath($this->vendorDir.'/phpunit/phpunit/phpunit')`).
+    let phpunit_hack = normalize_path(&target_s)
+        == normalize_path(&format!(
+            "{}/phpunit/phpunit/phpunit",
+            path_str(vendor_dir_real)
+        ));
+    if phpunit_hack {
+        globals.push_str("$GLOBALS['__PHPUNIT_ISOLATION_EXCLUDE_LIST'] = $GLOBALS['__PHPUNIT_ISOLATION_BLACKLIST'] = array(realpath(");
+        globals.push_str(&bin_path_exported);
+        globals.push_str("));\n");
+    }
     let (stream_hint, stream_block) = if detection.needs_wrapper {
         (
             " using a stream wrapper to prevent the shebang from being output on PHP<8\n *"
                 .to_string(),
-            format!("{PHP_STREAM_WRAPPER_HEAD}{bin_path_exported}{PHP_STREAM_WRAPPER_TAIL}"),
+            stream_wrapper_code(&bin_path_exported, phpunit_hack),
         )
     } else {
         (String::new(), String::new())
@@ -316,9 +332,28 @@ fn remove_stale(bin_dir: &Path, vendor_dir_real: &Path, keep: &HashSet<String>) 
 /// `BinaryInstaller::generateUnixyProxyCode`'s PHP-file body when the target
 /// starts with a shebang (or leading blank lines) before `<?php`: a
 /// `stream_wrapper_register`-backed `BinProxyWrapper` that strips the
-/// shebang line so PHP<8 doesn't echo it back out. Verbatim from Composer;
-/// the target's own path is spliced in between head and tail.
-const PHP_STREAM_WRAPPER_HEAD: &str = r#"if (PHP_VERSION_ID < 80000) {
+/// shebang line so PHP<8 doesn't echo it back out. Verbatim from Composer,
+/// bar two splice points: the target's own path between head and tail, and
+/// (when `phpunit_hack` is set) the `PHPUnit` process-isolation lines PHP
+/// itself only adds inside the `$phpunitHack1`/`$phpunitHack2` branch.
+fn stream_wrapper_code(bin_path_exported: &str, phpunit_hack: bool) -> String {
+    let opened_path_value = if phpunit_hack {
+        "'phpvfscomposer://'.$this->realpath"
+    } else {
+        "$this->realpath"
+    };
+    let read_hack = if phpunit_hack {
+        "\n                $data = str_replace('__DIR__', var_export(dirname($this->realpath), true), $data);\
+         \n                $data = str_replace('__FILE__', var_export($this->realpath, true), $data);"
+    } else {
+        ""
+    };
+    format!(
+        "{PHP_STREAM_WRAPPER_HEAD}{opened_path_value};{PHP_STREAM_WRAPPER_MID}{read_hack}{PHP_STREAM_WRAPPER_TAIL_A}{bin_path_exported}{PHP_STREAM_WRAPPER_TAIL_B}"
+    )
+}
+
+const PHP_STREAM_WRAPPER_HEAD: &str = r"if (PHP_VERSION_ID < 80000) {
     if (!class_exists('Composer\BinProxyWrapper')) {
         /**
          * @internal
@@ -334,7 +369,9 @@ const PHP_STREAM_WRAPPER_HEAD: &str = r#"if (PHP_VERSION_ID < 80000) {
                 // get rid of phpvfscomposer:// prefix for __FILE__ & __DIR__ resolution
                 $opened_path = substr($path, 17);
                 $this->realpath = realpath($opened_path) ?: $opened_path;
-                $opened_path = $this->realpath;
+                $opened_path = ";
+
+const PHP_STREAM_WRAPPER_MID: &str = r"
                 $this->handle = fopen($this->realpath, $mode);
                 $this->position = 0;
 
@@ -347,7 +384,9 @@ const PHP_STREAM_WRAPPER_HEAD: &str = r#"if (PHP_VERSION_ID < 80000) {
 
                 if ($this->position === 0) {
                     $data = preg_replace('{^#!.*\r?\n}', '', $data);
-                }
+                }";
+
+const PHP_STREAM_WRAPPER_TAIL_A: &str = r#"
 
                 $this->position += strlen($data);
 
@@ -417,7 +456,7 @@ const PHP_STREAM_WRAPPER_HEAD: &str = r#"if (PHP_VERSION_ID < 80000) {
     ) {
         return include("phpvfscomposer://" . "#;
 
-const PHP_STREAM_WRAPPER_TAIL: &str = ");\n    }\n}\n";
+const PHP_STREAM_WRAPPER_TAIL_B: &str = ");\n    }\n}\n";
 
 /// `BinaryInstaller::generateUnixyProxyCode`'s `sh`-file body, verbatim,
 /// with `__BIN_DIR__`/`__BIN_FILE__` standing in for `$binDir`/`$binFile`

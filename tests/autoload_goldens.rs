@@ -18,6 +18,7 @@ struct Pkg {
     replaces: &'static [&'static str],
     target_dir: Option<&'static str>,
     metapackage: bool,
+    include_path: &'static [&'static str],
 }
 
 impl Pkg {
@@ -29,6 +30,7 @@ impl Pkg {
             replaces: &[],
             target_dir: None,
             metapackage: false,
+            include_path: &[],
         }
     }
     fn requires(mut self, requires: &'static [&'static str]) -> Self {
@@ -47,11 +49,19 @@ impl Pkg {
         self.metapackage = true;
         self
     }
+    fn include_path(mut self, paths: &'static [&'static str]) -> Self {
+        self.include_path = paths;
+        self
+    }
 }
 
 /// Paths in `files`, `symlinks`, `working_dir` and `vendor_dir` are relative
 /// to the temp dir. `{wd}` in autoload JSON strings expands to the absolute
 /// working dir (Composer's tests use absolute paths in two cases).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "test fixture mirroring upstream AutoloadGeneratorTest's dump() flags"
+)]
 struct Case {
     root_name: &'static str,
     root_autoload: Value,
@@ -67,6 +77,16 @@ struct Case {
     vendor_dir: &'static str,
     dev_mode: bool,
     scan_psr: bool,
+    classmap_authoritative: bool,
+    /// `None` off; `Some(None)` on with a generated prefix; `Some(Some(p))`
+    /// on with a fixed prefix.
+    #[allow(
+        clippy::option_option,
+        reason = "mirrors generator::Input::apcu_prefix"
+    )]
+    apcu: Option<Option<&'static str>>,
+    use_include_path: bool,
+    root_include_path: &'static [&'static str],
     suffix: &'static str,
     /// `(golden file name, generated file relative to vendor dir)`.
     goldens: &'static [(&'static str, &'static str)],
@@ -95,6 +115,10 @@ impl Default for Case {
             vendor_dir: DEFAULT_VENDOR,
             dev_mode: false,
             scan_psr: false,
+            classmap_authoritative: false,
+            apcu: None,
+            use_include_path: false,
+            root_include_path: &[],
             suffix: "",
             goldens: &[],
             inline: &[],
@@ -169,6 +193,7 @@ fn run(case: &Case) {
                 path
             }),
             is_dev: false,
+            include_path: owned(p.include_path),
         })
         .collect();
 
@@ -179,6 +204,7 @@ fn run(case: &Case) {
             autoload_dev: expand(&case.root_autoload_dev, &working_dir),
             target_dir: case.root_target_dir.map(str::to_string),
             requires: owned(case.root_requires),
+            include_path: owned(case.root_include_path),
         },
         packages,
         dev_mode: case.dev_mode,
@@ -188,6 +214,9 @@ fn run(case: &Case) {
         base_dir: working_dir.clone(),
         platform_check: false,
         prepend_autoloader: true,
+        classmap_authoritative: case.classmap_authoritative,
+        apcu_prefix: case.apcu.map(|prefix| prefix.map(str::to_string)),
+        use_include_path: case.use_include_path,
     };
 
     let generated = generate(&input).expect("generate");
@@ -237,6 +266,7 @@ const FILES: &str = "composer/autoload_files.php";
 const STATIC: &str = "composer/autoload_static.php";
 const REAL: &str = "composer/autoload_real.php";
 const AUTOLOAD: &str = "autoload.php";
+const INCLUDE_PATHS: &str = "composer/include_paths.php";
 
 fn root_autoloading_case() -> Case {
     Case {
@@ -1254,6 +1284,136 @@ fn exclude_from_classmap_case() -> Case {
     }
 }
 
+#[allow(
+    clippy::option_option,
+    reason = "mirrors generator::Input::apcu_prefix"
+)]
+fn classmap_authoritative_and_apcu_setup(apcu: Option<Option<&'static str>>) -> Case {
+    Case {
+        root_requires: &["a/a", "b/b", "c/c"],
+        packages: vec![
+            Pkg::new("a/a", json!({"psr-4": {"": "src/"}})),
+            Pkg::new("b/b", json!({"psr-4": {"": "./"}})),
+            Pkg::new("c/c", json!({"psr-4": {"": "foo/"}})),
+        ],
+        files: &[
+            (
+                "composer-test-autoload/a/a/src/ClassMapFoo.php",
+                "<?php class ClassMapFoo {}",
+            ),
+            (
+                "composer-test-autoload/b/b/ClassMapBar.php",
+                "<?php class ClassMapBar {}",
+            ),
+            (
+                "composer-test-autoload/c/c/foo/ClassMapBaz.php",
+                "<?php class ClassMapBaz {}",
+            ),
+        ],
+        classmap_authoritative: true,
+        apcu,
+        suffix: "_7",
+        goldens: &[("autoload_classmap8.php", CLASSMAP)],
+        contains: &[(REAL, "$loader->setClassMapAuthoritative(true);")],
+        ..Case::default()
+    }
+}
+
+fn classmap_authoritative_and_apcu_case() -> Case {
+    Case {
+        contains: &[
+            (REAL, "$loader->setClassMapAuthoritative(true);"),
+            (REAL, "$loader->setApcuPrefix("),
+        ],
+        ..classmap_authoritative_and_apcu_setup(Some(None))
+    }
+}
+
+fn classmap_authoritative_and_apcu_prefix_case() -> Case {
+    Case {
+        contains: &[
+            (REAL, "$loader->setClassMapAuthoritative(true);"),
+            (REAL, "$loader->setApcuPrefix('custom\\'Prefix');"),
+        ],
+        ..classmap_authoritative_and_apcu_setup(Some(Some("custom'Prefix")))
+    }
+}
+
+fn include_path_file_generation_case() -> Case {
+    Case {
+        packages: vec![
+            Pkg::new("a/a", Value::Null).include_path(&["lib/"]),
+            Pkg::new("b/b", Value::Null).include_path(&["library"]),
+            Pkg::new("c", Value::Null).include_path(&["library"]),
+        ],
+        suffix: "_10",
+        goldens: &[("include_paths.php", INCLUDE_PATHS)],
+        ..Case::default()
+    }
+}
+
+fn include_paths_are_prepended_case() -> Case {
+    Case {
+        packages: vec![Pkg::new("a/a", Value::Null).include_path(&["lib/"])],
+        suffix: "_11",
+        contains: &[(
+            REAL,
+            "        $includePaths = require __DIR__ . '/include_paths.php';\n        $includePaths[] = get_include_path();\n        set_include_path(implode(PATH_SEPARATOR, $includePaths));\n",
+        )],
+        ..Case::default()
+    }
+}
+
+fn include_paths_in_root_package_case() -> Case {
+    Case {
+        root_include_path: &["/lib", "/src"],
+        packages: vec![Pkg::new("a/a", Value::Null).include_path(&["lib/"])],
+        suffix: "_12",
+        inline: &[(
+            INCLUDE_PATHS,
+            "<?php
+
+// include_paths.php @generated by Composer
+
+$vendorDir = dirname(__DIR__);
+$baseDir = dirname($vendorDir);
+
+return array(
+    $baseDir . '/lib',
+    $baseDir . '/src',
+    $vendorDir . '/a/a/lib',
+);
+",
+        )],
+        contains: &[(REAL, "require __DIR__ . '/include_paths.php';")],
+        ..Case::default()
+    }
+}
+
+fn include_path_file_without_paths_is_skipped_case() -> Case {
+    Case {
+        packages: vec![Pkg::new("a/a", Value::Null)],
+        suffix: "_12",
+        absent: &[INCLUDE_PATHS],
+        lacks: &[(REAL, "include_paths.php")],
+        ..Case::default()
+    }
+}
+
+fn use_global_include_path_case() -> Case {
+    Case {
+        root_autoload: json!({"psr-0": {"Main\\Foo": "", "Main\\Bar": ""}}),
+        root_target_dir: Some("Main/Foo/"),
+        use_include_path: true,
+        suffix: "IncludePath",
+        goldens: &[
+            ("autoload_real_include_path.php", REAL),
+            ("autoload_static_include_path.php", STATIC),
+        ],
+        ..Case::default()
+    }
+}
+
 macro_rules! cases {
     ($($name:ident => $build:ident),* $(,)?) => {
         $(
@@ -1293,4 +1453,187 @@ cases! {
     empty_paths => empty_paths_case,
     vendor_substring_path => vendor_substring_path_case,
     exclude_from_classmap => exclude_from_classmap_case,
+    classmap_autoloading_authoritative_and_apcu => classmap_authoritative_and_apcu_case,
+    classmap_autoloading_authoritative_and_apcu_prefix => classmap_authoritative_and_apcu_prefix_case,
+    include_path_file_generation => include_path_file_generation_case,
+    include_paths_are_prepended_in_autoload_file => include_paths_are_prepended_case,
+    include_paths_in_root_package => include_paths_in_root_package_case,
+    include_path_file_without_paths_is_skipped => include_path_file_without_paths_is_skipped_case,
+    use_global_include_path => use_global_include_path_case,
+}
+
+/// `testFilesAutoloadGenerationRemoveExtraEntitiesFromAutoloadFiles`: three
+/// `generate()` calls against the same vendor dir, each with less autoload
+/// data than the last, checking that files/include-paths a previous dump
+/// wrote are cleaned up rather than left stale.
+#[test]
+fn files_autoload_generation_remove_extra_entities() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp = tmp.path().canonicalize().expect("canonical tempdir");
+    let vendor_dir = tmp.join(DEFAULT_VENDOR);
+    fs::create_dir_all(vendor_dir.join("composer")).unwrap();
+
+    for (path, content) in [
+        (
+            "composer-test-autoload/a/a/test.php",
+            "<?php function testFilesAutoloadGeneration1() {}",
+        ),
+        (
+            "composer-test-autoload/b/b/test2.php",
+            "<?php function testFilesAutoloadGeneration2() {}",
+        ),
+        (
+            "composer-test-autoload/c/c/foo/bar/test3.php",
+            "<?php function testFilesAutoloadGeneration3() {}",
+        ),
+        (
+            "composer-test-autoload/c/c/foo/bar/test4.php",
+            "<?php function testFilesAutoloadGeneration4() {}",
+        ),
+        (
+            "root.php",
+            "<?php function testFilesAutoloadGenerationRoot() {}",
+        ),
+    ] {
+        let full = tmp.join(path);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(&full, content).unwrap();
+    }
+
+    let install_path = |name: &str, target: Option<&str>| {
+        let mut path = vendor_dir.join(name);
+        if let Some(target) = target {
+            path.push(target);
+        }
+        Some(path)
+    };
+    let requires = || vec!["a/a".to_string(), "b/b".to_string(), "c/c".to_string()];
+
+    let root_with_autoload = RootPackage {
+        name: "root/a".to_string(),
+        autoload: json!({"files": ["root.php"]}),
+        autoload_dev: Value::Null,
+        target_dir: None,
+        requires: requires(),
+        include_path: vec!["/lib".to_string(), "/src".to_string()],
+    };
+    let root_without_autoload = RootPackage {
+        autoload: Value::Null,
+        include_path: Vec::new(),
+        ..root_with_autoload.clone()
+    };
+
+    let packages_with_autoload = vec![
+        Package {
+            name: "a/a".to_string(),
+            autoload: json!({"files": ["test.php"]}),
+            requires: Vec::new(),
+            replaces: Vec::new(),
+            provides: Vec::new(),
+            target_dir: None,
+            install_path: install_path("a/a", None),
+            is_dev: false,
+            include_path: vec!["lib1".to_string(), "src1".to_string()],
+        },
+        Package {
+            name: "b/b".to_string(),
+            autoload: json!({"files": ["test2.php"]}),
+            requires: Vec::new(),
+            replaces: Vec::new(),
+            provides: Vec::new(),
+            target_dir: None,
+            install_path: install_path("b/b", None),
+            is_dev: false,
+            include_path: vec!["lib2".to_string()],
+        },
+        Package {
+            name: "c/c".to_string(),
+            autoload: json!({"files": ["test3.php", "foo/bar/test4.php"]}),
+            requires: Vec::new(),
+            replaces: Vec::new(),
+            provides: Vec::new(),
+            target_dir: Some("foo/bar".to_string()),
+            install_path: install_path("c/c", Some("foo/bar")),
+            is_dev: false,
+            include_path: vec!["lib3".to_string()],
+        },
+    ];
+    let packages_without_autoload: Vec<Package> = ["a/a", "b/b", "c/c"]
+        .iter()
+        .map(|name| Package {
+            name: (*name).to_string(),
+            autoload: Value::Null,
+            requires: Vec::new(),
+            replaces: Vec::new(),
+            provides: Vec::new(),
+            target_dir: None,
+            install_path: install_path(name, None),
+            is_dev: false,
+            include_path: Vec::new(),
+        })
+        .collect();
+
+    let base_input = Input {
+        root: root_with_autoload,
+        packages: packages_with_autoload,
+        dev_mode: false,
+        scan_psr: false,
+        suffix: "FilesAutoload".to_string(),
+        vendor_dir: vendor_dir.clone(),
+        base_dir: tmp.clone(),
+        platform_check: false,
+        prepend_autoloader: true,
+        classmap_authoritative: false,
+        apcu_prefix: None,
+        use_include_path: false,
+    };
+
+    let assert_file = |golden: &str, actual: &str| {
+        let expected = read_normalised(&goldens_dir().join(golden));
+        let got = read_normalised(&vendor_dir.join(actual));
+        assert_eq!(got, expected, "{actual} differs from golden {golden}");
+    };
+
+    generate(&base_input).expect("dump 1");
+    assert_file("autoload_functions.php", AUTOLOAD);
+    assert_file("autoload_real_functions_with_include_paths.php", REAL);
+    assert_file("autoload_static_functions_with_include_paths.php", STATIC);
+    assert_file("autoload_files_functions.php", FILES);
+    assert_file("include_paths_functions.php", INCLUDE_PATHS);
+
+    let input2 = Input {
+        packages: packages_without_autoload.clone(),
+        ..base_input.clone()
+    };
+    generate(&input2).expect("dump 2");
+    assert_file("autoload_functions.php", AUTOLOAD);
+    assert_file("autoload_real_functions_with_include_paths.php", REAL);
+    assert_file("autoload_files_functions_with_removed_extra.php", FILES);
+    assert_file(
+        "include_paths_functions_with_removed_extra.php",
+        INCLUDE_PATHS,
+    );
+
+    let input3 = Input {
+        root: root_without_autoload,
+        packages: packages_without_autoload,
+        ..base_input
+    };
+    generate(&input3).expect("dump 3");
+    assert_file(
+        "autoload_real_functions_with_removed_include_paths_and_autolad_files.php",
+        REAL,
+    );
+    assert_file(
+        "autoload_static_functions_with_removed_include_paths_and_autolad_files.php",
+        STATIC,
+    );
+    assert!(
+        !vendor_dir.join(FILES).exists(),
+        "autoload_files.php should have been removed"
+    );
+    assert!(
+        !vendor_dir.join(INCLUDE_PATHS).exists(),
+        "include_paths.php should have been removed"
+    );
 }

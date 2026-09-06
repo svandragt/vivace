@@ -69,6 +69,7 @@ fn check(dev_mode: bool, expected_dir: &str) {
             autoload_dev: root.autoload_dev.clone().unwrap_or(Value::Null),
             target_dir: None,
             requires: keys(&root.require),
+            include_path: Vec::new(),
         },
         packages: lock
             .packages(true)
@@ -81,6 +82,7 @@ fn check(dev_mode: bool, expected_dir: &str) {
                 target_dir: p.target_dir.clone(),
                 install_path: (p.r#type != "metapackage").then(|| vendor_dir.join(&p.name)),
                 is_dev: p.dev,
+                include_path: Vec::new(),
             })
             .collect(),
         dev_mode,
@@ -90,6 +92,9 @@ fn check(dev_mode: bool, expected_dir: &str) {
         base_dir: project.clone(),
         platform_check: true,
         prepend_autoloader: root.config.prepend_autoloader,
+        classmap_authoritative: false,
+        apcu_prefix: None,
+        use_include_path: false,
     };
     generate(&input).unwrap();
 

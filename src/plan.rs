@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::lock::{Lock, Package};
 
@@ -18,6 +19,10 @@ pub struct InstalledEntry {
     pub reference: Option<String>,
     /// Absolute path of the package dir.
     pub install_path: PathBuf,
+    /// `abandoned` (a replacement name, or `true` with none suggested).
+    /// Compared alongside version/reference so an abandonment change alone
+    /// still triggers a reinstall, not a silent keep.
+    pub abandoned: Option<Value>,
 }
 
 #[derive(Debug, Default)]
@@ -43,11 +48,13 @@ pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path) -> Result<Plan> {
     let mut plan = Plan::default();
     for package in lock.packages(dev) {
         let reference = package.dist.as_ref().and_then(|d| d.reference.clone());
+        let abandoned = package.raw.get("abandoned").cloned();
         match installed.remove(&package.name) {
             Some((entry, was_dev))
                 if entry.reference == reference
                     && entry.version == package.version
-                    && was_dev == package.dev =>
+                    && was_dev == package.dev
+                    && entry.abandoned == abandoned =>
             {
                 plan.keep.push(package.clone());
             }
@@ -102,6 +109,7 @@ fn read_installed(
                     version: entry.version,
                     reference: entry.dist.and_then(|d| d.reference),
                     install_path,
+                    abandoned: entry.abandoned,
                 },
                 dev,
             ),
@@ -141,6 +149,7 @@ struct InstalledPackage {
     dist: Option<InstalledDist>,
     #[serde(rename = "install-path")]
     install_path: Option<String>,
+    abandoned: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -270,6 +279,7 @@ mod tests {
                 version: "1.0.0".into(),
                 reference: Some("r9".into()),
                 install_path: vendor.path().join("gone/gone"),
+                abandoned: None,
             }]
         );
     }

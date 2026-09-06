@@ -54,8 +54,14 @@ pub struct Package {
     pub r#type: String,
     #[serde(rename = "target-dir")]
     pub target_dir: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_bin")]
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub bin: Vec<String>,
+    #[serde(
+        rename = "include-path",
+        default,
+        deserialize_with = "deserialize_string_or_vec"
+    )]
+    pub include_path: Vec<String>,
     #[serde(skip)]
     pub dev: bool,
     /// The untouched lock entry, key order preserved.
@@ -86,8 +92,9 @@ fn default_type() -> String {
     "library".to_string()
 }
 
-/// Composer's `bin` schema allows a single string or an array of strings.
-fn deserialize_bin<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+/// Composer allows some list-valued keys (`bin`, `include-path`) to be a
+/// single string or an array of strings.
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -199,6 +206,10 @@ where
 }
 
 /// The root `composer.json`'s `config` block (the subset vivace reads).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Composer's config keys"
+)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -216,6 +227,21 @@ pub struct Config {
     pub bin_dir: String,
     #[serde(rename = "bin-compat")]
     pub bin_compat: crate::bin::BinCompat,
+    /// `composer install -o`'s default: also classmap-scan PSR-0/PSR-4 dirs.
+    #[serde(rename = "optimize-autoloader")]
+    pub optimize_autoloader: bool,
+    /// `composer install -a`'s default: classmap-only autoloading.
+    #[serde(rename = "classmap-authoritative")]
+    pub classmap_authoritative: bool,
+    /// `composer install --apcu-autoloader`'s default.
+    #[serde(rename = "apcu-autoloader")]
+    pub apcu_autoloader: bool,
+    /// `composer install --apcu-autoloader-prefix`'s default.
+    #[serde(rename = "apcu-autoloader-prefix")]
+    pub apcu_autoloader_prefix: Option<String>,
+    /// `$loader->setUseIncludePath(true)` in `autoload_real.php`.
+    #[serde(rename = "use-include-path")]
+    pub use_include_path: bool,
 }
 
 impl Default for Config {
@@ -227,6 +253,11 @@ impl Default for Config {
             prepend_autoloader: true,
             bin_dir: "vendor/bin".to_string(),
             bin_compat: crate::bin::BinCompat::Auto,
+            optimize_autoloader: false,
+            classmap_authoritative: false,
+            apcu_autoloader: false,
+            apcu_autoloader_prefix: None,
+            use_include_path: false,
         }
     }
 }
@@ -244,6 +275,12 @@ pub struct Root {
     pub autoload_dev: Option<Value>,
     #[serde(default)]
     pub require: Map<String, Value>,
+    #[serde(
+        rename = "include-path",
+        default,
+        deserialize_with = "deserialize_string_or_vec"
+    )]
+    pub include_path: Vec<String>,
     #[serde(default)]
     pub config: Config,
 }
@@ -252,6 +289,89 @@ pub struct Root {
 pub fn read_root(path: &Path) -> Result<Root> {
     let content = fs_err::read_to_string(path)?;
     serde_json::from_str(&content).with_context(|| format!("parsing {} as JSON", path.display()))
+}
+
+/// Composer's `Locker::getContentHash`: an md5 of the sorted, compact JSON
+/// of the `composer.json` keys that decide what a lock should contain.
+fn content_hash(root_json: &[u8]) -> Result<String> {
+    const RELEVANT: &[&str] = &[
+        "name",
+        "version",
+        "require",
+        "require-dev",
+        "conflict",
+        "replace",
+        "provide",
+        "minimum-stability",
+        "prefer-stable",
+        "repositories",
+        "extra",
+    ];
+    let content: Value = serde_json::from_slice(root_json).context("parsing composer.json")?;
+    let mut relevant = std::collections::BTreeMap::new();
+    if let Some(root) = content.as_object() {
+        for key in RELEVANT {
+            if let Some(value) = root.get(*key) {
+                relevant.insert((*key).to_string(), value.clone());
+            }
+        }
+        if let Some(platform) = root.get("config").and_then(|c| c.get("platform")) {
+            relevant.insert(
+                "config".to_string(),
+                serde_json::json!({ "platform": platform }),
+            );
+        }
+    }
+    // ponytail: PHP's json_encode escapes `/`; serde_json doesn't. Harmless
+    // for the freshness comparison below (both sides go through this same
+    // function), but a hash computed here won't match a real Composer one
+    // byte-for-byte if a value contains a literal slash.
+    let encoded = serde_json::to_string(&relevant)?;
+    Ok(format!("{:x}", md5::compute(encoded)))
+}
+
+/// Composer's `Locker::isFresh`: does `lock`'s `content-hash` still match
+/// `root_json` (the root `composer.json` bytes)? A lock without a
+/// `content-hash` at all has nothing to compare, so it is treated as fresh.
+pub fn validate_against_root(lock: &Lock, root_json: &[u8]) -> Result<()> {
+    let Some(locked_hash) = &lock.content_hash else {
+        return Ok(());
+    };
+    let current = content_hash(root_json)?;
+    if &current != locked_hash {
+        bail!(
+            "The lock file is not up to date with the latest changes in composer.json \
+             (content-hash mismatch: locked {locked_hash}, current {current})"
+        );
+    }
+    Ok(())
+}
+
+/// Composer's root package names that are platform, not real packages
+/// (`PlatformRepository::isPlatformPackage`, the subset vivace cares about).
+fn is_platform_package(name: &str) -> bool {
+    name == "php"
+        || name.starts_with("php-")
+        || name == "hhvm"
+        || name.starts_with("ext-")
+        || name.starts_with("lib-")
+        || name.starts_with("composer-")
+}
+
+/// Composer's `Locker::getMissingRequirementInfo`, presence-only: is each of
+/// `root`'s required packages locked at all? Whether the locked version
+/// actually *satisfies* the root constraint needs a semver solver, which
+/// vivace's no-dependency-resolution planner deliberately doesn't have; that
+/// half of Composer's check is out of scope for v0.1.
+pub fn missing_requirements(lock: &Lock, root: &Root, dev: bool) -> Vec<String> {
+    let locked: std::collections::HashSet<String> =
+        lock.packages(dev).map(|p| p.name.clone()).collect();
+    root.require
+        .keys()
+        .filter(|name| !is_platform_package(name))
+        .filter(|name| !locked.contains(&name.to_lowercase()))
+        .map(|name| format!("- Required package \"{name}\" is not present in the lock file."))
+        .collect()
 }
 
 #[cfg(test)]
@@ -368,6 +488,33 @@ mod tests {
         let lock = read_lock(file.path()).unwrap();
         let package = lock.packages(true).next().unwrap();
         assert_eq!(package.bin, ["bin/foo"]);
+    }
+
+    #[test]
+    fn include_path_accepts_string_or_array_on_package_and_root() {
+        let lock_json = r#"{
+            "packages": [
+                {
+                    "name": "pear/console_getopt",
+                    "version": "1.0.0",
+                    "include-path": ["./"]
+                }
+            ],
+            "packages-dev": []
+        }"#;
+        let mut lock_file = tempfile::NamedTempFile::new().unwrap();
+        lock_file.write_all(lock_json.as_bytes()).unwrap();
+
+        let lock = read_lock(lock_file.path()).unwrap();
+        let package = lock.packages(true).next().unwrap();
+        assert_eq!(package.include_path, ["./"]);
+
+        let root_json = r#"{"include-path": "./lib"}"#;
+        let mut root_file = tempfile::NamedTempFile::new().unwrap();
+        root_file.write_all(root_json.as_bytes()).unwrap();
+
+        let root = read_root(root_file.path()).unwrap();
+        assert_eq!(root.include_path, ["./lib"]);
     }
 
     #[test]

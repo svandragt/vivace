@@ -32,6 +32,14 @@ fixtures:
 	devbox run -- composer -d tests/fixtures/monolog install --no-dev
 	cp tests/fixtures/monolog/vendor/autoload.php tests/fixtures/monolog/expected/no-dev/
 	cp tests/fixtures/monolog/vendor/composer/*.php tests/fixtures/monolog/vendor/composer/installed.json tests/fixtures/monolog/vendor/composer/LICENSE tests/fixtures/monolog/expected/no-dev/composer/
+	devbox run -- composer -d tests/fixtures/legacy install
+	cp tests/fixtures/legacy/vendor/autoload.php tests/fixtures/legacy/expected/dev/
+	cp tests/fixtures/legacy/vendor/composer/*.php tests/fixtures/legacy/vendor/composer/installed.json tests/fixtures/legacy/vendor/composer/LICENSE tests/fixtures/legacy/expected/dev/composer/
+	rm -rf tests/fixtures/legacy/expected/dev/bin && mkdir -p tests/fixtures/legacy/expected/dev/bin
+	cp tests/fixtures/legacy/vendor/bin/* tests/fixtures/legacy/expected/dev/bin/
+	devbox run -- composer -d tests/fixtures/legacy install --no-dev
+	cp tests/fixtures/legacy/vendor/autoload.php tests/fixtures/legacy/expected/no-dev/
+	cp tests/fixtures/legacy/vendor/composer/*.php tests/fixtures/legacy/vendor/composer/installed.json tests/fixtures/legacy/vendor/composer/LICENSE tests/fixtures/legacy/expected/no-dev/composer/
 
 fmt:
 	devbox run -- cargo fmt

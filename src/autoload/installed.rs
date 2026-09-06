@@ -521,6 +521,7 @@ mod tests {
             r#type: "library".into(),
             target_dir: None,
             bin: vec![],
+            include_path: vec![],
             dev: false,
             raw: json!({}),
         }

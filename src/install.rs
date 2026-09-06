@@ -31,9 +31,17 @@ use crate::plan::{self, Plan};
 use crate::store::{Store, hex};
 
 /// Fetch requests in flight at once (`fetch::fetch_all`'s concurrency).
-const CONCURRENCY: usize = 16;
+/// Downloads are latency-bound (a GitHub zipball round-trip, not vivace's
+/// CPU), so raising this shortens a cold install close to linearly until the
+/// remote host's own limits take over; 16 measured well short of that knee
+/// on a 101-package lock, 64 measured near it with low run-to-run variance.
+const CONCURRENCY: usize = 64;
 
 /// `viv install` flags.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Composer's install flags"
+)]
 #[derive(Args, Debug, Clone)]
 pub struct InstallArgs {
     /// Skip `require-dev` packages.
@@ -48,6 +56,20 @@ pub struct InstallArgs {
     /// Project directory holding `composer.json`/`composer.lock`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
+    /// Also classmap-scan PSR-0/PSR-4 directories (`config.optimize-autoloader`).
+    #[arg(short = 'o', long = "optimize-autoloader")]
+    pub optimize_autoloader: bool,
+    /// Classmap-only autoloading, no PSR-0/PSR-4 fallback at runtime
+    /// (`config.classmap-authoritative`); implies `-o`.
+    #[arg(short = 'a', long = "classmap-authoritative")]
+    pub classmap_authoritative: bool,
+    /// Cache classmap lookups in `APCu` (`config.apcu-autoloader`).
+    #[arg(long = "apcu-autoloader")]
+    pub apcu_autoloader: bool,
+    /// Fixed `APCu` cache-key prefix, instead of one generated per run
+    /// (`config.apcu-autoloader-prefix`); implies `--apcu-autoloader`.
+    #[arg(long = "apcu-autoloader-prefix", value_name = "PREFIX")]
+    pub apcu_autoloader_prefix: Option<String>,
 }
 
 /// What a repeat run compares against to recognise a no-op without a
@@ -131,10 +153,17 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
+        let fetch_started = Instant::now();
         let downloaded = runtime.block_on(fetch_missing(&fetcher, Arc::clone(&store), &missing))?;
+        tracing::debug!(
+            packages = missing.len(),
+            elapsed_ms = fetch_started.elapsed().as_millis(),
+            "fetched and stored missing packages"
+        );
         archive_dirs.extend(downloaded);
     }
 
+    let link_started = Instant::now();
     for package in &plan.install {
         let dir = archive_dirs
             .get(&package.name)
@@ -147,6 +176,11 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
             fs_err::remove_dir_all(&entry.install_path)?;
         }
     }
+    tracing::debug!(
+        packages = plan.install.len(),
+        elapsed_ms = link_started.elapsed().as_millis(),
+        "linked packages into vendor"
+    );
 
     let all: Vec<&Package> = plan.keep.iter().chain(&plan.install).collect();
 
@@ -155,12 +189,23 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         .iter()
         .map(|p| (*p, package_dir(&vendor_dir, p)))
         .collect();
+    let bin_started = Instant::now();
     for warning in bin::generate(&vendor_dir, &bin_dir, root.config.bin_compat, &bin_packages)? {
         tracing::warn!("{warning}");
     }
+    tracing::debug!(
+        elapsed_ms = bin_started.elapsed().as_millis(),
+        "generated vendor/bin"
+    );
 
-    write_autoload(&root, &lock, &vendor_dir, &project_dir, &all, dev)?;
+    let autoload_started = Instant::now();
+    write_autoload(args, &root, &lock, &vendor_dir, &project_dir, &all, dev)?;
+    tracing::debug!(
+        elapsed_ms = autoload_started.elapsed().as_millis(),
+        "generated autoload files"
+    );
 
+    let installed_started = Instant::now();
     write_atomic(
         &vendor_dir.join("composer/installed.json"),
         installed_json(&all, dev)?.as_bytes(),
@@ -170,6 +215,10 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         installed_php(&root, &all, dev)?.as_bytes(),
     )?;
     write_atomic(&state_path, &serde_json::to_vec(&state)?)?;
+    tracing::debug!(
+        elapsed_ms = installed_started.elapsed().as_millis(),
+        "wrote installed.json/php and state"
+    );
 
     out(&format!(
         "Installed {} packages ({from_cache} from cache), removed {}, in {:.2}s",
@@ -184,6 +233,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
 /// end up in `vendor/`, generate the autoload files, then write
 /// `platform_check.php` (or delete it) beside them.
 fn write_autoload(
+    args: &InstallArgs,
     root: &Root,
     lock: &Lock,
     vendor_dir: &Path,
@@ -192,6 +242,18 @@ fn write_autoload(
     dev: bool,
 ) -> Result<()> {
     let suffix = resolve_suffix(root, lock, vendor_dir)?;
+    let classmap_authoritative = args.classmap_authoritative || root.config.classmap_authoritative;
+    let scan_psr =
+        args.optimize_autoloader || classmap_authoritative || root.config.optimize_autoloader;
+    let apcu_prefix_override = args
+        .apcu_autoloader_prefix
+        .clone()
+        .or_else(|| root.config.apcu_autoloader_prefix.clone());
+    let apcu_autoloader = args.apcu_autoloader
+        || args.apcu_autoloader_prefix.is_some()
+        || root.config.apcu_autoloader
+        || apcu_prefix_override.is_some();
+    let apcu_prefix = apcu_autoloader.then_some(apcu_prefix_override);
     let root_name = root.name.clone().unwrap_or_else(|| "__root__".into());
 
     let empty = Map::new();
@@ -223,6 +285,7 @@ fn write_autoload(
             autoload_dev: root.autoload_dev.clone().unwrap_or(Value::Null),
             target_dir: None,
             requires: keys(&root.require),
+            include_path: root.include_path.clone(),
         },
         packages: packages
             .iter()
@@ -235,15 +298,19 @@ fn write_autoload(
                 target_dir: p.target_dir.clone(),
                 install_path: (p.r#type != "metapackage").then(|| package_dir(vendor_dir, p)),
                 is_dev: p.dev,
+                include_path: p.include_path.clone(),
             })
             .collect(),
         dev_mode: dev,
-        scan_psr: false,
+        scan_psr,
         suffix,
         vendor_dir: vendor_dir.to_path_buf(),
         base_dir: project_dir.to_path_buf(),
         platform_check: platform_body.is_some(),
         prepend_autoloader: root.config.prepend_autoloader,
+        classmap_authoritative,
+        apcu_prefix,
+        use_include_path: root.config.use_include_path,
     };
     let generated = generator::generate(&input)?;
     for warning in &generated.warnings {
@@ -259,24 +326,49 @@ fn write_autoload(
     Ok(())
 }
 
+/// Extractions (`Store::add_zip`) run on the blocking pool at once, so a slow
+/// disk cannot pile up an unbounded number of decompressed zips' worth of
+/// downloaded bytes waiting to be written.
+const EXTRACT_CONCURRENCY: usize = 8;
+
 /// Download every package not already in the store, extracting each into it
 /// as its bytes arrive.
+///
+/// Extraction is spawned onto a bounded `JoinSet` rather than awaited inline,
+/// so it overlaps with the remaining downloads instead of stalling the
+/// stream: awaiting an extraction inline would stop `stream.next()` being
+/// polled, and `buffer_unordered`'s in-flight downloads only make progress
+/// when their stream is polled.
 async fn fetch_missing(
     fetcher: &fetch::Fetcher,
     store: Arc<Store>,
     packages: &[Package],
 ) -> Result<HashMap<String, PathBuf>> {
-    let mut stream = fetcher.fetch_all(packages, CONCURRENCY);
+    let mut downloads = fetcher.fetch_all(packages, CONCURRENCY);
+    let mut extractions: tokio::task::JoinSet<Result<(String, PathBuf)>> =
+        tokio::task::JoinSet::new();
     let mut result = HashMap::new();
-    while let Some((package, bytes)) = stream.next().await {
-        let bytes = bytes.with_context(|| format!("{}: fetching dist", package.name))?;
-        let name = package.name.clone();
-        let package = package.clone();
-        let store = Arc::clone(&store);
-        let dir = tokio::task::spawn_blocking(move || store.add_zip(&package, &bytes))
-            .await
-            .context("store worker panicked")??;
-        result.insert(name, dir);
+    let mut downloads_done = false;
+
+    while !downloads_done || !extractions.is_empty() {
+        tokio::select! {
+            item = downloads.next(), if !downloads_done && extractions.len() < EXTRACT_CONCURRENCY => {
+                match item {
+                    Some((package, bytes)) => {
+                        let bytes = bytes.with_context(|| format!("{}: fetching dist", package.name))?;
+                        let name = package.name.clone();
+                        let package = package.clone();
+                        let store = Arc::clone(&store);
+                        extractions.spawn_blocking(move || Ok((name, store.add_zip(&package, &bytes)?)));
+                    }
+                    None => downloads_done = true,
+                }
+            }
+            Some(joined) = extractions.join_next(), if !extractions.is_empty() => {
+                let (name, dir) = joined.context("store worker panicked")??;
+                result.insert(name, dir);
+            }
+        }
     }
     Ok(result)
 }

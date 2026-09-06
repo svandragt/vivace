@@ -244,3 +244,30 @@ chmods the target inside the package, and `viv` does not, because package
 files are read-only hardlinks into the shared store. The exec bit comes from
 the zip, and it was there for all seven. With this the entire `vendor/`
 tree matches Composer's; the only extra file is `.vivace-state`.
+
+## 2026-09-06, late: milestone 0.2 in flight
+
+Work ran in file-disjoint lanes and landed together. Cold install was
+measured before anything changed: network-bound, hashing and extraction
+under 300 ms in total. Download concurrency went from 16 to 64 and
+extraction now overlaps downloads in a bounded task set; cold dropped from
+3.98 s to 2.29 s in one session against Riff's 1.69 s. HTTP/1.1 against
+HTTP/2 made no measurable difference, so the remaining gap is still open
+(#1).
+
+The optimised autoloader modes (`-o`, `-a`, `--apcu-autoloader`) and
+include-path support pass the eight golden cases that had been skipped, and
+per-package `include-path` is read from the lock. A second real-package
+fixture (PEAR-style PSR-0, `target-dir`, `files` across polyfills,
+phpunit's classmap tree, `vendor/bin` for phpunit and php-parse) is
+byte-identical to Composer in dev and no-dev mode. It exposed one more
+proxy branch: Composer rewrites `__DIR__` and `__FILE__` through its stream
+wrapper when the target script uses them, and adds an isolation list for
+phpunit. Eleven of Composer's nineteen install-from-lock fixtures run
+against the planner; the other eight need a constraint solver and are
+listed with reasons. Benchmarks now use isolated caches after one run
+wiped a developer's store.
+
+Lesson repeated: goldens catch logic, real projects catch assumptions, and
+regenerating fixtures inside a git checkout makes Composer guess the root
+version from the repository.

@@ -50,6 +50,7 @@ impl Fetcher {
     pub async fn fetch(&self, pkg: &Package) -> Result<Vec<u8>> {
         pkg.validate_dist()?;
         let dist = pkg.dist.as_ref().expect("validate_dist checked");
+        let started = std::time::Instant::now();
         // ponytail: the whole zip lives in memory at once (fine at
         // Composer's typical archive sizes); stream to a temp file if that
         // stops being true.
@@ -58,6 +59,12 @@ impl Fetcher {
             .await
             .with_context(|| format!("{}: downloading {}", pkg.name, dist.url))?;
         verify_shasum(&pkg.name, dist.shasum.as_deref().unwrap_or(""), &bytes)?;
+        tracing::debug!(
+            package = %pkg.name,
+            bytes = bytes.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "downloaded dist"
+        );
         Ok(bytes)
     }
 
