@@ -17,7 +17,7 @@ Scenarios: cold is no cache and no `vendor/`; warm is cache present, no
 
 Output check for the same lock: every file in `vendor/composer/` and
 `vendor/autoload.php` that `viv` writes is byte-identical to Composer's, and
-the package trees match. `viv` does not yet write `vendor/bin`.
+the package trees match, `vendor/bin` included.
 
 Notes
 
@@ -51,5 +51,4 @@ repository, 381 MB and 47,270 files in `vendor/`. Credentials from
 viv's warm time is 526 ms of system time: one `link()` per file. The rerun
 with `vendor/` present is a no-op. Cold install 8.3 s, dominated by the
 private downloads. Output: every file under `vendor/composer` and the whole
-package tree byte-identical to Composer's; `vendor/bin` is still the one
-omission.
+package tree byte-identical to Composer's, `vendor/bin` included.

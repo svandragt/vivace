@@ -210,6 +210,12 @@ pub struct Config {
     pub vendor_dir: String,
     #[serde(rename = "prepend-autoloader")]
     pub prepend_autoloader: bool,
+    /// `vendor/bin` by default, independent of `vendor-dir`, as Composer
+    /// has it (see `bin::generate`, `src/bin.rs`).
+    #[serde(rename = "bin-dir")]
+    pub bin_dir: String,
+    #[serde(rename = "bin-compat")]
+    pub bin_compat: crate::bin::BinCompat,
 }
 
 impl Default for Config {
@@ -219,6 +225,8 @@ impl Default for Config {
             platform_check: PlatformCheck::PhpOnly,
             vendor_dir: "vendor".to_string(),
             prepend_autoloader: true,
+            bin_dir: "vendor/bin".to_string(),
+            bin_compat: crate::bin::BinCompat::Auto,
         }
     }
 }

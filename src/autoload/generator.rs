@@ -1116,7 +1116,7 @@ fn static_file(suffix: &str, target: &str, vendor: &str, base: &str, maps: &Maps
     file
 }
 
-fn path_str(path: &Path) -> String {
+pub(crate) fn path_str(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
@@ -1199,7 +1199,12 @@ pub(crate) fn find_shortest_path(from: &str, to: &str, directories: bool) -> Str
 
 /// `Filesystem::findShortestPathCode` (`preferRelative` false): PHP code
 /// that evaluates to `to` when run from `from`.
-fn find_shortest_path_code(from: &str, to: &str, directories: bool, static_code: bool) -> String {
+pub(crate) fn find_shortest_path_code(
+    from: &str,
+    to: &str,
+    directories: bool,
+    static_code: bool,
+) -> String {
     let from = normalize_path(from);
     let to = normalize_path(to);
     if from == to {

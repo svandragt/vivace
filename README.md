@@ -54,13 +54,13 @@ pointing at Composer.
 
 ## Scope
 
-In: zip dists from any URL the lock names, sha1 verification when the lock
-carries a checksum, PSR-4, PSR-0, classmap and files autoloading, root
-`autoload` and `autoload-dev`, `platform_check.php`, `--no-dev`.
+In: zip dists from any URL the lock names, credentials from `auth.json` and
+`COMPOSER_AUTH`, sha1 verification when the lock carries a checksum, PSR-4,
+PSR-0, classmap and files autoloading, root `autoload` and `autoload-dev`,
+`platform_check.php`, `vendor/bin` proxies, `--no-dev`.
 
 Out for now: dependency resolution, plugins, scripts, git and path
-repositories, private registry authentication, tar dists, `vendor/bin`
-proxies, `--optimize-autoloader`.
+repositories, tar dists, `--optimize-autoloader`.
 
 ## Development
 

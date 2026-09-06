@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod autoload;
+pub mod bin;
 pub mod fetch;
 pub mod install;
 pub mod link;

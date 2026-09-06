@@ -234,3 +234,13 @@ run is a no-op.
 project caught the assumptions around it: credentials, the `composer/`
 vendor name, dev-branch aliases, a too-broad regex. One afternoon with a
 real lock file was worth more than another fixture.
+
+**Later that night: `vendor/bin`.** The same project has seven binaries
+(phpcs, phpcbf, carbon, tus, cs2pr, and two shell-wrapped sniffer tools),
+which made Composer's output for it the golden set. The PHP proxy with its
+stream-wrapper block and the shell proxy are ported verbatim; mode follows
+the umask as Composer's does. One deliberate difference: Composer also
+chmods the target inside the package, and `viv` does not, because package
+files are read-only hardlinks into the shared store. The exec bit comes from
+the zip, and it was there for all seven. With this the entire `vendor/`
+tree matches Composer's; the only extra file is `.vivace-state`.

@@ -23,6 +23,7 @@ use crate::auth::Auth;
 use crate::autoload::generator::{self, Input, RootPackage};
 use crate::autoload::installed::{installed_json, installed_php};
 use crate::autoload::platform::{IgnorePlatform, PlatformInput, platform_check};
+use crate::bin;
 use crate::fetch;
 use crate::link::{LinkMode, link_tree};
 use crate::lock::{Lock, Package, Root, read_lock, read_root};
@@ -101,10 +102,6 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         return Ok(());
     }
 
-    if selected.iter().any(|p| !p.bin.is_empty()) {
-        tracing::warn!("vendor/bin proxies are not generated in vivace v0.1");
-    }
-
     let start = Instant::now();
     fs_err::create_dir_all(&vendor_dir)?;
 
@@ -152,6 +149,16 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     }
 
     let all: Vec<&Package> = plan.keep.iter().chain(&plan.install).collect();
+
+    let bin_dir = project_dir.join(&root.config.bin_dir);
+    let bin_packages: Vec<(&Package, PathBuf)> = all
+        .iter()
+        .map(|p| (*p, package_dir(&vendor_dir, p)))
+        .collect();
+    for warning in bin::generate(&vendor_dir, &bin_dir, root.config.bin_compat, &bin_packages)? {
+        tracing::warn!("{warning}");
+    }
+
     write_autoload(&root, &lock, &vendor_dir, &project_dir, &all, dev)?;
 
     write_atomic(
