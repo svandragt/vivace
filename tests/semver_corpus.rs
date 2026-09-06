@@ -327,3 +327,27 @@ fn have_intersections_smoke() {
     let d = parse_constraint("^3.0").unwrap();
     assert!(!have_intersections(&c, &d));
 }
+
+// https://github.com/svandragt/vivace/issues/73: `semver-php` 0.1.0 panics
+// on a non-ASCII byte instead of erroring (it indexes by byte offset
+// without checking char boundaries). The facade must reject it first.
+#[test]
+fn non_ascii_constraint_errors_instead_of_panicking() {
+    let err = parse_constraint("v-Լ,~").err().unwrap();
+    assert_eq!(
+        err.to_string(),
+        "Could not parse version constraint v-Լ,~: Invalid version string \"v-Լ,~\""
+    );
+
+    let err = parse_constraint("Լ").err().unwrap();
+    assert_eq!(
+        err.to_string(),
+        "Could not parse version constraint Լ: Invalid version string \"Լ\""
+    );
+}
+
+#[test]
+fn non_ascii_version_errors_instead_of_panicking() {
+    assert!(normalize("v-Լ,~").is_err());
+    assert!(normalize("Լ").is_err());
+}

@@ -21,10 +21,25 @@ impl NormalizedVersion {
     }
 }
 
+/// `semver-php` 0.1.0 indexes constraint/version strings by byte offset
+/// without checking char-boundary alignment, so a non-ASCII byte (which
+/// only ever sits mid-char in UTF-8) can panic instead of erroring. Reject
+/// it up front with Composer's own `VersionParser` wording rather than
+/// delegating into that crash.
+fn reject_non_ascii(constraint: &str) -> Result<()> {
+    if constraint.is_ascii() {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "Could not parse version constraint {constraint}: Invalid version string \"{constraint}\""
+    ))
+}
+
 /// Normalise a Composer version string to its canonical four-component
 /// form. Delegates to `crate::version::normalize`, which already passes the
 /// composer/semver normalise corpus.
 pub fn normalize(version: &str) -> Result<NormalizedVersion> {
+    reject_non_ascii(version)?;
     Ok(NormalizedVersion(crate::version::normalize(version)?))
 }
 
@@ -48,6 +63,7 @@ impl std::fmt::Display for Constraint {
 
 /// Parse a constraint expression (`^1.0`, `>=2.0 <3.0`, `~1.2 || ^2.0`, ...).
 pub fn parse_constraint(spec: &str) -> Result<Constraint> {
+    reject_non_ascii(spec)?;
     VersionParser::parse_constraints(spec)
         .map(Constraint)
         .with_context(|| format!("parsing version constraint {spec:?}"))
