@@ -10,6 +10,7 @@ pub mod plan;
 pub mod repository;
 pub mod scripts;
 pub mod semver;
+pub mod solver;
 pub mod source;
 pub mod store;
 pub mod version;
