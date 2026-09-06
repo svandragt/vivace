@@ -1,26 +1,42 @@
-//! Native adapters for the two path-mapping Composer plugins vivace ports
-//! (`docs/plugin-strategy.md`'s rule 1: `composer/installers` and the
-//! `wordpress-core-installer` pair), plus rule 3's refusal for every other
-//! `composer-plugin` in the lock.
+//! Native adapters for the Composer plugins vivace ports
+//! (`docs/plugin-strategy.md`'s rules 1, 2 and 3: `composer/installers` and the
+//! `wordpress-core-installer` pair map install paths;
+//! `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`
+//! and `tbachert/spi` generate a file or run a command after install;
+//! `cweagans/composer-patches` applies patches after each package lands),
+//! plus rule 3's refusal for every other `composer-plugin` in the lock.
 //!
-//! Both adapters only ever change *where* a package lands on disk. Neither
-//! plugin actually runs — vivace has no PHP runtime — so this module only
-//! computes a project-relative install directory per package; every
-//! downstream consumer (`link_tree`'s target, `installed.json`/`.php`,
+//! The path-mapping pair only ever changes *where* a package lands on disk:
+//! this module computes a project-relative install directory per package;
+//! every downstream consumer (`link_tree`'s target, `installed.json`/`.php`,
 //! the autoload paths, `vendor/bin` proxies, the plan's keep/remove diff)
 //! already renders whatever absolute or relative path it is given, vendor or
-//! not, so none of them need to know a plugin was involved at all.
+//! not, so none of them need to know a plugin was involved at all. The three
+//! generator adapters ([`phpcs`], [`phpstan`], [`spi`]) instead run once,
+//! after every package has landed in its final spot, from `src/install.rs`'s
+//! own `post-install-cmd`/`pre-autoload-dump` hook points. [`patches`] runs
+//! earlier still, right after linking and before the autoloader is
+//! (re)generated, since a patch can add or remove classes.
 
 use anyhow::{Result, bail};
 use serde_json::Value;
 
 use crate::lock::{Lock, Package, Root};
 
+pub mod patches;
+mod phpcs;
+mod phpstan;
+mod spi;
+
 /// Composer plugins vivace applies the effect of natively.
 const NATIVE_ADAPTERS: &[&str] = &[
     "composer/installers",
     "johnpbloch/wordpress-core-installer",
     "roots/wordpress-core-installer",
+    "dealerdirect/phpcodesniffer-composer-installer",
+    "phpstan/extension-installer",
+    "tbachert/spi",
+    "cweagans/composer-patches",
 ];
 
 /// Composer plugins that only affect commands vivace doesn't implement
@@ -30,10 +46,18 @@ const KNOWN_INERT: &[&str] = &["ergebnis/composer-normalize"];
 
 /// Which native adapters are active for this install, resolved once from the
 /// lock and the root `composer.json` ([`resolve`]).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one flag per native adapter, not a state machine"
+)]
 #[derive(Debug, Default)]
 pub struct Plugins {
     installers: bool,
     wordpress_core: bool,
+    phpcs: bool,
+    phpstan: bool,
+    spi: bool,
+    patches: bool,
 }
 
 /// Resolve which native adapters apply and check every other enabled
@@ -57,7 +81,14 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
             if !no_plugins {
                 match package.name.as_str() {
                     "composer/installers" => plugins.installers = true,
-                    _ => plugins.wordpress_core = true,
+                    "johnpbloch/wordpress-core-installer" | "roots/wordpress-core-installer" => {
+                        plugins.wordpress_core = true;
+                    }
+                    "dealerdirect/phpcodesniffer-composer-installer" => plugins.phpcs = true,
+                    "phpstan/extension-installer" => plugins.phpstan = true,
+                    "cweagans/composer-patches" => plugins.patches = true,
+                    "tbachert/spi" => plugins.spi = true,
+                    other => unreachable!("{other} is in NATIVE_ADAPTERS but has no adapter arm"),
                 }
             }
             continue;
@@ -87,6 +118,64 @@ impl Plugins {
             return installer_path(root, package);
         }
         None
+    }
+
+    /// `tbachert/spi`'s `PRE_AUTOLOAD_DUMP` listener: runs from both `install`
+    /// and `dump-autoload`, since both regenerate the autoloader.
+    pub fn apply_pre_autoload_dump(
+        &self,
+        root: &Root,
+        vendor_dir: &std::path::Path,
+        packages: &[(&Package, std::path::PathBuf)],
+    ) -> Result<()> {
+        if self.spi {
+            spi::apply(root, vendor_dir, packages)?;
+        }
+        Ok(())
+    }
+
+    /// The `POST_INSTALL_CMD`-only adapters (`dealerdirect/phpcodesniffer-composer-installer`,
+    /// `phpstan/extension-installer`): both subscribe to `post-install-cmd`/
+    /// `post-update-cmd` only, never to a bare `dump-autoload`, so this is
+    /// called from `install::run` alone, not `install::dump_autoload`.
+    pub fn apply_post_install(
+        &self,
+        root: &Root,
+        packages: &[(&Package, std::path::PathBuf)],
+    ) -> Result<()> {
+        if self.phpcs {
+            phpcs::apply(root, packages)?;
+        }
+        if self.phpstan {
+            phpstan::apply(root, packages)?;
+        }
+        Ok(())
+    }
+
+    /// Whether `cweagans/composer-patches` is active for this install.
+    pub fn has_patches(&self) -> bool {
+        self.patches
+    }
+
+    /// `cweagans/composer-patches`' `POST_PACKAGE_INSTALL`/`POST_PACKAGE_UPDATE`
+    /// listener: applies patches to every package that has one, right after
+    /// `link_archives` and before the autoloader is (re)generated. `newly_linked`
+    /// are the packages `link_archives` just wrote (pristine, unpatched);
+    /// `kept` are the ones this run left alone, which may already carry a
+    /// previous run's patches.
+    pub fn apply_patches(
+        &self,
+        root: &Root,
+        project_dir: &std::path::Path,
+        vendor_dir: &std::path::Path,
+        newly_linked: &[Package],
+        kept: &[Package],
+        store: &crate::store::Store,
+    ) -> Result<()> {
+        if self.patches {
+            patches::apply(root, project_dir, vendor_dir, newly_linked, kept, store)?;
+        }
+        Ok(())
     }
 }
 
@@ -872,6 +961,15 @@ mod tests {
         assert!(plugins.installers);
     }
 
+    #[test]
+    fn composer_patches_enabled_by_allow_plugins_activates() {
+        let lock = lock_with(&[plugin_package("cweagans/composer-patches")]);
+        let root = root(json!({"config": {"allow-plugins": {"cweagans/composer-patches": true}}}));
+        let (plugins, warnings) = resolve(&lock, &root, false).unwrap();
+        assert!(warnings.is_empty());
+        assert!(plugins.has_patches());
+    }
+
     fn package(name: &str, r#type: &str) -> Package {
         let raw = json!({ "name": name, "version": "1.0.0", "type": r#type });
         let mut package: Package = serde_json::from_value(raw.clone()).unwrap();
@@ -884,6 +982,10 @@ mod tests {
         let plugins = Plugins {
             installers: true,
             wordpress_core: false,
+            phpcs: false,
+            phpstan: false,
+            spi: false,
+            patches: false,
         };
         let root = root(json!({}));
         let dir = plugins
@@ -897,6 +999,10 @@ mod tests {
         let plugins = Plugins {
             installers: true,
             wordpress_core: false,
+            phpcs: false,
+            phpstan: false,
+            spi: false,
+            patches: false,
         };
         let root = root(json!({
             "extra": {
@@ -916,6 +1022,10 @@ mod tests {
         let plugins = Plugins {
             installers: true,
             wordpress_core: false,
+            phpcs: false,
+            phpstan: false,
+            spi: false,
+            patches: false,
         };
         let root = root(json!({
             "extra": {
@@ -937,6 +1047,10 @@ mod tests {
         let plugins = Plugins {
             installers: true,
             wordpress_core: false,
+            phpcs: false,
+            phpstan: false,
+            spi: false,
+            patches: false,
         };
         let root = root(json!({
             "extra": {
@@ -957,6 +1071,10 @@ mod tests {
         let plugins = Plugins {
             installers: true,
             wordpress_core: false,
+            phpcs: false,
+            phpstan: false,
+            spi: false,
+            patches: false,
         };
         let root = root(json!({}));
         assert!(
@@ -971,6 +1089,10 @@ mod tests {
         let plugins = Plugins {
             installers: false,
             wordpress_core: true,
+            phpcs: false,
+            phpstan: false,
+            spi: false,
+            patches: false,
         };
         let root = root(json!({}));
         let dir = plugins
@@ -987,6 +1109,10 @@ mod tests {
         let plugins = Plugins {
             installers: false,
             wordpress_core: true,
+            phpcs: false,
+            phpstan: false,
+            spi: false,
+            patches: false,
         };
         let root = root(json!({"extra": {"wordpress-install-dir": "wp"}}));
         let dir = plugins
@@ -1003,6 +1129,10 @@ mod tests {
         let plugins = Plugins {
             installers: false,
             wordpress_core: true,
+            phpcs: false,
+            phpstan: false,
+            spi: false,
+            patches: false,
         };
         let root = root(json!({
             "extra": {"wordpress-install-dir": {"johnpbloch/wordpress-core": "web/wp"}}
@@ -1021,6 +1151,10 @@ mod tests {
         let plugins = Plugins {
             installers: false,
             wordpress_core: true,
+            phpcs: false,
+            phpstan: false,
+            spi: false,
+            patches: false,
         };
         let raw = json!({
             "name": "acme/wp",

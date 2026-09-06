@@ -1,0 +1,27 @@
+{
+    "_hash": "1a4fc7ee09f5b0516140b0c59645f361e531bb92120134a6ddfbf66de08b66a0",
+    "patches": {
+        "psr/log": [
+            {
+                "package": "psr/log",
+                "description": "Comment on LogLevel via root extra.patches",
+                "url": "patches/psr-log-root.patch",
+                "sha256": "70554c3fd0710f49d9a8cca8c3f39afd61b8bf9a576b52e961a3c5716f738c1d",
+                "depth": 1,
+                "extra": {
+                    "provenance": "root"
+                }
+            },
+            {
+                "package": "psr/log",
+                "description": "Comment on NullLogger::log via patches.json",
+                "url": "patches/psr-log-file.patch",
+                "sha256": "c85c9d44844cf641c3dd32d39068d1484dabffbf4112c2b45815dc26161074fe",
+                "depth": 1,
+                "extra": {
+                    "provenance": "patches-file:patches.json"
+                }
+            }
+        ]
+    }
+}

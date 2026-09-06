@@ -1,0 +1,16 @@
+{
+    "name": "vivace/fixture-phpcs",
+    "license": "proprietary",
+    "type": "project",
+    "require": {
+        "squizlabs/php_codesniffer": "^3.9",
+        "wp-coding-standards/wpcs": "^3.1",
+        "dealerdirect/phpcodesniffer-composer-installer": "^1.0"
+    },
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        },
+        "autoloader-suffix": "VivaceFixture"
+    }
+}

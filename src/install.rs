@@ -6,6 +6,7 @@
 //! them and *where* things live on disk.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -205,14 +206,26 @@ impl From<&DumpAutoloadArgs> for AutoloadFlags {
 /// `content-hash`, the `--no-dev` flag, and a hash of the root
 /// `composer.json` (whose `autoload`/`config` sections feed the generator
 /// even when the lock itself has not changed).
+///
+/// `patches_fingerprint` (#53) covers the one input the other three miss:
+/// `cweagans/composer-patches` reads its own patches from `extra.patches`
+/// (already inside `composer_json_sha256`, so covered) *and* a separate
+/// `patches-file` (`patches.json` by default) that isn't part of
+/// `composer.json`, `composer.lock`, or `--no-dev` at all. Without it, editing
+/// only that file would hit the fast no-op path below and never reach
+/// `Plugins::apply_patches`, leaving a stale patch applied (or a new one
+/// un-applied). `None` when the plugin isn't active, so a project without it
+/// pays nothing extra.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct State {
     content_hash: Option<String>,
     dev: bool,
     composer_json_sha256: String,
+    #[serde(default)]
+    patches_fingerprint: Option<String>,
 }
 
-pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
+pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
 
@@ -299,6 +312,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         content_hash: lock.content_hash.clone(),
         dev,
         composer_json_sha256: hex(Sha256::digest(&composer_json)),
+        patches_fingerprint: patches_fingerprint(&plugins, &root, &project_dir)?,
     };
     let composer_json_value: Value =
         serde_json::from_slice(&composer_json).context("parsing composer.json")?;
@@ -358,6 +372,20 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         .map(|p| (*p).clone())
         .collect();
     if !missing.is_empty() {
+        // `--offline`/`COMPOSER_DISABLE_NETWORK` (#23): report every missing
+        // package in one message, rather than let the fetcher fail on
+        // whichever one it happens to reach first.
+        if offline {
+            let mut message = format!(
+                "Network disabled, request canceled: not in the store ({} package{}):",
+                missing.len(),
+                if missing.len() == 1 { "" } else { "s" }
+            );
+            for package in &missing {
+                let _ = write!(message, "\n  {} ({})", package.name, package.version);
+            }
+            bail!(message);
+        }
         let auth = Auth::load(&project_dir)?;
         let fetcher = fetch::Fetcher::new(auth)?.secure_http(root.config.secure_http);
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -430,6 +458,20 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         "linked packages into vendor"
     );
 
+    // #53: cweagans/composer-patches. Runs before the autoloader is
+    // (re)generated, same as Composer's own POST_PACKAGE_INSTALL/UPDATE —
+    // a patch can add or remove classes the classmap needs to see.
+    if plugins.has_patches() {
+        plugins.apply_patches(
+            &root,
+            &project_dir,
+            &vendor_dir,
+            &plan.install,
+            &plan.keep,
+            &store,
+        )?;
+    }
+
     let all: Vec<&Package> = plan.keep.iter().chain(&plan.install).collect();
     let flags = AutoloadFlags::from(args);
     regenerate_vendor_metadata(
@@ -443,6 +485,9 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         &state,
         &state_path,
         &mut scripts,
+        Some(&archive_dirs),
+        &plugins,
+        true,
     )?;
 
     if plan.is_noop() {
@@ -496,6 +541,9 @@ fn regenerate_vendor_metadata(
     state: &State,
     state_path: &Path,
     scripts: &mut scripts::Runner,
+    archive_dirs: Option<&HashMap<String, PathBuf>>,
+    plugins: &plugins::Plugins,
+    is_install: bool,
 ) -> Result<()> {
     let bin_dir = project_dir.join(root.config.bin_dir());
     let bin_packages: Vec<(&Package, PathBuf)> = packages
@@ -522,11 +570,22 @@ fn regenerate_vendor_metadata(
         packages,
         dev,
         scripts,
+        archive_dirs,
+        plugins,
+        &bin_packages,
     )?;
     tracing::debug!(
         elapsed_ms = autoload_started.elapsed().as_millis(),
         "generated autoload files"
     );
+
+    // `dealerdirect/phpcodesniffer-composer-installer` and
+    // `phpstan/extension-installer` both subscribe to `post-install-cmd`/
+    // `post-update-cmd` only, never a bare `dump-autoload`
+    // (`plugins::Plugins::apply_post_install`'s doc comment).
+    if is_install {
+        plugins.apply_post_install(root, &bin_packages)?;
+    }
 
     let installed_started = Instant::now();
     write_atomic(
@@ -598,6 +657,7 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
         content_hash: lock.content_hash.clone(),
         dev,
         composer_json_sha256: hex(Sha256::digest(&composer_json)),
+        patches_fingerprint: patches_fingerprint(&plugins, &root, &project_dir)?,
     };
     let state_path = vendor_dir.join("composer/.vivace-state");
 
@@ -623,6 +683,11 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
         &state,
         &state_path,
         &mut scripts,
+        // No fetch/link ran here, so no freshly resolved archive dirs to key
+        // a classmap cache on; the scan just runs uncached.
+        None,
+        &plugins,
+        false,
     )?;
 
     out("Generated autoload files");
@@ -716,8 +781,14 @@ fn write_autoload(
     packages: &[&Package],
     dev: bool,
     scripts: &mut scripts::Runner,
+    archive_dirs: Option<&HashMap<String, PathBuf>>,
+    plugins: &plugins::Plugins,
+    plugin_packages: &[(&Package, PathBuf)],
 ) -> Result<()> {
     scripts.dispatch("pre-autoload-dump")?;
+    // `tbachert/spi` subscribes to `PRE_AUTOLOAD_DUMP`, so it runs from both
+    // `install` and `dump-autoload` alike, right where Composer would run it.
+    plugins.apply_pre_autoload_dump(root, vendor_dir, plugin_packages)?;
     let suffix = resolve_suffix(root, lock, vendor_dir)?;
     let classmap_authoritative = flags.classmap_authoritative || root.config.classmap_authoritative;
     let scan_psr =
@@ -777,6 +848,7 @@ fn write_autoload(
                     .then(|| package_dir(vendor_dir, project_dir, p)),
                 is_dev: p.dev,
                 include_path: p.include_path.clone(),
+                archive_dir: archive_dirs.and_then(|dirs| dirs.get(&p.name)).cloned(),
             })
             .collect(),
         dev_mode: dev,
@@ -992,7 +1064,7 @@ fn prune_empty_ancestors(removed: &Path, boundary: &Path) {
 /// still declares one — or, when `src/plugins.rs` mapped this package
 /// outside `vendor/` (a native `composer/installers`/`wordpress-core`
 /// adapter), that mapped directory under `project_dir` instead.
-fn package_dir(vendor_dir: &Path, project_dir: &Path, package: &Package) -> PathBuf {
+pub(crate) fn package_dir(vendor_dir: &Path, project_dir: &Path, package: &Package) -> PathBuf {
     if let Some(install_dir) = &package.install_dir {
         return project_dir.join(install_dir);
     }
@@ -1070,6 +1142,19 @@ fn default_cache_dir() -> Result<PathBuf> {
 fn read_state(path: &Path) -> Option<State> {
     let content = fs_err::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+/// `State::patches_fingerprint`: `None` when `cweagans/composer-patches`
+/// isn't active, so a project without it never pays for this.
+fn patches_fingerprint(
+    plugins: &plugins::Plugins,
+    root: &Root,
+    project_dir: &Path,
+) -> Result<Option<String>> {
+    plugins
+        .has_patches()
+        .then(|| plugins::patches::fingerprint(root, project_dir))
+        .transpose()
 }
 
 /// Write `content` to `path` only when it differs, via a temp file in the

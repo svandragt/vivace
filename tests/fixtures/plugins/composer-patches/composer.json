@@ -1,0 +1,22 @@
+{
+    "name": "vivace/fixture-composer-patches",
+    "license": "proprietary",
+    "type": "project",
+    "require": {
+        "psr/log": "3.0.2",
+        "cweagans/composer-patches": "2.0.0"
+    },
+    "config": {
+        "allow-plugins": {
+            "cweagans/composer-patches": true
+        },
+        "autoloader-suffix": "VivaceFixture"
+    },
+    "extra": {
+        "patches": {
+            "psr/log": {
+                "Comment on LogLevel via root extra.patches": "patches/psr-log-root.patch"
+            }
+        }
+    }
+}

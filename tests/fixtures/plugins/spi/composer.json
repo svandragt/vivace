@@ -1,0 +1,27 @@
+{
+    "name": "vivace/fixture-spi",
+    "license": "proprietary",
+    "type": "project",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/provider",
+            "options": {
+                "versions": {
+                    "acme/spi-provider": "1.0.0"
+                }
+            }
+        }
+    ],
+    "require": {
+        "tbachert/spi": "^1.0",
+        "acme/spi-provider": "1.0.0"
+    },
+    "config": {
+        "secure-http": true,
+        "autoloader-suffix": "VivaceFixture",
+        "allow-plugins": {
+            "tbachert/spi": true
+        }
+    }
+}

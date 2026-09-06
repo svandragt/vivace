@@ -1,0 +1,10 @@
+{
+    "patches": {
+        "psr/log": [
+            {
+                "description": "Comment on NullLogger::log via patches.json",
+                "url": "patches/psr-log-file.patch"
+            }
+        ]
+    }
+}

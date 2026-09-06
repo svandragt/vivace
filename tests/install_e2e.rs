@@ -12,11 +12,14 @@
 mod common;
 
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::TestContext;
+use vivace::lock::Package;
+use vivace::store::Store;
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog")
@@ -904,4 +907,443 @@ fn metapackage_with_a_dist_is_never_fetched_or_linked() {
         .find(|p| p["name"] == "acme/meta")
         .expect("acme/meta should still be recorded in installed.json");
     assert_eq!(meta["install-path"], serde_json::Value::Null);
+}
+
+/// #25: a classmap scan is cached per store archive so a rebuilt `vendor/`
+/// (deleted, then `-o` re-run against the same warm cache) does not
+/// retokenise every package's PHP files again — the output stays byte-
+/// identical and a cache sidecar lands next to the archive's `.ok` marker.
+#[test]
+fn optimized_autoload_reuses_the_classmap_cache_after_vendor_is_rebuilt() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping install_e2e: set VIVACE_TEST_NETWORK=1 to fetch real dists over the network"
+        );
+        return;
+    }
+
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_monolog_sources(project);
+
+    ctx.viv()
+        .args(["install", "-o"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 3 packages"));
+
+    let classmap_path = project.join("vendor/composer/autoload_classmap.php");
+    let first = fs::read(&classmap_path).unwrap();
+
+    let sidecars: Vec<PathBuf> = fs::read_dir(ctx.cache.path().join("archive-v0"))
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.unwrap().path();
+            (path.extension().and_then(|e| e.to_str()) == Some("classmap-v0")).then_some(path)
+        })
+        .collect();
+    assert!(
+        !sidecars.is_empty(),
+        "an -o install should leave at least one classmap cache sidecar"
+    );
+
+    // Rebuild `vendor/` from scratch against the same (warm) store, as
+    // `bench/run.sh`'s "warm" scenario does.
+    fs::remove_dir_all(project.join("vendor")).unwrap();
+    ctx.viv()
+        .args(["install", "-o"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 3 packages"));
+
+    let second = fs::read(&classmap_path).unwrap();
+    assert_eq!(first, second, "cached classmap must match a fresh scan");
+}
+
+/// #23: a single-file zip, in memory, for pre-populating the store without
+/// ever touching the network.
+fn zip_of_one_file(name: &str, content: &[u8]) -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer
+        .start_file(name, zip::write::SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(content).unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
+/// A lock package matching what `Store::add_zip` needs (name and dist), for
+/// pre-populating the store the same way a prior `viv install` would have
+/// left it — no `composer.lock` on disk needed for this.
+fn store_package(name: &str) -> Package {
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "version": "1.0.0",
+        "dist": {
+            "type": "zip",
+            "url": "https://example.invalid/pkg.zip",
+            "reference": "deadbeef",
+            "shasum": "",
+        },
+    }))
+    .unwrap()
+}
+
+/// #23: with every dist already in the store, `--offline` must still
+/// install successfully — a warm cache is exactly the case offline mode
+/// exists for, not just the case it tolerates.
+#[test]
+fn offline_install_succeeds_when_every_dist_is_already_in_the_store() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs::write(
+        project.join("composer.json"),
+        r#"{"name": "acme/app", "require": {"acme/pkg": "^1.0"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("composer.lock"),
+        r#"{
+            "packages": [
+                {
+                    "name": "acme/pkg",
+                    "version": "1.0.0",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.invalid/pkg.zip",
+                        "reference": "deadbeef",
+                        "shasum": ""
+                    }
+                }
+            ],
+            "packages-dev": []
+        }"#,
+    )
+    .unwrap();
+
+    // Pre-populate the store directly, the way a prior (online) install
+    // would have left it — this test never makes a network request itself.
+    let store = Store::open(ctx.cache.path()).unwrap();
+    store
+        .add_zip(
+            &store_package("acme/pkg"),
+            &zip_of_one_file("pkg.txt", b"hi"),
+        )
+        .unwrap();
+    drop(store);
+
+    ctx.viv()
+        .args(["install", "--offline"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Installed 1 packages (1 from cache)",
+        ));
+    assert_eq!(
+        fs::read(project.join("vendor/acme/pkg/pkg.txt")).unwrap(),
+        b"hi"
+    );
+}
+
+/// #23: nothing in the store and `--offline` set errors instead of
+/// attempting a download, naming the missing package.
+#[test]
+fn offline_install_errors_naming_a_package_not_in_the_store() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs::write(
+        project.join("composer.json"),
+        r#"{"name": "acme/app", "require": {"acme/pkg": "^1.0"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("composer.lock"),
+        r#"{
+            "packages": [
+                {
+                    "name": "acme/pkg",
+                    "version": "1.0.0",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.invalid/pkg.zip",
+                        "reference": "deadbeef",
+                        "shasum": ""
+                    }
+                }
+            ],
+            "packages-dev": []
+        }"#,
+    )
+    .unwrap();
+
+    let output = ctx.viv().args(["install", "--offline"]).output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Network disabled, request canceled"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("acme/pkg"), "{stderr}");
+}
+
+/// #52: native adapters for `dealerdirect/phpcodesniffer-composer-installer`,
+/// `phpstan/extension-installer` and `tbachert/spi`, each byte-diffed against
+/// the artifact the real plugin generates with Composer 2.10.2.
+mod plugin_generators {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use crate::common::TestContext;
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/plugins")
+            .join(name)
+    }
+
+    fn copy_lock_sources(fixture_dir: &Path, project: &Path) {
+        for name in ["composer.json", "composer.lock"] {
+            fs::copy(fixture_dir.join(name), project.join(name)).unwrap();
+        }
+    }
+
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn skip_without_network() -> bool {
+        if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+            eprintln!(
+                "skipping plugin_generators test: set VIVACE_TEST_NETWORK=1 to fetch real dists \
+                 over the network"
+            );
+            return true;
+        }
+        false
+    }
+
+    fn skip_without_php() -> bool {
+        if Command::new("php").arg("--version").output().is_err() {
+            eprintln!("skipping plugin_generators test: php not on PATH");
+            return true;
+        }
+        false
+    }
+
+    /// `dealerdirect/phpcodesniffer-composer-installer` runs `phpcs
+    /// --config-set installed_paths` after install, writing
+    /// `vendor/squizlabs/php_codesniffer/CodeSniffer.conf` with every
+    /// `phpcodesniffer-standard` package's ruleset directory, sorted and
+    /// comma-joined.
+    #[test]
+    fn phpcs_installed_paths_matches_composer() {
+        if skip_without_network() || skip_without_php() {
+            return;
+        }
+        let ctx = TestContext::new();
+        let project = ctx.project.path();
+        copy_lock_sources(&fixture("phpcs"), project);
+
+        ctx.viv()
+            .arg("install")
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("Installed 5 packages"));
+
+        let want = fs::read(fixture("phpcs").join("expected/CodeSniffer.conf")).unwrap();
+        let got =
+            fs::read(project.join("vendor/squizlabs/php_codesniffer/CodeSniffer.conf")).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            String::from_utf8_lossy(&want)
+        );
+    }
+
+    /// `phpstan/extension-installer` writes
+    /// `vendor/phpstan/extension-installer/src/GeneratedConfig.php`, a
+    /// `var_export` dump of every `extra.phpstan` package; the fixture's
+    /// `install_path` field embeds the project's own absolute path, so the
+    /// expected file is a template with a `{{PROJECT_DIR}}` placeholder.
+    #[test]
+    fn phpstan_generated_config_matches_composer() {
+        if skip_without_network() {
+            return;
+        }
+        let ctx = TestContext::new();
+        let project = ctx.project.path();
+        copy_lock_sources(&fixture("phpstan"), project);
+
+        ctx.viv()
+            .arg("install")
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("Installed 3 packages"));
+
+        let template =
+            fs::read_to_string(fixture("phpstan").join("expected/GeneratedConfig.php")).unwrap();
+        let project_dir = fs::canonicalize(project).unwrap();
+        let want = template.replace("{{PROJECT_DIR}}", &project_dir.display().to_string());
+        let got = fs::read_to_string(
+            project.join("vendor/phpstan/extension-installer/src/GeneratedConfig.php"),
+        )
+        .unwrap();
+        assert_eq!(got, want);
+    }
+
+    /// `tbachert/spi` writes `vendor/composer/GeneratedServiceProviderData.php`
+    /// from every package's `extra.spi`; the one declaring providers here is
+    /// a local `path` repository package, so only `tbachert/spi` itself (and
+    /// its own `composer/semver` dependency) needs the network.
+    #[test]
+    fn spi_generated_service_provider_data_matches_composer() {
+        if skip_without_network() {
+            return;
+        }
+        let ctx = TestContext::new();
+        let project = ctx.project.path();
+        copy_lock_sources(&fixture("spi"), project);
+        copy_tree(&fixture("spi").join("packages"), &project.join("packages"));
+
+        ctx.viv()
+            .arg("install")
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("Installed 3 packages"));
+
+        let want =
+            fs::read_to_string(fixture("spi").join("expected/GeneratedServiceProviderData.php"))
+                .unwrap();
+        let got =
+            fs::read_to_string(project.join("vendor/composer/GeneratedServiceProviderData.php"))
+                .unwrap();
+        assert_eq!(got, want);
+    }
+}
+
+/// #53: `cweagans/composer-patches` 2.0.0 (docs/plugin-strategy.md's rule 3):
+/// patches from root `extra.patches` and the `patches-file` applied via a
+/// temporary `git init`/`git apply` (2.0.0 dropped the plain `patch` CLI
+/// patcher 1.x had — `src/plugins/patches.rs`'s own doc comment), with
+/// `patches.lock.json` byte-diffed against the real plugin's own. Gated on
+/// `git`, not `php`: viv never runs the plugin's PHP, only mirrors what it
+/// would have applied.
+mod composer_patches {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use crate::common::TestContext;
+
+    fn fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugins/composer-patches")
+    }
+
+    fn copy_sources(project: &Path) {
+        for name in ["composer.json", "composer.lock", "patches.json"] {
+            fs::copy(fixture().join(name), project.join(name)).unwrap();
+        }
+        super::copy_tree(&fixture().join("patches"), &project.join("patches"));
+    }
+
+    fn skip_without_network() -> bool {
+        if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+            eprintln!(
+                "skipping composer_patches test: set VIVACE_TEST_NETWORK=1 to fetch real dists \
+                 over the network"
+            );
+            return true;
+        }
+        false
+    }
+
+    fn skip_without_git() -> bool {
+        if Command::new("git").arg("--version").output().is_err() {
+            eprintln!("skipping composer_patches test: git not on PATH");
+            return true;
+        }
+        false
+    }
+
+    #[test]
+    fn applies_patches_and_writes_lock_matching_composer() {
+        if skip_without_network() || skip_without_git() {
+            return;
+        }
+        let ctx = TestContext::new();
+        let project = ctx.project.path();
+        copy_sources(project);
+
+        ctx.viv()
+            .arg("install")
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("Installed 3 packages"));
+
+        super::assert_matches_expected(&fixture().join("expected/dev"), &project.join("vendor"));
+        assert_eq!(
+            fs::read(project.join("vendor/psr/log/src/LogLevel.php")).unwrap(),
+            fs::read(fixture().join("expected/patched/psr-log/src/LogLevel.php")).unwrap(),
+            "patch from root extra.patches"
+        );
+        assert_eq!(
+            fs::read(project.join("vendor/psr/log/src/NullLogger.php")).unwrap(),
+            fs::read(fixture().join("expected/patched/psr-log/src/NullLogger.php")).unwrap(),
+            "patch from the patches-file"
+        );
+        assert_eq!(
+            fs::read(project.join("patches.lock.json")).unwrap(),
+            fs::read(fixture().join("expected/patches.lock.json")).unwrap(),
+            "patches.lock.json must match the real plugin's own, byte for byte"
+        );
+
+        // Patching breaks this package's store hardlink: an independent,
+        // writable copy, never the store's shared read-only inode.
+        let mode = fs::metadata(project.join("vendor/psr/log/composer.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_ne!(
+            mode, 0o444,
+            "a patched package must not keep sharing the store's read-only inode"
+        );
+        assert!(
+            !project.join("vendor/psr/log/.git").exists(),
+            "GitInitPatcher's temporary repo must be cleaned up"
+        );
+
+        // Re-run: nothing changed, so it's a no-op (and doesn't re-run git).
+        ctx.viv()
+            .arg("install")
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("Nothing to install"));
+
+        // Editing only the patches file changes neither composer.lock nor
+        // composer.json, so the ordinary plan/state diff can't see it —
+        // `State::patches_fingerprint` (src/install.rs) must still catch it
+        // and re-patch from a pristine store copy.
+        fs::write(project.join("patches.json"), r#"{ "patches": {} }"#).unwrap();
+        ctx.viv().arg("install").assert().success();
+        assert_eq!(
+            fs::read(project.join("vendor/psr/log/src/NullLogger.php")).unwrap(),
+            fs::read(fixture().join("expected/pristine/psr-log/src/NullLogger.php")).unwrap(),
+            "dropping the patches-file patch must revert this file"
+        );
+        assert_eq!(
+            fs::read(project.join("vendor/psr/log/src/LogLevel.php")).unwrap(),
+            fs::read(fixture().join("expected/patched/psr-log/src/LogLevel.php")).unwrap(),
+            "the root extra.patches patch is untouched by the patches-file change"
+        );
+    }
 }

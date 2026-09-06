@@ -1,0 +1,16 @@
+{
+    "name": "vivace/fixture-phpstan",
+    "license": "proprietary",
+    "type": "project",
+    "require": {
+        "phpstan/phpstan": "^1.11",
+        "phpstan/phpstan-strict-rules": "^1.6",
+        "phpstan/extension-installer": "^1.4"
+    },
+    "config": {
+        "allow-plugins": {
+            "phpstan/extension-installer": true
+        },
+        "autoloader-suffix": "VivaceFixture"
+    }
+}

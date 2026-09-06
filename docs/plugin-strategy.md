@@ -14,15 +14,15 @@ WordPress project):
 |---|---|---|
 | composer/installers | Install path per package type from `extra.installer-paths` | Yes, pure path mapping |
 | johnpbloch/wordpress-core-installer | Install path of `wordpress-core` packages from `extra.wordpress-install-dir` | Yes, pure path mapping |
-| dealerdirect/phpcodesniffer-composer-installer | Runs `phpcs --config-set installed_paths` after install | Yes, one command |
+| dealerdirect/phpcodesniffer-composer-installer | Runs `phpcs --config-set installed_paths` after install | Native (`src/plugins/phpcs.rs`) |
+| phpstan/extension-installer | Writes `GeneratedConfig.php` listing every `extra.phpstan` package | Native (`src/plugins/phpstan.rs`) |
 | php-http/discovery | Adds packages to the resolver and generates a discovery file | Partly; the generated file, not the resolver hook |
-| tbachert/spi | Generates a service-provider map file after autoload dump | Yes, file generation |
+| tbachert/spi | Generates a service-provider map file after autoload dump | Native (`src/plugins/spi.rs`), `extra.spi` only |
 
 Plugins named in issue #12 but not seen in any lock yet: cweagans/composer-patches
 (applies patches, portable with `patch` or `git apply`), symfony/flex (rewrites
-composer.json and recipes, not portable), phpstan/extension-installer (generates a
-file), bamarni/composer-bin-plugin (nested installs, portable by running viv in
-each `vendor-bin/*`).
+composer.json and recipes, not portable), bamarni/composer-bin-plugin (nested
+installs, portable by running viv in each `vendor-bin/*`).
 
 ## Rule
 

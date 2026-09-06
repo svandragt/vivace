@@ -1,0 +1,10 @@
+--- a/src/LogLevel.php
++++ b/src/LogLevel.php
+@@ -7,6 +7,7 @@
+  */
+ class LogLevel
+ {
++    // patched by cweagans/composer-patches fixture (root extra.patches)
+     const EMERGENCY = 'emergency';
+     const ALERT     = 'alert';
+     const CRITICAL  = 'critical';

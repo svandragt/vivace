@@ -1,0 +1,14 @@
+{
+    "name": "acme/spi-provider",
+    "type": "library",
+    "autoload": {
+        "psr-4": { "Acme\\Spi\\": "src/" }
+    },
+    "extra": {
+        "spi": {
+            "Acme\\Spi\\ServiceInterface": [
+                "Acme\\Spi\\ConcreteProvider"
+            ]
+        }
+    }
+}
