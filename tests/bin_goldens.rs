@@ -42,6 +42,7 @@ fn package(name: &str, bin: &[&str]) -> Package {
         dev: false,
         raw: Value::Null,
         install_dir: None,
+        install_from_source: false,
     }
 }
 
@@ -233,6 +234,37 @@ fn no_bin_dir_created_when_no_package_declares_bin() {
     .unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     assert!(!bin_dir.exists(), "vendor/bin should not have been created");
+}
+
+/// #29/#37: a stale `sh` proxy (no `@generated` marker, same as Composer's
+/// own) must still be recognised and removed, by the wording its template
+/// already carries verbatim — not a marker added to the proxy's own bytes,
+/// which would fail `matches_composer_2_10_2_byte_for_byte` above.
+#[test]
+fn stale_sh_proxy_removed_without_a_marker_comment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vendor_dir = tmp.path().join("vendor");
+    let bin_dir = vendor_dir.join("bin");
+    let install_path = vendor_dir.join("acme/tool");
+    fs::create_dir_all(&install_path).unwrap();
+    fs::create_dir_all(&bin_dir).unwrap();
+    // A real Composer-written `sh` proxy (no `@generated` marker, same as
+    // ours): `tests/fixtures/bin/sniff`.
+    fs::write(bin_dir.join("stale"), fixture("sniff")).unwrap();
+
+    let pkg = package("acme/tool", &[]);
+    let warnings = generate(
+        &vendor_dir,
+        &bin_dir,
+        BinCompat::Auto,
+        &[(&pkg, install_path)],
+    )
+    .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(
+        !bin_dir.join("stale").exists(),
+        "stale sh proxy should have been removed"
+    );
 }
 
 /// `BinaryInstaller::removeBinaries` deletes stale proxies but leaves the

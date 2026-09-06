@@ -6,10 +6,11 @@
 //! them and *where* things live on disk.
 
 use std::collections::HashMap;
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
@@ -61,9 +62,8 @@ pub struct InstallArgs {
     pub link_mode: LinkMode,
     /// Reinstall every locked package from the store even if `installed.json`
     /// already matches it, e.g. to relink a `vendor/` Composer (or an older
-    /// viv) wrote as plain copies.
-    // ponytail: adopts unconditionally, no interactive confirmation; add a
-    // TTY prompt here if adopting silently ever bites someone.
+    /// viv) wrote as plain copies. Prompts for confirmation when stdin is a
+    /// terminal (skip with a non-interactive stdin, e.g. `</dev/null`).
     #[arg(long)]
     pub adopt: bool,
     /// Project directory holding `composer.json`/`composer.lock`.
@@ -152,12 +152,20 @@ pub struct CacheArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum CacheCommand {
-    /// Remove stale buckets, orphan temp dirs and orphan `.ok` markers;
-    /// every complete, current-bucket archive is kept.
-    Prune,
+    /// Remove stale buckets, orphan temp dirs, orphan `.ok` markers, and any
+    /// archive no dist pointer references any more.
+    Prune {
+        /// Also remove dist pointers not installed from in this many days
+        /// (touched on every `viv install` hit), before sweeping archives
+        /// that leaves unreferenced.
+        #[arg(long, value_name = "DAYS")]
+        older_than: Option<u64>,
+    },
     /// Remove the whole cache after confirming it looks like a vivace cache
     /// (only our own bucket names, or empty); refuses otherwise.
     Clean,
+    /// Print archive and dist-pointer counts and total size.
+    Size,
 }
 
 /// The autoload-shaping flags `install` and `dump-autoload` both accept,
@@ -231,8 +239,16 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     for warning in &plugin_warnings {
         warn_out(warning);
     }
+    // `config.preferred-install` (#43): a package with both a dist and a
+    // git `source` may still be checked out from source instead of fetched
+    // as an archive, per `DownloadManager::resolvePackageInstallPreference`.
+    let preferred_install = lock::resolve_preferred_install(&root.config.preferred_install)?;
     for package in &mut lock.packages {
         package.install_dir = plugins.install_dir(&root, package);
+        package.install_from_source = package.dist.is_some()
+            && package.source.as_ref().is_some_and(|s| s.r#type == "git")
+            && preferred_install
+                .prefers_source(&package.name, lock::is_dev_version(&package.version));
     }
 
     // Composer's `Installer::doInstall`: a stale content-hash is only a
@@ -264,6 +280,13 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     let composer_written =
         vendor_dir.join("composer/installed.json").is_file() && !state_path.is_file();
     if args.adopt {
+        // A human at a terminal gets a chance to back out of relinking every
+        // kept package in place; a script or test harness (stdin not a TTY)
+        // has no way to answer, so it proceeds unprompted, same as before
+        // this existed.
+        if std::io::stdin().is_terminal() && !confirm_adopt()? {
+            bail!("Aborted");
+        }
         plan.install.append(&mut plan.keep);
     }
 
@@ -306,13 +329,19 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     };
     let store = Arc::new(Store::open(&cache_dir)?);
 
-    // Path (#13's local-directory case) and dist-less git-source (#13's VCS
-    // case) packages are symlinked/mirrored or cloned straight into
+    // Path (#13's local-directory case), dist-less git-source (#13's VCS
+    // case) and preferred-install-source (#43, `install_from_source`, set
+    // above) packages are symlinked/mirrored or cloned straight into
     // `vendor/`, below; only zip/tar dists ever reach the store or fetcher.
     let archive_targets: Vec<&Package> = plan
         .install
         .iter()
-        .filter(|p| p.r#type != "metapackage" && !p.is_path() && !p.is_git_source())
+        .filter(|p| {
+            p.r#type != "metapackage"
+                && !p.is_path()
+                && !p.is_git_source()
+                && !p.install_from_source
+        })
         .collect();
 
     let mut archive_dirs: HashMap<String, PathBuf> = HashMap::new();
@@ -347,6 +376,13 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
 
     sweep_link_litter(&vendor_dir)?;
     let link_started = Instant::now();
+    // Path/git-source installs stay sequential: there are typically few of
+    // them, and a git checkout shares a per-URL mirror in `cache_dir` that
+    // isn't safe to clone into concurrently from two threads. Archive-backed
+    // packages (the common case) are the ones extraction already fans out
+    // 8-way, so linking them fans out the same way instead of serialising
+    // what was already parallel disk I/O up to this point.
+    let mut archive_installs: Vec<&Package> = Vec::new();
     for package in &plan.install {
         // Composer's MetapackageInstaller installs nothing (no dir, no dist
         // fetch); mirror that instead of downloading/linking a dist a
@@ -354,21 +390,38 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         if package.r#type == "metapackage" {
             continue;
         }
-        let dest = package_dir(&vendor_dir, &project_dir, package);
-        if package.is_path() {
-            source::install_path(&project_dir, package, &dest)?;
-        } else if package.is_git_source() {
-            source::checkout_git(&cache_dir, package, &dest)?;
+        if package.is_path() || package.is_git_source() || package.install_from_source {
+            let dest = package_dir(&vendor_dir, &project_dir, package);
+            if package.is_path() {
+                source::install_path(&project_dir, package, &dest)?;
+            } else {
+                source::checkout_git(&cache_dir, package, &dest)?;
+            }
         } else {
-            let dir = archive_dirs
-                .get(&package.name)
-                .expect("every install candidate was fetched or found in the store");
-            link_tree(dir, &dest, args.link_mode)?;
+            archive_installs.push(package);
         }
     }
+    link_archives(
+        &archive_installs,
+        &vendor_dir,
+        &project_dir,
+        &archive_dirs,
+        args.link_mode,
+    )?;
     for entry in &plan.remove {
         if entry.install_path.exists() {
             fs_err::remove_dir_all(&entry.install_path)?;
+            // Composer prunes now-empty parents after removing a package
+            // (`vendor/<vendor>/` disappears when its last package goes; a
+            // target-dir package's scaffold parents go the same way) —
+            // bounded at `vendor_dir` for an ordinary package, or
+            // `project_dir` for one a native installer mapped elsewhere.
+            let boundary = if entry.install_path.starts_with(&vendor_dir) {
+                vendor_dir.as_path()
+            } else {
+                project_dir.as_path()
+            };
+            prune_empty_ancestors(&entry.install_path, boundary);
         }
     }
     tracing::debug!(
@@ -392,16 +445,31 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
         &mut scripts,
     )?;
 
-    let installed_count = plan
-        .install
-        .iter()
-        .filter(|p| p.r#type != "metapackage")
-        .count();
-    out(&format!(
-        "Installed {installed_count} packages ({from_cache} from cache), removed {}, in {:.2}s",
-        plan.remove.len(),
-        start.elapsed().as_secs_f64()
-    ));
+    if plan.is_noop() {
+        // Composer's own wording for this case (only reached here because a
+        // stale state or `scripts` listener skipped the earlier fast path):
+        // nothing installed or removed, so no package counts to report.
+        out("Nothing to install, update or remove");
+        let optimized = args.optimize_autoloader
+            || args.classmap_authoritative
+            || root.config.optimize_autoloader;
+        out(if optimized {
+            "Generating optimized autoload files"
+        } else {
+            "Generating autoload files"
+        });
+    } else {
+        let installed_count = plan
+            .install
+            .iter()
+            .filter(|p| p.r#type != "metapackage")
+            .count();
+        out(&format!(
+            "Installed {installed_count} packages ({from_cache} from cache), removed {}, in {:.2}s",
+            plan.remove.len(),
+            start.elapsed().as_secs_f64()
+        ));
+    }
     if composer_written && !args.adopt {
         warn_out(
             "vendor/ was not installed by viv; packages are plain copies. Run \
@@ -567,15 +635,16 @@ pub fn cache(args: &CacheArgs, cache_dir: Option<&Path>) -> Result<()> {
         Some(dir) => dir.to_path_buf(),
         None => default_cache_dir()?,
     };
-    match args.command {
-        CacheCommand::Prune => {
+    match &args.command {
+        CacheCommand::Prune { older_than } => {
             let store = Store::open(&cache_dir)?;
-            let report = store.prune()?;
+            let older_than = older_than.map(|days| Duration::from_secs(days * 86_400));
+            let report = store.prune(older_than)?;
             out(&format!(
-                "Removed {} entr{} ({} bytes) from {}",
+                "Removed {} entr{} ({}) from {}",
                 report.entries,
                 if report.entries == 1 { "y" } else { "ies" },
-                report.bytes,
+                human_bytes(report.bytes),
                 cache_dir.display()
             ));
         }
@@ -597,8 +666,41 @@ pub fn cache(args: &CacheArgs, cache_dir: Option<&Path>) -> Result<()> {
                 cache_dir.display()
             ));
         }
+        CacheCommand::Size => {
+            let size = Store::open(&cache_dir)?.size()?;
+            out(&format!(
+                "{} ({} archives, {} pointers) in {}",
+                human_bytes(size.archive_bytes),
+                size.archives,
+                size.pointers,
+                cache_dir.display()
+            ));
+        }
     }
     Ok(())
+}
+
+/// `1234` -> `"1234 bytes"`, `1_500_000` -> `"1.43 MiB"`: binary units,
+/// Composer/`du`-shaped, only used for `viv cache`'s own report lines.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "a cache's byte count is nowhere near f64's 52-bit mantissa limit"
+)]
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
+    if bytes < 1024 {
+        return format!("{bytes} bytes");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = UNITS[0];
+    for candidate in &UNITS[1..] {
+        if value < 1024.0 {
+            break;
+        }
+        value /= 1024.0;
+        unit = candidate;
+    }
+    format!("{value:.2} {unit}")
 }
 
 /// Build the generator's `Input` from the root and the packages that will
@@ -708,6 +810,64 @@ fn write_autoload(
 /// to be written.
 const EXTRACT_CONCURRENCY: usize = 8;
 
+/// #37: fan `link_tree` out across a bounded pool instead of linking every
+/// archive-backed package one at a time — hardlinking (or copying, under
+/// `--link-mode copy`) is disk/syscall-bound the same way extraction is, so
+/// it gets the same eight-way ceiling, further capped by the machine's own
+/// core count via `std::thread::scope` (no new dependency: `link_tree` is
+/// already safe to call concurrently, each call touching a disjoint `dest`).
+fn link_archives(
+    packages: &[&Package],
+    vendor_dir: &Path,
+    project_dir: &Path,
+    archive_dirs: &HashMap<String, PathBuf>,
+    link_mode: LinkMode,
+) -> Result<()> {
+    if packages.is_empty() {
+        return Ok(());
+    }
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(EXTRACT_CONCURRENCY)
+        .min(packages.len());
+    let next = AtomicUsize::new(0);
+    let error: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(package) = packages.get(index) else {
+                        break;
+                    };
+                    if error
+                        .lock()
+                        .expect("error mutex is never poisoned")
+                        .is_some()
+                    {
+                        break;
+                    }
+                    let dest = package_dir(vendor_dir, project_dir, package);
+                    let dir = archive_dirs
+                        .get(&package.name)
+                        .expect("every install candidate was fetched or found in the store");
+                    if let Err(err) = link_tree(dir, &dest, link_mode) {
+                        let mut guard = error.lock().expect("error mutex is never poisoned");
+                        if guard.is_none() {
+                            *guard = Some(err);
+                        }
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    match error.into_inner().expect("error mutex is never poisoned") {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
 /// Download every package not already in the store, extracting each into it
 /// as its bytes arrive.
 ///
@@ -725,7 +885,11 @@ async fn fetch_missing(
     store: Arc<Store>,
     packages: &[Package],
 ) -> Result<HashMap<String, PathBuf>> {
-    let mut downloads = fetcher.fetch_all(packages, CONCURRENCY);
+    // #21: large downloads spill to a temp file in the store's own temp area
+    // rather than growing an ever-larger `Vec<u8>`; small ones (the common
+    // case) still travel as bytes.
+    let temp_dir = store.temp_dir()?;
+    let mut downloads = fetcher.fetch_all(packages, CONCURRENCY, &temp_dir);
     let extract_slots = Arc::new(tokio::sync::Semaphore::new(EXTRACT_CONCURRENCY));
     let mut extractions: tokio::task::JoinSet<Result<(String, PathBuf)>> =
         tokio::task::JoinSet::new();
@@ -736,8 +900,8 @@ async fn fetch_missing(
         tokio::select! {
             item = downloads.next(), if !downloads_done => {
                 match item {
-                    Some((package, bytes)) => {
-                        let bytes = bytes.with_context(|| format!("{}: fetching dist", package.name))?;
+                    Some((package, downloaded)) => {
+                        let downloaded = downloaded.with_context(|| format!("{}: fetching dist", package.name))?;
                         let name = package.name.clone();
                         let package = package.clone();
                         let store = Arc::clone(&store);
@@ -747,9 +911,17 @@ async fn fetch_missing(
                                 .acquire_owned()
                                 .await
                                 .expect("extract_slots semaphore is never closed");
-                            tokio::task::spawn_blocking(move || Ok((name, store.add_zip(&package, &bytes)?)))
-                                .await
-                                .context("store worker panicked")?
+                            tokio::task::spawn_blocking(move || {
+                                let dir = match &downloaded {
+                                    fetch::Downloaded::Bytes(bytes) => store.add_zip(&package, bytes)?,
+                                    fetch::Downloaded::File(path) => {
+                                        store.add_archive_from_file(&package, path)?
+                                    }
+                                };
+                                Ok((name, dir))
+                            })
+                            .await
+                            .context("store worker panicked")?
                         });
                     }
                     None => downloads_done = true,
@@ -794,6 +966,26 @@ fn sweep_link_litter(vendor_dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// #56/#37: after removing a package's install directory, remove now-empty
+/// parent directories one at a time, stopping at (never removing) `boundary`
+/// itself, a parent that still has something in it, or one this process
+/// cannot remove. Covers both a bare `vendor/<vendor>/` losing its last
+/// package and a `target-dir` package's scaffold parents (`vendor/<name>/`
+/// itself, one level up from the target-dir leaf `install_path` points at).
+fn prune_empty_ancestors(removed: &Path, boundary: &Path) {
+    let mut dir = removed.parent();
+    while let Some(current) = dir {
+        if current == boundary || !current.starts_with(boundary) {
+            break;
+        }
+        let is_empty = fs_err::read_dir(current).is_ok_and(|mut entries| entries.next().is_none());
+        if !is_empty || fs_err::remove_dir(current).is_err() {
+            break;
+        }
+        dir = current.parent();
+    }
 }
 
 /// `vendor/<name>`, plus the legacy `target-dir` nesting when the package
@@ -908,9 +1100,87 @@ fn warn_out(message: &str) {
     let _ = writeln!(std::io::stderr().lock(), "{message}");
 }
 
+/// `--adopt`'s TTY confirmation: `y`/`yes` (any case) continues, anything
+/// else (including a bare Enter) aborts.
+fn confirm_adopt() -> Result<bool> {
+    let mut stderr = std::io::stderr().lock();
+    write!(
+        stderr,
+        "This will relink every installed package from the store, overwriting vendor/ in \
+         place. Continue? [y/N] "
+    )?;
+    stderr.flush()?;
+    drop(stderr);
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::sweep_link_litter;
+    use super::{prune_empty_ancestors, sweep_link_litter};
+
+    /// #56/#37a: `vendor/<vendor>/` is pruned once its last package's dir is
+    /// removed, whether that dir is a plain `vendor/<vendor>/<name>` or a
+    /// target-dir package's nested scaffold (`vendor/<vendor>/<name>/Deep/Leaf`).
+    #[test]
+    fn prune_empty_ancestors_removes_the_vendor_namespace_dir_once_last_package_goes() {
+        let vendor_dir = tempfile::tempdir().unwrap();
+        let acme = vendor_dir.path().join("acme");
+        fs_err::create_dir_all(acme.join("a")).unwrap();
+        fs_err::create_dir_all(acme.join("b")).unwrap();
+
+        // One sibling left: vendor/acme must stay.
+        fs_err::remove_dir_all(acme.join("a")).unwrap();
+        prune_empty_ancestors(&acme.join("a"), vendor_dir.path());
+        assert!(acme.is_dir(), "vendor/acme should stay: b/ is still there");
+
+        // Last sibling goes: vendor/acme is pruned too, but not vendor/ itself.
+        fs_err::remove_dir_all(acme.join("b")).unwrap();
+        prune_empty_ancestors(&acme.join("b"), vendor_dir.path());
+        assert!(!acme.exists(), "vendor/acme should be pruned");
+        assert!(vendor_dir.path().is_dir(), "vendor/ itself must survive");
+    }
+
+    /// A target-dir package's `install_path` points at the nested leaf
+    /// (`vendor/<vendor>/<name>/Symfony/Component/Yaml`); removing it must
+    /// also clear the now-empty scaffold above it, up to and including
+    /// `vendor/<vendor>/<name>` itself, not just the leaf.
+    #[test]
+    fn prune_empty_ancestors_clears_a_target_dir_scaffold() {
+        let vendor_dir = tempfile::tempdir().unwrap();
+        let leaf = vendor_dir
+            .path()
+            .join("symfony/yaml/Symfony/Component/Yaml");
+        fs_err::create_dir_all(&leaf).unwrap();
+        fs_err::remove_dir_all(&leaf).unwrap();
+
+        prune_empty_ancestors(&leaf, vendor_dir.path());
+
+        assert!(
+            !vendor_dir.path().join("symfony").exists(),
+            "the whole scaffold above the leaf should be gone"
+        );
+        assert!(vendor_dir.path().is_dir(), "vendor/ itself must survive");
+    }
+
+    /// A native-installer path (`wp-content/mu-plugins/<name>`) prunes up to
+    /// `project_dir`, not `vendor_dir` — the package never lived under vendor/.
+    #[test]
+    fn prune_empty_ancestors_stops_at_a_non_vendor_boundary() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let plugin = project_dir.path().join("wp-content/mu-plugins/only-one");
+        fs_err::create_dir_all(&plugin).unwrap();
+        fs_err::remove_dir_all(&plugin).unwrap();
+
+        prune_empty_ancestors(&plugin, project_dir.path());
+
+        assert!(
+            !project_dir.path().join("wp-content").exists(),
+            "the empty wp-content scaffold should be pruned"
+        );
+        assert!(project_dir.path().is_dir(), "project_dir must survive");
+    }
 
     #[test]
     fn sweep_link_litter_removes_only_its_own_temp_patterns() {
