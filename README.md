@@ -5,7 +5,7 @@ directory that is byte for byte what Composer would write. Since 0.3 it also
 resolves: `viv update`, `viv require` and `viv remove` write a `composer.lock`
 that Composer accepts unchanged, using a port of Composer's own solver.
 
-Status: proof of concept, v0.3. Linux and macOS, both tested in CI. Before
+Status: proof of concept, v0.4. Linux and macOS, both tested in CI. Before
 each release a [compatibility sweep](compat/README.md) byte-diffs `vendor/`
 against Composer on pinned popular projects and a random Packagist sample.
 
@@ -18,7 +18,7 @@ raw data in [`bench/results/`](bench/results/README.md).
 |---|---|---|---|
 | composer 2.10.2 | 8.28 s | 1.69 s | 0.50 s |
 | riff 0.0.7 | 1.75 s | 0.26 s | 0.23 s |
-| viv 0.3.0 | 2.2 s | 0.140 s | 0.007 s |
+| viv 0.4.0 | 2.1 s | 0.042 s | 0.007 s |
 
 ## How it works
 
@@ -105,10 +105,16 @@ PSR-0, classmap and files autoloading, `--optimize-autoloader` and
 lifecycle scripts, `composer/installers` paths, full and partial `update`,
 `require`, `remove`, Packagist v2 metadata with a revalidating cache.
 
+Also in since 0.4: `preferred-install: source`, offline mode
+(`--offline`, `COMPOSER_DISABLE_NETWORK`), native adapters for the phpcs
+installer, phpstan extension-installer, spi and composer-patches, extraction
+size caps, tar.bz2, `viv cache size`, a classmap cache for `-o`.
+
 Out for now: other Composer plugins (refused, see the plugin strategy),
-`preferred-install: source`, `--minimal-changes`, private repositories that
-are not Packagist-compatible, and Composer's condensed multi-cause problem
-messages.
+`--minimal-changes`, private repositories that are not Packagist-compatible,
+Composer's condensed multi-cause problem messages, and `viv update` speed:
+it resolves correctly but takes about seven times longer than Composer on a
+large lock until the pool is pruned (#76).
 
 ## Development
 
