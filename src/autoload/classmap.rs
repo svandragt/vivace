@@ -6,7 +6,7 @@
 //! file (`ClassMapGenerator::scanPaths`, classmap mode only — no PSR-0/4
 //! filtering, vivace does not need it).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -27,17 +27,28 @@ const VCS_DIRS: [&str; 8] = [
     ".hg",
 ];
 
+/// A class/interface/trait/enum name as Composer keeps it: the raw bytes a
+/// PHP source declared, not necessarily valid UTF-8 (`class \xA9 {}` is
+/// legal PHP — identifiers only need to avoid ASCII punctuation). `BTreeMap`
+/// orders `Vec<u8>` byte-wise, which is exactly what PHP's `ksort` does.
+pub type ClassName = Vec<u8>;
+
 /// Result of scanning one or more paths: the class map plus any class found
 /// in more than one file (first occurrence wins in `map`).
 #[derive(Debug, Default)]
 pub struct ClassMap {
-    pub map: BTreeMap<String, PathBuf>,
+    pub map: BTreeMap<ClassName, PathBuf>,
     /// `(class, path already in the map, path this class was also found in)`.
-    pub ambiguous: Vec<(String, PathBuf, PathBuf)>,
+    pub ambiguous: Vec<(ClassName, PathBuf, PathBuf)>,
+    /// Every scanned file's canonical path, keyed by its literal path — the
+    /// canonicalize this module already did to dedupe symlinked duplicates,
+    /// reused by callers (`generator::Scanner`) instead of canonicalizing
+    /// the same file a second time.
+    pub canonical: HashMap<PathBuf, PathBuf>,
 }
 
 impl ClassMap {
-    fn record(&mut self, class: String, path: &Path) {
+    fn record(&mut self, class: ClassName, path: &Path) {
         if let Some(existing) = self.map.get(&class) {
             if existing != path {
                 self.ambiguous
@@ -87,17 +98,17 @@ fn token_regex() -> &'static BytesRegex {
 
 /// Find the classes, interfaces, traits and enums declared in a PHP file.
 ///
-/// Operates on raw bytes: fixtures include files that are not valid UTF-8
-/// (in comments the parser strips), so class names are decoded lossily only
-/// at the point they are emitted.
-pub fn find_classes(source: &[u8]) -> Vec<String> {
+/// Operates on raw bytes throughout, never decoding to UTF-8: PHP identifiers
+/// may contain any byte `>= 0x80` (`class \xA9 {}` is legal), and Composer's
+/// classmap keeps whatever bytes the source declared.
+pub fn find_classes(source: &[u8]) -> Vec<ClassName> {
     if !precheck_regex().is_match(source) {
         return Vec::new();
     }
 
     let cleaned = clean(source);
     let mut classes = Vec::new();
-    let mut namespace = String::new();
+    let mut namespace: Vec<u8> = Vec::new();
 
     for caps in token_regex().captures_iter(&cleaned) {
         let whole = caps.get(0).expect("group 0 always matches");
@@ -109,56 +120,57 @@ pub fn find_classes(source: &[u8]) -> Vec<String> {
         if caps.name("ns").is_some() {
             namespace = match caps.name("nsname") {
                 Some(nsname) => {
-                    let stripped: Vec<u8> = nsname
+                    let mut ns: Vec<u8> = nsname
                         .as_bytes()
                         .iter()
                         .copied()
                         .filter(|b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
                         .collect();
-                    let mut ns = String::from_utf8_lossy(&stripped).into_owned();
-                    ns.push('\\');
+                    ns.push(b'\\');
                     ns
                 }
                 // Braced global namespace: `namespace { ... }`.
-                None => String::new(),
+                None => Vec::new(),
             };
             continue;
         }
 
         let name = caps.name("name").expect("type branch always names name");
-        let mut name = String::from_utf8_lossy(name.as_bytes()).into_owned();
+        let name = name.as_bytes();
         // Anonymous classes: `new class extends Foo` / `new class implements Foo`.
-        if name == "extends" || name == "implements" {
+        if name == b"extends" || name == b"implements" {
             continue;
         }
 
-        if let Some(rest) = name.strip_prefix(':') {
+        let name: Vec<u8> = if let Some(rest) = name.strip_prefix(b":") {
             // XHP class, https://github.com/facebook/xhp
-            let mut xhp = String::from("xhp");
-            for c in rest.chars() {
-                match c {
-                    '-' => xhp.push('_'),
-                    ':' => xhp.push_str("__"),
+            let mut xhp = b"xhp".to_vec();
+            for &b in rest {
+                match b {
+                    b'-' => xhp.push(b'_'),
+                    b':' => xhp.extend_from_slice(b"__"),
                     other => xhp.push(other),
                 }
             }
-            name = xhp;
+            xhp
         } else if caps
             .name("type")
             .is_some_and(|t| t.as_bytes().eq_ignore_ascii_case(b"enum"))
         {
             // `enum Foo: string { ... }` — the regex captures the colon and
             // backing type as part of the name; cut it back off.
-            if let Some(colon) = name.rfind(':') {
-                name.truncate(colon);
+            match name.iter().rposition(|&b| b == b':') {
+                Some(colon) => name[..colon].to_vec(),
+                None => name.to_vec(),
             }
-        }
+        } else {
+            name.to_vec()
+        };
 
-        classes.push(
-            format!("{namespace}{name}")
-                .trim_start_matches('\\')
-                .to_string(),
-        );
+        let mut class = namespace.clone();
+        class.extend_from_slice(&name);
+        let start = class.iter().take_while(|&&b| b == b'\\').count();
+        classes.push(class[start..].to_vec());
     }
 
     classes
@@ -402,6 +414,7 @@ pub fn scan_paths(path: &Path, exclude: Option<&Regex>) -> Result<ClassMap> {
         if !seen.insert(canonical.clone()) {
             continue;
         }
+        class_map.canonical.insert(file.clone(), canonical.clone());
 
         if let Some(exclude) = exclude {
             // Both the realpath and the literal path, as upstream does, so a
@@ -477,31 +490,39 @@ mod tests {
     #[test]
     fn strips_comments_strings_and_finds_class() {
         let source = b"<?php\n// class Ignored\n/* class AlsoIgnored */\n$s = 'class StillIgnored';\nclass Real {}\n";
-        assert_eq!(find_classes(source), vec!["Real".to_string()]);
+        assert_eq!(find_classes(source), vec![b"Real".to_vec()]);
     }
 
     #[test]
     fn rejects_class_after_double_colon_dollar_arrow() {
         let source = b"<?php\n$x = Foo::class;\n$class = 1;\n$y->class;\nclass Real {}\n";
-        assert_eq!(find_classes(source), vec!["Real".to_string()]);
+        assert_eq!(find_classes(source), vec![b"Real".to_vec()]);
     }
 
     #[test]
     fn namespace_prefixes_following_classes() {
         let source = b"<?php\nnamespace Foo\\Bar;\nclass Baz {}\n";
-        assert_eq!(find_classes(source), vec!["Foo\\Bar\\Baz".to_string()]);
+        assert_eq!(find_classes(source), vec![b"Foo\\Bar\\Baz".to_vec()]);
     }
 
     #[test]
     fn enum_backing_type_is_cut_from_name() {
         let source = b"<?php\nenum Foo: string implements Bar {\n}\n";
-        assert_eq!(find_classes(source), vec!["Foo".to_string()]);
+        assert_eq!(find_classes(source), vec![b"Foo".to_vec()]);
     }
 
     #[test]
     fn anonymous_class_extends_or_implements_is_skipped() {
         let source =
             b"<?php\nnew class extends Foo {};\nnew class implements Bar {};\nclass Real {}\n";
-        assert_eq!(find_classes(source), vec!["Real".to_string()]);
+        assert_eq!(find_classes(source), vec![b"Real".to_vec()]);
+    }
+
+    #[test]
+    fn class_name_keeps_non_utf8_byte() {
+        // `\xA9` is a valid PHP identifier byte (`\x7f-\xff`) but not valid
+        // UTF-8 on its own; Composer's classmap keeps it raw (issue #71).
+        let source = b"<?php\nclass \xA9 {}\n";
+        assert_eq!(find_classes(source), vec![b"\xA9".to_vec()]);
     }
 }

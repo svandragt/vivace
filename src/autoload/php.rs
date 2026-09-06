@@ -18,6 +18,10 @@ pub enum Php {
 pub enum Key {
     Int(usize),
     Str(String),
+    /// A classmap class name: PHP strings are byte strings, and class names
+    /// may contain bytes that are not valid UTF-8 (issue #71), so this key
+    /// is exported raw rather than through the `String`-based `Str`.
+    Bytes(Vec<u8>),
 }
 
 /// `var_export($s, true)`: single quotes, escaping `\` and `'`.
@@ -25,35 +29,53 @@ pub fn export_str(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
-/// `var_export($value, true)` with PHP's two-space nested layout.
-fn export(value: &Php, indent: usize, out: &mut String) {
+/// `var_export($s, true)` on raw bytes. Composer's `var_export` never
+/// escapes bytes `>= 0x80` — it writes them unchanged inside the quotes, the
+/// same as [`export_str`] but without requiring valid UTF-8.
+pub fn export_bytes(s: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len() + 2);
+    out.push(b'\'');
+    for &b in s {
+        if b == b'\\' || b == b'\'' {
+            out.push(b'\\');
+        }
+        out.push(b);
+    }
+    out.push(b'\'');
+    out
+}
+
+/// `var_export($value, true)` with PHP's two-space nested layout. Bytes, not
+/// a `String`: a classmap key may embed non-UTF-8 bytes.
+fn export(value: &Php, indent: usize, out: &mut Vec<u8>) {
     let pad = " ".repeat(indent);
     match value {
-        Php::Str(s) => out.push_str(&export_str(s)),
-        Php::Int(n) => out.push_str(&n.to_string()),
-        Php::Code(code) => out.push_str(code),
+        Php::Str(s) => out.extend_from_slice(export_str(s).as_bytes()),
+        Php::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
+        Php::Code(code) => out.extend_from_slice(code.as_bytes()),
         Php::Arr(items) => {
-            out.push_str("array (\n");
+            out.extend_from_slice(b"array (\n");
             for (key, item) in items {
-                out.push_str(&pad);
-                out.push_str("  ");
+                out.extend_from_slice(pad.as_bytes());
+                out.extend_from_slice(b"  ");
                 match key {
-                    Key::Int(n) => out.push_str(&n.to_string()),
-                    Key::Str(s) => out.push_str(&export_str(s)),
+                    Key::Int(n) => out.extend_from_slice(n.to_string().as_bytes()),
+                    Key::Str(s) => out.extend_from_slice(export_str(s).as_bytes()),
+                    Key::Bytes(b) => out.extend_from_slice(&export_bytes(b)),
                 }
-                out.push_str(" => ");
+                out.extend_from_slice(b" => ");
                 if matches!(item, Php::Arr(_)) {
                     // PHP puts a nested array on its own line, leaving a
                     // trailing space after `=>` that Composer strips later.
-                    out.push('\n');
-                    out.push_str(&pad);
-                    out.push_str("  ");
+                    out.push(b'\n');
+                    out.extend_from_slice(pad.as_bytes());
+                    out.extend_from_slice(b"  ");
                 }
                 export(item, indent + 2, out);
-                out.push_str(",\n");
+                out.extend_from_slice(b",\n");
             }
-            out.push_str(&pad);
-            out.push(')');
+            out.extend_from_slice(pad.as_bytes());
+            out.push(b')');
         }
     }
 }
@@ -61,19 +83,28 @@ fn export(value: &Php, indent: usize, out: &mut String) {
 /// `var_export` output re-indented the way `AutoloadGenerator::getStaticFile`
 /// does: every line gets four spaces plus its own indentation doubled, the
 /// first line is left-trimmed and trailing spaces are removed.
-pub fn export_static(value: &Php) -> String {
-    let mut raw = String::new();
+pub fn export_static(value: &Php) -> Vec<u8> {
+    let mut raw = Vec::new();
     export(value, 0, &mut raw);
-    let lines: Vec<String> = raw
-        .lines()
+    let lines: Vec<Vec<u8>> = raw
+        .split(|&b| b == b'\n')
         .map(|line| {
-            let leading = line.len() - line.trim_start_matches(' ').len();
-            format!("    {}{}", " ".repeat(leading), line)
-                .trim_end()
-                .to_string()
+            let leading = line.iter().take_while(|&&b| b == b' ').count();
+            let mut out = vec![b' '; 4 + leading];
+            out.extend_from_slice(line);
+            while out.last().is_some_and(u8::is_ascii_whitespace) {
+                out.pop();
+            }
+            out
         })
         .collect();
-    lines.join("\n").trim_start().to_string()
+    let mut joined = lines.join(&b'\n');
+    let start = joined
+        .iter()
+        .take_while(|b| b.is_ascii_whitespace())
+        .count();
+    joined.drain(..start);
+    joined
 }
 
 /// The non-empty `ClassLoader` array properties, in declaration order, as
@@ -167,7 +198,14 @@ mod tests {
         )]);
         assert_eq!(
             export_static(&value),
-            "array (\n        'S' =>\n        array (\n            'Sit\\\\' => 4,\n        ),\n    )"
+            b"array (\n        'S' =>\n        array (\n            'Sit\\\\' => 4,\n        ),\n    )"
+                .to_vec()
         );
+    }
+
+    #[test]
+    fn export_bytes_writes_high_bytes_raw() {
+        // Composer's `var_export` never escapes bytes >= 0x80 (issue #71).
+        assert_eq!(export_bytes(b"\xA9"), b"'\xA9'".to_vec());
     }
 }

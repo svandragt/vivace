@@ -1637,3 +1637,65 @@ fn files_autoload_generation_remove_extra_entities() {
         "include_paths.php should have been removed"
     );
 }
+
+/// Issue #71: a classmap entry can declare a class name with a byte that is
+/// not valid UTF-8 (`class \xA9 {}`); Composer's `var_export` writes it raw
+/// inside single quotes rather than escaping or replacing it. `read_normalised`
+/// can't be used here (it needs valid UTF-8), so this reads the generated
+/// files as bytes and checks the exact line real Composer's `dump-autoload`
+/// produces for the same layout (verified by hand against Composer 2.10).
+#[test]
+fn classmap_keeps_non_utf8_class_name_byte() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp = tmp.path().canonicalize().expect("canonical tempdir");
+    let vendor_dir = tmp.join(DEFAULT_VENDOR);
+    fs::create_dir_all(vendor_dir.join("composer")).unwrap();
+
+    let src_dir = tmp.join("composersrc");
+    fs::create_dir_all(&src_dir).unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/composer/classmap/invalidBytes/InvalidBytes.php");
+    fs::copy(&fixture, src_dir.join("InvalidBytes.php")).expect("copy fixture");
+
+    let input = Input {
+        root: RootPackage {
+            name: "root/a".to_string(),
+            autoload: json!({"classmap": ["composersrc/"]}),
+            autoload_dev: Value::Null,
+            target_dir: None,
+            requires: Vec::new(),
+            include_path: Vec::new(),
+        },
+        packages: Vec::new(),
+        dev_mode: false,
+        scan_psr: false,
+        suffix: "InvalidBytes".to_string(),
+        vendor_dir: vendor_dir.clone(),
+        base_dir: tmp,
+        platform_check: false,
+        prepend_autoloader: true,
+        classmap_authoritative: false,
+        apcu_prefix: None,
+        use_include_path: false,
+    };
+    generate(&input).expect("generate");
+
+    let classmap = fs::read(vendor_dir.join(CLASSMAP)).expect("read autoload_classmap.php");
+    let expected_classmap_line = b"    '\xA9' => $baseDir . '/composersrc/InvalidBytes.php',\n";
+    assert!(
+        classmap
+            .windows(expected_classmap_line.len())
+            .any(|w| w == expected_classmap_line.as_slice()),
+        "expected {expected_classmap_line:?} in {classmap:?}"
+    );
+
+    let static_file = fs::read(vendor_dir.join(STATIC)).expect("read autoload_static.php");
+    let expected_static_line =
+        b"        '\xA9' => __DIR__ . '/../..' . '/composersrc/InvalidBytes.php',\n";
+    assert!(
+        static_file
+            .windows(expected_static_line.len())
+            .any(|w| w == expected_static_line.as_slice()),
+        "expected {expected_static_line:?} in {static_file:?}"
+    );
+}

@@ -27,7 +27,7 @@ fn assert_map(dir: &str, expected: &[(&str, &str)]) {
                 .expect("scanned path should be under the fixture root")
                 .to_string_lossy()
                 .replace('\\', "/");
-            (class.clone(), relative)
+            (String::from_utf8_lossy(class).into_owned(), relative)
         })
         .collect();
     actual.sort();
@@ -176,9 +176,9 @@ fn ambiguous_reference_is_recorded_and_first_wins() {
     let result = scan_paths(dir.path(), None).expect("scan should succeed");
 
     assert_eq!(result.map.len(), 1);
-    assert!(result.map.contains_key("A"));
+    assert!(result.map.contains_key(b"A".as_slice()));
     assert_eq!(result.ambiguous.len(), 1);
-    assert_eq!(result.ambiguous[0].0, "A");
+    assert_eq!(result.ambiguous[0].0, b"A".to_vec());
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn create_map_with_directory_excluded() {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            (class.clone(), relative)
+            (String::from_utf8_lossy(class).into_owned(), relative)
         })
         .collect();
     actual.sort();
@@ -289,7 +289,7 @@ fn symlink_cycle_terminates() {
 
     let result = scan_paths(&dir.path().join("loop"), None).expect("scan should succeed");
 
-    assert!(result.map.contains_key("A"));
+    assert!(result.map.contains_key(b"A".as_slice()));
 }
 
 #[cfg(unix)]
@@ -301,7 +301,7 @@ fn broken_symlink_is_skipped() {
 
     let result = scan_paths(dir.path(), None).expect("scan should succeed");
 
-    assert!(result.map.contains_key("Ok"));
+    assert!(result.map.contains_key(b"Ok".as_slice()));
     assert_eq!(result.map.len(), 1);
 }
 
@@ -316,4 +316,18 @@ fn scanning_a_hidden_directory_directly_still_works() {
         "hiddenDirectory/.hidden",
         &[("B", "hiddenDirectory/.hidden/B.php")],
     );
+}
+
+#[test]
+fn class_name_with_non_utf8_byte_is_kept_raw() {
+    // `invalidBytes/InvalidBytes.php` declares `class \xA9 {}`: `\xA9` is a
+    // legal PHP identifier byte but not valid UTF-8 on its own. Composer's
+    // classmap keeps the raw byte (verified against real Composer's
+    // `dump-autoload`, see issue #71); a lossy decode would turn it into
+    // U+FFFD instead.
+    let root = fixtures_root().join("invalidBytes");
+    let result = scan_paths(&root, None).expect("scan should succeed");
+
+    assert_eq!(result.map.len(), 1);
+    assert!(result.map.contains_key(b"\xA9".as_slice()));
 }
