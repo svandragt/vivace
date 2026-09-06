@@ -21,10 +21,9 @@ jobs:
           VIVACE_TEST_NETWORK: "1"
       - run: devbox run -- cargo deny check
 
-  # macOS support (#2): collecting failures without blocking main yet.
+  # macOS is a supported platform; this job blocks like the Linux one.
   check-macos:
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

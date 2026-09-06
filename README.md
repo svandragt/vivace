@@ -5,7 +5,7 @@ produces a `vendor/` directory that is byte for byte what Composer would
 write. It is to Composer what uv's `pip sync` was to pip: no dependency
 solving yet, all the speed comes from how packages are stored and linked.
 
-Status: proof of concept, v0.1. Linux only. Not a Composer replacement for
+Status: proof of concept, v0.1. Linux and macOS (both tested in CI). Not a Composer replacement for
 `update`, `require`, plugins or scripts.
 
 ## Numbers
