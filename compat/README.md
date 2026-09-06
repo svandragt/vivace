@@ -55,6 +55,15 @@ project/mode combination is one of:
 The sweep exits non-zero if any project **differs** or errors; **skipped**
 does not fail the run.
 
+A `composer failed`/`composer update failed` Details cell shows only the
+last three non-empty lines; the full combined output is saved per
+project/mode under `compat/results/<label>-logs/` (gitignored).
+
+The random sample's candidate list (`popular.json` plus `list.json`) is
+cached at `compat/results/<label>.sample.json` on first fetch and reused on
+a later run with the same label, so a label always samples from the same
+candidates.
+
 ## Replaying a seed
 
 A random-sample failure prints its seed in the report header. Reproduce it

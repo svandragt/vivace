@@ -31,7 +31,8 @@ composer_install_flags=(--no-scripts --no-plugins --no-interaction)
 composer_update_flags=(--no-scripts --no-plugins --no-interaction --ignore-platform-reqs)
 
 results_dir="$root/compat/results"
-mkdir -p "$results_dir"
+logs_dir="$results_dir/$label-logs"
+mkdir -p "$results_dir" "$logs_dir"
 report="$results_dir/$label.md"
 : > "$report"
 
@@ -59,8 +60,21 @@ table_header() {
 emit_row() {
   # $1 name, $2 mode, $3 result, $4 viv_ms (or "-"), $5 details
   local details=$5
+  details=${details//\|/\\|}
   details=${details//$'\n'/<br>}
   echo "| $1 | $2 | $3 | $4 | $details |" >> "$report"
+}
+
+# Last three non-empty lines of $1, for a "composer failed" Details cell.
+last_lines() {
+  grep -v '^$' <<< "$1" | tail -3
+}
+
+# Writes $2 (a project/mode identifier, e.g. "$name-$mode") 's combined
+# composer output ($1) to its own log under compat/results/<label>-logs/.
+save_log() {
+  local out=$1 id=$2
+  echo "$out" > "$logs_dir/$(echo "$id" | tr '/' '_').log"
 }
 
 # --- unsupported-feature detection -----------------------------------------
@@ -124,7 +138,8 @@ run_mode() {
       [ -n "$platform_line" ] || platform_line=$(grep -v '^$' <<< "$composer_out" | tail -1)
       emit_row "$name" "$mode" "skipped" "-" "${prefix}platform: $platform_line"
     else
-      emit_row "$name" "$mode" "skipped" "-" "${prefix}composer failed: $(tail -3 <<< "$composer_out")"
+      save_log "$composer_out" "$name-$mode"
+      emit_row "$name" "$mode" "skipped" "-" "${prefix}composer failed: $(last_lines "$composer_out")"
     fi
     return
   fi
@@ -165,8 +180,9 @@ process_project() {
   if [ ! -f "$srcdir/composer.lock" ]; then
     local update_out
     if ! update_out=$(composer -d "$srcdir" update --no-install "${composer_update_flags[@]}" 2>&1); then
-      emit_row "$name" "dev" "skipped" "-" "lock missing, composer update failed: $(tail -3 <<< "$update_out")"
-      emit_row "$name" "no-dev" "skipped" "-" "lock missing, composer update failed: $(tail -3 <<< "$update_out")"
+      save_log "$update_out" "$name-lock"
+      emit_row "$name" "dev" "skipped" "-" "lock missing, composer update failed: $(last_lines "$update_out")"
+      emit_row "$name" "no-dev" "skipped" "-" "lock missing, composer update failed: $(last_lines "$update_out")"
       return
     fi
     note="lock generated"
@@ -208,16 +224,20 @@ run_pinned() {
       rm -rf "$srcdir/.git"
     else
       log "create-project $name $version"
-      if ! composer create-project --no-install --no-scripts --no-interaction \
-          --ignore-platform-reqs "$name" "$srcdir" "$version" > /dev/null 2>&1; then
-        emit_row "$name" "dev" "skipped" "-" "create-project failed"
-        emit_row "$name" "no-dev" "skipped" "-" "create-project failed"
+      local create_out
+      if ! create_out=$(composer create-project --no-install --no-scripts --no-interaction \
+          --ignore-platform-reqs "$name" "$srcdir" "$version" 2>&1); then
+        save_log "$create_out" "$name-lock"
+        emit_row "$name" "dev" "skipped" "-" "create-project failed: $(last_lines "$create_out")"
+        emit_row "$name" "no-dev" "skipped" "-" "create-project failed: $(last_lines "$create_out")"
         continue
       fi
       # create-project --no-install writes composer.json but no lock.
-      if ! composer -d "$srcdir" update --no-install "${composer_update_flags[@]}" > /dev/null 2>&1; then
-        emit_row "$name" "dev" "skipped" "-" "composer failed"
-        emit_row "$name" "no-dev" "skipped" "-" "composer failed"
+      local update_out
+      if ! update_out=$(composer -d "$srcdir" update --no-install "${composer_update_flags[@]}" 2>&1); then
+        save_log "$update_out" "$name-lock"
+        emit_row "$name" "dev" "skipped" "-" "composer failed: $(last_lines "$update_out")"
+        emit_row "$name" "no-dev" "skipped" "-" "composer failed: $(last_lines "$update_out")"
         continue
       fi
     fi
@@ -237,15 +257,22 @@ run_random() {
   table_header
 
   local candidates="$scratch/candidates.txt"
-  : > "$candidates"
-  log "fetching popular.json pages"
-  for page in 1 2 3; do
-    curl -sS "https://packagist.org/explore/popular.json?per_page=100&page=$page" \
-      | jq -r '.packages[].name' >> "$candidates" || true
-  done
-  log "fetching list.json"
-  curl -sS "https://packagist.org/packages/list.json" \
-    | jq -r '.packageNames[]' >> "$candidates"
+  local sample_file="$results_dir/$label.sample.json"
+  if [ -f "$sample_file" ]; then
+    log "reusing cached sample $sample_file"
+    jq -r '.[]' "$sample_file" > "$candidates"
+  else
+    : > "$candidates"
+    log "fetching popular.json pages"
+    for page in 1 2 3; do
+      curl -sS "https://packagist.org/explore/popular.json?per_page=100&page=$page" \
+        | jq -r '.packages[].name' >> "$candidates" || true
+    done
+    log "fetching list.json"
+    curl -sS "https://packagist.org/packages/list.json" \
+      | jq -r '.packageNames[]' >> "$candidates"
+    sort -u "$candidates" | jq -R -s 'split("\n") | map(select(length > 0))' > "$sample_file"
+  fi
 
   local picks
   picks=$(sort -u "$candidates" | shuf --random-source=<(yes "$seed") -n "$random_n")
@@ -261,9 +288,11 @@ run_random() {
     mkdir -p "$srcdir"
     printf '{"require": {"%s": "*"}}\n' "$pkg" > "$srcdir/composer.json"
     log "locking random pick $pkg"
-    if ! composer -d "$srcdir" update --no-install "${composer_update_flags[@]}" > /dev/null 2>&1; then
-      emit_row "$pkg" "dev" "skipped" "-" "composer failed"
-      emit_row "$pkg" "no-dev" "skipped" "-" "composer failed"
+    local update_out
+    if ! update_out=$(composer -d "$srcdir" update --no-install "${composer_update_flags[@]}" 2>&1); then
+      save_log "$update_out" "$pkg-lock"
+      emit_row "$pkg" "dev" "skipped" "-" "composer failed: $(last_lines "$update_out")"
+      emit_row "$pkg" "no-dev" "skipped" "-" "composer failed: $(last_lines "$update_out")"
       continue
     fi
     process_project "$pkg" "$srcdir"

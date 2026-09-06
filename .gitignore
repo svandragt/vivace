@@ -6,3 +6,4 @@
 !/tests/fixtures/wordpress/
 !/tests/fixtures/wordpress/**
 /dist
+/compat/results/*-logs/
