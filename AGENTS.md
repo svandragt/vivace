@@ -87,3 +87,13 @@ compared with `bench/results/`. Warm and no-op times must be at or below the
 recorded numbers within noise; cold is recorded but not gated, because
 GitHub throttles repeated cold runs. If a feature regresses, optimise it
 back before committing, or do not commit.
+
+CI enforces the warm/no-op half of this rule on every push and pull request:
+the `bench` job runs `bench/run.sh` on `tests/fixtures/monolog` (a runner-sized
+project, unlike the local `bench/laravel` numbers above) and
+`bench/compare.py` fails the job if either mean rises more than 15% above
+`bench/results/baseline.json`. That baseline is measured on GitHub's runners,
+not Sander's machine, so it isn't written by a local run: a maintainer
+downloads the `baseline-candidate` artifact from a green CI run and commits it
+as `bench/results/baseline.json`. Run `make bench-check` to reproduce the same
+check locally against the committed baseline.

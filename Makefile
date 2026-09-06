@@ -1,7 +1,7 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install build test check bench hooks fixtures fmt
+.PHONY: install build test check bench bench-check hooks fixtures fmt
 
 install:
 	cargo install --path . --locked
@@ -20,6 +20,10 @@ check:
 
 bench:
 	devbox run -- bench/run.sh bench/laravel composer riff viv
+
+bench-check:
+	devbox run -- bench/run.sh tests/fixtures/monolog composer viv
+	python3 bench/compare.py bench/results/viv.json --baseline bench/results/baseline.json
 
 hooks:
 	printf '#!/bin/sh\nexec make check\n' > .git/hooks/pre-commit

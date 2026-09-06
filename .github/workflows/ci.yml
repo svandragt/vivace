@@ -39,7 +39,6 @@ jobs:
 
   bench:
     needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -50,8 +49,23 @@ jobs:
       - run: devbox run -- cargo build --release
       - run: devbox run -- bench/run.sh tests/fixtures/monolog composer viv
         env:
-          BENCH_RUNS: 3
+          BENCH_RUNS: 5
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bench-results
           path: bench/results/*.json
+      # Fails the job on a warm or no-op regression past tolerance; skips with a
+      # notice if bench/results/baseline.json has no entry yet for this project.
+      - run: python3 bench/compare.py bench/results/viv.json --baseline bench/results/baseline.json
+      # Runners differ from a maintainer's machine, so the baseline can't come
+      # from a local run: this candidate is uploaded for a maintainer to
+      # download and commit as bench/results/baseline.json (see bench/results/README.md).
+      - run: |
+          cp bench/results/baseline.json /tmp/baseline-candidate.json
+          python3 bench/compare.py bench/results/viv.json --baseline /tmp/baseline-candidate.json --write-baseline
+        if: always()
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: baseline-candidate
+          path: /tmp/baseline-candidate.json
