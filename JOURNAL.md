@@ -290,3 +290,45 @@ macOS passes the whole suite once the bin proxies used canonical paths
 tar.gz dists, retries with backoff, GitLab credentials, `dump-autoload`,
 and `--adopt` for a Composer-made vendor all landed with a failing test
 first. The eight installer fixtures that need a solver moved to 0.3.
+
+## 2026-09-06, later: beyond install
+
+Milestone 0.3 asks what a Composer replacement does once installing from a
+lock is solved. Today's answer in order of landing: a resolver design,
+`viv normalize`, the audit fixes, lifecycle scripts, a Packagist client, a
+`composer` shim, a release compatibility sweep, and a plugin strategy.
+
+The resolver decision was the one worth a second opinion. PubGrub is the
+obvious crate, and uv proves it, but uv owns its resolution semantics and
+we do not. Our lock must contain the versions Composer would have picked,
+and where several valid solutions exist Composer's `DefaultPolicy` breaks
+the tie by alias, replacer, vendor and pool order. Reproducing that inside
+PubGrub means porting the pool ordering anyway and then explaining why a
+backjump landed elsewhere. So the plan is a straight port of Composer's
+CDCL solver, about 2,500 lines of PHP, staged behind recorded Packagist
+fixtures. Two corrections came out of the review: `composer update` does
+not preserve locked versions by default, and our content-hash was wrong
+for writing because PHP's `json_encode` escapes `/`. Both are fixed or
+filed. `docs/resolver-design.md` has the whole argument.
+
+Two findings came from running viv against projects that were not written
+as fixtures. viv created an empty `vendor/bin` on every install because
+every fixture we had happened to contain a package with a binary. And a
+project whose global Composer config prefers source for one vendor got
+`installation-source: source` and a git checkout from Composer, which viv
+cannot yet do. The compatibility sweep that found the first one now runs on
+every tag against ten pinned popular projects and a seeded random sample
+from Packagist.
+
+The plugin inventory changed a plan. The only plugins in any lock we can
+reach are the WordPress ones: composer/installers routes seventeen
+packages of one project into `wp-content`, and viv had put them all under
+`vendor/`. The earlier byte-identical result on that project was against a
+plugin-free Composer run. Native adapters for pure path mapping come
+first, file generators second, and everything else is refused loudly with
+`--no-plugins` as the escape hatch.
+
+Scripts nearly shipped with a quiet deviation: skipping them on the no-op
+fast path. Composer fires `post-install-cmd` on every install and people
+rely on it, so the fast path is now taken only when the root defines no
+scripts. Script-free projects keep the 7 ms no-op.
