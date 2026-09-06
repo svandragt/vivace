@@ -16,6 +16,16 @@ use regex::bytes::Regex as BytesRegex;
 
 /// Extensions Composer scans for classmap entries.
 const EXTENSIONS: [&str; 3] = ["php", "inc", "hh"];
+const VCS_DIRS: [&str; 8] = [
+    ".svn",
+    "_svn",
+    "CVS",
+    "_darcs",
+    ".arch-params",
+    ".monotone",
+    ".bzr",
+    ".hg",
+];
 
 /// Result of scanning one or more paths: the class map plus any class found
 /// in more than one file (first occurrence wins in `map`).
@@ -442,6 +452,15 @@ fn walk_dir(dir: &Path, visited: &mut HashSet<PathBuf>, out: &mut Vec<PathBuf>) 
                 continue;
             }
         };
+        // Symfony Finder's defaults: ignoreDotFiles(true) and
+        // ignoreVCS(true). Applies below the scanned root only, so a root
+        // like `.hidden/` passed explicitly to `scan_paths` is still walked.
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || VCS_DIRS.contains(&name.as_ref()) {
+            continue;
+        }
+
         if metadata.is_dir() {
             walk_dir(&path, visited, out)?;
         } else if metadata.is_file() {

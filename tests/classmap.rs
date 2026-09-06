@@ -304,3 +304,16 @@ fn broken_symlink_is_skipped() {
     assert!(result.map.contains_key("Ok"));
     assert_eq!(result.map.len(), 1);
 }
+
+#[test]
+fn hidden_files_and_vcs_directories_are_skipped() {
+    assert_map("hiddenDirectory", &[("A", "hiddenDirectory/visible/A.php")]);
+}
+
+#[test]
+fn scanning_a_hidden_directory_directly_still_works() {
+    assert_map(
+        "hiddenDirectory/.hidden",
+        &[("B", "hiddenDirectory/.hidden/B.php")],
+    );
+}
