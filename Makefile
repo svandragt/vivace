@@ -1,13 +1,25 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install build test check bench bench-check hooks fixtures fmt record-packagist compat compat-refresh
+.PHONY: install build test check bench bench-check hooks fixtures fmt record-packagist compat compat-refresh dist
 
 install:
 	cargo install --path . --locked
 
 build:
 	devbox run -- cargo build --release
+
+# Builds the release tarball for the host target, same layout as release.yml,
+# for testing the release packaging locally.
+dist: build
+	$(eval TARGET := $(shell rustc -vV | sed -n 's/^host: //p'))
+	$(eval TAG := $(shell git describe --tags --always))
+	$(eval NAME := vivace-$(TAG)-$(TARGET))
+	rm -rf "dist/$(NAME)"
+	mkdir -p "dist/$(NAME)"
+	cp target/release/viv target/release/composer LICENSE README.md "dist/$(NAME)/"
+	tar czf "dist/$(NAME).tar.gz" -C dist "$(NAME)"
+	@echo "dist/$(NAME).tar.gz"
 
 test:
 	devbox run -- cargo nextest run

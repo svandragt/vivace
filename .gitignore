@@ -5,3 +5,4 @@
 # (its own nested .gitignore still hides the real WordPress checkout).
 !/tests/fixtures/wordpress/
 !/tests/fixtures/wordpress/**
+/dist

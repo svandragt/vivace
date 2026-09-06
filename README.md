@@ -40,6 +40,18 @@ an end-to-end test byte-diffs `vendor/` against Composer 2.10.2 output. See
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and
 [`docs/composer-contract.md`](docs/composer-contract.md).
 
+## Install
+
+Prebuilt binaries for Linux (x86_64, aarch64, musl) and macOS (x86_64,
+aarch64) are attached to each [release](https://github.com/svandragt/vivace/releases).
+
+```sh
+# download a tarball from the releases page, or:
+cargo binstall vivace
+# or build from source:
+cargo install --git https://github.com/svandragt/vivace --tag v0.3.0 vivace
+```
+
 ## Usage
 
 ```sh
