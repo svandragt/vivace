@@ -332,3 +332,33 @@ Scripts nearly shipped with a quiet deviation: skipping them on the no-op
 fast path. Composer fires `post-install-cmd` on every install and people
 rely on it, so the fast path is now taken only when the root defines no
 scripts. Script-free projects keep the 7 ms no-op.
+
+## 2026-09-06, night: milestone 0.3 closed
+
+The resolver shipped in five stages in one evening, each gated on a byte
+diff. Stage 1 fixed the content-hash encoding and put `semver-php` behind
+a facade with 474 of 476 composer/semver corpus rows passing; the two
+skipped rows are unrelated dev branches that Composer treats as
+incomparable and Rust's `Ordering` cannot express. Stage 2 recorded
+Packagist's v2 metadata as fixtures so nothing in the suite touches the
+network. Stage 3 ported the CDCL solver file by file, 2,700 lines, keeping
+Composer's names. Stage 4 wrote the lock and reproduced both fixtures byte
+for byte; Composer's own `validate --strict`, `install --dry-run` and
+`update --lock` leave the files alone. Stage 5 added partial updates,
+`require` and `remove`, with a hand-written balanced-JSON scanner standing
+in for `JsonManipulator` because Rust's regex crate has no recursive
+patterns. Two honest gaps went to 0.4: `--minimal-changes` parses but does
+nothing, and multi-cause problem messages skip Composer's deduplication.
+
+The release sweep earned its place before it was a day old. It found the
+unconditional `vendor/bin`, a classmap scanner that did not skip dot
+directories the way Symfony Finder does, and a metapackage with a dist zip
+that viv linked into `vendor/` because it keyed on the dist instead of the
+type. Each was a one-line fix with a test, and none would have shown up in
+the fixtures we wrote ourselves. It also exposed a mistake of mine twice:
+running Composer with `--ignore-platform-reqs` changes the files it writes,
+so the byte diff was comparing different things.
+
+Numbers on the 101-package lock, quiet machine: warm 140 ms, no-op 7 ms,
+both below 0.2.0. Nothing added today touched the install fast path except
+the plugin check and the normaliser, and both are cheaper than the noise.
