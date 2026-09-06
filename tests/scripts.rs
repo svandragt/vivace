@@ -46,6 +46,8 @@ fn setup(project: &Path, fixture: &str) {
 /// this.
 fn setup_vendor(project: &Path) {
     fs::create_dir_all(project.join("vendor/composer")).unwrap();
+    // Composer prepends bin-dir to PATH only when the directory exists.
+    fs::create_dir_all(project.join("vendor/bin")).unwrap();
 }
 
 fn read(project: &Path, name: &str) -> String {

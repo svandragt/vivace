@@ -10,6 +10,10 @@ license = "MIT"
 name = "viv"
 path = "src/main.rs"
 
+[[bin]]
+name = "composer"
+path = "src/bin/composer.rs"
+
 [lints.rust]
 unsafe_code = "warn"
 unreachable_pub = "warn"

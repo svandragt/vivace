@@ -52,6 +52,15 @@ target/release/viv install --link-mode copy
 `update`, `require`, `remove` and `dump-autoload` exit with a message
 pointing at Composer.
 
+## Using viv as a drop-in composer
+
+`cargo build`/`make install` also builds a `composer` binary. Put it on `PATH`
+ahead of the real Composer (or symlink it as `composer` in CI) and it maps
+`install`, `dump-autoload` and `normalize` with their supported flags to
+`viv`, execing the real Composer for everything else (`update`, `require`,
+plugins, unrecognised flags). Point `VIV_COMPOSER_PATH` at the real binary if
+it isn't first on `PATH`.
+
 ## Scope
 
 In: zip dists from any URL the lock names, credentials from `auth.json` and
