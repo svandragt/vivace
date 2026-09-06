@@ -77,3 +77,13 @@ bugs, not style.
 Prose in the repo follows British English and the Google developer style
 guide. Comments explain why, not what. Deliberate shortcuts carry a
 `ponytail:` comment naming the ceiling.
+
+## Performance rule
+
+No change may make `viv` slower. A feature that touches the install path is
+benchmarked before it lands (`make bench`, or `bench/run.sh bench/laravel
+viv` with an isolated cache on the same filesystem as `vendor/`) and
+compared with `bench/results/`. Warm and no-op times must be at or below the
+recorded numbers within noise; cold is recorded but not gated, because
+GitHub throttles repeated cold runs. If a feature regresses, optimise it
+back before committing, or do not commit.
