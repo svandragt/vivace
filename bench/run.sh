@@ -1,7 +1,10 @@
 #!/usr/bin/env sh
 # Benchmark `install` from an existing composer.lock across tools.
 # Usage: bench/run.sh <project-dir> [tool...]   (tools: composer riff presto viv)
-# Scenarios: cold (no cache, no vendor), warm (cache kept, no vendor), noop (vendor present).
+# Scenarios: cold (no cache, no vendor), warm (cache kept, no vendor), noop (vendor present);
+# plus update-warm (#55): resolve composer.json against a warm metadata cache
+# (composer/viv always, riff only when it's on PATH — no presto, it has no
+# update command).
 # Run inside devbox (`devbox run -- bench/run.sh bench/laravel`) so php/composer/hyperfine resolve.
 set -eu
 root=$(pwd)
@@ -54,4 +57,30 @@ for tool in $tools; do
     --command-name "$tool cold" --prepare "rm -rf $dir/vendor $cache" "$cmd" \
     --command-name "$tool warm" --prepare "rm -rf $dir/vendor" "$cmd" \
     --command-name "$tool noop" --prepare "true" "$cmd"
+done
+
+update_cmd_for() {
+  case $1 in
+    composer) echo "composer update --no-interaction --no-progress --quiet --no-install" ;;
+    riff)     echo "${RIFF:-riff} update" ;;
+    viv)      echo "${VIV:-$root/target/release/viv} update" ;;
+  esac
+}
+
+# update-warm (#55): the metadata cache from `cache_for` is left in place
+# (never wiped, unlike the cold/warm install scenarios above) so every
+# `/p2/` provider file revalidates with a 304 instead of a cold fetch; only
+# composer.json/composer.lock are reset before each timed run, since update
+# rewrites the lock.
+for tool in $tools; do
+  case $tool in
+    composer|viv) ;;
+    riff) command -v "${RIFF:-riff}" >/dev/null 2>&1 || continue ;;
+    *) continue ;;
+  esac
+  dir="$work/$tool-update"; rm -rf "$dir"; mkdir -p "$dir"
+  cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"
+  cmd="cd $dir && cp $proj/composer.json $proj/composer.lock . && export $(env_for "$tool") && $(update_cmd_for "$tool") >/dev/null 2>&1"
+  hyperfine --warmup 1 --runs "$runs" --export-json "$out/$tool-update.json" \
+    --command-name "$tool update-warm" "$cmd"
 done

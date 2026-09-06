@@ -241,7 +241,11 @@ pub fn generate(input: &Input) -> Result<Generated> {
         scanned: HashSet::new(),
         warnings: Vec::new(),
         regex_cache: HashMap::new(),
+        cache_hits: 0,
+        cache_misses: 0,
+        scan_paths_elapsed: std::time::Duration::ZERO,
     };
+    let scan_started = std::time::Instant::now();
     for dir in &autoloads.classmap {
         scanner.scan(dir, None)?;
     }
@@ -270,6 +274,13 @@ pub fn generate(input: &Input) -> Result<Generated> {
             }
         }
     }
+    tracing::debug!(
+        cache_hits = scanner.cache_hits,
+        cache_misses = scanner.cache_misses,
+        scan_paths_ms = scanner.scan_paths_elapsed.as_millis(),
+        elapsed_ms = scan_started.elapsed().as_millis(),
+        "scanned classmap/PSR directories"
+    );
     out.warnings.append(&mut scanner.warnings);
     let mut classmap = scanner.map;
     classmap.insert(
@@ -759,6 +770,12 @@ struct Scanner<'a> {
     /// autoload with no vendor-dir overlap trimming) share one `Regex::new`
     /// instead of paying to compile it again per directory.
     regex_cache: HashMap<String, Regex>,
+    /// #54: whether the classmap-scan sidecar cache is actually paying off,
+    /// and how much of `scan()`'s time is the filesystem walk/tokenizing
+    /// (`scan_paths`) itself versus everything else in `scan()`.
+    cache_hits: usize,
+    cache_misses: usize,
+    scan_paths_elapsed: std::time::Duration,
 }
 
 /// Maps an absolute, normalised scan directory back to the store archive dir
@@ -837,9 +854,13 @@ impl Scanner<'_> {
             .as_ref()
             .and_then(|(sidecar, key)| read_cached_scan(sidecar, key, Path::new(&abs_dir)));
         let found = if let Some(found) = cached {
+            self.cache_hits += 1;
             found
         } else {
+            self.cache_misses += 1;
+            let scan_started = std::time::Instant::now();
             let found = scan_paths(Path::new(&abs_dir), exclusion.as_ref())?;
+            self.scan_paths_elapsed += scan_started.elapsed();
             if let Some((sidecar, key)) = &cache {
                 // Best-effort: a failed write (read-only cache, permissions)
                 // must not fail the install that triggered it, only cost it

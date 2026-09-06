@@ -6,6 +6,7 @@
 //! (no locked repository exists in a full update, see `request.rs`).
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use crate::solver::decisions::Decisions;
 use crate::solver::policy::DefaultPolicy;
@@ -39,6 +40,14 @@ struct Solver<'a> {
     /// ever learned once, but kept as its own map to mirror the source and
     /// leave room for that to stop being true).
     learned_why: HashMap<usize, usize>,
+    /// #55: cumulative time and call count inside `propagate`, reported
+    /// alongside `analyze`'s (backjump/learn) own totals so a `-v` run can
+    /// show how the solve time splits between unit propagation and conflict
+    /// analysis, without threading a `tracing` span through every call.
+    propagate_elapsed: Duration,
+    propagate_calls: u32,
+    analyze_elapsed: Duration,
+    analyze_calls: u32,
 }
 
 /// `Solver::solve`. Returns the pool ids the solver decided to install.
@@ -63,9 +72,15 @@ pub fn solve(
         problems: Vec::new(),
         learned_pool: Vec::new(),
         learned_why: HashMap::new(),
+        propagate_elapsed: Duration::ZERO,
+        propagate_calls: 0,
+        analyze_elapsed: Duration::ZERO,
+        analyze_calls: 0,
     };
 
+    let rule_gen_started = Instant::now();
     solver.rules = rule_set_generator::rules_for(pool, request);
+    let rule_gen_elapsed = rule_gen_started.elapsed();
     solver.check_for_root_require_problems(request);
 
     for rule_id in solver.rules.iteration_order() {
@@ -73,7 +88,22 @@ pub fn solve(
     }
 
     solver.make_assertion_rule_decisions();
+    let sat_started = Instant::now();
     solver.run_sat();
+    // #55: rule generation vs propagation vs backjumping (analyze/learn),
+    // and a pool/rule count to give the skipped PoolOptimizer a number
+    // against (a smaller pool going in would mean fewer rules here).
+    tracing::debug!(
+        pool_packages = pool.len(),
+        rules = solver.rules.len(),
+        rule_generation_ms = rule_gen_elapsed.as_millis(),
+        propagate_ms = solver.propagate_elapsed.as_millis(),
+        propagate_calls = solver.propagate_calls,
+        backjump_ms = solver.analyze_elapsed.as_millis(),
+        backjump_calls = solver.analyze_calls,
+        sat_ms = sat_started.elapsed().as_millis(),
+        "solved pool"
+    );
 
     if !solver.problems.is_empty() {
         return Err(SolverError::from_problems(&solver.problems, pool));
@@ -169,6 +199,14 @@ impl Solver<'_> {
 
     /// `Solver::propagate`.
     fn propagate(&mut self, level: i32) -> Option<usize> {
+        let started = Instant::now();
+        let result = self.propagate_inner(level);
+        self.propagate_elapsed += started.elapsed();
+        self.propagate_calls += 1;
+        result
+    }
+
+    fn propagate_inner(&mut self, level: i32) -> Option<usize> {
         while self.decisions.valid_offset(self.propagate_index) {
             let (literal, _) = self.decisions.at_offset(self.propagate_index);
             let conflict = self.watch_graph.propagate_literal(
@@ -260,6 +298,14 @@ impl Solver<'_> {
     /// `Solver::analyze`. Returns `(learnLiteral, ruleLevel, newRule
     /// literals, why)`.
     fn analyze(&mut self, level: i32, rule_id: usize) -> (i32, i32, Vec<i32>, usize) {
+        let started = Instant::now();
+        let result = self.analyze_inner(level, rule_id);
+        self.analyze_elapsed += started.elapsed();
+        self.analyze_calls += 1;
+        result
+    }
+
+    fn analyze_inner(&mut self, level: i32, rule_id: usize) -> (i32, i32, Vec<i32>, usize) {
         let mut rule_id = rule_id;
         let mut rule_level = 1;
         let mut num = 0i32;

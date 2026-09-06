@@ -12,7 +12,7 @@
 //! the autoload paths, `vendor/bin` proxies, the plan's keep/remove diff)
 //! already renders whatever absolute or relative path it is given, vendor or
 //! not, so none of them need to know a plugin was involved at all. The three
-//! generator adapters ([`phpcs`], [`phpstan`], [`spi`]) instead run once,
+//! generator adapters (`phpcs`, `phpstan`, `spi`) instead run once,
 //! after every package has landed in its final spot, from `src/install.rs`'s
 //! own `post-install-cmd`/`pre-autoload-dump` hook points. [`patches`] runs
 //! earlier still, right after linking and before the autoloader is

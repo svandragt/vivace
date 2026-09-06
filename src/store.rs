@@ -585,7 +585,7 @@ fn archive_marker(dir: &Path) -> PathBuf {
 }
 
 /// The classmap-scan cache sidecar for an archive dir: a sibling file, same
-/// shape as [`archive_marker`]'s `.ok` but for a cached
+/// shape as `archive_marker`'s `.ok` but for a cached
 /// `autoload::classmap` result rather than "extraction finished" — reused by
 /// [`crate::autoload::generator`] so a scan survives `vendor/` being rebuilt
 /// from scratch, keyed by the archive's own content hash (its dir name).

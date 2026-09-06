@@ -12,7 +12,9 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use futures::stream::{self, StreamExt};
@@ -236,6 +238,11 @@ pub struct Repository<T: Transport> {
     /// `load_package`/`load_closure` call over names already loaded this
     /// run costs zero transport calls.
     loaded: Mutex<HashMap<String, Vec<PackageVersion>>>,
+    /// Count of `transport.get` calls issued for a provider file (#55):
+    /// every one of these is a real request, warm cache or not — a warm
+    /// metadata cache still revalidates with `If-Modified-Since`, it just
+    /// gets a 304 back instead of a body.
+    requests: AtomicUsize,
 }
 
 impl<T: Transport> Repository<T> {
@@ -293,7 +300,15 @@ impl<T: Transport> Repository<T> {
             available_package_patterns,
             cache_dir,
             loaded: Mutex::new(HashMap::new()),
+            requests: AtomicUsize::new(0),
         })
+    }
+
+    /// Provider-file requests issued so far (#55): excludes the initial
+    /// `packages.json` fetch and any name served from `inline_packages`
+    /// without a request.
+    pub fn request_count(&self) -> usize {
+        self.requests.load(Ordering::Relaxed)
     }
 
     /// Fetch a package's non-dev and/or `~dev` provider file, expanding it
@@ -345,6 +360,7 @@ impl<T: Transport> Repository<T> {
         };
         let url = self.provider_url(&file_name)?;
         let cache_path = self.cache_path(&file_name);
+        self.requests.fetch_add(1, Ordering::Relaxed);
         match get_cached_json(&self.transport, &url, &cache_path).await? {
             CachedJson::NotFound => Ok(Vec::new()),
             CachedJson::Data(data) => parse_provider_versions(&data, name),
@@ -390,6 +406,8 @@ impl<T: Transport> Repository<T> {
         dev: DevAcceptance,
         skip: &HashSet<String>,
     ) -> Result<HashMap<String, Vec<PackageVersion>>> {
+        let closure_started = Instant::now();
+        let requests_before = self.request_count();
         let mut discovered: HashSet<String> = skip.clone();
         let mut queue = VecDeque::new();
         for root in roots {
@@ -399,7 +417,9 @@ impl<T: Transport> Repository<T> {
         }
 
         let mut result = HashMap::new();
+        let mut batches = 0usize;
         while !queue.is_empty() {
+            batches += 1;
             let batch: Vec<String> = std::iter::from_fn(|| queue.pop_front())
                 .take(LOAD_BATCH_SIZE)
                 .collect();
@@ -418,6 +438,13 @@ impl<T: Transport> Repository<T> {
                 result.insert(name, versions);
             }
         }
+        tracing::debug!(
+            packages = result.len(),
+            batches,
+            requests = self.request_count() - requests_before,
+            elapsed_ms = closure_started.elapsed().as_millis(),
+            "loaded metadata closure"
+        );
         Ok(result)
     }
 }

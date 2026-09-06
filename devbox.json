@@ -8,7 +8,9 @@
     "cargo-insta@latest",
     "cargo-machete@latest",
     "cargo-fuzz@latest",
-    "cargo-llvm-cov@latest"
+    "cargo-llvm-cov@latest",
+    "linuxPackages.perf@latest",
+    "cargo-flamegraph@latest"
   ],
   "shell": {
     "scripts": {

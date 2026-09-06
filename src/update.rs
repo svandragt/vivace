@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
@@ -93,6 +94,7 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
+        let solve_started = Instant::now();
         let result = runtime.block_on(solve(
             args,
             &project_dir,
@@ -101,7 +103,18 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
             cache_dir,
             offline,
         ))?;
-        lock_json(&result, &composer_json)?
+        tracing::debug!(
+            elapsed_ms = solve_started.elapsed().as_millis(),
+            "resolved metadata and solved (merged solve, plus the dev-split \
+             second solve when require-dev is non-empty)"
+        );
+        let lock_write_started = Instant::now();
+        let lock = lock_json(&result, &composer_json)?;
+        tracing::debug!(
+            elapsed_ms = lock_write_started.elapsed().as_millis(),
+            "wrote composer.lock (content-hash + serialisation)"
+        );
+        lock
     };
 
     if args.dry_run {

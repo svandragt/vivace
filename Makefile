@@ -1,7 +1,7 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install build test check bench bench-check hooks fixtures fmt record-packagist compat compat-refresh dist fuzz coverage
+.PHONY: install build test check bench bench-check profile hooks fixtures fmt record-packagist compat compat-refresh dist fuzz coverage
 
 install:
 	cargo install --path . --locked
@@ -38,6 +38,16 @@ bench:
 bench-check:
 	devbox run -- bench/run.sh tests/fixtures/monolog composer viv
 	python3 bench/compare.py bench/results/viv.json --baseline bench/results/baseline.json
+
+# Flamegraphs for #54/#55 (bench/results/profile.md). Needs `perf` access
+# (`perf_event_paranoid <= 2` or `CAP_PERFMON`); errors with a message
+# pointing at that setting otherwise, which is what happened in the sandbox
+# this profiling first ran in — see profile.md's own note on the gap.
+profile:
+	devbox run -- cargo build --release
+	devbox run -- bench/profile/install.sh bench/laravel
+	devbox run -- bench/profile/install.sh bench/laravel -o
+	devbox run -- bench/profile/update.sh bench/laravel
 
 hooks:
 	printf '#!/bin/sh\nexec make check\n' > .git/hooks/pre-commit

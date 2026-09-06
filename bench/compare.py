@@ -16,8 +16,8 @@ import json
 import sys
 
 TOLERANCE_DEFAULT = 0.15
-SCENARIOS = ("cold", "warm", "noop")
-CHECKED_SCENARIOS = ("warm", "noop")
+SCENARIOS = ("cold", "warm", "noop", "update-warm")
+CHECKED_SCENARIOS = ("warm", "noop", "update-warm")
 
 
 def means_from_hyperfine(paths):
@@ -97,6 +97,7 @@ def main(argv):
             "warm": means.get("warm"),
             "noop": means.get("noop"),
             "cold": means.get("cold"),
+            "update-warm": means.get("update-warm"),
         }
         with open(args.baseline, "w") as f:
             json.dump(all_baselines, f, indent=2, sort_keys=True)

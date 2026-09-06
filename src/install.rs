@@ -240,15 +240,31 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Resul
     // `--dry-run` promises no filesystem writes, so normalizing (which
     // rewrites composer.json when it changes) is skipped, not just deferred.
     let composer_json_path = project_dir.join("composer.json");
+    let normalize_started = Instant::now();
     if !args.no_normalize && !args.dry_run && normalize::maybe_normalize(&composer_json_path)? {
         warn_out(&format!("Normalized {}", composer_json_path.display()));
     }
+    tracing::debug!(
+        elapsed_ms = normalize_started.elapsed().as_millis(),
+        "checked composer.json normalization"
+    );
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
+    let read_lock_started = Instant::now();
     let mut lock = read_lock(&lock_path)?;
+    tracing::debug!(
+        packages = lock.packages.len(),
+        elapsed_ms = read_lock_started.elapsed().as_millis(),
+        "read and parsed composer.lock"
+    );
     let dev = !args.no_dev;
 
+    let plugins_started = Instant::now();
     let (plugins, plugin_warnings) = plugins::resolve(&lock, &root, args.no_plugins)?;
+    tracing::debug!(
+        elapsed_ms = plugins_started.elapsed().as_millis(),
+        "resolved plugins"
+    );
     for warning in &plugin_warnings {
         warn_out(warning);
     }
@@ -285,7 +301,15 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Resul
     }
 
     let vendor_dir = project_dir.join(&root.config.vendor_dir);
+    let plan_started = Instant::now();
     let mut plan = plan::plan(&lock, dev, &vendor_dir, &project_dir)?;
+    tracing::debug!(
+        install = plan.install.len(),
+        keep = plan.keep.len(),
+        remove = plan.remove.len(),
+        elapsed_ms = plan_started.elapsed().as_millis(),
+        "diffed lock against installed.json"
+    );
 
     let state_path = vendor_dir.join("composer/.vivace-state");
     // installed.json exists but viv never wrote a state file: vendor/ came
@@ -332,7 +356,12 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Resul
         out("Nothing to install, update or remove");
         return Ok(());
     }
+    let scripts_started = Instant::now();
     scripts.dispatch("pre-install-cmd")?;
+    tracing::debug!(
+        elapsed_ms = scripts_started.elapsed().as_millis(),
+        "dispatched pre-install-cmd"
+    );
 
     let start = Instant::now();
     fs_err::create_dir_all(&vendor_dir)?;
@@ -521,7 +550,12 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Resul
              `viv install --adopt` to relink them from the store.",
         );
     }
+    let scripts_started = Instant::now();
     scripts.dispatch("post-install-cmd")?;
+    tracing::debug!(
+        elapsed_ms = scripts_started.elapsed().as_millis(),
+        "dispatched post-install-cmd"
+    );
     Ok(())
 }
 
