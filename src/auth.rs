@@ -23,6 +23,22 @@ pub struct Auth {
     github_oauth: HashMap<String, String>,
     http_basic: HashMap<String, (String, String)>,
     bearer: HashMap<String, String>,
+    gitlab_oauth: HashMap<String, String>,
+    gitlab_token: HashMap<String, GitlabToken>,
+    /// consumer-key, consumer-secret; loaded so a lock with bitbucket dists
+    /// is recognised, never turned into a header (see `header_for`).
+    bitbucket_oauth: HashMap<String, (String, String)>,
+}
+
+/// A `gitlab-token` entry: either a bare token string, or `{username,
+/// token}` where Composer lets the token *type* land in either field (see
+/// `GitLab::authorizeOAuth` upstream) — `gitlab_token_header` sorts out
+/// which is which.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GitlabToken {
+    Plain(String),
+    UsernameToken { username: String, token: String },
 }
 
 impl fmt::Debug for Auth {
@@ -34,12 +50,14 @@ impl fmt::Debug for Auth {
             .field("github_oauth_hosts", &hosts(&self.github_oauth))
             .field("http_basic_hosts", &hosts(&self.http_basic))
             .field("bearer_hosts", &hosts(&self.bearer))
+            .field("gitlab_oauth_hosts", &hosts(&self.gitlab_oauth))
+            .field("gitlab_token_hosts", &hosts(&self.gitlab_token))
+            .field("bitbucket_oauth_hosts", &hosts(&self.bitbucket_oauth))
             .finish()
     }
 }
 
-/// `auth.json`'s shape (a subset: gitlab and bitbucket entries are parsed by
-/// serde as part of the object but dropped, since nothing here reads them).
+/// `auth.json`'s shape.
 #[derive(Deserialize, Default)]
 struct RawAuth {
     #[serde(rename = "github-oauth", default)]
@@ -48,15 +66,30 @@ struct RawAuth {
     http_basic: HashMap<String, RawBasic>,
     #[serde(default)]
     bearer: HashMap<String, String>,
-    // ponytail: gitlab-oauth, gitlab-token and bitbucket-oauth are valid
-    // auth.json keys Composer supports; add them here if a project needs
-    // git hosting other than GitHub.
+    #[serde(rename = "gitlab-oauth", default)]
+    gitlab_oauth: HashMap<String, String>,
+    #[serde(rename = "gitlab-token", default)]
+    gitlab_token: HashMap<String, GitlabToken>,
+    #[serde(rename = "bitbucket-oauth", default)]
+    bitbucket_oauth: HashMap<String, RawBitbucketOauth>,
 }
 
 #[derive(Deserialize)]
 struct RawBasic {
     username: String,
     password: String,
+}
+
+/// Composer stores more fields here (`access-token`,
+/// `access-token-expiration`) once it has exchanged the consumer key/secret
+/// for a token; vivace doesn't do that exchange, so it only reads the two
+/// fields it can act on. Unknown fields are ignored by serde's default.
+#[derive(Deserialize)]
+struct RawBitbucketOauth {
+    #[serde(rename = "consumer-key")]
+    consumer_key: String,
+    #[serde(rename = "consumer-secret")]
+    consumer_secret: String,
 }
 
 impl Auth {
@@ -95,6 +128,21 @@ impl Auth {
                 .map(|(host, basic)| (host, (basic.username, basic.password))),
         );
         self.bearer.extend(raw.bearer);
+        self.gitlab_oauth.extend(raw.gitlab_oauth);
+        self.gitlab_token.extend(raw.gitlab_token);
+        for host in raw.bitbucket_oauth.keys() {
+            tracing::debug!(
+                host,
+                "bitbucket-oauth found in auth.json; vivace does not exchange the \
+                 consumer-key/consumer-secret for an access token, so requests to this host \
+                 send no Authorization header"
+            );
+        }
+        self.bitbucket_oauth.extend(
+            raw.bitbucket_oauth
+                .into_iter()
+                .map(|(host, b)| (host, (b.consumer_key, b.consumer_secret))),
+        );
     }
 
     /// The `Authorization` header to send for `url`'s host, if any
@@ -108,6 +156,24 @@ impl Auth {
                 AUTHORIZATION,
                 HeaderValue::from_str(&format!("token {token}")).ok()?,
             ));
+        }
+        if let Some(token) = self.gitlab_oauth.get(&host) {
+            return Some((
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}")).ok()?,
+            ));
+        }
+        if let Some(cred) = self.gitlab_token.get(&host) {
+            let (name, value) = gitlab_token_header(cred);
+            return Some((name, HeaderValue::from_str(&value).ok()?));
+        }
+        if self.bitbucket_oauth.contains_key(&host) {
+            // ponytail: no Authorization header until the OAuth2 exchange
+            // (POST consumer-key/consumer-secret to
+            // bitbucket.org/site/oauth2/access_token) is implemented; `None`
+            // here is deliberate so `credential_hint` still fires on the
+            // resulting 401/403.
+            return None;
         }
         if let Some((user, pass)) = self.http_basic.get(&host) {
             let encoded = base64_encode(format!("{user}:{pass}").as_bytes());
@@ -134,6 +200,34 @@ impl Auth {
         }
         None
     }
+}
+
+/// The header name and value Composer's `AuthHelper::addAuthenticationOptions`
+/// sends for a `gitlab-token` credential. A plain string is a personal
+/// access token: `PRIVATE-TOKEN: <token>`. A `{username, token}` object is
+/// only special-cased when `username` holds a *type* marker Composer
+/// recognises (`oauth2` sends the actual token as a Bearer, `private-token`
+/// and `gitlab-ci-token` send it via `PRIVATE-TOKEN`); anything else is a
+/// genuine username, and falls back to HTTP Basic like Composer does.
+fn gitlab_token_header(cred: &GitlabToken) -> (HeaderName, String) {
+    match cred {
+        GitlabToken::Plain(token) => (private_token_header(), token.clone()),
+        GitlabToken::UsernameToken { username, token } => match username.as_str() {
+            "oauth2" => (AUTHORIZATION, format!("Bearer {token}")),
+            "private-token" | "gitlab-ci-token" => (private_token_header(), token.clone()),
+            _ => (
+                AUTHORIZATION,
+                format!(
+                    "Basic {}",
+                    base64_encode(format!("{username}:{token}").as_bytes())
+                ),
+            ),
+        },
+    }
+}
+
+fn private_token_header() -> HeaderName {
+    HeaderName::from_static("private-token")
 }
 
 /// Composer home on Linux: `$COMPOSER_HOME` if set, else `~/.composer` if
@@ -380,6 +474,112 @@ mod tests {
         let (name, value) = auth.header_for(&gh("https://example.com/pkg.zip")).unwrap();
         assert_eq!(name, AUTHORIZATION);
         assert_eq!(value, "Bearer my-bearer-token");
+    }
+
+    #[test]
+    fn gitlab_oauth_sends_bearer() {
+        let _env = EnvGuard::set(&[
+            ("COMPOSER_HOME", None),
+            (
+                "COMPOSER_AUTH",
+                Some(r#"{"gitlab-oauth": {"gitlab.com": "gl-tok"}}"#),
+            ),
+        ]);
+        let project = tempfile::tempdir().unwrap();
+        let auth = Auth::load(project.path()).unwrap();
+        let (name, value) = auth.header_for(&gh("https://gitlab.com/acme/pkg")).unwrap();
+        assert_eq!(name, AUTHORIZATION);
+        assert_eq!(value, "Bearer gl-tok");
+    }
+
+    #[test]
+    fn gitlab_token_string_sends_private_token() {
+        let _env = EnvGuard::set(&[
+            ("COMPOSER_HOME", None),
+            (
+                "COMPOSER_AUTH",
+                Some(r#"{"gitlab-token": {"gitlab.com": "pat-123"}}"#),
+            ),
+        ]);
+        let project = tempfile::tempdir().unwrap();
+        let auth = Auth::load(project.path()).unwrap();
+        let (name, value) = auth.header_for(&gh("https://gitlab.com/acme/pkg")).unwrap();
+        assert_eq!(name, "private-token");
+        assert_eq!(value, "pat-123");
+    }
+
+    #[test]
+    fn gitlab_token_object_with_oauth2_marker_sends_bearer() {
+        let _env = EnvGuard::set(&[
+            ("COMPOSER_HOME", None),
+            (
+                "COMPOSER_AUTH",
+                Some(
+                    r#"{"gitlab-token": {"gitlab.com": {"username": "oauth2", "token": "gl-tok"}}}"#,
+                ),
+            ),
+        ]);
+        let project = tempfile::tempdir().unwrap();
+        let auth = Auth::load(project.path()).unwrap();
+        let (name, value) = auth.header_for(&gh("https://gitlab.com/acme/pkg")).unwrap();
+        assert_eq!(name, AUTHORIZATION);
+        assert_eq!(value, "Bearer gl-tok");
+    }
+
+    #[test]
+    fn gitlab_token_object_with_private_token_marker_sends_private_token() {
+        let _env = EnvGuard::set(&[
+            ("COMPOSER_HOME", None),
+            (
+                "COMPOSER_AUTH",
+                Some(
+                    r#"{"gitlab-token": {"gitlab.com": {"username": "private-token", "token": "pat-123"}}}"#,
+                ),
+            ),
+        ]);
+        let project = tempfile::tempdir().unwrap();
+        let auth = Auth::load(project.path()).unwrap();
+        let (name, value) = auth.header_for(&gh("https://gitlab.com/acme/pkg")).unwrap();
+        assert_eq!(name, "private-token");
+        assert_eq!(value, "pat-123");
+    }
+
+    #[test]
+    fn gitlab_token_object_with_real_username_falls_back_to_basic() {
+        let _env = EnvGuard::set(&[
+            ("COMPOSER_HOME", None),
+            (
+                "COMPOSER_AUTH",
+                Some(
+                    r#"{"gitlab-token": {"gitlab.com": {"username": "deploy", "token": "secret"}}}"#,
+                ),
+            ),
+        ]);
+        let project = tempfile::tempdir().unwrap();
+        let auth = Auth::load(project.path()).unwrap();
+        let (name, value) = auth.header_for(&gh("https://gitlab.com/acme/pkg")).unwrap();
+        assert_eq!(name, AUTHORIZATION);
+        // echo -n deploy:secret | base64
+        assert_eq!(value, "Basic ZGVwbG95OnNlY3JldA==");
+    }
+
+    #[test]
+    fn bitbucket_oauth_sends_no_header() {
+        let _env = EnvGuard::set(&[
+            ("COMPOSER_HOME", None),
+            (
+                "COMPOSER_AUTH",
+                Some(
+                    r#"{"bitbucket-oauth": {"bitbucket.org": {"consumer-key": "k", "consumer-secret": "s"}}}"#,
+                ),
+            ),
+        ]);
+        let project = tempfile::tempdir().unwrap();
+        let auth = Auth::load(project.path()).unwrap();
+        assert!(
+            auth.header_for(&gh("https://bitbucket.org/acme/pkg.zip"))
+                .is_none()
+        );
     }
 
     #[test]

@@ -15,6 +15,11 @@ use crate::store::hex;
 /// is one hop; this leaves headroom without looping forever on a bad host).
 const MAX_REDIRECTS: u8 = 10;
 
+/// Attempts after the first for a transient failure (connection error,
+/// timeout, or a 429/5xx response); Composer and Riff both retry dist
+/// downloads up to this many times.
+const MAX_RETRIES: u32 = 3;
+
 /// A client with vivace's User-Agent and a per-request timeout long enough
 /// for a large zip on a slow link.
 ///
@@ -36,6 +41,10 @@ fn client() -> Result<reqwest::Client> {
 pub struct Fetcher {
     client: reqwest::Client,
     auth: Auth,
+    /// Delay before each retry; a field (not the `backoff` free function
+    /// directly) so tests can swap in a zero-delay schedule instead of
+    /// actually sleeping.
+    backoff: fn(u32) -> Duration,
 }
 
 impl Fetcher {
@@ -43,6 +52,7 @@ impl Fetcher {
         Ok(Fetcher {
             client: client()?,
             auth,
+            backoff,
         })
     }
 
@@ -86,12 +96,13 @@ impl Fetcher {
     async fn get(&self, pkg_name: &str, start_url: &str) -> Result<Vec<u8>> {
         let mut url = Url::parse(start_url)
             .with_context(|| format!("{pkg_name}: invalid dist URL {start_url}"))?;
-        for _ in 0..MAX_REDIRECTS {
-            let mut request = self.client.get(url.clone());
-            if let Some((name, value)) = self.auth.header_for(&url) {
-                request = request.header(name, value);
+        let mut hops = 0u8;
+        loop {
+            if redirect_budget_exhausted(hops) {
+                bail!("{pkg_name}: too many redirects fetching {start_url}");
             }
-            let response = request.send().await?;
+            hops += 1;
+            let response = self.send_with_retries(pkg_name, &url).await?;
             if response.status().is_redirection() {
                 let location = response
                     .headers()
@@ -115,7 +126,42 @@ impl Fetcher {
             })?;
             return Ok(response.bytes().await?.to_vec());
         }
-        bail!("{pkg_name}: too many redirects fetching {start_url}");
+    }
+
+    /// `GET url` once, retrying a transient failure (connection error,
+    /// timeout, or 429/5xx) up to `MAX_RETRIES` times with backoff; a
+    /// redirect response is returned as-is, since `get` needs to decide the
+    /// next hop's URL before it can be retried.
+    async fn send_with_retries(&self, pkg_name: &str, url: &Url) -> Result<reqwest::Response> {
+        let mut attempt = 0u32;
+        loop {
+            let mut request = self.client.get(url.clone());
+            if let Some((name, value)) = self.auth.header_for(url) {
+                request = request.header(name, value);
+            }
+            let outcome = request.send().await;
+            let retryable = match &outcome {
+                Ok(response) => should_retry(Ok(response.status())),
+                Err(err) => (err.is_connect() || err.is_timeout()) && should_retry(Err(())),
+            };
+            if !retryable || attempt >= MAX_RETRIES {
+                return Ok(outcome?);
+            }
+            attempt += 1;
+            let delay = outcome
+                .as_ref()
+                .ok()
+                .and_then(|response| retry_after(response.headers()))
+                .unwrap_or_else(|| (self.backoff)(attempt));
+            tracing::debug!(
+                package = %pkg_name,
+                %url,
+                attempt,
+                delay_ms = delay.as_millis(),
+                "retrying dist download"
+            );
+            tokio::time::sleep(delay).await;
+        }
     }
 }
 
@@ -125,6 +171,53 @@ fn redirect_target(current: &Url, location: &str) -> Result<Url> {
     current
         .join(location)
         .with_context(|| format!("invalid redirect Location {location:?}"))
+}
+
+/// Whether `hops` redirects already reached `MAX_REDIRECTS`, kept as a pure
+/// check so the cap is testable without a live server.
+fn redirect_budget_exhausted(hops: u8) -> bool {
+    hops >= MAX_REDIRECTS
+}
+
+/// Whether a response status, or a transport failure (`Err`), should trigger
+/// a retry. Composer and Riff both retry 429 and 5xx dist-download
+/// responses; other 4xx (401/403/404/etc.) are never transient, so they
+/// aren't retried. A transport failure only reaches this function after the
+/// caller has already checked it's a connection error or a timeout (a
+/// malformed URL or a decode error retrying wouldn't fix), so it's always
+/// worth another attempt.
+fn should_retry(outcome: Result<StatusCode, ()>) -> bool {
+    match outcome {
+        Ok(status) => matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS
+                | StatusCode::INTERNAL_SERVER_ERROR
+                | StatusCode::BAD_GATEWAY
+                | StatusCode::SERVICE_UNAVAILABLE
+                | StatusCode::GATEWAY_TIMEOUT
+        ),
+        Err(()) => true,
+    }
+}
+
+/// Delay before retry `attempt` (1-based): Composer and Riff both back off
+/// 1s, 2s, 4s across three retries before giving up.
+fn backoff(attempt: u32) -> Duration {
+    Duration::from_secs(1 << attempt.saturating_sub(1))
+}
+
+/// `Retry-After` as whole seconds, capped at 30s so a server's large value
+/// can't stall a fetch for minutes. `None` when the header is missing or
+/// isn't a plain integer (dist hosts don't send the HTTP-date form, so it
+/// isn't worth parsing here); the caller falls back to `backoff` then.
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    let secs: u64 = value.parse().ok()?;
+    Some(Duration::from_secs(secs.min(30)))
 }
 
 /// A trailer to append to a download error when the host rejected the
@@ -218,6 +311,91 @@ mod tests {
     fn redirect_target_rejects_invalid_location() {
         let current = reqwest::Url::parse("https://api.github.com/x").unwrap();
         assert!(redirect_target(&current, "http://exa mple.com/y").is_err());
+    }
+
+    #[test]
+    fn redirect_budget_caps_at_max_redirects() {
+        assert!(!redirect_budget_exhausted(MAX_REDIRECTS - 1));
+        assert!(redirect_budget_exhausted(MAX_REDIRECTS));
+        assert!(redirect_budget_exhausted(MAX_REDIRECTS + 1));
+    }
+
+    #[test]
+    fn should_retry_on_429_and_5xx() {
+        for status in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            assert!(should_retry(Ok(status)), "{status}");
+        }
+    }
+
+    #[test]
+    fn should_retry_false_for_other_4xx() {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+        ] {
+            assert!(!should_retry(Ok(status)), "{status}");
+        }
+    }
+
+    #[test]
+    fn should_retry_false_for_success() {
+        assert!(!should_retry(Ok(StatusCode::OK)));
+    }
+
+    #[test]
+    fn should_retry_true_for_transport_error() {
+        assert!(should_retry(Err(())));
+    }
+
+    #[test]
+    fn backoff_schedule_is_1_2_4_seconds() {
+        assert_eq!(backoff(1), Duration::from_secs(1));
+        assert_eq!(backoff(2), Duration::from_secs(2));
+        assert_eq!(backoff(3), Duration::from_secs(4));
+    }
+
+    #[test]
+    fn retry_after_reads_small_values() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("5"),
+        );
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn retry_after_caps_large_values_at_30s() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("3600"),
+        );
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn retry_after_absent_when_header_missing() {
+        let headers = reqwest::header::HeaderMap::new();
+        assert_eq!(retry_after(&headers), None);
+    }
+
+    #[test]
+    fn retry_after_absent_for_http_date_form() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("Wed, 21 Oct 2026 07:28:00 GMT"),
+        );
+        assert_eq!(retry_after(&headers), None);
     }
 
     #[test]
