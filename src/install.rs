@@ -32,6 +32,7 @@ use crate::lock::{
 use crate::normalize;
 use crate::plan::{self, Plan};
 use crate::scripts;
+use crate::source;
 use crate::store::{Store, hex};
 
 /// Fetch requests in flight at once (`fetch::fetch_all`'s concurrency).
@@ -285,19 +286,27 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     };
     let store = Arc::new(Store::open(&cache_dir)?);
 
+    // Path (#13's local-directory case) and dist-less git-source (#13's VCS
+    // case) packages are symlinked/mirrored or cloned straight into
+    // `vendor/`, below; only zip/tar dists ever reach the store or fetcher.
+    let archive_targets: Vec<&Package> = plan
+        .install
+        .iter()
+        .filter(|p| !p.is_path() && !p.is_git_source())
+        .collect();
+
     let mut archive_dirs: HashMap<String, PathBuf> = HashMap::new();
     let mut from_cache = 0usize;
-    for package in &plan.install {
+    for package in &archive_targets {
         if let Some(dir) = store.lookup(package) {
             archive_dirs.insert(package.name.clone(), dir);
             from_cache += 1;
         }
     }
-    let missing: Vec<Package> = plan
-        .install
+    let missing: Vec<Package> = archive_targets
         .iter()
         .filter(|p| !archive_dirs.contains_key(&p.name))
-        .cloned()
+        .map(|p| (*p).clone())
         .collect();
     if !missing.is_empty() {
         let auth = Auth::load(&project_dir)?;
@@ -319,11 +328,17 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     sweep_link_litter(&vendor_dir)?;
     let link_started = Instant::now();
     for package in &plan.install {
-        let dir = archive_dirs
-            .get(&package.name)
-            .expect("every install candidate was fetched or found in the store");
         let dest = package_dir(&vendor_dir, package);
-        link_tree(dir, &dest, args.link_mode)?;
+        if package.is_path() {
+            source::install_path(&project_dir, package, &dest)?;
+        } else if package.is_git_source() {
+            source::checkout_git(&cache_dir, package, &dest)?;
+        } else {
+            let dir = archive_dirs
+                .get(&package.name)
+                .expect("every install candidate was fetched or found in the store");
+            link_tree(dir, &dest, args.link_mode)?;
+        }
     }
     for entry in &plan.remove {
         if entry.install_path.exists() {

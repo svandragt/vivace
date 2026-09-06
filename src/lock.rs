@@ -36,6 +36,28 @@ pub struct Dist {
     pub shasum: Option<String>,
 }
 
+/// A lock entry's `source` block: VCS provenance, present for the
+/// dist-less packages [`Package::validate_dist`] accepts on top of a zip/tar
+/// `dist` (#13's "no dist at all, git source" case) and, redundantly, for
+/// most zip/tar packages too (unused by vivace there).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Source {
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub url: String,
+    pub reference: Option<String>,
+}
+
+/// A lock entry's `transport-options` block: only the two keys a path
+/// repository package sets (`PathRepository`/`PathDownloader`). `None` means
+/// Composer's own default for that option (symlink when possible, relative
+/// when possible).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TransportOptions {
+    pub symlink: Option<bool>,
+    pub relative: Option<bool>,
+}
+
 /// One package from `packages` or `packages-dev`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Package {
@@ -43,6 +65,9 @@ pub struct Package {
     pub name: String,
     pub version: String,
     pub dist: Option<Dist>,
+    pub source: Option<Source>,
+    #[serde(rename = "transport-options", default)]
+    pub transport_options: TransportOptions,
     pub autoload: Option<Value>,
     #[serde(default)]
     pub require: Map<String, Value>,
@@ -70,24 +95,41 @@ pub struct Package {
 }
 
 impl Package {
-    /// vivace v0.1 only fetches zip and tar dists (tar covers `.tar`,
+    /// vivace v0.1 fetches zip and tar dists (tar covers `.tar`,
     /// `.tar.gz`/`.tgz` and `.tar.bz2`: Composer's own `dist.type` is `"tar"`
     /// for all three, distinguished by the archive bytes, not the type
-    /// string); error clearly, naming the package, rather than failing
-    /// obscurely later in `fetch`.
+    /// string) and symlinks/mirrors `path` dists (#13); a package with no
+    /// `dist` at all is accepted only when its `source` is a git checkout
+    /// (#13's other half), and rejected otherwise — error clearly, naming
+    /// the package, rather than failing obscurely later in `fetch`.
     pub fn validate_dist(&self) -> Result<()> {
         match &self.dist {
+            None if self.is_git_source() => Ok(()),
             None => bail!(
-                "{}: no dist entry (path/git-only packages are not supported in vivace v0.1)",
+                "{}: no dist entry and no git source (svn/hg/fossil sources are not supported \
+                 in vivace v0.1)",
                 self.name
             ),
+            Some(dist) if dist.r#type == "path" => Ok(()),
             Some(dist) if dist.r#type != "zip" && dist.r#type != "tar" => bail!(
-                "{}: dist type \"{}\" is not supported in vivace v0.1 (zip and tar only)",
+                "{}: dist type \"{}\" is not supported in vivace v0.1 (zip, tar and path only)",
                 self.name,
                 dist.r#type
             ),
             Some(_) => Ok(()),
         }
+    }
+
+    /// A path-repository package (#13): `dist.type` is `"path"`, never
+    /// fetched or stored, symlinked/mirrored straight from `dist.url`.
+    pub fn is_path(&self) -> bool {
+        self.dist.as_ref().is_some_and(|d| d.r#type == "path")
+    }
+
+    /// A dist-less, git-source package (#13): cloned from `source.url`
+    /// rather than fetched as an archive.
+    pub fn is_git_source(&self) -> bool {
+        self.dist.is_none() && self.source.as_ref().is_some_and(|s| s.r#type == "git")
     }
 }
 
@@ -834,7 +876,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "psr/log: dist type \"rar\" is not supported in vivace v0.1 (zip and tar only)"
+            "psr/log: dist type \"rar\" is not supported in vivace v0.1 (zip, tar and path only)"
         );
     }
 
@@ -855,6 +897,81 @@ mod tests {
 
         let lock = read_lock(file.path()).unwrap();
         lock.packages(true).next().unwrap().validate_dist().unwrap();
+    }
+
+    #[test]
+    fn validate_dist_accepts_path() {
+        let lock_json = r#"{
+            "packages": [
+                {
+                    "name": "acme/hello",
+                    "version": "1.0.0",
+                    "dist": { "type": "path", "url": "packages/hello", "reference": "abc" },
+                    "transport-options": { "relative": true }
+                }
+            ],
+            "packages-dev": []
+        }"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(lock_json.as_bytes()).unwrap();
+
+        let lock = read_lock(file.path()).unwrap();
+        let package = lock.packages(true).next().unwrap();
+        package.validate_dist().unwrap();
+        assert!(package.is_path());
+        assert!(!package.is_git_source());
+        assert_eq!(package.transport_options.relative, Some(true));
+    }
+
+    #[test]
+    fn validate_dist_accepts_a_dist_less_git_source() {
+        let lock_json = r#"{
+            "packages": [
+                {
+                    "name": "acme/vcslib",
+                    "version": "dev-main",
+                    "source": { "type": "git", "url": "https://example.test/acme/vcslib.git", "reference": "abc123" }
+                }
+            ],
+            "packages-dev": []
+        }"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(lock_json.as_bytes()).unwrap();
+
+        let lock = read_lock(file.path()).unwrap();
+        let package = lock.packages(true).next().unwrap();
+        package.validate_dist().unwrap();
+        assert!(package.is_git_source());
+        assert!(!package.is_path());
+    }
+
+    #[test]
+    fn validate_dist_rejects_a_dist_less_non_git_source() {
+        let lock_json = r#"{
+            "packages": [
+                {
+                    "name": "acme/svnlib",
+                    "version": "1.0.0",
+                    "source": { "type": "svn", "url": "svn://example.test/acme/svnlib", "reference": "1" }
+                }
+            ],
+            "packages-dev": []
+        }"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(lock_json.as_bytes()).unwrap();
+
+        let lock = read_lock(file.path()).unwrap();
+        let err = lock
+            .packages(true)
+            .next()
+            .unwrap()
+            .validate_dist()
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "acme/svnlib: no dist entry and no git source (svn/hg/fossil sources are not \
+             supported in vivace v0.1)"
+        );
     }
 
     /// `Locker::getContentHash` on real `composer.json` files, values taken

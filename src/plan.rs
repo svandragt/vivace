@@ -47,7 +47,15 @@ pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path) -> Result<Plan> {
     let mut installed = read_installed(&vendor_dir.join("composer/installed.json"), vendor_dir)?;
     let mut plan = Plan::default();
     for package in lock.packages(dev) {
-        let reference = package.dist.as_ref().and_then(|d| d.reference.clone());
+        // A dist-less git-source package (#13) has no `dist.reference`;
+        // fall back to `source.reference` so a bumped commit on an
+        // unchanged version (a dev branch, say) still reinstalls instead of
+        // comparing two `None`s and calling it a match.
+        let reference = package
+            .dist
+            .as_ref()
+            .and_then(|d| d.reference.clone())
+            .or_else(|| package.source.as_ref().and_then(|s| s.reference.clone()));
         let abandoned = package.raw.get("abandoned").cloned();
         match installed.remove(&package.name) {
             Some((entry, was_dev))
@@ -110,13 +118,17 @@ fn read_installed(
                 install_path.display()
             );
         }
+        let reference = entry
+            .dist
+            .and_then(|d| d.reference)
+            .or_else(|| entry.source.and_then(|s| s.reference));
         installed.insert(
             name.clone(),
             (
                 InstalledEntry {
                     name,
                     version: entry.version,
-                    reference: entry.dist.and_then(|d| d.reference),
+                    reference,
                     install_path,
                     abandoned: entry.abandoned,
                 },
@@ -156,6 +168,7 @@ struct InstalledPackage {
     name: String,
     version: String,
     dist: Option<InstalledDist>,
+    source: Option<InstalledSource>,
     #[serde(rename = "install-path")]
     install_path: Option<String>,
     abandoned: Option<Value>,
@@ -163,6 +176,13 @@ struct InstalledPackage {
 
 #[derive(Deserialize)]
 struct InstalledDist {
+    reference: Option<String>,
+}
+
+/// A dist-less git-source package's `installed.json` entry (#13) carries
+/// its reference under `source`, not `dist`.
+#[derive(Deserialize)]
+struct InstalledSource {
     reference: Option<String>,
 }
 

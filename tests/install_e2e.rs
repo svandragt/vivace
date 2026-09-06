@@ -26,6 +26,10 @@ fn legacy_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy")
 }
 
+fn path_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/path")
+}
+
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {
@@ -342,4 +346,195 @@ new App\Legacy\Foo();"#,
         "php dev autoload smoke test failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// #13: `dist.type: path` packages, entirely offline (no network fetch, no
+/// content-addressed store — see `src/source.rs`). Fixture has one prod and
+/// one dev-only path package so `--no-dev` actually changes the plan.
+fn copy_path_sources(project: &Path) {
+    for name in ["composer.json", "composer.lock"] {
+        fs::copy(path_fixture().join(name), project.join(name)).unwrap();
+    }
+    copy_tree(&path_fixture().join("packages"), &project.join("packages"));
+}
+
+fn assert_symlinked_path_package(project: &Path, name: &str, target: &str) {
+    let dest = project.join("vendor").join(name);
+    let meta =
+        fs::symlink_metadata(&dest).unwrap_or_else(|err| panic!("{}: {err}", dest.display()));
+    assert!(meta.file_type().is_symlink(), "{name} should be a symlink");
+    assert_eq!(fs::read_link(&dest).unwrap(), Path::new(target));
+}
+
+#[test]
+fn path_repository_install_matches_composer_and_is_idempotent() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 2 packages"));
+
+    assert_matches_expected(
+        &path_fixture().join("expected/dev"),
+        &project.join("vendor"),
+    );
+    assert_symlinked_path_package(project, "acme/hello", "../../packages/hello");
+    assert_symlinked_path_package(project, "acme/testkit", "../../packages/testkit");
+    assert_eq!(
+        fs::read_to_string(project.join("vendor/acme/hello/src/Greeter.php")).unwrap(),
+        fs::read_to_string(path_fixture().join("packages/hello/src/Greeter.php")).unwrap(),
+    );
+
+    // Re-run: nothing changed, so it should take the no-op path.
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Nothing to install"));
+
+    ctx.viv().args(["install", "--no-dev"]).assert().success();
+    assert_matches_expected(
+        &path_fixture().join("expected/no-dev"),
+        &project.join("vendor"),
+    );
+    assert!(
+        !project.join("vendor/acme/testkit").exists(),
+        "the dev-only path package should be gone, symlink and all"
+    );
+    assert!(
+        path_fixture().join("packages/testkit").is_dir(),
+        "removing the symlink must not touch its target"
+    );
+
+    // Back to dev: acme/testkit is relinked.
+    ctx.viv().arg("install").assert().success();
+    assert_matches_expected(
+        &path_fixture().join("expected/dev"),
+        &project.join("vendor"),
+    );
+}
+
+/// #13: a dist-less, `source.type: git` lock entry. Built against a throwaway
+/// local repo (no `.git` fixture ever committed), isolated from any global
+/// git hooks/config a developer machine may have (`core.hooksPath` rewrites
+/// commit messages on this machine, for instance).
+fn git_available() -> bool {
+    Command::new("git").arg("--version").output().is_ok()
+}
+
+fn git_run(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(["-c", "core.hooksPath=/dev/null"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "vivace test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.test")
+        .env("GIT_COMMITTER_NAME", "vivace test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.test")
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+fn git_head(dir: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// A one-commit upstream repo with a real package layout; returns its HEAD.
+fn init_upstream_repo(dir: &Path) -> String {
+    git_run(dir, &["init", "-q", "-b", "main"]);
+    fs::write(
+        dir.join("composer.json"),
+        r#"{
+    "name": "acme/vcslib",
+    "type": "library",
+    "autoload": {"psr-4": {"Acme\\Vcs\\": "src/"}}
+}"#,
+    )
+    .unwrap();
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("src/Thing.php"),
+        "<?php\n\nnamespace Acme\\Vcs;\n\nclass Thing {}\n",
+    )
+    .unwrap();
+    git_run(dir, &["add", "-A"]);
+    git_run(dir, &["commit", "-q", "-m", "init"]);
+    git_head(dir)
+}
+
+#[test]
+fn git_source_package_checks_out_the_locked_reference() {
+    if !git_available() {
+        eprintln!("skipping git_source_package_checks_out_the_locked_reference: git not on PATH");
+        return;
+    }
+
+    let upstream = tempfile::tempdir().unwrap();
+    let reference = init_upstream_repo(upstream.path());
+
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs::write(
+        project.join("composer.json"),
+        r#"{"name": "vivace/fixture-vcs", "config": {"secure-http": true}}"#,
+    )
+    .unwrap();
+    let lock = serde_json::json!({
+        "packages": [{
+            "name": "acme/vcslib",
+            "version": "dev-main",
+            "source": {
+                "type": "git",
+                "url": upstream.path().to_str().unwrap(),
+                "reference": reference,
+            },
+            "type": "library",
+            "autoload": {"psr-4": {"Acme\\Vcs\\": "src/"}},
+        }],
+        "packages-dev": [],
+    });
+    fs::write(
+        project.join("composer.lock"),
+        serde_json::to_string_pretty(&lock).unwrap(),
+    )
+    .unwrap();
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 1 packages"));
+
+    let checkout = project.join("vendor/acme/vcslib");
+    assert!(checkout.join(".git").is_dir());
+    assert!(checkout.join("src/Thing.php").is_file());
+    assert_eq!(git_head(&checkout), reference);
+
+    let installed: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project.join("vendor/composer/installed.json")).unwrap(),
+    )
+    .unwrap();
+    let package = &installed["packages"][0];
+    assert_eq!(package["installation-source"], "source");
+    assert_eq!(package["source"]["reference"], reference);
+
+    // Re-run: nothing changed, so it should take the no-op path.
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Nothing to install"));
+    assert_eq!(git_head(&checkout), reference);
 }

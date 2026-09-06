@@ -142,7 +142,18 @@ fn dump_package(package: &Package) -> Result<Value> {
                 version::normalize(&package.version)
                     .with_context(|| format!("{}: version", package.name))?,
             ),
-            "installation-source" => Value::String("dist".into()),
+            // Composer's `LibraryInstaller`: `dist` for every package fetched
+            // as an archive (zip/tar/path — a path repo's package still has
+            // a `dist` block, just `type: path`), `source` for the dist-less
+            // git-source packages `Package::validate_dist` accepts (#13).
+            "installation-source" => Value::String(
+                if package.dist.is_none() {
+                    "source"
+                } else {
+                    "dist"
+                }
+                .into(),
+            ),
             // `getType()` defaults to `library`, so the key is always present.
             "type" => Value::String(package.r#type.clone()),
             "install-path" => install_path(package).map_or(Value::Null, Value::String),
@@ -471,7 +482,7 @@ mod tests {
     use serde_json::json;
 
     use super::{installed_json, installed_php};
-    use crate::lock::{Dist, Package, Root, read_lock, read_root};
+    use crate::lock::{Dist, Package, Root, TransportOptions, read_lock, read_root};
 
     fn fixture(name: &str) -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -540,6 +551,8 @@ mod tests {
                 reference: Some(r.into()),
                 shasum: None,
             }),
+            source: None,
+            transport_options: TransportOptions::default(),
             autoload: None,
             require: serde_json::Map::new(),
             provide: serde_json::Map::new(),

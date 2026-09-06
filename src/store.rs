@@ -72,6 +72,11 @@ impl Store {
         let Some(dist) = pkg.dist.as_ref() else {
             return Ok(None);
         };
+        // Path packages (#13) are symlinked/mirrored straight from
+        // `dist.url` and never fetched, so they never enter the store.
+        if dist.r#type == "path" {
+            return Ok(None);
+        }
         // ponytail: two names differing only by case collide on a
         // case-insensitive filesystem (macOS default, Windows); Composer
         // hits the same wall, fold and disambiguate if it ever bites here.
@@ -107,7 +112,7 @@ impl Store {
     /// `.tar.gz`/`.tgz` and `.tar.bz2`, detected from the archive bytes).
     pub fn add_archive(&self, pkg: &Package, archive_bytes: &[u8]) -> Result<PathBuf> {
         let Some(pointer) = self.pointer(pkg)? else {
-            bail!("{}: no dist entry", pkg.name);
+            bail!("{}: no dist entry, or a path dist, never stored", pkg.name);
         };
         let dist_type = &pkg
             .dist

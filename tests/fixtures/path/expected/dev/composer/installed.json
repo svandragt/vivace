@@ -1,0 +1,50 @@
+{
+    "packages": [
+        {
+            "name": "acme/hello",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/hello",
+                "reference": "f25f249178304a977332e49488b49798b49c3092"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Hello\\": "src/"
+                }
+            },
+            "transport-options": {
+                "relative": true
+            },
+            "install-path": "../acme/hello"
+        },
+        {
+            "name": "acme/testkit",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/testkit",
+                "reference": "78ff73f1cc37d92c843162614d0a6c8663398bcc"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Testkit\\": "src/"
+                }
+            },
+            "transport-options": {
+                "relative": true
+            },
+            "install-path": "../acme/testkit"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": [
+        "acme/testkit"
+    ]
+}

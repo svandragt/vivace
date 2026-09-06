@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 use vivace::bin::{BinCompat, generate};
-use vivace::lock::Package;
+use vivace::lock::{Package, TransportOptions};
 
 fn fixture(name: &str) -> Vec<u8> {
     fs::read(
@@ -29,6 +29,8 @@ fn package(name: &str, bin: &[&str]) -> Package {
         name: name.to_string(),
         version: "1.0.0".to_string(),
         dist: None,
+        source: None,
+        transport_options: TransportOptions::default(),
         autoload: None,
         require: Map::new(),
         provide: Map::new(),

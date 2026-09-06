@@ -1,0 +1,27 @@
+{
+    "packages": [
+        {
+            "name": "acme/hello",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/hello",
+                "reference": "f25f249178304a977332e49488b49798b49c3092"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Hello\\": "src/"
+                }
+            },
+            "transport-options": {
+                "relative": true
+            },
+            "install-path": "../acme/hello"
+        }
+    ],
+    "dev": false,
+    "dev-package-names": []
+}
