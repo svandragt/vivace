@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -92,6 +93,12 @@ pub struct Package {
     /// The untouched lock entry, key order preserved.
     #[serde(skip)]
     pub raw: Value,
+    /// Project-root-relative install directory (no leading/trailing slash),
+    /// set by [`crate::plugins::Plugins::install_dir`] before planning when
+    /// `composer/installers` or a `wordpress-core-installer` maps this
+    /// package outside `vendor/`; `None` keeps the default `vendor/<name>`.
+    #[serde(skip)]
+    pub install_dir: Option<String>,
 }
 
 impl Package {
@@ -241,6 +248,60 @@ where
         .to_string())
 }
 
+/// `config.allow-plugins`: Composer's `PluginManager::parseAllowedPlugins`.
+/// `true`/`false` allow or deny every `composer-plugin` package; a map is
+/// tried in key order, first pattern to match (`*` glob, case-insensitive,
+/// `BasePackage::packageNameToRegexp`) wins. Absent entirely (Composer's
+/// schema default, `[]`) behaves like an empty map: nothing matches, so
+/// every plugin is disallowed — the same outcome Composer reaches
+/// non-interactively (CI has no prompt to fall back on either).
+#[derive(Debug, Clone, Default)]
+pub enum AllowPlugins {
+    All(bool),
+    #[default]
+    None,
+    Map(Vec<(String, bool)>),
+}
+
+impl AllowPlugins {
+    pub fn is_enabled(&self, package: &str) -> bool {
+        match self {
+            AllowPlugins::All(allow) => *allow,
+            AllowPlugins::None => false,
+            AllowPlugins::Map(rules) => rules
+                .iter()
+                .find(|(pattern, _)| glob_match(pattern, package))
+                .is_some_and(|(_, allow)| *allow),
+        }
+    }
+}
+
+/// `BasePackage::packageNameToRegexp`: `*` expands to "anything", the rest of
+/// the pattern matches literally, case-insensitively.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let escaped = regex::escape(pattern).replace(r"\*", ".*");
+    Regex::new(&format!("(?i)^{escaped}$")).is_ok_and(|re| re.is_match(name))
+}
+
+impl<'de> Deserialize<'de> for AllowPlugins {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match Value::deserialize(deserializer)? {
+            Value::Bool(allow) => Ok(AllowPlugins::All(allow)),
+            Value::Object(map) => Ok(AllowPlugins::Map(
+                map.into_iter()
+                    .map(|(name, allow)| (name, allow.as_bool().unwrap_or(false)))
+                    .collect(),
+            )),
+            other => Err(serde::de::Error::custom(format!(
+                "invalid config.allow-plugins value: {other}"
+            ))),
+        }
+    }
+}
+
 /// Composer lowercases package names throughout.
 fn deserialize_lowercase<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
 where
@@ -301,6 +362,10 @@ pub struct Config {
     /// (`fetch::Fetcher::secure_http`); Composer defaults this to `true`.
     #[serde(rename = "secure-http")]
     pub secure_http: bool,
+    /// Which `composer-plugin` packages viv treats as enabled
+    /// (`docs/plugin-strategy.md`'s rule 3, and the native adapters' gate).
+    #[serde(rename = "allow-plugins")]
+    pub allow_plugins: AllowPlugins,
 }
 
 impl Default for Config {
@@ -318,6 +383,7 @@ impl Default for Config {
             apcu_autoloader_prefix: None,
             use_include_path: false,
             secure_http: true,
+            allow_plugins: AllowPlugins::None,
         }
     }
 }
@@ -361,6 +427,12 @@ pub struct Root {
     pub include_path: Vec<String>,
     #[serde(default)]
     pub config: Config,
+    /// `extra.installer-paths`/`extra.wordpress-install-dir`
+    /// (`src/plugins.rs`) live here alongside whatever else a project keeps
+    /// in `extra`; kept as a raw [`Value`] like [`Package::raw`], since only
+    /// those two keys are ever read.
+    #[serde(default)]
+    pub extra: Value,
 }
 
 /// Read and parse the root `composer.json`.

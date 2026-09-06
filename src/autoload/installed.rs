@@ -87,16 +87,36 @@ const NO_VERSION_SET: &str = "1.0.0+no-version-set";
 /// share `vendor/composer` as their parent with `installed.json`/`.php`
 /// themselves, so `findShortestPath` gives `./name` there instead of the
 /// `../name` every other vendor gets.
+///
+/// `from`/`to` are given a synthetic `/vivace-root` prefix (never a real
+/// filesystem path) purely so the two are guaranteed to share a common
+/// ancestor other than `vendor`: `package.install_dir` (`src/plugins.rs`'s
+/// native adapters) can point anywhere under the project root, not just
+/// under `vendor/`, and without a shared prefix `find_shortest_path`'s
+/// common-ancestor walk would never terminate for a "to" that shares no path
+/// segment with `vendor/composer` at all. The prefix has to be more than
+/// one component deep — plain `/` — or `find_shortest_path`'s own
+/// leave-it-absolute case for a *real* top-level split (`/foo` vs `/bar`,
+/// distinct Windows drives or Docker mounts) would fire here too.
 fn install_path(package: &Package) -> Option<String> {
     if package.r#type == "metapackage" {
         return None;
     }
-    let mut to = format!("vendor/{}", package.name);
-    if let Some(dir) = &package.target_dir {
-        to.push('/');
-        to.push_str(dir);
-    }
-    Some(find_shortest_path("vendor/composer", &to, true))
+    let to = if let Some(dir) = &package.install_dir {
+        dir.clone()
+    } else {
+        let mut to = format!("vendor/{}", package.name);
+        if let Some(dir) = &package.target_dir {
+            to.push('/');
+            to.push_str(dir);
+        }
+        to
+    };
+    Some(find_shortest_path(
+        "/vivace-root/vendor/composer",
+        &format!("/vivace-root/{to}"),
+        true,
+    ))
 }
 
 /// The `installed.json` body: lock entries in `ArrayDumper` key order plus
@@ -563,6 +583,7 @@ mod tests {
             include_path: vec![],
             dev: false,
             raw: json!({}),
+            install_dir: None,
         }
     }
 

@@ -1,0 +1,12 @@
+---
+source: tests/cli.rs
+expression: snapshot
+---
+success: true
+exit_code: 0
+----- stdout -----
+install 1 / keep 0 / remove 0
+  install acme/mystery-plugin (1.0.0)
+
+----- stderr -----
+viv cannot run the Composer plugin acme/mystery-plugin; see docs/plugin-strategy.md. Pass --no-plugins to install without it, as Composer would.

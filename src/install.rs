@@ -31,6 +31,7 @@ use crate::lock::{
 };
 use crate::normalize;
 use crate::plan::{self, Plan};
+use crate::plugins;
 use crate::scripts;
 use crate::source;
 use crate::store::{Store, hex};
@@ -90,6 +91,12 @@ pub struct InstallArgs {
     /// reading it.
     #[arg(long)]
     pub no_normalize: bool,
+    /// Install every package under `vendor/`, as Composer does with the same
+    /// flag: the native `composer/installers`/`wordpress-core-installer`
+    /// adapters are disabled, and any other enabled plugin viv would
+    /// otherwise refuse only warns (`docs/plugin-strategy.md`).
+    #[arg(long)]
+    pub no_plugins: bool,
 }
 
 /// `viv dump-autoload` flags: same autoload-shaping knobs as `install`, minus
@@ -129,6 +136,11 @@ pub struct DumpAutoloadArgs {
     /// reading it.
     #[arg(long)]
     pub no_normalize: bool,
+    /// Regenerate every package's autoload entry at its plain `vendor/`
+    /// location: the native installer adapters are disabled, same as
+    /// `install --no-plugins` (`docs/plugin-strategy.md`).
+    #[arg(long)]
+    pub no_plugins: bool,
 }
 
 /// `viv cache` flags: which cache maintenance operation to run.
@@ -212,8 +224,16 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     }
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
-    let lock = read_lock(&lock_path)?;
+    let mut lock = read_lock(&lock_path)?;
     let dev = !args.no_dev;
+
+    let (plugins, plugin_warnings) = plugins::resolve(&lock, &root, args.no_plugins)?;
+    for warning in &plugin_warnings {
+        warn_out(warning);
+    }
+    for package in &mut lock.packages {
+        package.install_dir = plugins.install_dir(&root, package);
+    }
 
     // Composer's `Installer::doInstall`: a stale content-hash is only a
     // warning, but a requirement entirely absent from the lock is fatal
@@ -236,7 +256,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     }
 
     let vendor_dir = project_dir.join(&root.config.vendor_dir);
-    let mut plan = plan::plan(&lock, dev, &vendor_dir)?;
+    let mut plan = plan::plan(&lock, dev, &vendor_dir, &project_dir)?;
 
     let state_path = vendor_dir.join("composer/.vivace-state");
     // installed.json exists but viv never wrote a state file: vendor/ came
@@ -328,7 +348,7 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>) -> Result<()> {
     sweep_link_litter(&vendor_dir)?;
     let link_started = Instant::now();
     for package in &plan.install {
-        let dest = package_dir(&vendor_dir, package);
+        let dest = package_dir(&vendor_dir, &project_dir, package);
         if package.is_path() {
             source::install_path(&project_dir, package, &dest)?;
         } else if package.is_git_source() {
@@ -402,7 +422,7 @@ fn regenerate_vendor_metadata(
     let bin_dir = project_dir.join(root.config.bin_dir());
     let bin_packages: Vec<(&Package, PathBuf)> = packages
         .iter()
-        .map(|p| (*p, package_dir(vendor_dir, p)))
+        .map(|p| (*p, package_dir(vendor_dir, project_dir, p)))
         .collect();
     let bin_started = Instant::now();
     for warning in bin::generate(vendor_dir, &bin_dir, root.config.bin_compat, &bin_packages)? {
@@ -468,8 +488,16 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
     }
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
-    let lock = read_lock(&lock_path)?;
+    let mut lock = read_lock(&lock_path)?;
     let dev = !args.no_dev;
+
+    let (plugins, plugin_warnings) = plugins::resolve(&lock, &root, args.no_plugins)?;
+    for warning in &plugin_warnings {
+        warn_out(warning);
+    }
+    for package in &mut lock.packages {
+        package.install_dir = plugins.install_dir(&root, package);
+    }
 
     let vendor_dir = project_dir.join(&root.config.vendor_dir);
     if !vendor_dir.is_dir() {
@@ -481,7 +509,7 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
 
     let selected: Vec<&Package> = lock.packages(dev).collect();
     for package in &selected {
-        let dir = package_dir(&vendor_dir, package);
+        let dir = package_dir(&vendor_dir, &project_dir, package);
         if package.r#type != "metapackage" && !dir.is_dir() {
             bail!("{} not found; run `viv install` first", dir.display());
         }
@@ -632,7 +660,8 @@ fn write_autoload(
                 replaces: keys(&p.replace),
                 provides: keys(&p.provide),
                 target_dir: p.target_dir.clone(),
-                install_path: (p.r#type != "metapackage").then(|| package_dir(vendor_dir, p)),
+                install_path: (p.r#type != "metapackage")
+                    .then(|| package_dir(vendor_dir, project_dir, p)),
                 is_dev: p.dev,
                 include_path: p.include_path.clone(),
             })
@@ -757,8 +786,13 @@ fn sweep_link_litter(vendor_dir: &Path) -> Result<()> {
 }
 
 /// `vendor/<name>`, plus the legacy `target-dir` nesting when the package
-/// still declares one.
-fn package_dir(vendor_dir: &Path, package: &Package) -> PathBuf {
+/// still declares one — or, when `src/plugins.rs` mapped this package
+/// outside `vendor/` (a native `composer/installers`/`wordpress-core`
+/// adapter), that mapped directory under `project_dir` instead.
+fn package_dir(vendor_dir: &Path, project_dir: &Path, package: &Package) -> PathBuf {
+    if let Some(install_dir) = &package.install_dir {
+        return project_dir.join(install_dir);
+    }
     let mut dir = vendor_dir.join(&package.name);
     if let Some(target) = package.target_dir.as_deref().filter(|t| !t.is_empty()) {
         dir = dir.join(target);

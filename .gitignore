@@ -1,1 +1,7 @@
 /target
+
+# A user-global ~/.gitignore ignoring "wordpress/" anywhere collides with
+# this fixture's own directory name; un-ignore it and everything under it
+# (its own nested .gitignore still hides the real WordPress checkout).
+!/tests/fixtures/wordpress/
+!/tests/fixtures/wordpress/**

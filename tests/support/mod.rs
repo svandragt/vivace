@@ -164,7 +164,7 @@ pub(crate) fn run(src: &str) {
     match fixture.expect_exit_code {
         Some(code) if code != 0 => assert_rejected(&fixture, &lock, &root, &composer_bytes),
         _ => {
-            let result = plan::plan(&lock, fixture.dev, &vendor).expect("planning");
+            let result = plan::plan(&lock, fixture.dev, &vendor, project.path()).expect("planning");
             assert_eq!(operations(&fixture, &result), fixture.expect);
         }
     }

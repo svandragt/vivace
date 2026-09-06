@@ -8,6 +8,7 @@ pub mod lock;
 pub mod lock_writer;
 pub mod normalize;
 pub mod plan;
+pub mod plugins;
 pub mod repository;
 pub mod scripts;
 pub mod semver;

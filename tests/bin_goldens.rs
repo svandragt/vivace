@@ -41,6 +41,7 @@ fn package(name: &str, bin: &[&str]) -> Package {
         bin: bin.iter().copied().map(str::to_string).collect(),
         dev: false,
         raw: Value::Null,
+        install_dir: None,
     }
 }
 

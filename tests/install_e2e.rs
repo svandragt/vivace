@@ -26,6 +26,10 @@ fn legacy_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy")
 }
 
+fn wordpress_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wordpress")
+}
+
 fn path_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/path")
 }
@@ -58,6 +62,12 @@ fn copy_legacy_sources(project: &Path) {
     }
     for dir in ["src-psr0", "src-psr4", "tests-legacy"] {
         copy_tree(&legacy_fixture().join(dir), &project.join(dir));
+    }
+}
+
+fn copy_wordpress_sources(project: &Path) {
+    for name in ["composer.json", "composer.lock"] {
+        fs::copy(wordpress_fixture().join(name), project.join(name)).unwrap();
     }
 }
 
@@ -537,4 +547,75 @@ fn git_source_package_checks_out_the_locked_reference() {
         .success()
         .stdout(predicates::str::contains("Nothing to install"));
     assert_eq!(git_head(&checkout), reference);
+}
+
+/// #51: `composer/installers` and `johnpbloch/wordpress-core-installer`
+/// mapped natively — a wordpress-plugin, wordpress-muplugin and
+/// wordpress-theme land under `wp-content/`, and `wordpress-core` under
+/// `extra.wordpress-install-dir`, never under `vendor/`, byte-diffed against
+/// real Composer 2.10.2 with both plugins enabled.
+#[test]
+fn wordpress_installer_paths_and_wordpress_core_matches_composer() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping install_e2e: set VIVACE_TEST_NETWORK=1 to fetch real dists over the network"
+        );
+        return;
+    }
+
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_wordpress_sources(project);
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 6 packages"));
+
+    assert_matches_expected(
+        &wordpress_fixture().join("expected/dev"),
+        &project.join("vendor"),
+    );
+
+    // Mapped outside vendor/, at composer/installers' and the WordPress
+    // core installer's real paths, not vendor/<vendor>/<name>.
+    assert!(project.join("wp-content/plugins/soil").is_dir());
+    assert!(
+        project
+            .join("wp-content/mu-plugins/bedrock-disallow-indexing")
+            .is_dir()
+    );
+    assert!(project.join("wp-content/themes/wd_s").is_dir());
+    assert!(project.join("wordpress/wp-settings.php").is_file());
+    assert!(!project.join("vendor/roots").exists());
+    assert!(!project.join("vendor/webdevstudios").exists());
+    assert!(!project.join("vendor/johnpbloch/wordpress-core").exists());
+    // Not path-mapped: a `composer-plugin` package itself, not a WordPress
+    // type `composer/installers`/the core installer map.
+    assert!(
+        project
+            .join("vendor/johnpbloch/wordpress-core-installer")
+            .is_dir()
+    );
+    assert!(project.join("vendor/composer/installers").is_dir());
+
+    // Re-run: nothing changed, so it should take the no-op path.
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Nothing to install"));
+
+    ctx.viv().args(["install", "--no-dev"]).assert().success();
+    assert_matches_expected(
+        &wordpress_fixture().join("expected/no-dev"),
+        &project.join("vendor"),
+    );
+    // The dev-only mu-plugin, mapped outside vendor/, is still removed.
+    assert!(
+        !project
+            .join("wp-content/mu-plugins/bedrock-disallow-indexing")
+            .exists()
+    );
 }

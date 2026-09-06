@@ -1,0 +1,35 @@
+{
+    "name": "vivace/fixture-wordpress",
+    "type": "project",
+    "require": {
+        "composer/installers": "^2.3",
+        "johnpbloch/wordpress-core": "1.5.0",
+        "johnpbloch/wordpress-core-installer": "^2.0",
+        "roots/soil": "^4.1",
+        "webdevstudios/wd_s": "^4.0"
+    },
+    "require-dev": {
+        "roots/bedrock-disallow-indexing": "^2.1"
+    },
+    "config": {
+        "allow-plugins": {
+            "composer/installers": true,
+            "johnpbloch/wordpress-core-installer": true
+        }
+    },
+    "extra": {
+        "wordpress-install-dir": "wordpress",
+        "installer-paths": {
+            "wp-content/mu-plugins/{$name}/": [
+                "type:wordpress-muplugin"
+            ],
+            "wp-content/themes/{$name}/": [
+                "type:wordpress-theme",
+                "vendor:webdevstudios"
+            ],
+            "wp-content/plugins/{$name}/": [
+                "type:wordpress-plugin"
+            ]
+        }
+    }
+}

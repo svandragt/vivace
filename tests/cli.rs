@@ -38,7 +38,7 @@ fn copy_monolog_sources(project: &Path) {
 }
 
 #[test]
-fn update_is_not_implemented() {
+fn update_without_a_composer_json_fails() {
     let ctx = TestContext::new();
     let mut cmd = ctx.viv();
     cmd.arg("update");
@@ -95,6 +95,61 @@ fn install_fails_when_a_requirement_is_missing_from_the_lock() {
 
     let mut cmd = ctx.viv();
     cmd.args(["install", "--dry-run", "--no-normalize"]);
+    viv_snapshot!(ctx, cmd);
+}
+
+/// A hand-made lock with one locked `composer-plugin` package that is
+/// neither a native adapter (`composer/installers`,
+/// `*-wordpress-core-installer`) nor known-inert, enabled via
+/// `config.allow-plugins`.
+fn write_unknown_plugin_lock(project: &Path) {
+    fs::write(
+        project.join("composer.json"),
+        r#"{
+            "name": "vivace/fixture-unknown-plugin",
+            "config": {
+                "allow-plugins": { "acme/mystery-plugin": true }
+            }
+        }"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("composer.lock"),
+        r#"{
+            "packages": [
+                {
+                    "name": "acme/mystery-plugin",
+                    "version": "1.0.0",
+                    "type": "composer-plugin",
+                    "dist": { "type": "zip", "url": "https://example.test/a.zip", "reference": "abc", "shasum": "" }
+                }
+            ],
+            "packages-dev": []
+        }"#,
+    )
+    .unwrap();
+}
+
+/// #51 rule 3: viv refuses to run a Composer plugin it has no native adapter
+/// or known-inert entry for, naming it and pointing at
+/// `docs/plugin-strategy.md`.
+#[test]
+fn install_refuses_an_unknown_enabled_composer_plugin() {
+    let ctx = TestContext::new();
+    write_unknown_plugin_lock(ctx.project.path());
+    let mut cmd = ctx.viv();
+    cmd.args(["install", "--dry-run"]);
+    viv_snapshot!(ctx, cmd);
+}
+
+/// `--no-plugins` downgrades the same refusal to a warning and installs
+/// under `vendor/` anyway, as Composer does with the same flag.
+#[test]
+fn install_no_plugins_downgrades_the_refusal_to_a_warning() {
+    let ctx = TestContext::new();
+    write_unknown_plugin_lock(ctx.project.path());
+    let mut cmd = ctx.viv();
+    cmd.args(["install", "--dry-run", "--no-plugins"]);
     viv_snapshot!(ctx, cmd);
 }
 

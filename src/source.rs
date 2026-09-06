@@ -247,6 +247,7 @@ mod tests {
             include_path: Vec::new(),
             dev: false,
             raw: serde_json::Value::Null,
+            install_dir: None,
         }
     }
 

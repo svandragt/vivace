@@ -43,8 +43,13 @@ impl Plan {
 /// name, `version`, `dist.reference` and dev flag; otherwise it is
 /// (re)installed. Installed entries without a locked counterpart are
 /// removed. No `installed.json` means a fresh install of everything.
-pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path) -> Result<Plan> {
-    let mut installed = read_installed(&vendor_dir.join("composer/installed.json"), vendor_dir)?;
+///
+/// `project_dir` bounds a package's `install-path`, not `vendor_dir`: a
+/// package a native adapter (`src/plugins.rs`) mapped outside `vendor/` (a
+/// `WordPress` plugin under `wp-content/plugins/`, say) still has to live
+/// somewhere sane, just not necessarily under `vendor/`.
+pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path, project_dir: &Path) -> Result<Plan> {
+    let mut installed = read_installed(&vendor_dir.join("composer/installed.json"), project_dir)?;
     let mut plan = Plan::default();
     for package in lock.packages(dev) {
         // A dist-less git-source package (#13) has no `dist.reference`;
@@ -89,7 +94,7 @@ pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path) -> Result<Plan> {
 /// `install-path` (metapackages) own no directory and are skipped.
 fn read_installed(
     path: &Path,
-    vendor_dir: &Path,
+    project_dir: &Path,
 ) -> Result<HashMap<String, (InstalledEntry, bool)>> {
     let content = match fs_err::read_to_string(path) {
         Ok(content) => content,
@@ -111,10 +116,10 @@ fn read_installed(
         let name = entry.name.to_lowercase();
         let dev = file.dev_package_names.contains(&name);
         let install_path = normalise(&composer_dir.join(install_path));
-        if !install_path.starts_with(vendor_dir) {
+        if !install_path.starts_with(project_dir) {
             anyhow::bail!(
                 "{name}: install-path escapes {} ({})",
-                vendor_dir.display(),
+                project_dir.display(),
                 install_path.display()
             );
         }
@@ -266,7 +271,7 @@ mod tests {
     fn missing_installed_json_installs_everything() {
         let vendor = tempfile::tempdir().unwrap();
         let lock = lock(&[("a/a", "r1", false), ("b/b", "r2", true)]);
-        let plan = plan(&lock, true, vendor.path()).unwrap();
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
         assert_eq!(names(&plan.install), ["a/a", "b/b"]);
         assert!(plan.keep.is_empty());
         assert!(plan.remove.is_empty());
@@ -284,7 +289,7 @@ mod tests {
             ],
         );
         let lock = lock(&[("a/a", "r1", false), ("b/b", "r2", true)]);
-        let plan = plan(&lock, true, vendor.path()).unwrap();
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
         assert_eq!(names(&plan.keep), ["a/a", "b/b"]);
         assert!(plan.install.is_empty());
         assert!(plan.remove.is_empty());
@@ -299,7 +304,7 @@ mod tests {
         let vendor = tempfile::tempdir().unwrap();
         write_installed_json(vendor.path(), &[("a/a", "r1", false, Some("../a/a"))]);
         let lock = lock(&[("a/a", "r1", false)]);
-        let plan = plan(&lock, true, vendor.path()).unwrap();
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
         assert_eq!(names(&plan.install), ["a/a"]);
         assert!(plan.keep.is_empty());
         assert!(plan.remove.is_empty());
@@ -310,7 +315,7 @@ mod tests {
         let vendor = tempfile::tempdir().unwrap();
         installed(vendor.path(), &[("a/a", "old", false, Some("../a/a"))]);
         let lock = lock(&[("a/a", "new", false)]);
-        let plan = plan(&lock, true, vendor.path()).unwrap();
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
         assert_eq!(names(&plan.install), ["a/a"]);
         assert!(plan.keep.is_empty());
         assert!(plan.remove.is_empty());
@@ -327,7 +332,7 @@ mod tests {
             ],
         );
         let lock = lock(&[("a/a", "r1", false)]);
-        let plan = plan(&lock, true, vendor.path()).unwrap();
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
         assert_eq!(names(&plan.keep), ["a/a"]);
         assert_eq!(
             plan.remove,
@@ -352,7 +357,7 @@ mod tests {
             ],
         );
         let lock = lock(&[("a/a", "r1", false), ("b/b", "r2", true)]);
-        let plan = plan(&lock, false, vendor.path()).unwrap();
+        let plan = plan(&lock, false, vendor.path(), vendor.path()).unwrap();
         assert_eq!(names(&plan.keep), ["a/a"]);
         assert!(plan.install.is_empty());
         assert_eq!(plan.remove.len(), 1);
@@ -364,7 +369,7 @@ mod tests {
         let vendor = tempfile::tempdir().unwrap();
         installed(vendor.path(), &[("a/a", "r1", true, Some("../a/a"))]);
         let lock = lock(&[("a/a", "r1", false)]);
-        let plan = plan(&lock, true, vendor.path()).unwrap();
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
         assert_eq!(names(&plan.install), ["a/a"]);
         assert!(plan.remove.is_empty(), "replaced in place, not removed");
     }
@@ -374,7 +379,7 @@ mod tests {
         let vendor = tempfile::tempdir().unwrap();
         installed(vendor.path(), &[("meta/meta", "r1", false, None)]);
         let lock = lock(&[]);
-        let plan = plan(&lock, true, vendor.path()).unwrap();
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
         assert!(plan.is_noop());
         assert!(plan.remove.is_empty());
     }
@@ -414,7 +419,7 @@ mod tests {
             packages: vec![package],
         };
 
-        let plan = plan(&lock, true, vendor.path()).unwrap();
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
         assert_eq!(names(&plan.install), ["a/a"]);
         assert!(plan.keep.is_empty());
     }
@@ -424,7 +429,9 @@ mod tests {
         let vendor = tempfile::tempdir().unwrap();
         installed(vendor.path(), &[("a/a", "r1", false, Some("../../../"))]);
         let lock = lock(&[("a/a", "r1", false)]);
-        let err = plan(&lock, true, vendor.path()).unwrap_err().to_string();
+        let err = plan(&lock, true, vendor.path(), vendor.path())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("a/a"), "error should name the entry: {err}");
     }
 
@@ -433,7 +440,7 @@ mod tests {
         let vendor = tempfile::tempdir().unwrap();
         installed(vendor.path(), &[("A/A", "r1", false, Some("../a/a"))]);
         let lock = lock(&[("a/a", "r1", false)]);
-        let plan = plan(&lock, true, vendor.path()).unwrap();
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
         assert_eq!(names(&plan.keep), ["a/a"]);
         assert!(plan.install.is_empty());
     }
