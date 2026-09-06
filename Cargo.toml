@@ -37,6 +37,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha1 = "0.11.0"
 sha2 = "0.11.0"
+tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -46,4 +47,3 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 assert_cmd = "2.2.2"
 insta = "1.48.0"
 predicates = "3.1.4"
-tempfile = "3.27.0"
