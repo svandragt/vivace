@@ -56,7 +56,16 @@ pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path) -> Result<Plan> {
                     && was_dev == package.dev
                     && entry.abandoned == abandoned =>
             {
-                plan.keep.push(package.clone());
+                // installed.json can agree with the lock while the package's
+                // own directory is gone (deleted by hand, a half-finished
+                // previous install): a metapackage owns no directory and is
+                // always kept on a match, everything else must still be on
+                // disk to be kept.
+                if package.r#type != "metapackage" && !entry.install_path.is_dir() {
+                    plan.install.push(package.clone());
+                } else {
+                    plan.keep.push(package.clone());
+                }
             }
             // A stale entry's dir is replaced by the install itself, so it
             // does not also go on the remove list.
@@ -185,7 +194,7 @@ mod tests {
     }
 
     /// Write an installed.json with `(name, reference, dev, install_path)` rows.
-    fn installed(vendor: &Path, entries: &[(&str, &str, bool, Option<&str>)]) {
+    fn write_installed_json(vendor: &Path, entries: &[(&str, &str, bool, Option<&str>)]) {
         let packages: Vec<_> = entries
             .iter()
             .map(|(name, reference, _, path)| {
@@ -213,6 +222,20 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    /// `write_installed_json` plus creating each entry's on-disk package dir,
+    /// so existing "keep" fixtures don't trip the must-exist check a keep
+    /// requires.
+    fn installed(vendor: &Path, entries: &[(&str, &str, bool, Option<&str>)]) {
+        write_installed_json(vendor, entries);
+        for (_, _, _, path) in entries {
+            if let Some(path) = path {
+                // Same resolution `read_installed` uses, so the dir this
+                // creates is the one `plan` will check for.
+                fs_err::create_dir_all(normalise(&vendor.join("composer").join(path))).unwrap();
+            }
+        }
     }
 
     fn names(packages: &[Package]) -> Vec<&str> {
@@ -246,6 +269,20 @@ mod tests {
         assert!(plan.install.is_empty());
         assert!(plan.remove.is_empty());
         assert!(plan.is_noop());
+    }
+
+    /// installed.json agreeing with the lock is not enough to keep a package
+    /// whose own directory is gone (deleted by hand, or a crash mid-install):
+    /// linking would then have nothing to hardlink from.
+    #[test]
+    fn keep_requires_the_install_dir_to_exist() {
+        let vendor = tempfile::tempdir().unwrap();
+        write_installed_json(vendor.path(), &[("a/a", "r1", false, Some("../a/a"))]);
+        let lock = lock(&[("a/a", "r1", false)]);
+        let plan = plan(&lock, true, vendor.path()).unwrap();
+        assert_eq!(names(&plan.install), ["a/a"]);
+        assert!(plan.keep.is_empty());
+        assert!(plan.remove.is_empty());
     }
 
     #[test]

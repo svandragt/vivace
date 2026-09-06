@@ -53,6 +53,9 @@ pub struct Fetcher {
     /// the cold-path gap to Riff was one slow hop repeated or something
     /// systemic.
     hop_timings: Mutex<HashMap<String, Vec<Duration>>>,
+    /// Composer's `config.secure-http` (default `true`): reject a plain
+    /// `http://` dist URL or redirect target rather than following it.
+    secure_http: bool,
 }
 
 impl Fetcher {
@@ -62,7 +65,17 @@ impl Fetcher {
             auth,
             backoff,
             hop_timings: Mutex::new(HashMap::new()),
+            secure_http: true,
         })
+    }
+
+    /// Composer's `config.secure-http`. install.rs wires this to the root
+    /// `composer.json`'s `config.secure-http` key; that wiring is not done
+    /// here.
+    #[must_use]
+    pub fn secure_http(mut self, secure_http: bool) -> Self {
+        self.secure_http = secure_http;
+        self
     }
 
     /// Log a per-host count/min/median/max of every hop timed since this
@@ -105,14 +118,16 @@ impl Fetcher {
     pub async fn fetch(&self, pkg: &Package) -> Result<Vec<u8>> {
         pkg.validate_dist()?;
         let dist = pkg.dist.as_ref().expect("validate_dist checked");
+        let url = Url::parse(&dist.url)
+            .with_context(|| format!("{}: invalid dist URL {}", pkg.name, dist.url))?;
         let started = std::time::Instant::now();
         // ponytail: the whole zip lives in memory at once (fine at
         // Composer's typical archive sizes); stream to a temp file if that
         // stops being true.
         let bytes = self
-            .get(&pkg.name, &dist.url)
+            .get(&pkg.name, url.clone())
             .await
-            .with_context(|| format!("{}: downloading {}", pkg.name, dist.url))?;
+            .with_context(|| format!("{}: downloading {}", pkg.name, redact(&url)))?;
         verify_shasum(&pkg.name, dist.shasum.as_deref().unwrap_or(""), &bytes)?;
         tracing::debug!(
             package = %pkg.name,
@@ -138,13 +153,13 @@ impl Fetcher {
     /// `GET start_url`, following redirects by hand so each hop gets the
     /// credential for *its* host rather than reusing (or losing) the first
     /// hop's.
-    async fn get(&self, pkg_name: &str, start_url: &str) -> Result<Vec<u8>> {
-        let mut url = Url::parse(start_url)
-            .with_context(|| format!("{pkg_name}: invalid dist URL {start_url}"))?;
+    async fn get(&self, pkg_name: &str, start_url: Url) -> Result<Vec<u8>> {
+        require_https(pkg_name, &start_url, self.secure_http)?;
+        let mut url = start_url;
         let mut hops = 0u8;
         loop {
             if redirect_budget_exhausted(hops) {
-                bail!("{pkg_name}: too many redirects fetching {start_url}");
+                bail!("{pkg_name}: too many redirects fetching {}", redact(&url));
             }
             hops += 1;
             let host = url.host_str().unwrap_or("").to_string();
@@ -169,6 +184,7 @@ impl Fetcher {
                     .context("redirect Location header is not valid UTF-8")?
                     .to_string();
                 url = redirect_target(&url, &location)?;
+                require_https(pkg_name, &url, self.secure_http)?;
                 continue;
             }
             let status = response.status();
@@ -179,7 +195,10 @@ impl Fetcher {
                     self.auth.header_for(&url).is_some(),
                 )
                 .unwrap_or_default();
-                anyhow::anyhow!("{err}{hint}")
+                // `err`'s own Display embeds the request URL verbatim
+                // (reqwest's `Error::fmt`); strip it so a URL with
+                // credentials never reaches this message unredacted.
+                anyhow::anyhow!("{} fetching {}{hint}", err.without_url(), redact(&url))
             })?;
             // Timed through the body read (not just headers), so this hop's
             // number is comparable to the redirect hop above and reflects
@@ -218,7 +237,12 @@ impl Fetcher {
                 Err(err) => (err.is_connect() || err.is_timeout()) && should_retry(Err(())),
             };
             if !retryable || attempt >= MAX_RETRIES {
-                return Ok(outcome?);
+                return outcome.map_err(|err| {
+                    // Same reasoning as the error_for_status case in `get`:
+                    // don't let reqwest's own URL-embedding Display leak a
+                    // credential here.
+                    anyhow::anyhow!("{} fetching {}", err.without_url(), redact(url))
+                });
             }
             attempt += 1;
             let delay = outcome
@@ -228,7 +252,7 @@ impl Fetcher {
                 .unwrap_or_else(|| (self.backoff)(attempt));
             tracing::debug!(
                 package = %pkg_name,
-                %url,
+                url = %redact(url),
                 attempt,
                 delay_ms = delay.as_millis(),
                 "retrying dist download"
@@ -244,6 +268,36 @@ fn redirect_target(current: &Url, location: &str) -> Result<Url> {
     current
         .join(location)
         .with_context(|| format!("invalid redirect Location {location:?}"))
+}
+
+/// Composer's `secure-http` check: reject a plain `http://` dist URL or
+/// redirect target unless the caller opted out (`config.secure-http: false`,
+/// wired to [`Fetcher::secure_http`]). A dist host redirecting to `http`
+/// would otherwise silently drop back to a channel a MITM can tamper with.
+fn require_https(pkg_name: &str, url: &Url, secure_http: bool) -> Result<()> {
+    if !secure_http || url.scheme() == "https" {
+        return Ok(());
+    }
+    bail!(
+        "{pkg_name}: refusing to fetch {} over {} (set config.secure-http to false to allow this)",
+        redact(url),
+        url.scheme()
+    );
+}
+
+/// `url` with any embedded HTTP Basic credentials masked, for error messages
+/// and log lines: a dist URL or a redirect target can carry
+/// `https://user:pass@host/...`, and this must never reach a log or an error
+/// unredacted.
+fn redact(url: &Url) -> String {
+    let mut redacted = url.clone();
+    if !redacted.username().is_empty() {
+        let _ = redacted.set_username("***");
+    }
+    if redacted.password().is_some() {
+        let _ = redacted.set_password(Some("***"));
+    }
+    redacted.to_string()
 }
 
 /// Whether `hops` redirects already reached `MAX_REDIRECTS`, kept as a pure
@@ -384,6 +438,54 @@ mod tests {
     fn redirect_target_rejects_invalid_location() {
         let current = reqwest::Url::parse("https://api.github.com/x").unwrap();
         assert!(redirect_target(&current, "http://exa mple.com/y").is_err());
+    }
+
+    #[test]
+    fn require_https_rejects_http() {
+        let url = reqwest::Url::parse("http://example.test/a.zip").unwrap();
+        let err = require_https("acme/pkg", &url, true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("acme/pkg"), "{err}");
+        assert!(err.contains("config.secure-http"), "{err}");
+    }
+
+    #[test]
+    fn require_https_accepts_https() {
+        let url = reqwest::Url::parse("https://example.test/a.zip").unwrap();
+        require_https("acme/pkg", &url, true).unwrap();
+    }
+
+    #[test]
+    fn require_https_disabled_allows_http() {
+        let url = reqwest::Url::parse("http://example.test/a.zip").unwrap();
+        require_https("acme/pkg", &url, false).unwrap();
+    }
+
+    #[test]
+    fn redirect_to_http_is_rejected() {
+        // Pure function on the Location target: no live server involved.
+        let current = reqwest::Url::parse("https://example.test/a.zip").unwrap();
+        let target = redirect_target(&current, "http://example.test/legacy.zip").unwrap();
+        assert!(require_https("acme/pkg", &target, true).is_err());
+    }
+
+    #[test]
+    fn redact_masks_username_and_password() {
+        let url = reqwest::Url::parse("https://user:pass@example.test/a.zip").unwrap();
+        assert_eq!(redact(&url), "https://***:***@example.test/a.zip");
+    }
+
+    #[test]
+    fn redact_masks_password_only_username() {
+        let url = reqwest::Url::parse("https://tok@example.test/a.zip").unwrap();
+        assert_eq!(redact(&url), "https://***@example.test/a.zip");
+    }
+
+    #[test]
+    fn redact_is_a_no_op_without_credentials() {
+        let url = reqwest::Url::parse("https://example.test/a.zip?x=1").unwrap();
+        assert_eq!(redact(&url), "https://example.test/a.zip?x=1");
     }
 
     #[test]

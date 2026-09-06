@@ -2,10 +2,13 @@
 //!
 //! Layout under the store root (borrowed from uv's versioned cache buckets):
 //!
-//! - `archive-v0/<sha256 of the archive bytes>/` holds an extracted tree.
+//! - `archive-v0/<sha256 of the archive bytes>/` holds an extracted tree, and
+//!   `archive-v0/<sha256>.ok` (a sibling of the dir, not inside it, so `link`
+//!   never has to skip it) is written only once extraction finishes: a dir
+//!   with no marker is incomplete (crash mid-extraction, or mid-rename) and
+//!   `lookup`/`add_archive` treat it as if the dir were missing.
 //! - `dists-v0/<vendor>/<name>/<reference>` is a relative symlink to one of
-//!   those trees. A pointer that resolves means "extracted"; there are no
-//!   marker files.
+//!   those trees.
 //! - `.lock` carries a process-lifetime shared advisory lock so `prune` (which
 //!   takes it exclusively) never deletes under a running install.
 //!
@@ -83,12 +86,13 @@ impl Store {
         ))
     }
 
-    /// The archive dir a package's dist pointer resolves to, if any.
+    /// The archive dir a package's dist pointer resolves to, if any. `None`
+    /// when the dir is missing *or* incomplete (no `.ok` marker next to it).
     pub fn lookup(&self, pkg: &Package) -> Option<PathBuf> {
         let pointer = self.pointer(pkg).ok().flatten()?;
         let target = fs_err::read_link(pointer).ok()?;
         let dir = self.archive_dir().join(target.file_name()?);
-        dir.is_dir().then_some(dir)
+        (dir.is_dir() && archive_marker(&dir).is_file()).then_some(dir)
     }
 
     /// Thin wrapper kept for callers written before tar dists ([#8]); dispatch
@@ -119,8 +123,9 @@ impl Store {
         );
         let archive_dir = self.archive_dir();
         let dest = archive_dir.join(&id);
+        let marker = archive_marker(&dest);
 
-        if !dest.is_dir() {
+        if !dest.is_dir() || !marker.is_file() {
             fs_err::create_dir_all(&archive_dir)?;
             let temp = tempfile::tempdir_in(&archive_dir)?;
             let extract_started = std::time::Instant::now();
@@ -131,7 +136,21 @@ impl Store {
                 elapsed_ms = extract_started.elapsed().as_millis(),
                 "extracted dist"
             );
+            let manifest = archive_manifest(temp.path())?;
             let temp = temp.keep();
+
+            // A dir already at `dest` here has no marker: it's incomplete
+            // (an earlier extraction crashed, or lost a race, between its
+            // own rename and marker write). Swap it aside first so the
+            // rename below lands on an empty target — the same crash-safety
+            // shape `link::link_tree` uses for `vendor/`.
+            let aside = if dest.is_dir() {
+                let slot = archive_dir.join(format!(".stale-{id}"));
+                fs_err::rename(&dest, &slot)?;
+                Some(slot)
+            } else {
+                None
+            };
             if let Err(err) = fs_err::rename(&temp, &dest) {
                 if dest.is_dir() {
                     // Another process finished the same archive first:
@@ -142,6 +161,10 @@ impl Store {
                     return Err(err.into());
                 }
             }
+            if let Some(aside) = aside {
+                fs_err::remove_dir_all(aside)?;
+            }
+            write_marker(&marker, &manifest)?;
         }
 
         let parent = pointer
@@ -194,14 +217,23 @@ impl Store {
                 fs_err::remove_file(entry.path())?;
             }
         }
-        // Stray `.tmp*` dirs from an add_zip that never reached its rename
-        // (crash, or a losing race with another process on the same archive).
+        // Stray `.tmp*`/`.stale-*` dirs from an add_zip that never reached
+        // its final rename (crash, or a losing race with another process on
+        // the same archive), and `.ok` markers whose dir is gone (removed by
+        // hand, or a prune that got as far as the dir but not the marker):
+        // a marker with no dir would wrongly claim completeness if a dir of
+        // the same id ever reappeared without going through `add_archive`.
         let archive_dir = self.archive_dir();
         if archive_dir.is_dir() {
             for entry in fs_err::read_dir(&archive_dir)? {
                 let entry = entry?;
-                if entry.file_name().to_string_lossy().starts_with(".tmp") {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(".tmp") || name.starts_with(".stale-") {
                     fs_err::remove_dir_all(entry.path())?;
+                } else if let Some(id) = name.strip_suffix(".ok")
+                    && !archive_dir.join(id).is_dir()
+                {
+                    fs_err::remove_file(entry.path())?;
                 }
             }
         }
@@ -229,6 +261,54 @@ fn sanitise_path_component(kind: &str, value: &str) -> Result<()> {
         bail!("{kind} {value:?} contains a `..` component");
     }
     Ok(())
+}
+
+/// The `.ok` marker path for an archive dir: a sibling file, not an entry
+/// inside the dir, so `link::link_tree` never has to know it exists.
+fn archive_marker(dir: &Path) -> PathBuf {
+    dir.with_extension("ok")
+}
+
+/// Write `manifest` into `marker` via a temp file in the same directory, then
+/// rename it into place, so a reader never observes a partially written
+/// marker.
+fn write_marker(marker: &Path, manifest: &str) -> Result<()> {
+    use std::io::Write;
+    let parent = marker
+        .parent()
+        .expect("marker is nested under the archive dir");
+    let mut temp = tempfile::Builder::new()
+        .prefix(".tmp-ok-")
+        .tempfile_in(parent)?;
+    temp.write_all(manifest.as_bytes())?;
+    temp.persist(marker)?;
+    Ok(())
+}
+
+/// A one-line `files=<count> bytes=<total>` summary of everything under
+/// `dir`, written into the `.ok` marker: a truncated extraction (crash
+/// mid-copy) leaves a dir with no marker at all, rather than a marker that
+/// might itself be checked against the wrong count.
+fn archive_manifest(dir: &Path) -> Result<String> {
+    let (files, bytes) = count_tree(dir)?;
+    Ok(format!("files={files} bytes={bytes}\n"))
+}
+
+fn count_tree(dir: &Path) -> Result<(u64, u64)> {
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    for entry in fs_err::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            let (nested_files, nested_bytes) = count_tree(&entry.path())?;
+            files += nested_files;
+            bytes += nested_bytes;
+        } else {
+            files += 1;
+            bytes += entry.metadata()?.len();
+        }
+    }
+    Ok((files, bytes))
 }
 
 /// Lowercase hex of a digest.
@@ -571,11 +651,12 @@ mod tests {
         let first = store.add_zip(&package("acme/pkg", "ref1"), &zip).unwrap();
         let second = store.add_zip(&package("acme/pkg", "ref2"), &zip).unwrap();
         assert_eq!(first, second);
+        // One archive dir plus its `.ok` marker, not two archives.
         assert_eq!(
             fs_err::read_dir(root.path().join("archive-v0"))
                 .unwrap()
                 .count(),
-            1
+            2
         );
         assert!(root.path().join("dists-v0/acme/pkg/ref1").exists());
         assert!(root.path().join("dists-v0/acme/pkg/ref2").exists());
@@ -589,6 +670,37 @@ mod tests {
         assert_eq!(store.lookup(&pkg), None);
         let dir = store.add_zip(&pkg, &zip_of(&[("f", b"1", None)])).unwrap();
         assert_eq!(store.lookup(&pkg), Some(dir));
+    }
+
+    #[test]
+    fn lookup_without_marker_is_none() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let pkg = package("acme/pkg", "abc");
+        let dir = store.add_zip(&pkg, &zip_of(&[("f", b"1", None)])).unwrap();
+        fs_err::remove_file(archive_marker(&dir)).unwrap();
+        assert_eq!(store.lookup(&pkg), None);
+        assert!(dir.is_dir(), "the dir itself is untouched, only unmarked");
+    }
+
+    #[test]
+    fn add_archive_reextracts_a_stale_dir_missing_its_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let pkg = package("acme/pkg", "abc");
+        let zip = zip_of(&[("f", b"1", None)]);
+        let dir = store.add_zip(&pkg, &zip).unwrap();
+        // Simulate a truncated extraction: extra junk in the dir, no marker.
+        fs_err::write(dir.join("stray"), "junk").unwrap();
+        fs_err::remove_file(archive_marker(&dir)).unwrap();
+
+        let dir2 = store.add_zip(&pkg, &zip).unwrap();
+        assert_eq!(dir, dir2);
+        assert!(
+            !dir2.join("stray").exists(),
+            "a stale dir should be replaced by re-extraction, not reused"
+        );
+        assert!(archive_marker(&dir2).is_file());
     }
 
     #[test]
@@ -662,12 +774,27 @@ mod tests {
         fs_err::create_dir(root.path().join("archive-v0/.tmpstray")).unwrap();
         store.prune().unwrap();
         assert!(!root.path().join("archive-v0/.tmpstray").exists());
+        // The one real archive dir plus its `.ok` marker survive.
         assert_eq!(
             fs_err::read_dir(root.path().join("archive-v0"))
                 .unwrap()
                 .count(),
-            1
+            2
         );
+    }
+
+    #[test]
+    fn prune_removes_orphan_markers() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let dir = store
+            .add_zip(&package("acme/pkg", "abc"), &zip_of(&[("f", b"1", None)]))
+            .unwrap();
+        let orphan = root.path().join("archive-v0/deadbeef.ok");
+        fs_err::write(&orphan, "files=0 bytes=0\n").unwrap();
+        store.prune().unwrap();
+        assert!(!orphan.exists());
+        assert!(archive_marker(&dir).is_file(), "the real marker survives");
     }
 
     #[test]
