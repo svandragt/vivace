@@ -285,10 +285,22 @@ impl Fetcher {
         url: &Url,
         extra_headers: &[(HeaderName, HeaderValue)],
     ) -> Result<reqwest::Response> {
+        // Best-effort: a failed exchange (bad consumer key/secret, network
+        // hiccup) leaves the bitbucket-oauth cache empty rather than failing
+        // the whole fetch here; `header_for` then sends no Authorization
+        // header, and `credential_hint` on the resulting 401/403 covers it.
+        if let Some(host) = url.host_str()
+            && let Err(err) = self.auth.ensure_bitbucket_token(host).await
+        {
+            tracing::debug!(host, error = %err, "bitbucket OAuth token exchange failed");
+        }
         let mut attempt = 0u32;
         loop {
             let mut request = self.client.get(url.clone());
             if let Some((name, value)) = self.auth.header_for(url) {
+                request = request.header(name, value);
+            }
+            for (name, value) in self.auth.custom_headers_for(url) {
                 request = request.header(name, value);
             }
             for (name, value) in extra_headers {
