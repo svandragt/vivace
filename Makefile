@@ -17,6 +17,8 @@ check:
 	devbox run -- cargo clippy --all-targets -- -D warnings
 	devbox run -- cargo nextest run
 	devbox run -- cargo deny check
+	devbox run -- cargo machete
+	devbox run -- env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
 bench:
 	devbox run -- bench/run.sh bench/laravel composer riff viv

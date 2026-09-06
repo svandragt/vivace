@@ -20,6 +20,8 @@ jobs:
         env:
           VIVACE_TEST_NETWORK: "1"
       - run: devbox run -- cargo deny check
+      - run: devbox run -- cargo machete
+      - run: devbox run -- env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
   # macOS is a supported platform; this job blocks like the Linux one.
   check-macos:
@@ -36,6 +38,8 @@ jobs:
         env:
           VIVACE_TEST_NETWORK: "1"
       - run: devbox run -- cargo deny check
+      - run: devbox run -- cargo machete
+      - run: devbox run -- env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
   bench:
     needs: check

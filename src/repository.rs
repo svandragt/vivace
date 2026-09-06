@@ -350,7 +350,7 @@ impl<T: Transport> Repository<T> {
             .join(format!("provider-{}.json", file_name.replace('/', "$")))
     }
 
-    /// Breadth-first metadata load, batching [`LOAD_BATCH_SIZE`] concurrent
+    /// Breadth-first metadata load, batching `LOAD_BATCH_SIZE` concurrent
     /// fetches per wave (`PoolBuilder::LOAD_BATCH_SIZE`). Discovers further
     /// names from each loaded version's `require` only; platform packages
     /// are never queued (`PlatformRepository::isPlatformPackage`).
