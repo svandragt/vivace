@@ -36,6 +36,16 @@ fn wpackagist_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wpackagist/wpackagist.org")
 }
 
+// #119: bedrock's actual wpackagist mirror is `repo.wp-packages.org`, a v2
+// (`metadata-url`) repository, unlike the classic `providers-url` protocol
+// `wpackagist.org` itself still serves (`wpackagist_root`, whose
+// provider-includes listing already gates per-name requests for free). Its
+// root `packages.json` carries `available-package-patterns` (verified
+// against the live file as of 2026-09-07: `["wp-plugin/*", "wp-theme/*"]`).
+fn available_patterns_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wpackagist/hand/available-patterns")
+}
+
 fn scoped_constraints_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packagist/hand/scoped-constraints")
 }
@@ -456,6 +466,50 @@ async fn v1_provider_file_object_keyed_by_version_label() {
     assert_eq!(versions.len(), 2, "{versions_summary:?}");
     assert!(versions_summary.contains(&"2.2.5"));
     assert!(versions_summary.contains(&"2.2.6"));
+}
+
+// #119: a `metadata-url` source whose root `packages.json` declares
+// `available-package-patterns` must never be asked (a `/p2/%package%.json`
+// request) about a name outside those patterns; a name inside one still
+// resolves normally.
+#[tokio::test]
+async fn available_package_patterns_skip_names_outside_the_patterns() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport::with_roots([
+        (
+            "wp-available-patterns".to_string(),
+            available_patterns_root(),
+        ),
+        ("repo.packagist.org".to_string(), fixtures_root()),
+    ]);
+    let root = json!({
+        "repositories": [
+            {"type": "composer", "url": "https://wp-available-patterns"},
+        ],
+    });
+    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let monolog = repo
+        .load_package("monolog/monolog", DevAcceptance::NonDevOnly)
+        .await
+        .unwrap();
+    assert!(!monolog.is_empty(), "still resolves from packagist.org");
+    assert!(
+        !transport
+            .calls()
+            .iter()
+            .any(|url| url.contains("wp-available-patterns") && url.contains("monolog")),
+        "{:?}",
+        transport.calls()
+    );
+
+    let plugin = repo
+        .load_package("wp-plugin/example", DevAcceptance::NonDevOnly)
+        .await
+        .unwrap();
+    assert_eq!(plugin.len(), 1, "{plugin:?}");
 }
 
 #[tokio::test]

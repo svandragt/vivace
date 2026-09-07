@@ -9,14 +9,13 @@
 //! Composer's own disk format. No solving: `docs/resolver-design.md`'s
 //! stage 2, the pool builder's metadata loader.
 //!
-//! Skipped, with a clear error where it matters: `available-packages` and
-//! `available-package-patterns` are ignored outright (an optimisation, not
-//! a correctness concern), `providers-api`, `security-advisories`, and
-//! `path`/`artifact` repositories are not supported (a repository whose
-//! `type` isn't `"composer"`, `"vcs"`, `"git"` or `"github"` is rejected; a
-//! `"composer"` repository missing every provider mechanism below is
-//! treated as empty rather than erroring, matching `whatProvides`'s own
-//! `return []`). `"vcs"`/`"git"`/`"github"` repositories are handled by
+//! Skipped, with a clear error where it matters: `providers-api`,
+//! `security-advisories`, and `path`/`artifact` repositories are not
+//! supported (a repository whose `type` isn't `"composer"`, `"vcs"`, `"git"`
+//! or `"github"` is rejected; a `"composer"` repository missing every
+//! provider mechanism below is treated as empty rather than erroring,
+//! matching `whatProvides`'s own `return []`).
+//! `"vcs"`/`"git"`/`"github"` repositories are handled by
 //! [`crate::vcs`] (`VcsRepository`/`Vcs\GitDriver`/`Vcs\GitHubDriver`);
 //! every other VCS driver (GitLab, Bitbucket, Forgejo, Mercurial,
 //! Perforce, Fossil, SVN) is not supported.
@@ -322,6 +321,73 @@ fn names_to_regex(names: &[String]) -> Result<Regex> {
     Regex::new(&format!("(?i)^(?:{alternation})$")).context("building an only/exclude pattern")
 }
 
+/// `ComposerRepository::$hasAvailablePackageList`/`$availablePackages`/
+/// `$availablePackagePatterns` (#119): a v2 (`metadata-url`) source's root
+/// `packages.json` can name (`available-packages`) or glob-match
+/// (`available-package-patterns`, compiled the same way `only`/`exclude` are
+/// — `names_to_regex` doubles as `BasePackage::packageNameToRegexp` here)
+/// every package it can possibly answer for; a name outside both is never
+/// even asked about (`findPackage`/`findPackages`'s own
+/// `lazyProvidersRepoContains` short-circuit,
+/// `ComposerRepository.php:281-283`/`326-328`), so `wpackagist`'s real
+/// mirror (`repo.wp-packages.org`, `available-package-patterns:
+/// ["wp-plugin/*", "wp-theme/*"]`) never costs a `/p2/%package%.json`
+/// request for a non-WordPress name. Only parsed for the `metadata-url`
+/// protocol (`ComposerRepository.php:1499-1531`): the older
+/// `providers-lazy-url`-only branch never sets `hasAvailablePackageList`,
+/// and classic `providers-url` doesn't need this at all — its
+/// `provider-includes` listing already gates a per-name miss for free
+/// (`Provider::Providers`'s `listing.get`).
+struct AvailablePackages {
+    /// Lowercased verbatim names (`available-packages`).
+    names: HashSet<String>,
+    patterns: Option<Regex>,
+}
+
+impl AvailablePackages {
+    /// `None` when `root` declares neither key (a source with no available
+    /// list behaves as today: every name is worth asking about).
+    fn parse(root: &Value) -> Result<Option<AvailablePackages>> {
+        // `!empty($data[...])`: absent, `null`, or an empty array are all
+        // "not provided", matching every other falsy-array PHP root field
+        // this crate already treats the same way (`notify-batch`, `search`).
+        let string_list = |key: &str| -> Result<Option<Vec<String>>> {
+            match root.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::Array(items)) if items.is_empty() => Ok(None),
+                Some(Value::Array(items)) => Ok(Some(
+                    items
+                        .iter()
+                        .map(|v| {
+                            v.as_str()
+                                .map(str::to_string)
+                                .with_context(|| format!("{key:?} entries must be strings"))
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                )),
+                Some(_) => bail!("{key:?} must be an array of package names"),
+            }
+        };
+        let names = string_list("available-packages")?;
+        let patterns = string_list("available-package-patterns")?;
+        if names.is_none() && patterns.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(AvailablePackages {
+            names: names
+                .unwrap_or_default()
+                .into_iter()
+                .map(|n| n.to_ascii_lowercase())
+                .collect(),
+            patterns: patterns.as_deref().map(names_to_regex).transpose()?,
+        }))
+    }
+
+    fn allows(&self, name: &str) -> bool {
+        self.names.contains(name) || self.patterns.as_ref().is_some_and(|p| p.is_match(name))
+    }
+}
+
 /// A source's provider-lookup strategy, decided once from `packages.json`'s
 /// root fields (`ComposerRepository::loadRootServerFile`'s priority: v2's
 /// `metadata-url` wins outright; else v1's `providers-url` (with a
@@ -361,6 +427,9 @@ struct ComposerSource {
     /// source loads without its own `notification-url` gets this one
     /// (`ComposerRepository.php:1709-1710`).
     notify_url: Option<String>,
+    /// `available-packages`/`available-package-patterns` (#119), parsed only
+    /// for the `metadata-url` protocol ([`AvailablePackages`]'s own doc).
+    available: Option<AvailablePackages>,
     cache_dir: PathBuf,
 }
 
@@ -404,8 +473,14 @@ impl ComposerSource {
         let requests = AtomicUsize::new(0);
         let requests = &requests;
 
+        // `available-packages`/`available-package-patterns` only take effect
+        // for the `metadata-url` protocol (`AvailablePackages`'s own doc
+        // comment); parsed here, alongside the branch that reads
+        // `metadata-url` itself, rather than unconditionally below.
+        let mut available = None;
         let provider = if let Some(metadata_url) = root.get("metadata-url").and_then(Value::as_str)
         {
+            available = AvailablePackages::parse(&root)?;
             Provider::Lazy {
                 metadata_url: metadata_url.to_string(),
             }
@@ -458,8 +533,17 @@ impl ComposerSource {
             provider,
             inline_packages,
             notify_url,
+            available,
             cache_dir,
         })
+    }
+
+    /// `ComposerRepository::lazyProvidersRepoContains`: `true` when this
+    /// source has no `available-packages`/`available-package-patterns` list
+    /// at all (every name is worth asking about, today's behaviour), or when
+    /// `name` is on/matches the one it does have.
+    fn allows(&self, name: &str) -> bool {
+        self.available.as_ref().is_none_or(|a| a.allows(name))
     }
 
     /// This source's versions for `name` (already lowercased), applying its
@@ -601,6 +685,22 @@ impl Source {
             filters: entry.filters,
             kind,
         })
+    }
+
+    /// Whether this source is worth asking about `name` (already lowercased)
+    /// at all: `only`/`exclude` (`RepoFilters`), layered with a `"composer"`
+    /// source's own `available-packages`/`available-package-patterns`
+    /// (`ComposerSource::allows`, #119). A VCS source has neither of the
+    /// latter — it's always worth asking, since it only ever holds the one
+    /// package it was configured for.
+    fn allows(&self, name: &str) -> bool {
+        if !self.filters.allows(name) {
+            return false;
+        }
+        match &self.kind {
+            SourceKind::Composer(source) => source.allows(name),
+            SourceKind::Vcs(_) => true,
+        }
     }
 
     /// This source's versions for `name` (already lowercased); `dev` only
@@ -989,7 +1089,7 @@ impl<T: Transport> Repository<T> {
         }
         let mut versions = Vec::new();
         for source in &self.sources {
-            if !source.filters.allows(&key) {
+            if !source.allows(&key) {
                 continue;
             }
             let found = source
