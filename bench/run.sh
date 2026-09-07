@@ -54,12 +54,19 @@ cache_for() {
 for tool in $tools; do
   dir="$work/$tool"; rm -rf "$dir"; mkdir -p "$dir"
   cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"
-  cmd="cd $dir && cp $proj/composer.lock . && export $(env_for "$tool") && $(cmd_for "$tool") >/dev/null 2>&1"
+  log="$out/$tool-cold.log"; : >"$log"
+  cmd="cd $dir && cp $proj/composer.lock . && export $(env_for "$tool") && $(cmd_for "$tool") >>$log 2>&1"
   cache=$(cache_for "$tool")
+  rc=0
   hyperfine --warmup 0 --runs "$runs" --export-json "$out/$tool.json" \
     --command-name "$tool cold" --prepare "rm -rf $dir/vendor $cache" "$cmd" \
     --command-name "$tool warm" --prepare "rm -rf $dir/vendor" "$cmd" \
-    --command-name "$tool noop" --prepare "true" "$cmd"
+    --command-name "$tool noop" --prepare "true" "$cmd" || rc=$?
+  if [ "${rc:-0}" -ne 0 ]; then
+    echo "run.sh: $tool install failed:" >&2
+    tail -20 "$log" >&2
+    exit "$rc"
+  fi
 done
 
 update_cmd_for() {
@@ -83,8 +90,12 @@ for tool in $tools; do
   esac
   dir="$work/$tool-update"; rm -rf "$dir"; mkdir -p "$dir"
   cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"
-  cmd="cd $dir && cp $proj/composer.json $proj/composer.lock . && export $(env_for "$tool") && $(update_cmd_for "$tool") >/dev/null 2>&1"
-  hyperfine --warmup 1 --runs "$runs" --export-json "$out/$tool-update.json" \
-    --command-name "$tool update-warm" "$cmd" \
-    || echo "warning: $tool update-warm failed, skipping (see bench/results/README.md)" >&2
+  log="$out/$tool-update.log"; : >"$log"
+  cmd="cd $dir && cp $proj/composer.json $proj/composer.lock . && export $(env_for "$tool") && $(update_cmd_for "$tool") >>$log 2>&1"
+  if ! hyperfine --warmup 1 --runs "$runs" --export-json "$out/$tool-update.json" \
+    --command-name "$tool update-warm" "$cmd"; then
+    echo "run.sh: $tool update-warm failed:" >&2
+    tail -20 "$log" >&2
+    echo "warning: $tool update-warm failed, skipping (see bench/results/README.md)" >&2
+  fi
 done

@@ -7,3 +7,4 @@
 !/tests/fixtures/wordpress/**
 /dist
 /compat/results/*-logs/
+bench/results/*.log
