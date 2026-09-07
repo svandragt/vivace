@@ -620,3 +620,25 @@ the "after". The corpus benchmark (#106) still needs a quiet machine.
 
 Full suite under devbox at the end of the session: 562 passed, 6 network
 tests skipped. 0.6 stays open on #88, #90, #91 and #106.
+
+**Addendum, same evening.** Porting Composer's constraint-filtered
+discovery closed the gap: the closure walk now tracks the union of
+constraints per name, loads only versions that satisfy it, and queues only
+those versions' requires. bench/laravel: 108 metadata requests instead of
+251 (Composer's own count), pool 615 packages instead of 5169, optimiser
+613 ms to 19 ms, warm update 3.42 s to 1.19 s, lock byte-identical. A
+quiet-machine run of all three tools puts viv ahead of Composer on every
+Laravel column, update-warm 1.12 s against 1.23 s; riff keeps cold by half
+a second. #90 and #91 closed.
+
+The corpus run tells a less tidy story: viv wins warm and no-op on every
+project, but update-warm trails Composer on laravel/laravel at HEAD and on
+symfony/demo, is n/a on three projects for reasons the script lost when
+it aborted on yii2-app-basic, and cold is mixed against riff. #106 stays
+open with those two follow-ups; #88's release criterion against Composer
+is met on bench/laravel.
+
+Also today: a question about composer-patches and shared hardlinks. The
+adapter relinks the patched package as a copy through `link_tree`'s
+temp-directory swap, so the store is never written through; a regression
+test asserting that is parked.
