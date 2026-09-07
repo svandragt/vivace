@@ -36,6 +36,7 @@ use crate::solver::policy::DefaultPolicy;
 use crate::solver::pool::{Link, Package, Pool};
 use crate::solver::pool_optimizer;
 use crate::solver::request::Request;
+use crate::solver::{ConstraintCache, parse_constraint_cached};
 
 /// `BasePackage::STABILITIES` order, least to most stable... actually most
 /// stable first, matching `stability_rank`'s ascending "more stable = lower
@@ -122,6 +123,7 @@ pub async fn build<T: Transport>(
     let mut packages = platform_packages(&platform_overrides)?;
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
+    let mut constraint_cache: ConstraintCache = ConstraintCache::new();
     for versions in closure.values() {
         for version in versions {
             push_package_version(
@@ -130,6 +132,7 @@ pub async fn build<T: Transport>(
                 &acceptable,
                 &stability_flags,
                 &root_aliases,
+                &mut constraint_cache,
             )?;
         }
     }
@@ -140,7 +143,7 @@ pub async fn build<T: Transport>(
         fixed,
     };
     let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
-    let optimized = pool_optimizer::optimize(&request, pool, &policy)?;
+    let optimized = pool_optimizer::optimize(&request, pool, &policy, &mut constraint_cache)?;
     // `optimize` only borrows `request`; `requires` is still ours to move
     // into the final, remapped `Request` (`fixed` alone changes, `optimize`
     // reindexes it to match the pruned pool).
@@ -338,9 +341,10 @@ pub async fn build_partial<T: Transport>(
     let mut packages = platform_packages(&platform_overrides)?;
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
+    let mut constraint_cache: ConstraintCache = ConstraintCache::new();
     for name in &skip {
         if let Some(entry) = locked_by_name.get(name) {
-            packages.push(package_from_lock_entry(entry)?);
+            packages.push(package_from_lock_entry(entry, &mut constraint_cache)?);
         }
     }
 
@@ -352,6 +356,7 @@ pub async fn build_partial<T: Transport>(
                 &acceptable,
                 &stability_flags,
                 &root_aliases,
+                &mut constraint_cache,
             )?;
         }
     }
@@ -362,7 +367,7 @@ pub async fn build_partial<T: Transport>(
         fixed,
     };
     let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
-    let optimized = pool_optimizer::optimize(&request, pool, &policy)?;
+    let optimized = pool_optimizer::optimize(&request, pool, &policy, &mut constraint_cache)?;
     let Request { requires, .. } = request;
 
     Ok(BuildResult {
@@ -389,7 +394,7 @@ pub async fn build_partial<T: Transport>(
 /// two extra cases): a lock entry that is itself a branch alias already
 /// carries that alias's own version/requires, and nothing in a partial
 /// update looks up a *further* alias of a package it isn't refetching.
-fn package_from_lock_entry(entry: &Value) -> Result<Package> {
+fn package_from_lock_entry(entry: &Value, cache: &mut ConstraintCache) -> Result<Package> {
     let obj = entry
         .as_object()
         .context("lock package entry is not an object")?;
@@ -407,10 +412,10 @@ fn package_from_lock_entry(entry: &Value) -> Result<Package> {
     let stability = semver::stability(version.as_str());
     let is_dev = stability == "dev";
 
-    let requires = parse_links(&map_field(obj, "require"), &name, &pretty_version)?;
-    let conflicts = parse_links(&map_field(obj, "conflict"), &name, &pretty_version)?;
-    let provides = parse_links(&map_field(obj, "provide"), &name, &pretty_version)?;
-    let replaces = parse_links(&map_field(obj, "replace"), &name, &pretty_version)?;
+    let requires = parse_links(&map_field(obj, "require"), &name, &pretty_version, cache)?;
+    let conflicts = parse_links(&map_field(obj, "conflict"), &name, &pretty_version, cache)?;
+    let provides = parse_links(&map_field(obj, "provide"), &name, &pretty_version, cache)?;
+    let replaces = parse_links(&map_field(obj, "replace"), &name, &pretty_version, cache)?;
 
     Ok(Package {
         name,
@@ -632,25 +637,17 @@ fn pretty_alias(normalized: &str) -> String {
     NINES.replace(normalized, ".x").into_owned()
 }
 
-/// `Link` holds a parsed `Constraint`, which is not `Clone` (`semver.rs`'s
-/// facade wraps a `Box<dyn Constraint>`), so an alias's copy of the
-/// aliased package's links (`AliasPackage`'s constructor copies
-/// `getRequires`/`getConflicts`/`getProvides`/`getReplaces` verbatim) is
-/// rebuilt by reparsing each link's own pretty constraint text rather than
-/// cloned; deterministic, since the text already parsed successfully once.
-fn clone_links(links: &[Link]) -> Result<Vec<Link>> {
+/// An alias's copy of the aliased package's links (`AliasPackage`'s
+/// constructor copies `getRequires`/`getConflicts`/`getProvides`/
+/// `getReplaces` verbatim): `Link::constraint`'s `Arc` (`solver::
+/// ConstraintCache`) makes this a pointer clone rather than a reparse.
+fn clone_links(links: &[Link]) -> Vec<Link> {
     links
         .iter()
-        .map(|link| {
-            Ok(Link {
-                target: link.target.clone(),
-                constraint: link
-                    .pretty_constraint
-                    .as_deref()
-                    .map(semver::parse_constraint)
-                    .transpose()?,
-                pretty_constraint: link.pretty_constraint.clone(),
-            })
+        .map(|link| Link {
+            target: link.target.clone(),
+            constraint: link.constraint.clone(),
+            pretty_constraint: link.pretty_constraint.clone(),
         })
         .collect()
 }
@@ -664,28 +661,29 @@ fn clone_links(links: &[Link]) -> Result<Vec<Link>> {
 /// second solve's repository never carries `AliasPackage` entries either
 /// (`LockTransaction::getNewLockPackages` skips them before `$resultRepo` is
 /// built), so this is only ever called on a non-alias package.
-pub(crate) fn clone_package(package: &Package) -> Result<Package> {
-    Ok(Package {
+pub(crate) fn clone_package(package: &Package) -> Package {
+    Package {
         name: package.name.clone(),
         version: package.version.clone(),
         pretty_version: package.pretty_version.clone(),
         stability: package.stability,
         is_dev: package.is_dev,
-        requires: clone_links(&package.requires)?,
-        conflicts: clone_links(&package.conflicts)?,
-        provides: clone_links(&package.provides)?,
-        replaces: clone_links(&package.replaces)?,
+        requires: clone_links(&package.requires),
+        conflicts: clone_links(&package.conflicts),
+        provides: clone_links(&package.provides),
+        replaces: clone_links(&package.replaces),
         alias_of: None,
         is_root_package_alias: false,
         has_self_version_requires: package.has_self_version_requires,
         raw: package.raw.clone(),
-    })
+    }
 }
 
 fn parse_links(
     map: &Map<String, Value>,
     own_name: &str,
     own_pretty_version: &str,
+    cache: &mut ConstraintCache,
 ) -> Result<Vec<Link>> {
     let mut links = Vec::with_capacity(map.len());
     for (target, value) in map {
@@ -715,7 +713,7 @@ fn parse_links(
         };
         links.push(Link {
             target,
-            constraint: Some(semver::parse_constraint(text)?),
+            constraint: Some(parse_constraint_cached(cache, text)?),
             pretty_constraint: Some(text.to_string()),
         });
     }
@@ -734,6 +732,7 @@ fn push_package_version(
     acceptable: &HashSet<&'static str>,
     stability_flags: &HashMap<String, &'static str>,
     root_aliases: &HashMap<String, Vec<(String, String, String)>>,
+    cache: &mut ConstraintCache,
 ) -> Result<()> {
     let name = pv.name.to_ascii_lowercase();
     let version = semver::normalize(&pv.version)?;
@@ -743,10 +742,10 @@ fn push_package_version(
         return Ok(());
     }
 
-    let requires = parse_links(&pv.require, &name, &pv.version)?;
-    let conflicts = parse_links(&pv.conflict, &name, &pv.version)?;
-    let provides = parse_links(&pv.provide, &name, &pv.version)?;
-    let replaces = parse_links(&pv.replace, &name, &pv.version)?;
+    let requires = parse_links(&pv.require, &name, &pv.version, cache)?;
+    let conflicts = parse_links(&pv.conflict, &name, &pv.version, cache)?;
+    let provides = parse_links(&pv.provide, &name, &pv.version, cache)?;
+    let replaces = parse_links(&pv.replace, &name, &pv.version, cache)?;
     let is_dev = stability == "dev";
 
     let real_index = if let Some(alias_normalized) = branch_alias_target(pv) {
@@ -758,10 +757,10 @@ fn push_package_version(
             pretty_version: pretty_alias(&alias_normalized),
             stability: semver::stability(&alias_normalized),
             is_dev: true,
-            requires: clone_links(&requires)?,
-            conflicts: clone_links(&conflicts)?,
-            provides: clone_links(&provides)?,
-            replaces: clone_links(&replaces)?,
+            requires: clone_links(&requires),
+            conflicts: clone_links(&conflicts),
+            provides: clone_links(&provides),
+            replaces: clone_links(&replaces),
             alias_of: Some(real_index),
             is_root_package_alias: false,
             // Not detected: `RuleSetGenerator`/`Problem` are the only
@@ -822,10 +821,10 @@ fn push_package_version(
                 continue;
             }
             let real = &packages[real_index];
-            let requires = clone_links(&real.requires)?;
-            let conflicts = clone_links(&real.conflicts)?;
-            let provides = clone_links(&real.provides)?;
-            let replaces = clone_links(&real.replaces)?;
+            let requires = clone_links(&real.requires);
+            let conflicts = clone_links(&real.conflicts);
+            let provides = clone_links(&real.provides);
+            let replaces = clone_links(&real.replaces);
             let raw = real.raw.clone();
             packages.push(Package {
                 name: name.clone(),

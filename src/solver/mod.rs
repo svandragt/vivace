@@ -39,14 +39,36 @@ pub mod transaction;
 pub mod watch_graph;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::{Map, Value};
 
 use crate::repository::{Repository, Transport};
+use crate::semver::{self, Constraint};
 use policy::DefaultPolicy;
 use pool::Pool;
 use transaction::{AliasEntry, ResolvedPackage};
+
+/// Distinct constraint text -> its parsed `Constraint`, shared for the
+/// lifetime of one `pool_builder::build`/`build_partial` call between every
+/// `Link` that names it and `pool_optimizer`'s own disjunct groups.
+/// `bench/results/profile.md` §2.8: `push_package_version` re-parsing the
+/// same handful of constraint strings (`"php": "^7.2.5 || ^8.0.0"`, written
+/// near-identically by thousands of package versions) tens of thousands of
+/// times over cost 863 ms uncached.
+pub type ConstraintCache = HashMap<String, Arc<Constraint>>;
+
+/// Parses `text` once per distinct string, cloning the shared `Arc` on
+/// every repeat rather than re-running `semver::parse_constraint`.
+pub fn parse_constraint_cached(cache: &mut ConstraintCache, text: &str) -> Result<Arc<Constraint>> {
+    if let Some(constraint) = cache.get(text) {
+        return Ok(Arc::clone(constraint));
+    }
+    let constraint = Arc::new(semver::parse_constraint(text)?);
+    cache.insert(text.to_string(), Arc::clone(&constraint));
+    Ok(constraint)
+}
 
 /// Builds a pool from `root`'s `require`/`require-dev` (merged, matching
 /// `Installer::doUpdate`'s first solve) against everything `repo`'s
@@ -202,7 +224,7 @@ fn resolve(
         for index in 0..fixed_count {
             second_packages.push(pool_builder::clone_package(
                 built.pool.package_by_id(pool::id_of(index)),
-            )?);
+            ));
         }
         for &id in &installed {
             if fixed_ids.contains(&id) {
@@ -212,7 +234,7 @@ fn resolve(
             if package.is_alias() {
                 continue;
             }
-            second_packages.push(pool_builder::clone_package(package)?);
+            second_packages.push(pool_builder::clone_package(package));
         }
         let second_pool = Pool::new(second_packages);
         let second_request = pool_builder::require_only_request(root, fixed_count)?;
@@ -239,4 +261,32 @@ fn resolve(
         platform_dev_reqs: built.platform_dev_reqs,
         platform_overrides: built.platform_overrides,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `bench/results/profile.md` §2.8's fix: a repeated constraint string
+    /// must reuse the exact same parsed `Constraint` (`Arc::ptr_eq`, not
+    /// just an equivalent one — `Constraint` has no `PartialEq` to compare
+    /// against), while two distinct strings never share an entry.
+    #[test]
+    fn caches_by_string_without_colliding_across_distinct_constraints() {
+        let mut cache = ConstraintCache::new();
+
+        let first = parse_constraint_cached(&mut cache, "^1.0").unwrap();
+        let repeat = parse_constraint_cached(&mut cache, "^1.0").unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &repeat),
+            "a repeated constraint string must return the same cached Arc"
+        );
+
+        let other = parse_constraint_cached(&mut cache, "^2.0").unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &other),
+            "distinct constraint strings must not collide"
+        );
+        assert_eq!(cache.len(), 2);
+    }
 }

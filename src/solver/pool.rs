@@ -9,6 +9,8 @@
 //! index in [`Pool::packages`], added immediately after it (mirroring the
 //! insertion order above), rather than wrapping a nested object.
 
+use std::sync::Arc;
+
 use serde_json::Value;
 
 use crate::semver::{self, Constraint, NormalizedVersion};
@@ -16,9 +18,16 @@ use crate::semver::{self, Constraint, NormalizedVersion};
 /// `Package\Link`: a require/conflict/provide/replace edge. Only the fields
 /// the solver and rule generator read; no getSource/getDescription, since
 /// those exist for `Rule::getPrettyString` (Problem.php, stage 5).
+///
+/// `constraint` is `Arc`-shared rather than owned outright: the same
+/// constraint text (`"php": "^7.2.5 || ^8.0.0"`) recurs across thousands of
+/// package versions, and `Constraint` itself isn't `Clone` (it wraps a
+/// `Box<dyn semver_php::Constraint>`), so sharing one parse is the only way
+/// to cache it at all (`bench/results/profile.md` §2.8,
+/// `solver::ConstraintCache`).
 pub struct Link {
     pub target: String,
-    pub constraint: Option<Constraint>,
+    pub constraint: Option<Arc<Constraint>>,
     /// The constraint exactly as written in `composer.json`/the provider
     /// file, `Link::getPrettyConstraint()`; `None` prints as `"*"`
     /// (`MatchAllConstraint::getPrettyString()`).

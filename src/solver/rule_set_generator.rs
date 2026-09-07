@@ -188,7 +188,7 @@ fn add_rules_for_package(
         }
 
         for link in &package.requires {
-            let providers = pool.what_provides(&link.target, link.constraint.as_ref());
+            let providers = pool.what_provides(&link.target, link.constraint.as_deref());
             create_require_rule(
                 package_id,
                 &providers,
@@ -219,7 +219,7 @@ fn add_conflict_rules(
             if !added_by_name.iter().any(|(n, _)| n == &link.target) {
                 continue;
             }
-            let conflicts = pool.what_provides(&link.target, link.constraint.as_ref());
+            let conflicts = pool.what_provides(&link.target, link.constraint.as_deref());
             for &conflict_id in &conflicts {
                 let conflict = pool.package_by_id(conflict_id);
                 // For an alias, only add the conflict when the name matches

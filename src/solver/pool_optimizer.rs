@@ -60,6 +60,7 @@
 //! closure's pool size shows the gap matters.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -67,6 +68,7 @@ use crate::semver::{self, CompiledConstraint, Constraint, NormalizedVersion, Ver
 use crate::solver::policy::DefaultPolicy;
 use crate::solver::pool::{self, Link, Package, Pool};
 use crate::solver::request::Request;
+use crate::solver::{ConstraintCache, parse_constraint_cached};
 
 /// [`optimize`]'s result: the pruned pool, and `request.fixed`'s indices
 /// remapped to match (`Pool::new` reassigns ids from scratch, so pruning
@@ -82,7 +84,7 @@ pub struct Optimized {
 /// §2.6: this loop alone drove 3.29M `Constraint::matches` calls).
 struct CompiledRequire {
     text: String,
-    constraint: Constraint,
+    constraint: Arc<Constraint>,
     compiled: CompiledConstraint,
 }
 
@@ -103,7 +105,12 @@ type ConstraintGroups = HashMap<String, Vec<CompiledRequire>>;
 /// group: the same `prefer_stable`/`prefer_lowest` policy the solve itself
 /// uses (no `--minimal-changes` pin here either — `policy.rs`'s own doc
 /// comment explains why nothing wires that into `update.rs` yet).
-pub fn optimize(request: &Request, pool: Pool, policy: &DefaultPolicy) -> Result<Optimized> {
+pub fn optimize(
+    request: &Request,
+    pool: Pool,
+    policy: &DefaultPolicy,
+    cache: &mut ConstraintCache,
+) -> Result<Optimized> {
     let alias_groups = alias_groups(pool.packages());
 
     let mut irremovable: HashSet<usize> = HashSet::new();
@@ -118,6 +125,7 @@ pub fn optimize(request: &Request, pool: Pool, policy: &DefaultPolicy) -> Result
             &mut require_constraints,
             &root.name,
             &root.pretty_constraint,
+            cache,
         )?;
     }
     for package in pool.packages() {
@@ -126,6 +134,7 @@ pub fn optimize(request: &Request, pool: Pool, policy: &DefaultPolicy) -> Result
                 &mut require_constraints,
                 &link.target,
                 link.pretty_constraint(),
+                cache,
             )?;
         }
         for link in &package.conflicts {
@@ -133,6 +142,7 @@ pub fn optimize(request: &Request, pool: Pool, policy: &DefaultPolicy) -> Result
                 &mut conflict_constraints,
                 &link.target,
                 link.pretty_constraint(),
+                cache,
             )?;
         }
     }
@@ -212,13 +222,18 @@ fn mark_irremovable(
 /// doc for the literal `||`-split simplification). Dedupes by the
 /// disjunct's own trimmed text, matching the PHP associative array's
 /// `(string) $expanded` key overwrite.
-fn add_disjuncts(groups: &mut ConstraintGroups, name: &str, pretty: &str) -> Result<()> {
+fn add_disjuncts(
+    groups: &mut ConstraintGroups,
+    name: &str,
+    pretty: &str,
+    cache: &mut ConstraintCache,
+) -> Result<()> {
     let entry = groups.entry(name.to_string()).or_default();
     for part in pretty.split("||").map(str::trim).filter(|p| !p.is_empty()) {
         if entry.iter().any(|require| require.text == part) {
             continue;
         }
-        let constraint = semver::parse_constraint(part)?;
+        let constraint = parse_constraint_cached(cache, part)?;
         let compiled = CompiledConstraint::compile(&constraint);
         entry.push(CompiledRequire {
             text: part.to_string(),
@@ -467,7 +482,7 @@ mod tests {
     fn link_c(target: &str, constraint: &str) -> Link {
         Link {
             target: target.to_string(),
-            constraint: Some(semver::parse_constraint(constraint).unwrap()),
+            constraint: Some(Arc::new(semver::parse_constraint(constraint).unwrap())),
             pretty_constraint: Some(constraint.to_string()),
         }
     }
@@ -520,7 +535,7 @@ mod tests {
         let request = require("vendor/dep", "^1.0");
         let policy = DefaultPolicy::new(false, false);
 
-        let optimized = optimize(&request, pool, &policy).unwrap();
+        let optimized = optimize(&request, pool, &policy, &mut ConstraintCache::new()).unwrap();
 
         let dep_versions: Vec<&str> = optimized
             .pool
@@ -552,7 +567,7 @@ mod tests {
         let request = require("vendor/dep", "^1.0 || ^2.0");
         let policy = DefaultPolicy::new(false, false);
 
-        let optimized = optimize(&request, pool, &policy).unwrap();
+        let optimized = optimize(&request, pool, &policy, &mut ConstraintCache::new()).unwrap();
 
         let mut dep_versions: Vec<&str> = optimized
             .pool
@@ -577,7 +592,7 @@ mod tests {
         };
         let policy = DefaultPolicy::new(false, false);
 
-        let optimized = optimize(&request, pool, &policy).unwrap();
+        let optimized = optimize(&request, pool, &policy, &mut ConstraintCache::new()).unwrap();
 
         assert_eq!(optimized.fixed, vec![0]);
         assert_eq!(
@@ -603,10 +618,11 @@ mod tests {
         let packages = vec![root, dep_match, dep_impossible];
 
         let mut require_constraints: ConstraintGroups = HashMap::new();
+        let mut cache = ConstraintCache::new();
         // Root itself must be "used" (referenced by some requirement) for
         // its own requires to apply at all (`isUnusedPackage`'s guard).
-        add_disjuncts(&mut require_constraints, "vendor/root", "*").unwrap();
-        add_disjuncts(&mut require_constraints, "vendor/dep", "1.0.0").unwrap();
+        add_disjuncts(&mut require_constraints, "vendor/root", "*", &mut cache).unwrap();
+        add_disjuncts(&mut require_constraints, "vendor/dep", "1.0.0", &mut cache).unwrap();
 
         let mut to_remove = HashSet::new();
         optimize_impossible_packages_away(
