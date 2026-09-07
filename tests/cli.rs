@@ -394,3 +394,17 @@ fn update_lock_accepts_install_only_flags() {
     cmd.args(["update-lock", "--no-plugins", "--no-scripts"]);
     viv_snapshot!(ctx, cmd);
 }
+
+#[test]
+fn add_and_rm_are_aliases_for_require_and_remove() {
+    let help = String::from_utf8(
+        std::process::Command::new(env!("CARGO_BIN_EXE_viv"))
+            .arg("--help")
+            .output()
+            .expect("run viv --help")
+            .stdout,
+    )
+    .expect("utf-8 help");
+    assert!(help.contains("[alias: add]"), "{help}");
+    assert!(help.contains("[alias: rm]"), "{help}");
+}

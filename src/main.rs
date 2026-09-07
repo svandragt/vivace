@@ -85,9 +85,11 @@ enum Command {
     UpdateLock(UpdateArgs),
     /// Add a dependency to composer.json, resolve it and install
     /// (`--no-install`/`--no-update` opt out).
+    #[command(visible_alias = "add")]
     Require(RequireArgs),
     /// Remove a dependency from composer.json, resolve the rest and install
     /// (`--no-install`/`--no-update` opt out).
+    #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
     /// Regenerate the autoload files and `vendor/bin` from an already
     /// installed `vendor/`, without fetching or linking.
