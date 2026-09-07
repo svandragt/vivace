@@ -47,8 +47,30 @@ use crate::vcs;
 pub const PACKAGIST_URL: &str = "https://repo.packagist.org";
 
 /// `PoolBuilder::LOAD_BATCH_SIZE`: names are loaded breadth-first in waves
-/// of this many concurrent fetches.
-const LOAD_BATCH_SIZE: usize = 50;
+/// of this many concurrent fetches, now also the cap on
+/// [`Repository::load_closure_seeded`]'s seed burst (#120). Packagist
+/// advertises `SETTINGS_MAX_CONCURRENT_STREAMS: 128` on its pooled HTTP/2
+/// connection; above that, requests queue client-side and per-request
+/// latency climbs, so this needs to sit comfortably under 128 without
+/// leaving the connection under-used. Swept 24/40/64/100 on warm caches, 3
+/// runs each, median closure `elapsed_ms` (`RUST_LOG=vivace=debug`):
+///
+/// | cap | symfony/demo (160 names) | bench/laravel (~110 names) |
+/// |----:|-------------------------:|----------------------------:|
+/// |  24 |                    1611  |                        736  |
+/// |  40 |                    1667  |                        737  |
+/// |  64 |                    1577  |                        701  |
+/// | 100 |                    1387  |                        644  |
+///
+/// 100 won on both: fewer, larger waves beat more, smaller ones as long as
+/// the connection stays under its stream limit (100 vs the unpatched
+/// all-at-once seed burst, 153 streams on one connection: 1692 median on
+/// symfony/demo, a ~18% regression from queuing past the limit). A second
+/// connection (`pool_max_idle_per_host(2)`) at the same cap made no
+/// measurable difference — expected, since 100 in flight never needs a
+/// second connection to begin with — so it wasn't worth the extra client
+/// plumbing.
+const LOAD_BATCH_SIZE: usize = 100;
 
 /// `PlatformRepository::PLATFORM_PACKAGE_REGEX`. Copied rather than shared
 /// from `autoload::installed` (private there, and that module belongs to
@@ -149,6 +171,17 @@ impl PackageVersion {
     /// through this same constructor rather than duplicating its field
     /// extraction.
     pub(crate) fn from_value(raw: &Value) -> Result<Self> {
+        Self::from_owned_value(raw.clone())
+    }
+
+    /// Same field extraction as [`PackageVersion::from_value`], but takes
+    /// `raw` by value so a caller that already owns it (freshly
+    /// deserialized JSON, never aliased elsewhere: #120) moves it into the
+    /// `raw` field instead of cloning the whole document a second time on
+    /// top of the per-field clones just below — one clone dropped per
+    /// version instead of two, and Packagist's own provider files run every
+    /// version through this on every closure fetch.
+    pub(crate) fn from_owned_value(raw: Value) -> Result<Self> {
         let obj = raw
             .as_object()
             .context("provider version entry is not an object")?;
@@ -166,27 +199,37 @@ impl PackageVersion {
             Some(v) => v,
             None => crate::version::normalize(&version)?,
         };
+        let require = map_field(obj, "require");
+        let require_dev = map_field(obj, "require-dev");
+        let replace = map_field(obj, "replace");
+        let provide = map_field(obj, "provide");
+        let conflict = map_field(obj, "conflict");
+        let default_branch = obj
+            .get("default-branch")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let dist = obj.get("dist").cloned();
+        let source = obj.get("source").cloned();
+        let branch_alias = obj
+            .get("extra")
+            .and_then(|extra| extra.get("branch-alias"))
+            .cloned();
+        let time = obj.get("time").and_then(Value::as_str).map(str::to_string);
         Ok(PackageVersion {
             name,
             version,
             version_normalized,
-            require: map_field(obj, "require"),
-            require_dev: map_field(obj, "require-dev"),
-            replace: map_field(obj, "replace"),
-            provide: map_field(obj, "provide"),
-            conflict: map_field(obj, "conflict"),
-            default_branch: obj
-                .get("default-branch")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            dist: obj.get("dist").cloned(),
-            source: obj.get("source").cloned(),
-            branch_alias: obj
-                .get("extra")
-                .and_then(|extra| extra.get("branch-alias"))
-                .cloned(),
-            time: obj.get("time").and_then(Value::as_str).map(str::to_string),
-            raw: raw.clone(),
+            require,
+            require_dev,
+            replace,
+            provide,
+            conflict,
+            default_branch,
+            dist,
+            source,
+            branch_alias,
+            time,
+            raw,
         })
     }
 }
@@ -600,7 +643,7 @@ impl ComposerSource {
                     HashKind::Sha256,
                 )
                 .await?;
-                parse_provider_versions(&data, name)?
+                parse_provider_versions(data, name)?
             }
             Provider::Eager { packages } => packages.get(name).cloned().unwrap_or_default(),
         };
@@ -646,7 +689,7 @@ impl ComposerSource {
         requests.fetch_add(1, Ordering::Relaxed);
         match get_cached_json(transport, &url, &cache_path).await? {
             CachedJson::NotFound => Ok(Vec::new()),
-            CachedJson::Data(data) => parse_provider_versions(&data, name),
+            CachedJson::Data(data) => parse_provider_versions(data, name),
         }
     }
 }
@@ -1166,14 +1209,16 @@ impl<T: Transport> Repository<T> {
     }
 
     /// Same walk as [`Repository::load_closure_skipping`], but every
-    /// (already lowercased) name in `seed` also starts fetching immediately,
-    /// alongside `roots`' own names, rather than waiting to be discovered
-    /// through a require chain (#90: a warm `viv update` re-walks a closure
-    /// that's almost always the previous `composer.lock` again, so seeding
-    /// with that lock's package names turns the BFS's ~9 sequential
-    /// round-trip levels into ~2 — everything the lock already knew about is
-    /// in flight from the first wave, and only genuinely new names still
-    /// wait on a parent's response). A seed is a *prefetch*, never a pool
+    /// (already lowercased) name in `seed` queues alongside `roots`' own
+    /// names, rather than waiting to be discovered through a require chain
+    /// (#90: a warm `viv update` re-walks a closure that's almost always the
+    /// previous `composer.lock` again, so seeding with that lock's package
+    /// names turns the BFS's ~9 sequential round-trip levels into ~2 —
+    /// everything the lock already knew about queues from the first wave,
+    /// dispatched `LOAD_BATCH_SIZE` at a time same as any other name (#120:
+    /// firing every seed at once overran Packagist's HTTP/2 stream limit),
+    /// and only genuinely new names still wait on a parent's response). A
+    /// seed is a *prefetch*, never a pool
     /// change: its fetch is started and cached here, but it only contributes
     /// versions to the returned closure if the walk below actually reaches
     /// it from `roots` with a constraint some of its versions satisfy; a
@@ -1243,35 +1288,35 @@ impl<T: Transport> Repository<T> {
         // instead of waiting for the slowest sibling in its wave.
         let mut in_flight = FuturesUnordered::new();
 
-        // `prefetching` tracks a seeded name from the moment its fetch is
-        // dispatched (below, uncapped by `LOAD_BATCH_SIZE` on purpose: the
-        // whole point is every one of them in flight in the first wave) to
-        // the moment its future lands, so the fill loop further down never
-        // dispatches a second, duplicate fetch for a name that turns out to
-        // also be `roots`-reachable.
+        // A seed name queues exactly like a discovered one (#120: firing all
+        // of them at once — 153 on symfony/demo — blew past Packagist's
+        // 128-stream HTTP/2 limit and the excess queued client-side at
+        // rising per-request latency). `prefetching` tracks a name from the
+        // moment its fetch is actually dispatched (below) to the moment its
+        // future lands, so a name reached twice — once as a seed, once
+        // through a require chain — is never queued for a second fetch.
         let mut prefetching: HashSet<String> = HashSet::new();
         for name in seed {
             let name = name.to_ascii_lowercase();
             if skip.contains(&name) || is_platform_package(&name) {
                 continue;
             }
-            if prefetching.insert(name.clone()) {
-                in_flight.push(self.fetch_named(name, dev));
-            }
+            walk.queue.push_back(name);
         }
 
-        let mut waves = usize::from(!in_flight.is_empty());
+        let mut waves = 0;
         loop {
             let was_empty = in_flight.is_empty();
             while in_flight.len() < LOAD_BATCH_SIZE {
                 let Some(name) = walk.queue.pop_front() else {
                     break;
                 };
-                if prefetching.contains(&name) {
-                    // Already in flight from the seed wave above; its
-                    // completion lands via `ClosureWalk::land`, which finds
-                    // `name` already discovered and folds it in without a
-                    // second fetch.
+                if !prefetching.insert(name.clone()) {
+                    // Already dispatched (a seed name duplicated in `seed`
+                    // itself, or a seed name also queued by `discover`
+                    // through a require chain); its completion lands via
+                    // `ClosureWalk::land`, which finds `name` already
+                    // discovered and folds it in without a second fetch.
                     continue;
                 }
                 in_flight.push(self.fetch_named(name, dev));
@@ -1476,7 +1521,12 @@ fn is_version_loaded(
     let mut candidates = vec![pv.version_normalized.clone()];
     candidates.extend(branch_alias_target(pv));
     for candidate in candidates {
-        let normalized = semver::normalize(&candidate)?;
+        // Both candidates are already in `semver::normalize`'s canonical
+        // form (`version_normalized` straight from the provider file, or
+        // `branch_alias_target`'s own `normalize_branch` output): wrap
+        // rather than re-run the regex pipeline on a value that would only
+        // parse back to itself (#120).
+        let normalized = semver::from_normalized(candidate)?;
         if !accept(name, semver::stability(normalized.as_str())) {
             continue;
         }
@@ -1537,11 +1587,17 @@ fn parse_inline_versions(name: &str, inline: &Value) -> Result<Vec<PackageVersio
     versions.values().map(PackageVersion::from_value).collect()
 }
 
-fn parse_provider_versions(data: &Value, name: &str) -> Result<Vec<PackageVersion>> {
+/// `data` is a freshly deserialized `Value` from [`get_cached_json`]/
+/// [`get_hash_verified_json`] with no other reference to it anywhere
+/// (every call re-reads and re-parses; #120), so every version entry it
+/// holds is moved into a [`PackageVersion`] via
+/// [`PackageVersion::from_owned_value`] rather than cloned out of a
+/// borrowed `data`.
+fn parse_provider_versions(mut data: Value, name: &str) -> Result<Vec<PackageVersion>> {
     let Some(entry) = data
-        .get("packages")
-        .and_then(Value::as_object)
-        .and_then(|packages| packages.get(name))
+        .get_mut("packages")
+        .and_then(Value::as_object_mut)
+        .and_then(|packages| packages.remove(name))
     else {
         return Ok(Vec::new());
     };
@@ -1551,20 +1607,25 @@ fn parse_provider_versions(data: &Value, name: &str) -> Result<Vec<PackageVersio
     // `$packages['packages']` iterates a PHP array either way, so this split
     // is only needed because JSON objects and arrays aren't interchangeable
     // in Rust).
-    if let Some(versions) = entry.as_object() {
-        return versions.values().map(PackageVersion::from_value).collect();
+    if let Value::Object(versions) = entry {
+        return versions
+            .into_values()
+            .map(PackageVersion::from_owned_value)
+            .collect();
     }
-    let list = entry
-        .as_array()
-        .with_context(|| format!("{name}: provider entry is not a list"))?
-        .clone();
+    let Value::Array(list) = entry else {
+        bail!("{name}: provider entry is not a list");
+    };
     let minified = data.get("minified").and_then(Value::as_str) == Some("composer/2.0");
     let expanded = if minified {
         expand_minified(list)
     } else {
         list
     };
-    expanded.iter().map(PackageVersion::from_value).collect()
+    expanded
+        .into_iter()
+        .map(PackageVersion::from_owned_value)
+        .collect()
 }
 
 /// Reads a cache file written by [`write_cache_file`]: the raw provider

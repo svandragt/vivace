@@ -43,6 +43,20 @@ pub fn normalize(version: &str) -> Result<NormalizedVersion> {
     Ok(NormalizedVersion(crate::version::normalize(version)?))
 }
 
+/// Wraps a string the caller already knows is in `normalize`'s canonical
+/// form (Packagist's own `version_normalized` field, or
+/// `crate::version::normalize_branch`'s output), skipping `normalize`'s
+/// regex passes entirely — ~300 ns/call measured down to ~10 ns/call (#120:
+/// `ClosureWalk::process` re-normalising an already-normalized
+/// `version_normalized` on every rescan of every version, over every
+/// package in a closure, was part of that walk's synchronous CPU). Still
+/// runs the ASCII guard: an untrusted repository could ship a bogus value
+/// here.
+pub(crate) fn from_normalized(version: String) -> Result<NormalizedVersion> {
+    reject_non_ascii(&version)?;
+    Ok(NormalizedVersion(version))
+}
+
 /// A parsed version constraint (`VersionParser::parseConstraints`).
 pub struct Constraint(Box<dyn semver_php::Constraint>);
 
@@ -443,3 +457,4 @@ impl CompiledConstraint {
         }))
     }
 }
+
