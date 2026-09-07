@@ -18,7 +18,7 @@ raw data in [`bench/results/`](bench/results/README.md).
 |---|---|---|---|---|
 | composer 2.10.2 | 7.28 s | 1.05 s | 0.47 s | 1.23 s |
 | riff 0.0.7 | 1.74 s | 0.24 s | 0.24 s | n/a\* |
-| viv (main, after 0.6.0) | 2.26 s | 0.043 s | 0.008 s | 1.12 s |
+| viv 0.6.0 | 2.26 s | 0.043 s | 0.008 s | 1.12 s |
 
 \* riff 0.0.7 can't resolve this lock's `update`: see
 [`bench/results/README.md`](bench/results/README.md#update-warm-metadata).
@@ -37,7 +37,10 @@ The pinned projects from [`compat/corpus.toml`](compat/corpus.toml), same
 machine, `--no-plugins --no-scripts`, three runs, warm metadata cache.
 Full columns and footnotes in [`bench/results/corpus.md`](bench/results/corpus.md).
 
-| Project | Packages | Update: composer | riff | viv |
+Columns are `update`, warm metadata (the same scenario as the Numbers table's
+last column).
+
+| Project | Packages | composer | riff | viv |
 |---|---|---|---|---|
 | laravel/laravel | 109 | 1.75 s | fails | 1.43 s |
 | symfony/demo | 153 | 1.66 s | 0.73 s | 1.49 s |

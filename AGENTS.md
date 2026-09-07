@@ -79,6 +79,11 @@ bugs, not style.
 | `src/link.rs` | hardlink (fallback copy) from store into `vendor/` |
 | `src/plan.rs` | diff lock against `vendor/composer/installed.json` |
 | `src/autoload/` | autoloader generation; `templates/` holds Composer's verbatim files |
+| `src/solver/` | port of Composer's CDCL dependency solver; see `docs/resolver-design.md` |
+| `src/repository.rs` | Packagist v2/v1 metadata clients, closure loading, HTTP cache |
+| `src/plugins/` | native adapters for the Composer plugins vivace ports |
+| `src/show.rs` | `viv show`/`tree`/`why`/`outdated`, read-only inspection of installed packages |
+| `src/diagnose.rs` | `viv diagnose`, environment/config report |
 | `tests/fixtures/composer/` | upstream Composer test corpora, do not edit |
 | `tests/fixtures/monolog/` | end-to-end fixture with Composer's expected output |
 | `bench/` | hyperfine script, Laravel-sized lock, results |

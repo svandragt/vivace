@@ -690,3 +690,13 @@ committed JSON and restored it. Bench numbers under concurrent compiles
 are unusable; every before/after tonight was taken on a quiet machine or
 from a worktree build of HEAD against the working tree. riff was
 reinstalled so its column is measured, not carried over.
+
+**Release.** Cutting the tag surfaced two more contract gaps the sweep had
+never reached: drupal's `include_paths.php` follows Composer's install
+order rather than the lock's, and archives may carry symlink entries,
+which both extractors had been dropping (gotenberg/gotenberg-php ships
+three). Symlinks are now written after every regular entry, with escaping
+targets refused. The shim tests' one-in-three failure turned out to be
+`ETXTBSY` from a copy still open when another test forked; a mutex
+settles it. Sweep at the tag: 36 rows identical, none differ. v0.6.0
+tagged.

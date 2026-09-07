@@ -13,16 +13,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Stability policy: what viv promises and how it versions ([#83](https://github.com/svandragt/vivace/issues/83))
 - Run the compat sweep on a schedule, not only on tags ([#84](https://github.com/svandragt/vivace/issues/84))
 - Add riff to the update-warm benchmark ([#87](https://github.com/svandragt/vivace/issues/87))
+- 0.6 target: faster than riff on every scenario ([#88](https://github.com/svandragt/vivace/issues/88))
 - Cache parsed constraints when building pool packages ([#89](https://github.com/svandragt/vivace/issues/89))
+- Metadata closure fetch dominates warm update at ~1.5 s ([#90](https://github.com/svandragt/vivace/issues/90))
+- Resolver at Composer's speed on large locks ([#91](https://github.com/svandragt/vivace/issues/91))
 - Normalise composer.json on update, require and remove, not on install ([#95](https://github.com/svandragt/vivace/issues/95))
 - viv update rejects --no-plugins and --no-scripts that install accepts ([#96](https://github.com/svandragt/vivace/issues/96))
 - viv update refuses a composer.json with a vcs repository ([#97](https://github.com/svandragt/vivace/issues/97))
 - Aliases: viv add for require, viv rm for remove ([#99](https://github.com/svandragt/vivace/issues/99))
 - Adapter for php-http/discovery ([#101](https://github.com/svandragt/vivace/issues/101))
+- Rerun the client corpus sweep and bench before tagging 0.6 ([#102](https://github.com/svandragt/vivace/issues/102))
+- viv update fails on wpackagist metadata: provider entry is not a list ([#105](https://github.com/svandragt/vivace/issues/105))
+- Bench the public compat corpus, not only the Laravel lock ([#106](https://github.com/svandragt/vivace/issues/106))
 
 ### Changed
 - make install should not put the composer shim on PATH by default ([#103](https://github.com/svandragt/vivace/issues/103))
 - update, require and remove should install after writing the lock, as Composer does ([#104](https://github.com/svandragt/vivace/issues/104))
+
+### Fixed
+- update: self.version in a dependency's require breaks the closure walk (bedrock, drupal) ([#115](https://github.com/svandragt/vivace/issues/115))
+- update: pool optimizer leaves alias_of unremapped, panics on phpunit/phpunit ([#116](https://github.com/svandragt/vivace/issues/116))
+- update: root replace/provide ignored, symfony/demo lock gains four polyfills ([#117](https://github.com/svandragt/vivace/issues/117))
+- update: php-64bit and lib-* platform packages missing from the solver ([#118](https://github.com/svandragt/vivace/issues/118))
+- update: honour available-package-patterns so wpackagist isn't asked about every name ([#119](https://github.com/svandragt/vivace/issues/119))
+- update: write the lock's time field as RFC 3339 with +00:00 like ArrayDumper ([#121](https://github.com/svandragt/vivace/issues/121))
+
+### Performance
+- update: cap closure fetch concurrency under the h2 stream limit and take the version scan off the fetch loop ([#120](https://github.com/svandragt/vivace/issues/120))
 
 ## [0.5.0] - 2026-09-07
 ### Added

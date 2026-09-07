@@ -36,8 +36,8 @@ composer.json + composer.lock
 ```
 
 `viv install` runs the lower half only, from an existing lock. `viv update`,
-`viv require` and `viv remove` run the solver first and write a new lock;
-`viv require`/`viv remove` stop at the lock and do not chain into install.
+`viv require` and `viv remove` run the solver first, write a new lock, then
+chain into the lower half and install (`--no-install` opts out).
 
 ## Modules
 
@@ -45,7 +45,7 @@ composer.json + composer.lock
 |---|---|
 | `lock` | Parse `composer.lock` and the root `composer.json` (`autoload`, `autoload-dev`, `config`). Keeps JSON key order (`serde_json` `preserve_order`) because `installed.json` re-emits lock entries. |
 | `repository` | Packagist v2 and v1 (Satis/Private Packagist) metadata clients, multi-repository construction from `composer.json`'s `repositories`, an HTTP cache mirroring Composer's disk format. |
-| `solver` | Port of Composer's CDCL dependency solver (`pool`, `pool_builder`, `pool_optimizer`, `rule_set_generator`, `rules`, `watch_graph`, `decisions`, `policy`, `solver`, `transaction`, `request`). Full updates only; `viv install` never reaches it. |
+| `solver` | Port of Composer's CDCL dependency solver (`pool`, `pool_builder`, `pool_optimizer`, `rule_set_generator`, `rules`, `watch_graph`, `decisions`, `policy`, `solver`, `transaction`, `request`, `platform`). Full updates only; `viv install` never reaches it. |
 | `lock_writer` | Writes `composer.lock` from a solved transaction: top-level key order, `content-hash`, per-package `ArrayDumper` shape. |
 | `require` | `viv require`/`viv remove`: constraint synthesis and a format-preserving `composer.json` edit, then a partial update of the touched package(s). |
 | `update` | Wires repositories, the solver and `lock_writer` together for `viv update`/`viv update --lock` (`viv update-lock`'s alias). |
@@ -67,7 +67,7 @@ composer.json + composer.lock
 | `normalize` | `viv normalize`: a native `ergebnis/composer-normalize` for `composer.json`'s key order and formatting. |
 | `tool` | `viv x`/`viv run`/`viv exec`: npx-style one-off tool execution, `scripts::Runner` entry points, and a bare `vendor/bin` exec. |
 | `version`, `semver` | Composer version normalisation and constraint parsing/matching, shared by the solver, `show`, and the autoloader's version dumps. |
-| `bin.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, plus `--offline` and `--cache-dir`. |
+| `main.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, `diagnose`, plus `--offline` and `--cache-dir`. |
 
 ## Why a store and hardlinks
 

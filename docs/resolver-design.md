@@ -39,11 +39,13 @@ Scope of the port, about 2,500 lines of PHP:
 | `Pool.php`, `PoolBuilder.php` | 1,289 | Yes; this is the metadata loader |
 | `Transaction.php`, `LockTransaction.php` | 569 | Yes |
 | `Problem.php`, `SolverProblemsException.php` | 914 | Stage 5; ship a blunt error first |
-| `PoolOptimizer.php` | 479 | No. Pure speed, no semantic effect |
+| `PoolOptimizer.php` | 479 | Yes (#76) |
 
-`PoolOptimizer` removes pool entries that no rule can distinguish. Skipping it
-changes nothing about the answer, only the rule count. Add it if a large lock
-is slow, and gate it on producing an identical lock.
+`PoolOptimizer` removes pool entries that no rule can distinguish. Pruning
+changes nothing about the answer, only the rule count, so it runs between
+pool build and rule generation (`src/solver/pool_optimizer.rs`) with a
+post-prune remap of `alias_of` back onto the surviving package IDs, gated on
+producing an identical lock.
 
 ### Composer semantics and how each is handled
 
@@ -126,9 +128,14 @@ Packagist v2 protocol, `Repository/ComposerRepository.php`:
 - HTTP cache under `$XDG_CACHE_HOME/vivace/repo/<repo-host>/`, key
   `provider-<name with / replaced by $>.json` (`:1160`), revalidated with
   `If-Modified-Since` (`:1889`, `:1968`). Reuse `src/fetch.rs`'s client.
-- Concurrency: batch 50 names per wave, matching
+- Concurrency: batch 100 names per wave, matching
   `PoolBuilder::LOAD_BATCH_SIZE`; the closure is loaded breadth-first as the
-  pool builder discovers requires.
+  pool builder discovers requires, and only versions matching the
+  constraints accumulated so far are loaded, the same narrowing
+  `PoolBuilder` itself applies, so a version an earlier require's constraint
+  already rules out is never fetched. A prior lock's package names can seed
+  the first wave's prefetch (`Repository::load_closure_seeded`, #90), a
+  hint capped at the same `LOAD_BATCH_SIZE`, never a pool change.
 
 Skip in v1 with a clear error: `available-packages` and
 `available-package-patterns` (optimisations), `providers-api`,
@@ -159,7 +166,10 @@ Field order comes from `Package/Dumper/ArrayDumper.php:29-147` (the same order
 then post-processes: drops `version_normalized` and `installation-source`,
 moves `time` to the end, skips `AliasPackage` entries, sorts by `strcmp(name)`
 then `strcmp(version)`. `dist.shasum` and `dist.mirrors` appear only when
-non-empty; empty arrays are omitted throughout.
+non-empty; empty arrays are omitted throughout. `time` itself is renormalised
+to RFC 3339 with a `+00:00` offset, whatever shape the source repository sent
+(`Z`, a numeric offset, or a space-separated SQL timestamp), matching
+`ArrayDumper`'s own `DateTime`-through-`P`-format round trip.
 
 ### content-hash
 

@@ -1,23 +1,22 @@
 # Install from lock, 101 packages (bench/laravel)
 
-Machine: AMD Ryzen 9 7900X3D, ext4, Linux 7.0, PHP 8.4.24, 2026-09-06.
+Machine: AMD Ryzen 9 7900X3D, ext4, Linux 7.0, PHP 8.4.24, 2026-09-07.
 `bench/run.sh bench/laravel composer riff viv`, three runs each, means.
 Vendor directory and caches on the same filesystem (hardlinks need that;
 across filesystems `viv` falls back to copying with a warning).
 
-For the same scenarios run across the pinned public compat corpus
-(`compat/corpus.toml`) rather than just Laravel, see `bench/results/corpus.md`,
-produced by `bench/corpus.sh`.
-
 Scenarios: cold is no cache and no `vendor/`; warm is cache present, no
-`vendor/`; no-op is `vendor/` present and up to date.
+`vendor/`; no-op is `vendor/` present and up to date; update, warm metadata
+resolves with the metadata cache already populated.
 
-| Tool | Cold | Warm | No-op |
-|---|---|---|---|
-| composer 2.10.2 | 8.28 s | 1.69 s | 0.50 s |
-| riff 0.0.7 | 1.75 s | 0.26 s | 0.23 s |
-| viv 0.1.0 | 2.22 s | 0.146 s | 0.010 s |
-| presto 0.1.12 (earlier run) | 6.46 s | 6.33 s | 3.41 s |
+| Tool | Cold | Warm cache | No-op | Update, warm metadata |
+|---|---|---|---|---|
+| composer 2.10.2 | 7.28 s | 1.05 s | 0.47 s | 1.23 s |
+| riff 0.0.7 | 1.74 s | 0.24 s | 0.24 s | fails\* |
+| viv 0.6.0 | 2.26 s | 0.043 s | 0.008 s | 1.12 s |
+| presto 0.1.12 (earlier run) | 6.46 s | 6.33 s | 3.41 s | n/a |
+
+\* see "Update, warm metadata" below.
 
 Output check for the same lock: every file in `vendor/composer/` and
 `vendor/autoload.php` that `viv` writes is byte-identical to Composer's, and
@@ -40,6 +39,14 @@ Notes
 - Filesystem dominates install numbers, as uv's benchmark notes warn.
 
 Raw hyperfine JSON: `composer.json`, `riff.json`, `viv.json`, `presto.json`.
+
+## Corpus
+
+The same four scenarios run across the pinned public projects
+(`compat/corpus.toml`) rather than just Laravel: results are in
+`bench/results/corpus.md`, produced by `bench/corpus.sh`. Known
+per-tool/per-project failures it skips instead of re-running every night are
+in `bench/skips.txt`.
 
 ## Cold install: closing the gap to Riff (#1)
 
