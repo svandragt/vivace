@@ -65,7 +65,9 @@ The autoloader (`vendor/autoload.php`, `vendor/composer/*.php`,
 Composer's generator. Composer's own golden test cases are in the suite, and
 an end-to-end test byte-diffs `vendor/` against Composer 2.10.2 output. See
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and
-[`docs/composer-contract.md`](docs/composer-contract.md).
+[`docs/composer-contract.md`](docs/composer-contract.md). What viv
+promises across releases, and what may change, is in
+[`docs/stability.md`](docs/stability.md).
 
 ## Install
 
