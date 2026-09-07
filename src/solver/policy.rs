@@ -21,7 +21,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use crate::semver::NormalizedVersion;
+use crate::semver::{self, NormalizedVersion, VersionKey};
 use crate::solver::pool::Pool;
 
 /// `Constraint::STR_OP_*`, the subset `versionCompare` actually takes.
@@ -72,11 +72,14 @@ impl DefaultPolicy {
 
     /// `DefaultPolicy::versionCompare`. The dev-branch-via-`matchSpecific`
     /// path and the `CompilingMatcher` path both collapse into one
-    /// `semver::compare` call: that facade function's doc comment (see
-    /// `src/semver.rs`) is written to be exactly this method's fallback
-    /// comparator. Its one documented gap (two *unrelated* dev branches,
-    /// neither a numeric alias nor `dev-master`-style, fold to `Equal`
-    /// rather than "incomparable") would only bite here if a single
+    /// `VersionKey::cmp` call: that impl's doc comment (see `src/semver.rs`)
+    /// is written to be exactly this method's fallback comparator — same
+    /// `Ordering`, computed from `a`/`b`'s already-parsed keys instead of
+    /// `crate::semver::compare`'s own per-call re-normalisation
+    /// (`bench/results/profile.md` §2.7: this was the next hotspot after
+    /// `CompiledConstraint`). Its one documented gap (two *unrelated* dev
+    /// branches, neither a numeric alias nor `dev-master`-style, fold to
+    /// `Equal` rather than "incomparable") would only bite here if a single
     /// require resolved to two different arbitrary feature branches of the
     /// same package — not exercised by any fixture in this stage.
     pub fn version_compare(&self, a: &PackageRef, b: &PackageRef, operator: Op) -> bool {
@@ -87,7 +90,7 @@ impl DefaultPolicy {
             return stability_rank(a.stability) < stability_rank(b.stability);
         }
 
-        let ordering = crate::semver::compare(&a.version, &b.version);
+        let ordering = a.key.cmp(&b.key);
         match operator {
             Op::Gt => ordering == Ordering::Greater,
             Op::Lt => ordering == Ordering::Less,
@@ -210,16 +213,19 @@ impl DefaultPolicy {
 }
 
 /// Just enough of a `Package` for `version_compare` to read, so it does not
-/// need to borrow the `Pool` for the comparison's lifetime.
+/// need to borrow the `Pool` for the comparison's lifetime. `key` is parsed
+/// once here rather than once per comparison (`version_compare` used to
+/// call `crate::semver::compare` on `version` directly, re-normalising both
+/// sides on every call it made).
 pub struct PackageRef {
-    pub version: crate::semver::NormalizedVersion,
+    pub key: VersionKey,
     pub stability: &'static str,
 }
 
 fn package_ref(pool: &Pool, literal: i32) -> PackageRef {
     let p = pool.literal_to_package(literal);
     PackageRef {
-        version: p.version.clone(),
+        key: semver::parse_version_key(&p.version),
         stability: p.stability,
     }
 }

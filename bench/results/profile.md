@@ -100,6 +100,71 @@ Raw hyperfine JSON: not checked in (ad hoc, `--optimize-autoloader` isn't a
 `hyperfine --prepare "rm -rf vendor" "$VIV install" "$VIV install -o"` against a
 warm cache.
 
+### 1.3.1 #77 after: the 19 misses were a cache-thrashing bug, not root dirs
+
+Finer `-v` spans added this session (`cache_read_ms`, `merge_ms`, `setup_ms`,
+`cache_write_ms` alongside the existing `scan_paths_ms`) plus a one-off
+`abs_dir`/`has_cache_entry` trace line traced §1.3's "19 misses" to a real
+bug, not the root-package explanation above: **all 19 had a store archive to
+cache on** (`has_cache_entry=true`) — `laravel/framework`'s several PSR-4
+namespaces (`Illuminate\Support`, `\Macroable`, `\Conditionable`, ...),
+`nette/schema` listing `src` under both `classmap` and PSR-4, and
+`symfony/polyfill-*`'s base dir plus its `Resources/stubs` subdir all scan the
+*same archive* under *different* `ScanKey`s. The sidecar
+(`archive_classmap_sidecar`) stored only the single most-recently-written key
+per archive, so scanning a second subpath of the same archive evicted and
+overwrote the first — every one of those keys missed and got rewritten on
+*every single warm run*, not just once.
+
+Fix: `Sidecar` (`src/autoload/classmap.rs`) now holds a `Vec` of
+`(ScanKey, classes, ambiguous)` entries per archive instead of one, so two
+subpaths of the same archive both stay cached; `Scanner` (`generator.rs`)
+reads each sidecar file at most once per install (a `HashMap<PathBuf,
+Sidecar>`, not a file read per `ScanKey`) and merges a miss into the existing
+entries before rewriting, rather than overwriting them.
+
+```
+                                          before        after
+scanned classmap/PSR directories         73-78 ms      14-15 ms   (110 cache hits, 0 misses)
+  scan_paths_ms (misses)                  42-52 ms       0 ms
+  cache_read_ms (sidecar read+parse)      3 ms           3-4 ms
+  merge_ms (fold into self.map)           9-10 ms        9 ms
+  setup_ms (regex/ArchiveIndex/key)       1 ms           1 ms
+  cache_write_ms (sidecar rewrite)        14-17 ms       0 ms  (nothing left to rewrite once warm)
+generated autoload files                  88-116 ms      29 ms
+```
+
+(`RUST_LOG=vivace=debug viv install -o -v`, isolated `XDG_CACHE_HOME`, 5+ runs
+each, `bench/laravel`; machine had other agents' `cargo`/`nextest` running
+concurrently this session — load average 3.7-5.5 — so absolute numbers carry
+more noise than usual, but the before/after gap and the 0-miss/0-write result
+were stable across every repeat.)
+
+Wall clock (`hyperfine --warmup 2 --runs 15`, `viv install -o` warm, same
+scratch copy, before binary built from this file's pre-#77 content, after
+binary the one this session lands):
+
+```
+before (thrash)   119.8 ms ± 3.0 ms
+after (fixed)      61.3 ms ± 2.2 ms   (1.95× faster)
+```
+
+`autoload_classmap.php` and `autoload_static.php`: byte-identical before and
+after (`cmp`), confirming the merge-not-overwrite fix changes nothing about
+*what* gets cached, only that both keys of a shared archive now survive.
+`hyperfine`-measured cache hits still cost more than the ideal in-process
+number above 10 ms in a couple of runs, wholly inside `merge_ms` (~9 ms
+folding ~5,885 classmap entries into `self.map`) — that cost is identical on
+a miss too (it is the classmap-building bookkeeping the cache is meant to
+skip *ahead of*, not part of the sidecar itself), so it wasn't chased further
+here: the entire "40-50 ms" #77 named was the cache-thrashing bug above, not
+the hit path, and that's gone.
+
+Plain `warm`/`no-op` (`--optimize-autoloader` off, no PSR/classmap scan of
+vendor archives at all) are unaffected by this change: `bench/run.sh
+bench/laravel viv` still reports 41.2 ms / 7.1 ms, at or below the recorded
+43.7-43.9 ms / 7.0-8.1 ms baseline.
+
 ### 1.4 serde_json `preserve_order` and installed.json
 
 Question: does `preserve_order`'s `IndexMap` backing cost measurable time on a
@@ -232,11 +297,171 @@ surface.
   one (see issues below) — it blocked measuring laravel's partial-update
   number, so that cell is empty rather than guessed.
 
+### 2.6 After #76: `PoolOptimizer` wired into `pool_builder::build`
+
+Candidate #1 below, landed: `src/solver/pool_optimizer.rs` ports
+`PoolOptimizer.php`'s two passes and runs between pool build and rule
+generation (`pool_builder::build`/`build_partial`, exactly where
+`PoolBuilder::buildPool` calls it). Same machine/session as above, warm
+metadata cache, one `RUST_LOG=vivace=debug` run of `viv update` on
+`bench/laravel` (single run, not a `hyperfine` mean — consistent with how
+§1.3's ad hoc numbers are reported):
+
+| Metric | Before (§2.3) | After |
+|---|---|---|
+| Pool packages (1st solve) | 45,604 | **5,169** (−89%) |
+| Rules (1st solve) | 492,226 | **13,918** (−97%) |
+| Rule generation | 4.81 s | **0.58 s** (−88%) |
+| Metadata closure (warm) | 2.35 s (§2.2) | 1.55 s |
+| **Total (`resolved metadata and solved`)** | ~8.7 s | **14.1 s** |
+
+The pool/rule-count win is exactly the one predicted in §2.3 and §3's old
+row 1, and rule generation itself got the expected 8× cut. **Total wall-clock
+got worse anyway**: `PoolOptimizer::optimize` itself now costs ~9.5 s (68% of
+the 14.1 s total), moving the bottleneck rather than removing it, so
+`update` is still well over the 2 s target from #76 and is now slower than
+before this change on this fixture.
+
+Where the 9.5 s inside `optimize` goes (same run, function-level timing added
+temporarily and removed again): `alias_groups` and
+`optimize_impossible_packages_away` (no locked packages, so a documented
+no-op) are both sub-millisecond; `add_disjuncts` is 40 ms. The rest —
+**~9.5 s — is `optimize_by_identical_dependencies`**: grouping (6.2 s,
+1,160,288 disjunct checks driving 3,287,911 `Constraint::matches` calls) plus
+selecting the preferred package per group (3.4 s). A handful of names
+dominate the disjunct count: `php` (146 distinct requiring constraint texts
+in this closure), `phpunit/php-code-coverage` (103),
+`symfony/http-foundation` (105), `sebastian/comparator` (59),
+`symfony/http-kernel` (56), `symfony/console` (56) — each checked against
+every historical version of that name still in the pool
+(`docs/resolver-design.md`'s note on the same `||`-split trade-off already
+flags this shape).
+
+A standalone micro-benchmark of `Constraint::matches` alone (3,000,000 calls,
+a two-branch `^6.4 || ^7.0`-shaped constraint against one version) measured
+**~775 ns/call** — consistent with the 3.29M calls costing several seconds by
+itself, with no per-call caching in `semver_php` (`SingleConstraint::new`
+allocates and the match walks the whole parsed constraint tree every time).
+That is almost certainly the real gap to Composer's `CompilingMatcher`
+(compiled/cached comparator, same name), not this port's loop shape: the
+nested-loop algorithm here is the same one `PoolOptimizer.php` runs, so a
+real ecosystem-sized closure pays the same O(versions × distinct requiring
+constraints) product in PHP too.
+
+**Not implemented here, flagged instead (`AGENTS.md`'s "do not start a second
+optimisation without saying so"):** cheapening `Constraint::matches`'s
+per-call cost lives in `src/semver.rs`/the `semver_php` facade, outside this
+task's owned files, and is a distinct piece of work (a leaner point-in-range
+check, or a cache keyed on `(constraint text, version)` — plausible, not
+attempted). `PoolOptimizer` is wired in as #76 asked; the acceptance test
+(byte-identical locks) passes; the wall-clock target is not met, and this is
+why.
+
+### 2.7 After #76 follow-up: `CompiledConstraint` (`src/semver.rs`)
+
+The candidate flagged in §2.6 (`Constraint::matches`'s per-call cost), now
+owned by this lane too. `src/semver.rs` gained `CompiledConstraint`/
+`VersionKey`/`parse_version_key`: a constraint's numeric bounds compiled once
+via `Intervals::get` (already correct, already ported — this hoists it out of
+the hot loop rather than re-deriving it), each bound parsed once into a
+`Vec<Part>`; `matches` is then a handful of `Part` comparisons, no string
+work, no allocation. Equivalence proven against the whole `satisfies`/
+`satisfied_by` semver corpus (`tests/semver_corpus.rs`,
+`compiled_constraint_agrees_with_matches_on_the_*_corpus`): every
+(constraint, version) pair must agree with `Constraint::matches`, or the test
+fails — this is the same corpus `semver.rs`'s existing tests already gate on,
+not a new one. Wired into `pool_optimizer.rs`'s two hot loops (require and
+conflict disjuncts), caching one `CompiledConstraint` per distinct constraint
+string exactly as `ConstraintGroups` already deduplicated by string; also
+hoisted the replace/conflict-parts computation (previously recomputed once
+per require disjunct bucket for no reason — same result every time) out to
+once per package/name.
+
+Same run shape as §2.6 (warm metadata cache, `RUST_LOG=vivace=debug`, single
+run):
+
+| Metric | §2.6 (PoolOptimizer, uncompiled) | After (compiled) |
+|---|---|---|
+| `optimize_by_identical_dependencies`'s grouping loop | 6.2 s (3.29M `matches` calls) | **0.79 s** (1.23M calls, 0 fallbacks to the slow path) |
+| Constraint compilation (`add_disjuncts`) | n/a | 54 ms |
+| **`optimize_by_identical_dependencies`'s selection loop** | 3.4 s | **3.3 s (now the largest single cost)** |
+| **Total (`resolved metadata and solved`)** | 14.1 s | **8.2–9.9 s** (`bench/run.sh`'s `update-warm`: 8.233 s ± 0.312 s, 5 runs) |
+
+The grouping loop got the ~8× the isolated `matches` micro-benchmark
+predicted (§2.6). Total wall-clock followed it down, roughly back to (very
+slightly better than) the pre-#76 baseline (~8.7 s) — `PoolOptimizer` is no
+longer a net regression, but it is not yet a net win either, and update-warm
+is still nowhere near the 2 s target.
+
+**Next hotspot, found by profiling rather than guessed at (the task's own
+instruction: report it, don't start a third optimisation):**
+`optimize_by_identical_dependencies`'s *second* loop — picking the preferred
+package within each identical-dependency group via
+`DefaultPolicy::select_preferred_packages` — is now the single largest cost
+in the whole `update`, at 3.3 s. It never touches `Constraint::matches` at
+all, so `CompiledConstraint` cannot help it: its own hot path is
+`DefaultPolicy::version_compare` → `crate::semver::compare` →
+`semver_php::greater_than`/`less_than`, each of which re-normalises both
+version strings and builds a fresh `SingleConstraint` per call — the exact
+same "re-parse on every comparison" shape `CompiledConstraint` just fixed for
+constraint matching, just on the *sorting* side instead of the *matching*
+side. Left as the next candidate rather than fixed here.
+
+Raw hyperfine JSON from this run: not committed (this session's
+`bench/results/viv.json`/`viv-update.json` were reverted with `git checkout`
+after recording the numbers above, matching the recorded `update-warm`
+baseline's own provenance note).
+
+### 2.8 After #76 third follow-up: `VersionKey: Ord`
+
+The hotspot §2.7 named, now fixed the same way `CompiledConstraint` fixed
+matching: `VersionKey` (`src/semver.rs`) implements `Ord` directly on its
+pre-parsed `Part`s (a plain part-by-part `version_compare`, folding to
+`Equal` when both sides are dev branches, exactly `crate::semver::compare`'s
+own documented gap). `DefaultPolicy::PackageRef` now carries a `VersionKey`
+parsed once per candidate instead of a `NormalizedVersion` re-parsed on every
+pairwise `crate::semver::compare` call inside `prune_to_best_version`.
+Equivalence proven two ways (`tests/semver_corpus.rs`): every pair within
+each `sort.json`/`rsort.json` row, and every pair within each recorded
+Packagist fixture package's own version history (`p2/**/*.json`, ~2,000
+versions across 41 files, stride-sampled to 80 per package so the two
+several-hundred-version outliers — `phpunit/phpunit`, `symfony/yaml` — don't
+dominate the test suite's own runtime).
+
+Same run shape as §2.6/§2.7:
+
+| Metric | §2.7 (compiled matching) | After (+ `VersionKey: Ord`) |
+|---|---|---|
+| `optimize_by_identical_dependencies`'s grouping loop | 0.79 s | 0.77 s (unchanged — this loop never sorted) |
+| **`optimize_by_identical_dependencies`'s selection loop** | 3.3 s | **0.15 s** |
+| **Total (`resolved metadata and solved`)** | 8.2 s ± 0.3 s | **5.1 s ± 0.3 s** (`update-warm`: 5.140 s ± 0.264 s, 5 runs) |
+
+`bench/run.sh bench/laravel viv`: install warm 40.3 ms, no-op 6.8 ms —
+unchanged. All `update`/`require`/`remove` byte-diff tests stay green
+(523/523 in the shared tree).
+
+**Still above the 2 s target. Next hotspot, by number, found by profiling
+(not fixed here):** with both loops of `optimize_by_identical_dependencies`
+now under a second combined (~0.9 s), the largest *remaining* piece inside
+`pool_builder::build` is turning the closure into `Package`s in the first
+place — `push_package_version`, called once per one of the 45,604 versions,
+parsing every require/conflict/provide/replace link's constraint via
+`semver::parse_constraint`: **863 ms**, measured directly
+(`RUST_LOG=vivace=debug`-adjacent temporary timing, this session). Unlike
+`pool_optimizer`'s `ConstraintGroups`, nothing caches this parse by string,
+so the same constraint text (`"php": "^7.2.5 || ^8.0.0"`, written near-
+identically by thousands of package versions) gets parsed thousands of
+times over. The single largest piece overall is the metadata closure fetch
+itself (**1.48 s** this run, 251 provider-file requests) — not an
+algorithmic target, `bench/results/profile.md` §2.2 already found a warm
+cache doesn't reliably beat a cold one there (Packagist's own round-trip
+latency dominates either way).
+
 ## 3. Ranked optimisation candidates
 
 | # | Candidate | Evidence | Expected saving |
 |---|---|---|---|
-| 1 | Prune the solver pool before rule generation (PoolOptimizer or equivalent) | §2.3: 4.81 s of 8.6 s (56%) is rule generation over a 45,604-package, 492,226-rule pool for a 101-package lock | Multi-second per `update`/`require` on any project with deep transitive deps; likely the difference between viv losing 7× to Composer and beating it |
+| 1 | ~~Prune the solver pool before rule generation (PoolOptimizer or equivalent)~~ — **landed (#76), see §2.6**: rule generation dropped 4.81 s → 0.58 s as predicted, but `PoolOptimizer` itself now costs ~9.5 s on this fixture, a net regression | §2.3: 4.81 s of 8.6 s (56%) is rule generation over a 45,604-package, 492,226-rule pool for a 101-package lock | Multi-second per `update`/`require` on any project with deep transitive deps; likely the difference between viv losing 7× to Composer and beating it |
 | 2 | Skip/cheapen the classmap-scan cache-hit path (91 hits still cost ~40-50ms) and reconsider mtime-checking the root package's own (never-cached) PSR-4 dirs | §1.3: 19 always-miss dirs cost 61 ms every `-o` run (45-61% of the 136 ms warm-o wall time); 91 hits still cost ~40-50ms | Tens of ms off `install -o`, the common case for a deployed build |
 | 3 | `link_tree`'s `create_dir_all` issues far more `mkdir` than needed | §1.5: 1309 `mkdir` calls, 176 errors (EEXIST), 10% of warm's syscall time (92 ms) across 101 packages | Single-digit ms on warm install; small but a clean, isolated fix |
 

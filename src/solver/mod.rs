@@ -19,14 +19,13 @@
 //! | `solver.rs` | `Solver.php` |
 //! | `transaction.rs` | `Transaction.php`/`LockTransaction.php` (result extraction only) |
 //! | `problem.rs` | a blunt stand-in for `Problem.php`/`SolverProblemsException.php` (full port is stage 5, composer/composer#42) |
-//!
-//! Skipped outright: `PoolOptimizer.php` (pure speed, no semantic effect,
-//! per the design doc).
+//! | `pool_optimizer.rs` | `PoolOptimizer.php`, run from `pool_builder::build`/`build_partial` between pool build and rule generation (#76) |
 
 pub mod decisions;
 pub mod policy;
 pub mod pool;
 pub mod pool_builder;
+pub mod pool_optimizer;
 pub mod problem;
 pub mod request;
 pub mod rule_set_generator;
@@ -61,7 +60,7 @@ pub async fn solve_full_update<T: Transport>(
     prefer_stable: bool,
     prefer_lowest: bool,
 ) -> Result<Vec<ResolvedPackage>> {
-    let built = pool_builder::build(repo, root).await?;
+    let built = pool_builder::build(repo, root, prefer_stable, prefer_lowest).await?;
     let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
     let installed =
         solver::solve(&policy, &built.pool, &built.request).map_err(anyhow::Error::from)?;
@@ -107,7 +106,7 @@ pub async fn solve_update<T: Transport>(
     prefer_stable: bool,
     prefer_lowest: bool,
 ) -> Result<UpdateResult> {
-    let built = pool_builder::build(repo, root).await?;
+    let built = pool_builder::build(repo, root, prefer_stable, prefer_lowest).await?;
     resolve(built, root, prefer_stable, prefer_lowest)
 }
 
@@ -157,7 +156,15 @@ pub async fn solve_partial_update<T: Transport>(
     let allow_names =
         pool_builder::expand_allow_list(&allow_list, &locked_requires, &root_require_names, mode);
 
-    let built = pool_builder::build_partial(repo, root, locked_by_name, &allow_names).await?;
+    let built = pool_builder::build_partial(
+        repo,
+        root,
+        locked_by_name,
+        &allow_names,
+        prefer_stable,
+        prefer_lowest,
+    )
+    .await?;
     resolve(built, root, prefer_stable, prefer_lowest)
 }
 

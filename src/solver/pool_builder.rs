@@ -4,12 +4,13 @@
 //! and `Repository/PlatformRepository.php`'s fixed platform packages.
 //!
 //! Full update only (`docs/resolver-design.md` stage 3): no partial-update
-//! allow-list, path-repo unlocking, security-advisory/filter-list pool
-//! filters or `PoolOptimizer` (skipped outright per the design doc: pure
-//! speed, no semantic effect). `Repository::load_closure` already does the
-//! breadth-first, batched metadata load `PoolBuilder::loadPackagesMarkedForLoading`
+//! allow-list or path-repo unlocking, security-advisory/filter-list pool
+//! filters. `Repository::load_closure` already does the breadth-first,
+//! batched metadata load `PoolBuilder::loadPackagesMarkedForLoading`
 //! performs in real Composer, so this only needs to turn that closure into
-//! `Package`s and filter/alias them.
+//! `Package`s and filter/alias them. `pool_optimizer::optimize` runs right
+//! after the raw pool is assembled, exactly where
+//! `PoolBuilder::buildPool`'s own `runOptimizer` call sits (#76).
 //!
 //! Not modelled: the root `composer.json` package itself as a *pool*
 //! member (`Installer::createRequest` also does
@@ -31,7 +32,9 @@ use serde_json::{Map, Value};
 
 use crate::repository::{ClosureRoot, DevAcceptance, PackageVersion, Repository, Transport};
 use crate::semver;
+use crate::solver::policy::DefaultPolicy;
 use crate::solver::pool::{Link, Package, Pool};
+use crate::solver::pool_optimizer;
 use crate::solver::request::Request;
 
 /// `BasePackage::STABILITIES` order, least to most stable... actually most
@@ -61,7 +64,12 @@ pub struct BuildResult {
 /// `Installer::doUpdate`'s first solve: root `require` and `require-dev`
 /// merged (`Installer.php:1061-1067`), against every package the
 /// repository's closure discovers.
-pub async fn build<T: Transport>(repo: &Repository<T>, root: &Value) -> Result<BuildResult> {
+pub async fn build<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    prefer_lowest: bool,
+) -> Result<BuildResult> {
     let require = string_map(root, "require");
     let require_dev = string_map(root, "require-dev");
 
@@ -127,20 +135,23 @@ pub async fn build<T: Transport>(repo: &Repository<T>, root: &Value) -> Result<B
     }
 
     let pool = Pool::new(packages);
-
-    let mut requires = Vec::with_capacity(require.len() + require_dev.len());
-    for (name, value) in require.iter().chain(require_dev.iter()) {
-        let raw = value.as_str().expect("checked as_str above");
-        requires.push(crate::solver::request::RootRequire {
-            name: name.to_ascii_lowercase(),
-            constraint: Some(semver::parse_constraint(raw)?),
-            pretty_constraint: raw.to_string(),
-        });
-    }
+    let request = Request {
+        requires: root_requires(&require, &require_dev)?,
+        fixed,
+    };
+    let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
+    let optimized = pool_optimizer::optimize(&request, pool, &policy)?;
+    // `optimize` only borrows `request`; `requires` is still ours to move
+    // into the final, remapped `Request` (`fixed` alone changes, `optimize`
+    // reindexes it to match the pruned pool).
+    let Request { requires, .. } = request;
 
     Ok(BuildResult {
-        pool,
-        request: Request { requires, fixed },
+        pool: optimized.pool,
+        request: Request {
+            requires,
+            fixed: optimized.fixed,
+        },
         minimum_stability,
         stability_flags: stability_flags
             .into_iter()
@@ -150,6 +161,26 @@ pub async fn build<T: Transport>(repo: &Repository<T>, root: &Value) -> Result<B
         platform_dev_reqs: extract_platform_requirements(&require_dev),
         platform_overrides,
     })
+}
+
+/// `Installer::requirePackagesForUpdate`'s non-`updateMirrors` branch: root
+/// `require` then `require-dev`, in that order (`Installer.php:1061-1067`).
+fn root_requires(
+    require: &Map<String, Value>,
+    require_dev: &Map<String, Value>,
+) -> Result<Vec<crate::solver::request::RootRequire>> {
+    let mut requires = Vec::with_capacity(require.len() + require_dev.len());
+    for (name, value) in require.iter().chain(require_dev.iter()) {
+        let raw = value
+            .as_str()
+            .with_context(|| format!("require {name}: constraint is not a string"))?;
+        requires.push(crate::solver::request::RootRequire {
+            name: name.to_ascii_lowercase(),
+            constraint: Some(semver::parse_constraint(raw)?),
+            pretty_constraint: raw.to_string(),
+        });
+    }
+    Ok(requires)
 }
 
 /// A partial update's allow-list mode (`Request::UPDATE_*`), deciding how
@@ -226,6 +257,8 @@ pub async fn build_partial<T: Transport>(
     root: &Value,
     locked_by_name: &HashMap<String, Value>,
     allow_names: &HashSet<String>,
+    prefer_stable: bool,
+    prefer_lowest: bool,
 ) -> Result<BuildResult> {
     let require = string_map(root, "require");
     let require_dev = string_map(root, "require-dev");
@@ -324,20 +357,20 @@ pub async fn build_partial<T: Transport>(
     }
 
     let pool = Pool::new(packages);
-
-    let mut requires = Vec::with_capacity(require.len() + require_dev.len());
-    for (name, value) in require.iter().chain(require_dev.iter()) {
-        let raw = value.as_str().expect("checked as_str above");
-        requires.push(crate::solver::request::RootRequire {
-            name: name.to_ascii_lowercase(),
-            constraint: Some(semver::parse_constraint(raw)?),
-            pretty_constraint: raw.to_string(),
-        });
-    }
+    let request = Request {
+        requires: root_requires(&require, &require_dev)?,
+        fixed,
+    };
+    let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
+    let optimized = pool_optimizer::optimize(&request, pool, &policy)?;
+    let Request { requires, .. } = request;
 
     Ok(BuildResult {
-        pool,
-        request: Request { requires, fixed },
+        pool: optimized.pool,
+        request: Request {
+            requires,
+            fixed: optimized.fixed,
+        },
         minimum_stability,
         stability_flags: stability_flags
             .into_iter()

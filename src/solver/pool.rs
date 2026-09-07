@@ -114,6 +114,15 @@ impl Pool {
         &self.packages
     }
 
+    /// Consumes the pool, returning its packages in insertion order.
+    /// `pool_optimizer::optimize` uses this to filter the vec and rebuild a
+    /// pruned [`Pool`] via [`Pool::new`], which reassigns fresh 1-based ids
+    /// (`Pool::setPackages`'s own re-numbering in
+    /// `PoolOptimizer::applyRemovalsToPool`).
+    pub fn into_packages(self) -> Vec<Package> {
+        self.packages
+    }
+
     pub fn len(&self) -> usize {
         self.packages.len()
     }

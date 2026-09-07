@@ -172,7 +172,24 @@ trips still make it noisy enough to report rather than gate in CI.
 |---|---|---|---|---|
 | 0.4.0 | laravel, 101 packages | 8.7 s | 1.2 s | 7.2x slower |
 | 0.4.0 | monolog, 3 packages | 0.20 s | 0.62 s | 3x faster |
+| 0.4.0 + #76 (`PoolOptimizer`) | laravel, 101 packages | 14.1 s | 1.2 s | 11.8x slower |
+| 0.4.0 + #76 (+ `CompiledConstraint`) | laravel, 101 packages | 8.2 s ± 0.3 s | 1.2 s | 6.9x slower |
+| 0.4.0 + #76 (+ `VersionKey: Ord`) | laravel, 101 packages | 5.1 s ± 0.3 s | 1.2 s | 4.3x slower |
 
-The Laravel gap is rule generation over a 45,604-version pool; see
-`profile.md` and #76. Record this table for every release next to the install
-numbers.
+The Laravel gap was rule generation over a 45,604-version pool; #76 ports
+`PoolOptimizer` to prune that pool before rule generation runs, and it works
+as designed (rule generation 4.81 s → 0.58 s, pool 45,604 → 5,169 packages),
+but `PoolOptimizer` itself then cost ~9.5 s, more than it saved. Two
+follow-ups since: compiling each constraint's numeric bounds once instead of
+re-parsing them on every `matches` call (`CompiledConstraint`, grouping loop
+6.2 s → 0.8 s), then giving `VersionKey` an `Ord` so `DefaultPolicy` sorts on
+a pre-parsed key instead of calling `crate::semver::compare` per pair
+(selection loop 3.3 s → 0.15 s). Net effect: 14.1 s → 5.1 s, better than the
+pre-#76 baseline for the first time, but still well above the 2 s target.
+See `profile.md` §2.8 for the breakdown and the next hotspot found by
+profiling (parsing every one of the pool's 45,604 packages' require/conflict
+links, uncached, ~0.86 s — the same "re-parse the same string repeatedly"
+shape both fixes above already addressed elsewhere, not yet touched here;
+the metadata closure fetch itself, ~1.5 s, is now the single largest piece
+and is network-bound, not algorithmic). Record this table for every release
+next to the install numbers.

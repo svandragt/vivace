@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use vivace::semver::{
-    compare, have_intersections, is_subset_of, normalize, normalize_branch, parse_constraint,
-    parse_numeric_alias_prefix, stability,
+    CompiledConstraint, compare, have_intersections, is_subset_of, normalize, normalize_branch,
+    parse_constraint, parse_numeric_alias_prefix, parse_version_key, stability,
 };
 
 fn fixture(name: &str) -> Vec<Value> {
@@ -350,4 +350,150 @@ fn non_ascii_constraint_errors_instead_of_panicking() {
 fn non_ascii_version_errors_instead_of_panicking() {
     assert!(normalize("v-Լ,~").is_err());
     assert!(normalize("Լ").is_err());
+}
+
+// #76 follow-up: `CompiledConstraint` (`src/semver.rs`) must agree with
+// `Constraint::matches` on every (constraint, version) pair either corpus
+// fixture exercises, since it exists purely to answer the same question
+// faster — any divergence here is a wrong solve waiting to happen, not a
+// style nit. Skips a version that is a dev branch (`CompiledConstraint`
+// only compiles the numeric side; see `src/semver.rs`'s module doc), since
+// callers already fall back to `Constraint::matches` for those.
+fn assert_compiled_matches_agree(constraint_str: &str, version: &str) {
+    let normalized = normalize(version).unwrap_or_else(|e| panic!("{version}: {e}"));
+    let key = parse_version_key(&normalized);
+    let constraint =
+        parse_constraint(constraint_str).unwrap_or_else(|e| panic!("{constraint_str}: {e}"));
+    let compiled = CompiledConstraint::compile(&constraint);
+    let Some(compiled_result) = compiled.matches(&key) else {
+        return;
+    };
+    let direct_result = constraint.matches(&normalized);
+    assert_eq!(
+        compiled_result, direct_result,
+        "{version} against {constraint_str}: compiled={compiled_result} direct={direct_result}"
+    );
+}
+
+#[test]
+fn compiled_constraint_agrees_with_matches_on_the_satisfies_corpus() {
+    for row in fixture("satisfies.json") {
+        let (version, constraint_str) = (s(&row[1]), s(&row[2]));
+        assert_compiled_matches_agree(constraint_str, version);
+    }
+}
+
+#[test]
+fn compiled_constraint_agrees_with_matches_on_the_satisfied_by_corpus() {
+    for row in fixture("satisfied_by.json") {
+        let constraint_str = s(&row[0]);
+        for version in row[1].as_array().unwrap().iter().map(s) {
+            assert_compiled_matches_agree(constraint_str, version);
+        }
+    }
+}
+
+// #76 second follow-up: `VersionKey`'s `Ord` (`src/semver.rs`) must agree
+// with `crate::semver::compare` on every pair it could ever be asked about,
+// since `DefaultPolicy` now sorts on it directly instead of calling
+// `compare` — a wrong tie-break here reorders which version wins, not just
+// which one runs slower.
+fn assert_version_key_ord_agrees(a: &str, b: &str) {
+    let na = normalize(a).unwrap_or_else(|e| panic!("{a}: {e}"));
+    let nb = normalize(b).unwrap_or_else(|e| panic!("{b}: {e}"));
+    let (ka, kb) = (parse_version_key(&na), parse_version_key(&nb));
+    assert_eq!(
+        ka.cmp(&kb),
+        compare(&na, &nb),
+        "VersionKey ordering of {a} vs {b} disagrees with compare"
+    );
+}
+
+// SemverTest::sortProvider: every pair within a row's own version list,
+// not just the adjacent ones the ascending/descending columns already
+// imply — a stronger check than re-deriving `sort()`'s own assertion.
+#[test]
+fn version_key_ord_agrees_with_compare_on_the_sort_corpus() {
+    for row in fixture("sort.json") {
+        let versions: Vec<&str> = row[0].as_array().unwrap().iter().map(s).collect();
+        for (i, &a) in versions.iter().enumerate() {
+            for &b in &versions[i + 1..] {
+                assert_version_key_ord_agrees(a, b);
+            }
+        }
+    }
+}
+
+// Every pair of versions *within each package's own recorded history*
+// (`tests/fixtures/packagist/repo.packagist.org/p2/**`): a much larger,
+// real-world corpus than the handful of `composer/semver`'s own unit-test
+// rows, exercising version shapes actual packages ship (patch releases,
+// `-dev` suffixes, branch aliases) rather than synthetic ones. Scoped to
+// one package's own versions at a time (not a global all-pairs across every
+// package in the fixture set): that's the only comparison `DefaultPolicy`
+// ever actually makes (candidates for the same require), so it is both the
+// faithful equivalence check and, at ~2,000 versions across 41 files, the
+// difference between a sub-second test and a multi-minute one.
+#[test]
+fn version_key_ord_agrees_with_compare_on_recorded_packagist_versions() {
+    // A handful of packages (`phpunit/phpunit`, `symfony/yaml`) have
+    // hundreds of releases; an all-pairs check over every one of them would
+    // dominate the whole test suite's runtime for no extra confidence over
+    // a stride-sampled subset spanning the same range.
+    const MAX_VERSIONS_PER_PACKAGE: usize = 80;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/packagist/repo.packagist.org/p2");
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    assert!(
+        files.len() > 10,
+        "fixture corpus looks too small: {}",
+        files.len()
+    );
+
+    let mut pairs_checked = 0usize;
+    for path in files {
+        let content =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let doc: Value =
+            serde_json::from_str(&content).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let Some(packages) = doc.get("packages").and_then(Value::as_object) else {
+            continue;
+        };
+        for entries in packages.values() {
+            let mut versions: Vec<&str> = entries
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.get("version").and_then(Value::as_str))
+                .collect();
+            versions.sort_unstable();
+            versions.dedup();
+            if versions.len() > MAX_VERSIONS_PER_PACKAGE {
+                let stride = versions.len().div_ceil(MAX_VERSIONS_PER_PACKAGE);
+                versions = versions.iter().copied().step_by(stride).collect();
+            }
+            for (i, &a) in versions.iter().enumerate() {
+                for &b in &versions[i + 1..] {
+                    assert_version_key_ord_agrees(a, b);
+                    pairs_checked += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        pairs_checked > 1000,
+        "too few pairs checked: {pairs_checked}"
+    );
 }
