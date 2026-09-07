@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use futures::stream::{Stream, StreamExt};
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{StatusCode, Url};
+use serde_json::Value;
 use sha1::{Digest, Sha1};
 
 use crate::auth::Auth;
@@ -270,6 +271,75 @@ impl Fetcher {
                     last_modified,
                 })
             }
+        }
+    }
+
+    /// `POST url` with `packages[]=<name>` form fields, for
+    /// `audit::run`'s single call to `packagist.org/api/security-advisories/`
+    /// (`ComposerRepository::getSecurityAdvisories`'s plain, non-lazy path).
+    /// Retries the same way a dist download does; no redirects are expected
+    /// from this endpoint, so unlike `get` this doesn't follow any.
+    pub async fn post_json(&self, label: &str, url: &Url, packages: &[String]) -> Result<Value> {
+        require_https(label, url, self.secure_http)?;
+        if self.offline {
+            bail!(
+                "{label}: Network disabled, request canceled: {}",
+                redact(url)
+            );
+        }
+        let form: Vec<(&str, &str)> = packages
+            .iter()
+            .map(|name| ("packages[]", name.as_str()))
+            .collect();
+        let response = self.send_post_with_retries(label, url, &form).await?;
+        let response = response
+            .error_for_status()
+            .with_context(|| format!("posting to {}", redact(url)))?;
+        let body = response.bytes().await?;
+        serde_json::from_slice(&body).with_context(|| format!("parsing JSON from {}", redact(url)))
+    }
+
+    /// `POST url` once, retrying a transient failure the same way
+    /// `send_with_retries` does for a `GET`.
+    async fn send_post_with_retries(
+        &self,
+        label: &str,
+        url: &Url,
+        form: &[(&str, &str)],
+    ) -> Result<reqwest::Response> {
+        let mut attempt = 0u32;
+        loop {
+            let mut request = self.client.post(url.clone()).form(form);
+            if let Some((name, value)) = self.auth.header_for(url) {
+                request = request.header(name, value);
+            }
+            for (name, value) in self.auth.custom_headers_for(url) {
+                request = request.header(name, value);
+            }
+            let outcome = request.send().await;
+            let retryable = match &outcome {
+                Ok(response) => should_retry(Ok(response.status())),
+                Err(err) => (err.is_connect() || err.is_timeout()) && should_retry(Err(())),
+            };
+            if !retryable || attempt >= MAX_RETRIES {
+                return outcome.map_err(|err| {
+                    anyhow::anyhow!("{} posting to {}", err.without_url(), redact(url))
+                });
+            }
+            attempt += 1;
+            let delay = outcome
+                .as_ref()
+                .ok()
+                .and_then(|response| retry_after(response.headers()))
+                .unwrap_or_else(|| (self.backoff)(attempt));
+            tracing::debug!(
+                label,
+                url = %redact(url),
+                attempt,
+                delay_ms = delay.as_millis(),
+                "retrying advisories POST"
+            );
+            tokio::time::sleep(delay).await;
         }
     }
 

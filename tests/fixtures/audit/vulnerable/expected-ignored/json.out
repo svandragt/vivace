@@ -1,0 +1,30 @@
+{
+    "advisories": [],
+    "ignored-advisories": {
+        "monolog/monolog": [
+            {
+                "advisoryId": "PKSA-dmw8-jd8k-q3c6",
+                "packageName": "monolog/monolog",
+                "affectedVersions": ">=1.8.0,<1.12.0",
+                "title": "Header injection in NativeMailerHandler",
+                "cve": null,
+                "link": "https://github.com/Seldaek/monolog/pull/448#issuecomment-68208704",
+                "reportedAt": "2014-12-29T00:00:00+00:00",
+                "sources": [
+                    {
+                        "name": "GitHub",
+                        "remoteId": "GHSA-f57v-q966-7fh6"
+                    },
+                    {
+                        "name": "FriendsOfPHP/security-advisories",
+                        "remoteId": "monolog/monolog/2014-12-29-1.yaml"
+                    }
+                ],
+                "severity": "low",
+                "ignoreReason": "we accept this risk"
+            }
+        ]
+    },
+    "abandoned": [],
+    "filter": []
+}

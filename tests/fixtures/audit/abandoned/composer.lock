@@ -1,0 +1,31 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "2d2b5f61dc4f3fc796dd2aab40f0a464",
+    "packages": [
+        {
+            "name": "swiftmailer/swiftmailer",
+            "version": "6.3.0",
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/swiftmailer/swiftmailer/zipball/be1955e8a1541b81020eda0a4e264c561e37f0f",
+                "reference": "be1955e8a1541b81020eda0a4e264c561e37f0f",
+                "shasum": ""
+            },
+            "type": "library",
+            "abandoned": "symfony/mailer"
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}

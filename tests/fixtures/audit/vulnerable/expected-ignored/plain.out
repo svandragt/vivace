@@ -1,0 +1,10 @@
+Found 1 ignored security vulnerability advisory affecting 1 package:
+Package: monolog/monolog
+Severity: low
+Advisory ID: PKSA-dmw8-jd8k-q3c6
+CVE: NO CVE
+Title: Header injection in NativeMailerHandler
+URL: https://github.com/Seldaek/monolog/pull/448#issuecomment-68208704
+Affected versions: >=1.8.0,<1.12.0
+Reported at: 2014-12-29T00:00:00+00:00
+Ignore reason: we accept this risk

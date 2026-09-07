@@ -1,0 +1,6 @@
+{
+    "name": "vivace/audit-fixture",
+    "require": {
+        "monolog/monolog": "1.10.0"
+    }
+}

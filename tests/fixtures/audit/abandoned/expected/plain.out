@@ -1,0 +1,3 @@
+No security vulnerability advisories found.
+Found 1 abandoned package:
+swiftmailer/swiftmailer is abandoned. Use symfony/mailer instead.

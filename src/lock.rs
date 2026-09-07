@@ -568,6 +568,10 @@ pub struct Config {
     /// here — [`Config`] only ever sees the project's own composer.json.
     #[serde(rename = "preferred-install")]
     pub preferred_install: PreferredInstall,
+    /// `viv audit`'s config-level ignore list and abandoned-package policy
+    /// (`Config.php`'s `'audit' => ['ignore' => [], 'abandoned' => 'fail']`).
+    #[serde(default)]
+    pub audit: AuditConfig,
 }
 
 impl Default for Config {
@@ -587,7 +591,78 @@ impl Default for Config {
             secure_http: true,
             allow_plugins: AllowPlugins::None,
             preferred_install: PreferredInstall::default(),
+            audit: AuditConfig::default(),
         }
+    }
+}
+
+/// `config.audit`: `viv audit`'s ignore list and abandoned-package policy.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AuditConfig {
+    pub ignore: AuditIgnore,
+    pub abandoned: AbandonedPolicy,
+}
+
+/// `config.audit.ignore`: either a bare list of advisory IDs/package names
+/// (no reason recorded), or a map of the same keyed to a reason string
+/// (`null` allowed, same as no reason).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum AuditIgnore {
+    List(Vec<String>),
+    Map(std::collections::HashMap<String, Option<String>>),
+}
+
+impl Default for AuditIgnore {
+    fn default() -> Self {
+        AuditIgnore::List(Vec::new())
+    }
+}
+
+impl AuditIgnore {
+    /// `Some(reason)` when `key` (a package name, advisory ID, CVE or
+    /// remote ID — `Auditor::processAdvisories` checks all four) is
+    /// ignored; the inner `Option` is the configured reason, if any.
+    pub fn reason_for(&self, key: &str) -> Option<Option<String>> {
+        match self {
+            AuditIgnore::List(ids) => ids.iter().any(|id| id == key).then_some(None),
+            AuditIgnore::Map(map) => map.get(key).cloned(),
+        }
+    }
+}
+
+/// `config.audit.abandoned`/`--abandoned`: how `viv audit` treats an
+/// abandoned package. Composer defaults this to `fail`, unlike `install`'s
+/// own abandoned handling, which only ever warns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AbandonedPolicy {
+    Ignore,
+    Report,
+    #[default]
+    Fail,
+}
+
+impl AbandonedPolicy {
+    /// `--abandoned`'s three accepted values; anything else is the same
+    /// error message `AuditCommand::execute` throws.
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "ignore" => Ok(AbandonedPolicy::Ignore),
+            "report" => Ok(AbandonedPolicy::Report),
+            "fail" => Ok(AbandonedPolicy::Fail),
+            _ => bail!("--abandoned must be one of ignore, report, fail."),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AbandonedPolicy {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        AbandonedPolicy::parse(&value).map_err(serde::de::Error::custom)
     }
 }
 

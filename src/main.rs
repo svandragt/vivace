@@ -7,9 +7,11 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+use vivace::audit::{self, AuditArgs};
 use vivace::install::{self, CacheArgs, DumpAutoloadArgs, InstallArgs};
 use vivace::normalize::{self, NormalizeArgs};
 use vivace::require::{self, RemoveArgs, RequireArgs};
+use vivace::show::{self, OutdatedArgs, ShowArgs};
 use vivace::solver::problem::SolverError;
 use vivace::update::{self, UpdateArgs};
 
@@ -90,6 +92,17 @@ enum Command {
     Normalize(NormalizeArgs),
     /// Cache maintenance: prune stale entries, or remove the cache outright.
     Cache(CacheArgs),
+    /// Check installed (or locked) packages for security vulnerability
+    /// advisories and abandoned packages.
+    Audit(AuditArgs),
+    /// List installed packages, or inspect one (`--tree`/`-t` for the
+    /// require tree).
+    Show(ShowArgs),
+    /// `show --tree`'s spelling (#86).
+    Tree(ShowArgs),
+    /// List installed packages with a newer version available
+    /// (`show --latest --outdated`).
+    Outdated(OutdatedArgs),
 }
 
 fn main() -> ExitCode {
@@ -137,6 +150,37 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Command::Audit(args) => match audit::run(&args) {
+            Ok(status) => ExitCode::from(status),
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::Show(args) => match show::run(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::Tree(args) => match show::run_tree(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::Outdated(args) => {
+            match show::run_outdated(&args, cli.cache_dir.as_deref(), offline) {
+                Ok(true) => ExitCode::from(1),
+                Ok(false) => ExitCode::SUCCESS,
+                Err(err) => {
+                    err_out(&format!("{err:#}"));
+                    ExitCode::from(1)
+                }
+            }
+        }
     }
 }
 

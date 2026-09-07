@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod auth;
 pub mod autoload;
 pub mod bin;
@@ -13,6 +14,7 @@ pub mod repository;
 pub mod require;
 pub mod scripts;
 pub mod semver;
+pub mod show;
 pub mod solver;
 pub mod source;
 pub mod store;
