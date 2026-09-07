@@ -102,3 +102,56 @@ viv 0.6.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 run
 | craftcms/craft | 118 | viv | 3.562 | 0.124 | 0.008 | n/a |
 
 - craftcms/craft/viv: warning: viv update-warm failed, skipping (see bench/results/README.md)
+
+## 2026-09-07T18:57:05Z
+
+viv 0.6.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 runs each.
+
+| Project | Packages | Tool | Cold | Warm | No-op | Update-warm |
+|---|---|---|---|---|---|---|
+| laravel/laravel | 109 | composer | 7.952 | 1.479 | 0.872 | 1.763 |
+| laravel/laravel | 109 | riff | 4.146 | 0.534 | 0.395 | n/a |
+| laravel/laravel | 109 | viv | 3.036 | 0.070 | 0.008 | 1.768 |
+
+- laravel/laravel/riff: warning: riff update-warm failed, skipping (see bench/results/README.md)
+| symfony/demo | 153 | composer | 9.658 | 1.340 | 0.482 | 1.770 |
+| symfony/demo | 153 | riff | 2.695 | 0.316 | 0.248 | 1.105 |
+| symfony/demo | 153 | viv | 2.642 | 0.051 | 0.009 | 1.825 |
+| drupal/recommended-project | 68 | composer | 9.085 | 2.060 | 0.412 | 2.848 |
+| drupal/recommended-project | 68 | riff | 4.023 | 1.259 | 1.295 | n/a |
+| drupal/recommended-project | 68 | viv | 3.890 | 0.302 | 0.015 | 1.137 |
+
+- drupal/recommended-project/riff: warning: riff update-warm failed, skipping (see bench/results/README.md)
+| roots/bedrock | 73 | composer | 36.205 | 1.568 | 0.554 | 2.450 |
+| roots/bedrock | 73 | riff | 3.853 | 0.480 | 0.221 | n/a |
+| roots/bedrock | 73 | viv | 3.443 | 0.065 | 0.095 | 1.556 |
+
+- roots/bedrock/riff: warning: riff update-warm failed, skipping (see bench/results/README.md)
+| composer/composer | 36 | composer | 4.437 | 0.812 | 0.404 | 0.650 |
+| composer/composer | 36 | riff | 1.184 | 0.237 | 0.251 | 0.246 |
+| composer/composer | 36 | viv | 1.316 | 0.012 | 0.005 | 0.385 |
+| phpunit/phpunit | 26 | composer | 4.428 | 0.872 | 0.504 | 0.699 |
+| phpunit/phpunit | 26 | riff | 8.025 | 9.848 | 0.210 | n/a |
+| phpunit/phpunit | 26 | viv | 1.131 | 0.053 | 0.004 | 0.258 |
+
+- phpunit/phpunit/riff: warning: riff update-warm failed, skipping (see bench/results/README.md)
+| slimphp/Slim-Skeleton | 57 | composer | 5.875 | 1.056 | 0.437 | 0.759 |
+| slimphp/Slim-Skeleton | 57 | riff | 1.766 | 0.215 | 0.211 | n/a |
+| slimphp/Slim-Skeleton | 57 | viv | 1.915 | 0.039 | 0.005 | 0.344 |
+
+- slimphp/Slim-Skeleton/riff: warning: riff update-warm failed, skipping (see bench/results/README.md)
+| yiisoft/yii2-app-basic | 93 | composer | 9.832 | 1.202 | 0.494 | n/a |
+| yiisoft/yii2-app-basic | 93 | riff | n/a | n/a | n/a | n/a |
+| yiisoft/yii2-app-basic | 93 | viv | n/a | n/a | n/a | n/a |
+
+- yiisoft/yii2-app-basic/composer: -p1: failed to apply patch to src/Iterator.php: error applying hunk #1
+- yiisoft/yii2-app-basic/riff: run.sh: riff install failed:
+- yiisoft/yii2-app-basic/viv: -p1: failed to apply patch to src/Iterator.php: error applying hunk #1
+| statamic/statamic | 160 | composer | 10.885 | 2.142 | 1.146 | 2.462 |
+| statamic/statamic | 160 | riff | 3.648 | 0.732 | 0.559 | n/a |
+| statamic/statamic | 160 | viv | 3.682 | 0.121 | 0.010 | 4.656 |
+
+- statamic/statamic/riff: warning: riff update-warm failed, skipping (see bench/results/README.md)
+| craftcms/craft | 118 | composer | 8.939 | 1.822 | 1.112 | 2.152 |
+| craftcms/craft | 118 | riff | 4.186 | 0.645 | 0.620 | 0.606 |
+| craftcms/craft | 118 | viv | 3.608 | 0.125 | 0.008 | 1.367 |
