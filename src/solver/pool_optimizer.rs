@@ -25,7 +25,7 @@
 //!   branch (`getUpdateAllowList()` non-empty) — so a full update never
 //!   populates `getLockedPackages()` either, and this pass's own guard
 //!   (`count($request->getLockedPackages()) === 0`) already no-ops for the
-//!   case this crate exercises today. [`optimize_impossible_packages_away`]
+//!   case this crate exercises today. `optimize_impossible_packages_away`
 //!   is still ported in full (a locked-package index list parameter) so the
 //!   behaviour exists the day `Request` grows one; this module's own tests
 //!   exercise it directly with a non-empty list.
