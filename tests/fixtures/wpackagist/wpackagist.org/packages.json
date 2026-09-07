@@ -1,0 +1,1 @@
+{"packages":{},"providers-url":"/p/%package%$%hash%.json","provider-includes":{"p/providers-fixture$%hash%.json":{"sha256":"3f176dbc597bb4dd16f721b0f35a88d1be73ea614f2519876d8e2a6853817c3d"}},"available-package-patterns":["wpackagist-plugin/*","wpackagist-theme/*"]}

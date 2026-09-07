@@ -675,3 +675,79 @@ async fn update_dispatches_update_scripts_not_install_scripts() {
         "pre-update-cmd must fire before post-update-cmd: {stdout}"
     );
 }
+
+/// #105: wpackagist.org is a real v1 repository whose provider files are
+/// non-minified (object-keyed by version label, `tests/repository.rs`'s
+/// `v1_provider_file_object_keyed_by_version_label` fixture covers that
+/// shape hermetically). This is the live-network half: `viv update` against
+/// the real wpackagist.org must byte-match real Composer's own lock, the
+/// same "record once, gate on network" split as `tests/install_e2e.rs`.
+#[tokio::test]
+async fn viv_update_reproduces_composers_lock_against_real_wpackagist() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping viv_update_reproduces_composers_lock_against_real_wpackagist: set \
+             VIVACE_TEST_NETWORK=1 to hit the real wpackagist.org"
+        );
+        return;
+    }
+    if Command::new("composer").arg("--version").output().is_err() {
+        eprintln!(
+            "skipping viv_update_reproduces_composers_lock_against_real_wpackagist: composer \
+             is not on PATH"
+        );
+        return;
+    }
+
+    let root = serde_json::json!({
+        "name": "vivace/wpackagist-fixture",
+        "repositories": [
+            {"type": "composer", "url": "https://wpackagist.org"}
+        ],
+        "require": {"wpackagist-plugin/akismet": "*"}
+    });
+    let composer_json = serde_json::to_vec_pretty(&root).unwrap();
+
+    let project_dir = tempfile::tempdir().unwrap();
+    fs_err::write(project_dir.path().join("composer.json"), &composer_json).unwrap();
+    let composer_home = tempfile::tempdir().unwrap();
+
+    let status = Command::new("composer")
+        .args(["update", "--no-install", "--no-plugins"])
+        .current_dir(project_dir.path())
+        .env("COMPOSER_HOME", composer_home.path())
+        .env("COMPOSER_CACHE_DIR", composer_home.path().join("cache"))
+        .status()
+        .unwrap();
+    assert!(status.success(), "composer update failed");
+    let want = fs_err::read_to_string(project_dir.path().join("composer.lock")).unwrap();
+
+    let auth = vivace::auth::Auth::load(project_dir.path()).unwrap();
+    let fetcher = vivace::fetch::Fetcher::new(auth).unwrap();
+    let transport = vivace::repository::HttpTransport { fetcher: &fetcher };
+    let cache = tempfile::tempdir().unwrap();
+    let repo = Repository::from_composer_json(&root, cache.path(), transport)
+        .await
+        .unwrap();
+    let result = solver::solve_update(&repo, &root, false, false)
+        .await
+        .unwrap();
+    let options = vivace::lock_writer::LockOptions {
+        minimum_stability: result.minimum_stability,
+        stability_flags: &result.stability_flags,
+        prefer_stable: result.prefer_stable,
+        prefer_lowest: result.prefer_lowest,
+        platform_reqs: &result.platform_reqs,
+        platform_dev_reqs: &result.platform_dev_reqs,
+        platform_overrides: &result.platform_overrides,
+        aliases: &result.aliases,
+    };
+    let got =
+        vivace::lock_writer::write(&result.non_dev, Some(&result.dev), &options, &composer_json)
+            .unwrap();
+
+    assert_eq!(
+        got, want,
+        "viv update's lock does not byte-match Composer's against real wpackagist.org"
+    );
+}

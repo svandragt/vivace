@@ -1123,6 +1123,15 @@ fn parse_provider_versions(data: &Value, name: &str) -> Result<Vec<PackageVersio
     else {
         return Ok(Vec::new());
     };
+    // A v1 (non-minified) provider file, wpackagist's included, keys each
+    // entry by version label rather than a plain list, the same shape as an
+    // inline `packages[name]` entry (`ComposerRepository.php`'s foreach over
+    // `$packages['packages']` iterates a PHP array either way, so this split
+    // is only needed because JSON objects and arrays aren't interchangeable
+    // in Rust).
+    if let Some(versions) = entry.as_object() {
+        return versions.values().map(PackageVersion::from_value).collect();
+    }
     let list = entry
         .as_array()
         .with_context(|| format!("{name}: provider entry is not a list"))?

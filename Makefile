@@ -1,7 +1,7 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install install-shim build test check bench bench-check profile hooks fixtures fmt record-packagist record-satis compat compat-refresh dist fuzz coverage changelog
+.PHONY: install install-shim build test check bench bench-check profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
 
 install:
 	cargo install --path . --locked --bin viv
@@ -112,3 +112,6 @@ coverage:
 # make changelog MILESTONE="0.6 adoption: client projects and update speed" VERSION=0.6.0
 changelog:
 	scripts/changelog.sh "$(MILESTONE)" "$(VERSION)" --write
+
+record-wpackagist:
+	./tests/fixtures/wpackagist/record.sh

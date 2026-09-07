@@ -32,6 +32,10 @@ fn satis_root(name: &str) -> PathBuf {
         .join(name)
 }
 
+fn wpackagist_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wpackagist/wpackagist.org")
+}
+
 /// Serves recorded/hand-built fixtures by mapping a URL's host onto a root
 /// directory and its path onto a file under that root, and counts every
 /// call so tests can assert a warm cache makes none. A test with a single
@@ -288,6 +292,29 @@ async fn v1_providers_url_cache_hit_makes_no_further_requests() {
         "only packages.json's own Last-Modified revalidation, no provider-includes/provider \
          file requests once their sha256 matches the cache"
     );
+}
+
+// wpackagist.org (#105) is a v1 repository whose provider files aren't
+// minified: each `packages[name]` entry is an object keyed by version
+// label, the same shape as an inline `packages` entry, not the plain list
+// every other recorded/hand-built v1 fixture here happens to use.
+#[tokio::test]
+async fn v1_provider_file_object_keyed_by_version_label() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport =
+        FixtureTransport::with_roots([("wpackagist.org".to_string(), wpackagist_root())]);
+    let repo = Repository::load("https://wpackagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let versions = repo
+        .load_package("wpackagist-plugin/akismet", DevAcceptance::NonDevOnly)
+        .await
+        .unwrap();
+    let versions_summary: Vec<&str> = versions.iter().map(|v| v.version.as_str()).collect();
+    assert_eq!(versions.len(), 2, "{versions_summary:?}");
+    assert!(versions_summary.contains(&"2.2.5"));
+    assert!(versions_summary.contains(&"2.2.6"));
 }
 
 #[tokio::test]
