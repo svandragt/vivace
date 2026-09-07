@@ -643,7 +643,7 @@ impl ComposerSource {
                     HashKind::Sha256,
                 )
                 .await?;
-                parse_provider_versions(data, name)?
+                parse_provider_versions(data, name).await?
             }
             Provider::Eager { packages } => packages.get(name).cloned().unwrap_or_default(),
         };
@@ -689,7 +689,7 @@ impl ComposerSource {
         requests.fetch_add(1, Ordering::Relaxed);
         match get_cached_json(transport, &url, &cache_path).await? {
             CachedJson::NotFound => Ok(Vec::new()),
-            CachedJson::Data(data) => parse_provider_versions(data, name),
+            CachedJson::Data(data) => parse_provider_versions(data, name).await,
         }
     }
 }
@@ -1593,7 +1593,24 @@ fn parse_inline_versions(name: &str, inline: &Value) -> Result<Vec<PackageVersio
 /// holds is moved into a [`PackageVersion`] via
 /// [`PackageVersion::from_owned_value`] rather than cloned out of a
 /// borrowed `data`.
-fn parse_provider_versions(mut data: Value, name: &str) -> Result<Vec<PackageVersion>> {
+///
+/// The one seam every source's lazy/v1 branch funnels through
+/// (`ComposerSource::fetch_lazy`, `ComposerSource::load_versions`'s
+/// `Provider::Providers` arm) to turn a provider file into
+/// `Vec<PackageVersion>`: `expand_minified` plus one
+/// `PackageVersion::from_owned_value` per entry is real CPU work — a big
+/// provider file (laravel/framework.json's ~1000 versions) runs it
+/// inline on the single-threaded fetch loop, blocking every other
+/// in-flight request behind it. `spawn_blocking` moves it to the runtime's
+/// blocking pool so the loop keeps polling while it runs.
+async fn parse_provider_versions(data: Value, name: &str) -> Result<Vec<PackageVersion>> {
+    let name = name.to_string();
+    tokio::task::spawn_blocking(move || parse_provider_versions_sync(data, &name))
+        .await
+        .context("provider parse task panicked")?
+}
+
+fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<PackageVersion>> {
     let Some(entry) = data
         .get_mut("packages")
         .and_then(Value::as_object_mut)
