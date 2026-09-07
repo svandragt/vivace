@@ -4,6 +4,13 @@ Installs a corpus of real-world projects with both Composer and `viv`, and
 byte-diffs the resulting `vendor/`. Run before tagging a release
 (`JOURNAL.md` records the result). See #49 for the design.
 
+The GitHub Actions workflow also runs the sweep every Monday, using the run
+ID as the random sample's seed, in addition to running on a tag push or
+manual dispatch. Every run uploads the report and per-project logs as a
+`compat-report` artifact retained for 90 days; a scheduled run that fails
+opens or updates a `compat` issue titled "Compat sweep drift: <date>" with a
+link to the run and the report's first 40 lines.
+
 Two sources feed the sweep:
 
 - A pinned corpus (`compat/corpus.toml`): ten popular projects, each pinned

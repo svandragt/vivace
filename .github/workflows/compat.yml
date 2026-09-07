@@ -3,6 +3,8 @@ name: Compatibility sweep
 on:
   push:
     tags: ["v*"]
+  schedule:
+    - cron: '17 4 * * 1'
   workflow_dispatch:
     inputs:
       seed:
@@ -24,10 +26,52 @@ jobs:
           enable-cache: true
       - run: make compat
         env:
-          COMPAT_SEED: ${{ inputs.seed }}
+          COMPAT_SEED: ${{ github.event_name == 'schedule' && github.run_id || inputs.seed }}
           COMPAT_RANDOM: ${{ inputs.random }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: compat-results
-          path: compat/results/*.md
+          name: compat-report
+          retention-days: 90
+          path: |
+            compat/results/*.md
+            compat/results/*-logs/
+      - if: always() && github.event_name == 'schedule' && failure()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const fs = require('fs');
+            const date = new Date().toISOString().slice(0, 10);
+            const title = `Compat sweep drift: ${date}`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const report = fs.readdirSync('compat/results').find(f => f.endsWith('.md'));
+            const reportBody = report
+              ? fs.readFileSync(`compat/results/${report}`, 'utf8').split('\n').slice(0, 40).join('\n')
+              : '(no report found)';
+            const body = `Scheduled compat sweep failed: ${runUrl}\n\n\`\`\`\n${reportBody}\n\`\`\``;
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'compat',
+            });
+            const existing = issues.find(i => i.title.startsWith('Compat sweep drift'));
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                labels: ['compat'],
+                body,
+              });
+            }
