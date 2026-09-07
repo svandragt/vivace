@@ -23,8 +23,11 @@ use serde_json::Value;
 
 use crate::auth::Auth;
 use crate::fetch::Fetcher;
+use crate::install::{self, InstallArgs};
+use crate::link::LinkMode;
 use crate::normalize;
 use crate::repository::{HttpTransport, Repository};
+use crate::scripts;
 use crate::solver::{self, pool_builder::UpdateAllowMode, transaction::ResolvedPackage};
 
 /// `viv update` flags: `docs/resolver-design.md` stages 4 (full update) and
@@ -84,15 +87,18 @@ pub struct UpdateArgs {
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
-    /// Reserved: `update` does not run lifecycle scripts yet, so there is
-    /// nothing to skip. Accepted (like Composer's own flag) so it can sit
-    /// alongside `install`'s flags of the same name in a single invocation.
+    /// Skip `pre-update-cmd`/`post-update-cmd` and every other root
+    /// `scripts` listener, including the chained install's own
+    /// `pre-autoload-dump`/`post-autoload-dump`.
     #[arg(long)]
     pub no_scripts: bool,
-    /// Reserved: `update` does not run `install`'s plugin step, so there is
-    /// nothing to skip. Accepted for the same reason as `--no-scripts`.
+    /// Passed straight through to the chained install (`docs/plugin-strategy.md`).
     #[arg(long)]
     pub no_plugins: bool,
+    /// Skip the install step after writing `composer.lock`
+    /// (`composer update --no-install`): today's `viv update` behaviour.
+    #[arg(long)]
+    pub no_install: bool,
 }
 
 pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -103,34 +109,55 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
     let root: Value = serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let lock_path = project_dir.join("composer.lock");
 
-    let lock = if args.lock {
-        lock_only(&lock_path, &composer_json)?
-    } else {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
-        let solve_started = Instant::now();
-        let result = runtime.block_on(solve(
-            args,
-            &project_dir,
-            &root,
-            &lock_path,
-            cache_dir,
-            offline,
-        ))?;
-        tracing::debug!(
-            elapsed_ms = solve_started.elapsed().as_millis(),
-            "resolved metadata and solved (merged solve, plus the dev-split \
-             second solve when require-dev is non-empty)"
-        );
-        let lock_write_started = Instant::now();
-        let lock = lock_json(&result, &composer_json)?;
-        tracing::debug!(
-            elapsed_ms = lock_write_started.elapsed().as_millis(),
-            "wrote composer.lock (content-hash + serialisation)"
-        );
-        lock
-    };
+    // `--lock` re-derives the lock from itself (no solving, so nothing to
+    // dispatch `pre-update-cmd`/`post-update-cmd` around, and no install to
+    // chain into either).
+    if args.lock {
+        let lock = lock_only(&lock_path, &composer_json)?;
+        if args.dry_run {
+            write!(std::io::stdout().lock(), "{lock}")?;
+            return Ok(());
+        }
+        fs_err::write(&lock_path, lock)?;
+        if !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
+            warn_out(&format!("Normalized {}", composer_json_path.display()));
+        }
+        return Ok(());
+    }
+
+    // `Installer::run`: `pre-update-cmd` dispatches before pool building even
+    // starts; skipped entirely under `--dry-run`, which never runs scripts,
+    // same as Composer's own `dryRun` -> `runScripts = false`.
+    let bin_dir = bin_dir(&root);
+    let mut scripts =
+        scripts::Runner::new(&root, &project_dir, &bin_dir, !args.no_dev, args.no_scripts);
+    if !args.dry_run {
+        scripts.dispatch("pre-update-cmd")?;
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let solve_started = Instant::now();
+    let result = runtime.block_on(solve(
+        args,
+        &project_dir,
+        &root,
+        &lock_path,
+        cache_dir,
+        offline,
+    ))?;
+    tracing::debug!(
+        elapsed_ms = solve_started.elapsed().as_millis(),
+        "resolved metadata and solved (merged solve, plus the dev-split \
+         second solve when require-dev is non-empty)"
+    );
+    let lock_write_started = Instant::now();
+    let lock = lock_json(&result, &composer_json)?;
+    tracing::debug!(
+        elapsed_ms = lock_write_started.elapsed().as_millis(),
+        "wrote composer.lock (content-hash + serialisation)"
+    );
 
     if args.dry_run {
         // `writeln!` to stdout directly, not `println!`, to satisfy the
@@ -139,14 +166,48 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
         return Ok(());
     }
 
-    fs_err::write(lock_path, lock)?;
-    let _ = args.no_dev; // `--no-dev` only changes `install`'s selection, not the lock.
-    let _ = args.no_scripts; // reserved: `update` does not run scripts yet.
-    let _ = args.no_plugins; // reserved: `update` does not run `install`'s plugin step.
+    fs_err::write(&lock_path, lock)?;
     if !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
         warn_out(&format!("Normalized {}", composer_json_path.display()));
     }
+
+    if !args.no_install {
+        let install_args = InstallArgs {
+            no_dev: args.no_dev,
+            dry_run: false,
+            link_mode: LinkMode::default(),
+            adopt: false,
+            project_dir: project_dir.clone(),
+            optimize_autoloader: false,
+            classmap_authoritative: false,
+            apcu_autoloader: false,
+            apcu_autoloader_prefix: None,
+            no_scripts: args.no_scripts,
+            no_normalize: false,
+            no_plugins: args.no_plugins,
+        };
+        install::run_after_update(&install_args, cache_dir, offline)?;
+    }
+
+    scripts.dispatch("post-update-cmd")?;
     Ok(())
+}
+
+/// `config.bin-dir`, resolved the same way `lock::Config::bin_dir` does
+/// (`{vendor-dir}/bin` when unset), read straight off the raw root `Value`
+/// here rather than the fuller `lock::parse_root`: `update`/`require`/
+/// `remove` only need this one string each, and `install::run_after_update`
+/// re-parses the root properly moments later anyway. `pub(crate)`:
+/// `require.rs` reuses this one rather than a third copy (same reasoning as
+/// `default_cache_dir` below).
+pub(crate) fn bin_dir(root: &Value) -> String {
+    let vendor_dir = root
+        .pointer("/config/vendor-dir")
+        .and_then(Value::as_str)
+        .map_or("vendor", |v| v.trim_end_matches('/'));
+    root.pointer("/config/bin-dir")
+        .and_then(Value::as_str)
+        .map_or_else(|| format!("{vendor_dir}/bin"), str::to_string)
 }
 
 async fn solve(

@@ -1,12 +1,10 @@
 //! `viv require`/`viv remove`: constraint synthesis (a `VersionSelector`
 //! port) and a format-preserving `composer.json` edit (a `JsonManipulator`
-//! port), then normalizing that edit (`--no-normalize` opts out, #95) and a
+//! port), then normalizing that edit (`--no-normalize` opts out, #95), a
 //! partial update of the touched package(s) (`docs/resolver-design.md`
-//! stage 5, composer/composer#42).
-//!
-//! `viv require` stops at the lock: unlike `composer require`, it does not
-//! also run `install` (see `RequireArgs`'s doc comment). Run `viv install`
-//! afterwards.
+//! stage 5, composer/composer#42), and a chained `install` (`--no-install`
+//! opts out), matching `composer require`/`composer remove`'s own chain into
+//! `Installer::run()` with `update` set.
 //!
 //! The `JsonManipulator` port here is not a byte-for-byte port of
 //! `Json/JsonManipulator.php`'s own regexes: those lean on PCRE's recursive
@@ -25,8 +23,11 @@ use serde_json::Value;
 
 use crate::auth::Auth;
 use crate::fetch::Fetcher;
+use crate::install::{self, InstallArgs};
+use crate::link::LinkMode;
 use crate::normalize;
 use crate::repository::{HttpTransport, Repository};
+use crate::scripts;
 use crate::solver::{self, pool_builder::UpdateAllowMode};
 
 const PACKAGIST_URL: &str = "https://repo.packagist.org";
@@ -45,9 +46,8 @@ pub struct RequireArgs {
     /// Add to `require-dev` instead of `require`.
     #[arg(long)]
     pub dev: bool,
-    /// Edit `composer.json` only; don't resolve or touch `composer.lock`.
-    /// vivace never runs `install` here regardless (unlike `composer
-    /// require`): run `viv install` yourself once the lock looks right.
+    /// Edit `composer.json` only; don't resolve, touch `composer.lock`, or
+    /// install (implies `--no-install`, matching `composer require`).
     #[arg(long = "no-update")]
     pub no_update: bool,
     /// Sort the touched require section alphabetically (platform packages
@@ -68,15 +68,18 @@ pub struct RequireArgs {
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
-    /// Reserved: `require` does not run lifecycle scripts yet, so there is
-    /// nothing to skip. Accepted (like Composer's own flag) so it can sit
-    /// alongside `install`'s flags of the same name in a single invocation.
+    /// Skip `pre-update-cmd`/`post-update-cmd` and every other root
+    /// `scripts` listener, including the chained install's own
+    /// `pre-autoload-dump`/`post-autoload-dump`.
     #[arg(long)]
     pub no_scripts: bool,
-    /// Reserved: `require` does not run `install`'s plugin step, so there is
-    /// nothing to skip. Accepted for the same reason as `--no-scripts`.
+    /// Passed straight through to the chained install (`docs/plugin-strategy.md`).
     #[arg(long)]
     pub no_plugins: bool,
+    /// Skip the install step after writing `composer.lock`
+    /// (`composer require --no-install`): today's `viv require` behaviour.
+    #[arg(long)]
+    pub no_install: bool,
 }
 
 /// `viv remove` flags.
@@ -92,7 +95,8 @@ pub struct RemoveArgs {
     /// Remove from `require-dev` instead of `require`.
     #[arg(long)]
     pub dev: bool,
-    /// Edit `composer.json` only; don't resolve or touch `composer.lock`.
+    /// Edit `composer.json` only; don't resolve, touch `composer.lock`, or
+    /// install (implies `--no-install`, matching `composer remove`).
     #[arg(long = "no-update")]
     pub no_update: bool,
     /// Don't normalize `composer.json` (key order, whitespace) after
@@ -102,18 +106,21 @@ pub struct RemoveArgs {
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
-    /// Reserved: `remove` does not run lifecycle scripts yet, so there is
-    /// nothing to skip. Accepted (like Composer's own flag) so it can sit
-    /// alongside `install`'s flags of the same name in a single invocation.
+    /// Skip `pre-update-cmd`/`post-update-cmd` and every other root
+    /// `scripts` listener, including the chained install's own
+    /// `pre-autoload-dump`/`post-autoload-dump`.
     #[arg(long)]
     pub no_scripts: bool,
-    /// Reserved: `remove` does not run `install`'s plugin step, so there is
-    /// nothing to skip. Accepted for the same reason as `--no-scripts`.
+    /// Passed straight through to the chained install (`docs/plugin-strategy.md`).
     #[arg(long)]
     pub no_plugins: bool,
+    /// Skip the install step after writing `composer.lock`
+    /// (`composer remove --no-install`): today's `viv remove` behaviour.
+    #[arg(long)]
+    pub no_install: bool,
 }
 
-pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>) -> Result<()> {
+pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
@@ -165,14 +172,18 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>) -> Result<()> {
     partial_update(
         &project_dir,
         cache_dir,
+        offline,
         args.prefer_stable,
         args.prefer_lowest,
         &allow_list,
         UpdateAllowMode::OnlyListed,
+        args.no_scripts,
+        args.no_plugins,
+        args.no_install,
     )
 }
 
-pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>) -> Result<()> {
+pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
@@ -206,27 +217,49 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>) -> Result<()> {
     partial_update(
         &project_dir,
         cache_dir,
+        offline,
         false,
         false,
         &allow_list,
         UpdateAllowMode::WithTransitiveDepsNoRootRequire,
+        args.no_scripts,
+        args.no_plugins,
+        args.no_install,
     )
 }
 
 /// Shared tail of both commands: reload the (just-edited) `composer.json`,
-/// solve a partial update allow-listing `names`, and write the lock.
+/// dispatch `pre-update-cmd`, solve a partial update allow-listing `names`,
+/// write the lock, chain into `install` (`--no-install` opts out), and
+/// dispatch `post-update-cmd` — matching `composer require`/`composer
+/// remove`'s own chain into `Installer::run()` with `update` set.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    reason = "require/remove's shared tail, no bundling win"
+)]
 fn partial_update(
     project_dir: &Path,
     cache_dir: Option<&Path>,
+    offline: bool,
     prefer_stable: bool,
     prefer_lowest: bool,
     names: &[String],
     mode: UpdateAllowMode,
+    no_scripts: bool,
+    no_plugins: bool,
+    no_install: bool,
 ) -> Result<()> {
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root: Value = serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let lock_path = project_dir.join("composer.lock");
+
+    // `Installer::run`: `pre-update-cmd` dispatches before pool
+    // building/solving even starts.
+    let bin_dir = crate::update::bin_dir(&root);
+    let mut scripts = scripts::Runner::new(&root, project_dir, &bin_dir, true, no_scripts);
+    scripts.dispatch("pre-update-cmd")?;
 
     let secure_http = root
         .pointer("/config/secure-http")
@@ -288,7 +321,27 @@ fn partial_update(
     };
     let lock =
         crate::lock_writer::write(&result.non_dev, Some(&result.dev), &options, &composer_json)?;
-    fs_err::write(lock_path, lock)?;
+    fs_err::write(&lock_path, lock)?;
+
+    if !no_install {
+        let install_args = InstallArgs {
+            no_dev: false,
+            dry_run: false,
+            link_mode: LinkMode::default(),
+            adopt: false,
+            project_dir: project_dir.to_path_buf(),
+            optimize_autoloader: false,
+            classmap_authoritative: false,
+            apcu_autoloader: false,
+            apcu_autoloader_prefix: None,
+            no_scripts,
+            no_normalize: false,
+            no_plugins,
+        };
+        install::run_after_update(&install_args, Some(&cache_dir), offline)?;
+    }
+
+    scripts.dispatch("post-update-cmd")?;
     Ok(())
 }
 

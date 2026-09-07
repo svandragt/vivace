@@ -135,6 +135,10 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             project_dir: env_dir.clone(),
             no_scripts: false,
             no_plugins: false,
+            // `x` runs its own `install::run` right below with its own
+            // `InstallArgs`; without this, `update::run`'s own new chaining
+            // (#104) would install twice.
+            no_install: true,
         };
         update::run(&update_args, Some(&cache_dir), offline)
             .with_context(|| format!("resolving {spec}"))?;

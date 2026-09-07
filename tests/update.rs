@@ -12,6 +12,7 @@
 
 mod common;
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -19,6 +20,7 @@ use common::TestContext;
 use serde_json::Value;
 use vivace::repository::{Repository, Transport};
 use vivace::solver;
+use vivace::store::Store;
 
 const FIXED_LAST_MODIFIED: &str = "Mon, 01 Jan 2024 00:00:00 GMT";
 
@@ -462,4 +464,214 @@ async fn unsatisfiable_root_require_matches_composers_message() {
                 it\n\nRead <https://getcomposer.org/doc/articles/troubleshooting.md> for further \
                 common problems.\n";
     assert_eq!(format!("{solver_error}"), want);
+}
+
+/// #23/#104: a single-file zip, in memory, for pre-populating the store
+/// without ever touching the network. Duplicated from
+/// `tests/install_e2e.rs`'s copy of the same name (private there, and small
+/// enough not to widen for one more caller).
+fn zip_of_one_file(name: &str, content: &[u8]) -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer
+        .start_file(name, zip::write::SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(content).unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
+/// #104: a `tests/fixtures/partial-update` project (`lock-before.json` as
+/// `composer.lock`) with its on-disk repository cache pre-warmed from the
+/// recorded Packagist fixtures (same `FixtureTransport`/`solve_partial_update`
+/// call `partial_update_keeps_the_unlisted_package_locked` already makes,
+/// run here only for its side effect of writing `packages.json`/provider
+/// caches to `ctx.cache`) and its store pre-populated with a synthetic
+/// archive for every package `tests/fixtures/monolog/composer.lock` already
+/// proves this partial update converges to — so the real `viv` binary can
+/// run `update psr/log --offline` (solve *and* the chained install) with no
+/// network at all.
+async fn offline_partial_update_context() -> TestContext {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/partial-update");
+    let monolog_fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    fs_err::copy(
+        fixture.join("lock-before.json"),
+        project.join("composer.lock"),
+    )
+    .unwrap();
+    for dir in ["src", "lib"] {
+        copy_tree(&monolog_fixture.join(dir), &project.join(dir));
+    }
+
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", ctx.cache.path(), &transport)
+        .await
+        .unwrap();
+    let root: Value =
+        serde_json::from_slice(&fs_err::read(project.join("composer.json")).unwrap()).unwrap();
+    let lock_before: Value =
+        serde_json::from_slice(&fs_err::read(fixture.join("lock-before.json")).unwrap()).unwrap();
+    let mut locked_by_name = std::collections::HashMap::new();
+    for key in ["packages", "packages-dev"] {
+        for entry in lock_before[key].as_array().unwrap() {
+            locked_by_name.insert(
+                entry["name"].as_str().unwrap().to_ascii_lowercase(),
+                entry.clone(),
+            );
+        }
+    }
+    vivace::solver::solve_partial_update(
+        &repo,
+        &root,
+        false,
+        false,
+        &locked_by_name,
+        &["psr/log".to_string()],
+        vivace::solver::pool_builder::UpdateAllowMode::OnlyListed,
+    )
+    .await
+    .unwrap();
+
+    let store = Store::open(ctx.cache.path()).unwrap();
+    let lock = vivace::lock::read_lock(&monolog_fixture.join("composer.lock")).unwrap();
+    for package in lock.packages(true) {
+        store
+            .add_zip(
+                package,
+                &zip_of_one_file("marker.txt", package.name.as_bytes()),
+            )
+            .unwrap();
+    }
+    drop(store);
+
+    ctx
+}
+
+/// #104: `viv update psr/log` chains into `install` once `composer.lock` is
+/// written (`--no-install` opts out, asserted separately below), the way
+/// `composer update` chains into `Installer::run()` with `update` set.
+#[tokio::test]
+async fn update_chains_into_install() {
+    let ctx = offline_partial_update_context().await;
+    let project = ctx.project.path();
+
+    ctx.viv()
+        .args(["update", "psr/log", "--offline"])
+        .assert()
+        .success();
+
+    for name in ["monolog/monolog", "psr/log", "psr/container"] {
+        assert!(
+            project
+                .join("vendor")
+                .join(name)
+                .join("marker.txt")
+                .is_file(),
+            "{name} should be installed under vendor/ from the chained install"
+        );
+    }
+
+    let installed: Value = serde_json::from_slice(
+        &fs_err::read(project.join("vendor/composer/installed.json")).unwrap(),
+    )
+    .unwrap();
+    let lock: Value =
+        serde_json::from_slice(&fs_err::read(project.join("composer.lock")).unwrap()).unwrap();
+    let mut installed_names: Vec<String> = installed["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap().to_string())
+        .collect();
+    installed_names.sort();
+    let mut locked_names: Vec<String> = lock["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(lock["packages-dev"].as_array().unwrap())
+        .map(|p| p["name"].as_str().unwrap().to_string())
+        .collect();
+    locked_names.sort();
+    assert_eq!(
+        installed_names, locked_names,
+        "vendor/composer/installed.json should match the freshly written lock"
+    );
+}
+
+/// #104: `--no-install` is today's `viv update` behaviour, kept as an
+/// explicit opt-out now that installing is the default.
+#[tokio::test]
+async fn update_no_install_leaves_vendor_absent() {
+    let ctx = offline_partial_update_context().await;
+    let project = ctx.project.path();
+
+    ctx.viv()
+        .args(["update", "psr/log", "--offline", "--no-install"])
+        .assert()
+        .success();
+
+    assert!(
+        !project.join("vendor").exists(),
+        "vendor/ must stay absent under --no-install"
+    );
+}
+
+/// #104: `pre-update-cmd`/`post-update-cmd` fire around the whole
+/// resolve-then-install run, in place of the chained install's own
+/// `pre-install-cmd`/`post-install-cmd` (`Installer::run`'s own event-name
+/// switch on its `update` flag: Composer never fires both pairs for one
+/// invocation).
+#[tokio::test]
+async fn update_dispatches_update_scripts_not_install_scripts() {
+    let ctx = offline_partial_update_context().await;
+    let project = ctx.project.path();
+    let composer_json_path = project.join("composer.json");
+    let mut root: Value =
+        serde_json::from_slice(&fs_err::read(&composer_json_path).unwrap()).unwrap();
+    root["scripts"] = serde_json::json!({
+        "pre-update-cmd": "echo PRE-UPDATE-CMD-RAN",
+        "post-update-cmd": "echo POST-UPDATE-CMD-RAN",
+        "pre-install-cmd": "echo PRE-INSTALL-CMD-MUST-NOT-RUN",
+        "post-install-cmd": "echo POST-INSTALL-CMD-MUST-NOT-RUN",
+    });
+    fs_err::write(
+        &composer_json_path,
+        serde_json::to_vec_pretty(&root).unwrap(),
+    )
+    .unwrap();
+
+    let output = ctx
+        .viv()
+        .args(["update", "psr/log", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        !stdout.contains("PRE-INSTALL-CMD-MUST-NOT-RUN"),
+        "install's own pre-install-cmd must not fire during an update: {stdout}"
+    );
+    assert!(
+        !stdout.contains("POST-INSTALL-CMD-MUST-NOT-RUN"),
+        "install's own post-install-cmd must not fire during an update: {stdout}"
+    );
+    let pre = stdout
+        .find("PRE-UPDATE-CMD-RAN")
+        .expect("pre-update-cmd should fire before resolving");
+    let post = stdout
+        .find("POST-UPDATE-CMD-RAN")
+        .expect("post-update-cmd should fire after the install step");
+    assert!(
+        pre < post,
+        "pre-update-cmd must fire before post-update-cmd: {stdout}"
+    );
 }

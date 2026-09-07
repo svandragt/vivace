@@ -257,9 +257,12 @@ fn viv_require_matches_composer_and_validates() {
     // records; `viv require` reproduces it byte for byte only with
     // `--no-normalize` (#95: without it, `viv require` also normalizes the
     // file after writing it, which this fixture's formatting doesn't
-    // already match).
+    // already match). `--no-install` matches the recorded command itself
+    // (see the module doc) and keeps this test scoped to the
+    // `composer.json`/lock edit, not a real dist fetch (#104: `viv require`
+    // installs by default now).
     ctx.viv()
-        .args(["require", "psr/container", "--no-normalize"])
+        .args(["require", "psr/container", "--no-normalize", "--no-install"])
         .assert()
         .success();
 
@@ -302,7 +305,7 @@ fn viv_require_matches_composer_and_validates() {
     .unwrap();
     normalized_ctx
         .viv()
-        .args(["require", "psr/container"])
+        .args(["require", "psr/container", "--no-install"])
         .assert()
         .success();
     let got_normalized = fs_err::read_to_string(normalized_project.join("composer.json")).unwrap();
@@ -353,9 +356,17 @@ fn viv_remove_matches_composer_and_validates() {
     .unwrap();
 
     // See `viv_require_matches_composer_and_validates`'s comment: byte-exact
-    // parity with Composer's own edit needs `--no-normalize`.
+    // parity with Composer's own edit needs `--no-normalize`, and
+    // `--no-install` keeps this scoped to the edit rather than a real dist
+    // fetch (#104: `viv remove` installs by default now).
     ctx.viv()
-        .args(["remove", "psr/container", "--dev", "--no-normalize"])
+        .args([
+            "remove",
+            "psr/container",
+            "--dev",
+            "--no-normalize",
+            "--no-install",
+        ])
         .assert()
         .success();
 
@@ -398,7 +409,7 @@ fn viv_remove_matches_composer_and_validates() {
     .unwrap();
     normalized_ctx
         .viv()
-        .args(["remove", "psr/container", "--dev"])
+        .args(["remove", "psr/container", "--dev", "--no-install"])
         .assert()
         .success();
     let got_normalized = fs_err::read_to_string(normalized_project.join("composer.json")).unwrap();

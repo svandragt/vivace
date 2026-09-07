@@ -227,6 +227,27 @@ struct State {
 }
 
 pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
+    run_impl(args, cache_dir, offline, true)
+}
+
+/// `update`/`require`/`remove` chaining into `install` once `composer.lock`
+/// (and, for `require`/`remove`, `composer.json`) is written, the way
+/// `composer update`/`require`/`remove` all chain into the same
+/// `Installer::run()` with `update` set: the caller already dispatched
+/// `pre-update-cmd` before resolving and dispatches `post-update-cmd` once
+/// this returns, in place of `install`'s own `pre-install-cmd`/
+/// `post-install-cmd` (`Installer::run`'s own event-name switch on its
+/// `update` flag — Composer never fires both pairs for one invocation).
+pub fn run_after_update(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
+    run_impl(args, cache_dir, offline, false)
+}
+
+fn run_impl(
+    args: &InstallArgs,
+    cache_dir: Option<&Path>,
+    offline: bool,
+    dispatch_install_cmd_events: bool,
+) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
 
@@ -353,7 +374,9 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Resul
         return Ok(());
     }
     let scripts_started = Instant::now();
-    scripts.dispatch("pre-install-cmd")?;
+    if dispatch_install_cmd_events {
+        scripts.dispatch("pre-install-cmd")?;
+    }
     tracing::debug!(
         elapsed_ms = scripts_started.elapsed().as_millis(),
         "dispatched pre-install-cmd"
@@ -547,7 +570,9 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Resul
         );
     }
     let scripts_started = Instant::now();
-    scripts.dispatch("post-install-cmd")?;
+    if dispatch_install_cmd_events {
+        scripts.dispatch("post-install-cmd")?;
+    }
     tracing::debug!(
         elapsed_ms = scripts_started.elapsed().as_millis(),
         "dispatched post-install-cmd"

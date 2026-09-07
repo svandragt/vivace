@@ -92,10 +92,11 @@ target/release/viv install            # in a project with composer.json and comp
 target/release/viv install --no-dev
 target/release/viv install --dry-run  # show the plan, change nothing
 target/release/viv install --link-mode copy
-target/release/viv update                # full update, writes composer.lock
-target/release/viv update psr/log -w     # partial update with dependencies
-target/release/viv require psr/container # edits composer.json, updates the lock
-target/release/viv remove psr/container
+target/release/viv update                # resolves, writes composer.lock and installs
+target/release/viv update psr/log -w     # partial update with dependencies, then installs
+target/release/viv update --no-install   # resolve and write the lock only
+target/release/viv require psr/container # edits composer.json, updates the lock and installs
+target/release/viv remove psr/container  # same, minus the package (--no-install opts out too)
 target/release/viv dump-autoload -o
 target/release/viv normalize --check     # update/require/remove also normalise when they write
 target/release/viv cache prune

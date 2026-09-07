@@ -77,17 +77,17 @@ mod tests {
 enum Command {
     /// Install packages from composer.lock.
     Install(InstallArgs),
-    /// Resolve composer.json and write a composer.lock (full or partial
-    /// update).
+    /// Resolve composer.json, write a composer.lock (full or partial
+    /// update) and install (`--no-install` opts out).
     Update(UpdateArgs),
     /// `update --lock`'s own first-class subcommand (#86): re-derive
-    /// `composer.lock` from itself without solving.
+    /// `composer.lock` from itself without solving or installing.
     UpdateLock(UpdateArgs),
-    /// Add a dependency to composer.json and resolve it. Stops at the
-    /// lock: run `viv install` afterwards (vivace does not chain into
-    /// install the way `composer require` does).
+    /// Add a dependency to composer.json, resolve it and install
+    /// (`--no-install`/`--no-update` opt out).
     Require(RequireArgs),
-    /// Remove a dependency from composer.json and resolve the rest.
+    /// Remove a dependency from composer.json, resolve the rest and install
+    /// (`--no-install`/`--no-update` opt out).
     Remove(RemoveArgs),
     /// Regenerate the autoload files and `vendor/bin` from an already
     /// installed `vendor/`, without fetching or linking.
@@ -147,14 +147,18 @@ fn main() -> ExitCode {
                 Err(err) => resolver_error(&err),
             }
         }
-        Command::Require(args) => match require::run_require(&args, cli.cache_dir.as_deref()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => resolver_error(&err),
-        },
-        Command::Remove(args) => match require::run_remove(&args, cli.cache_dir.as_deref()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => resolver_error(&err),
-        },
+        Command::Require(args) => {
+            match require::run_require(&args, cli.cache_dir.as_deref(), offline) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => resolver_error(&err),
+            }
+        }
+        Command::Remove(args) => {
+            match require::run_remove(&args, cli.cache_dir.as_deref(), offline) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => resolver_error(&err),
+            }
+        }
         Command::DumpAutoload(args) => match install::dump_autoload(&args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
