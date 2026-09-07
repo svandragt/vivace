@@ -30,6 +30,11 @@ mod phpcs;
 mod phpstan;
 mod spi;
 
+/// A PHP single-quoted string literal: only `\` and `'` need escaping.
+pub(super) fn php_string(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
 /// Composer plugins vivace applies the effect of natively.
 const NATIVE_ADAPTERS: &[&str] = &[
     "composer/installers",

@@ -157,10 +157,6 @@ impl RuleSet {
         &mut self.rules[id]
     }
 
-    pub fn package_rule_ids(&self) -> &[usize] {
-        &self.package
-    }
-
     pub fn request_rule_ids(&self) -> &[usize] {
         &self.request
     }

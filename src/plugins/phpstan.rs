@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 use semver_php::{Bound, VersionParser};
 use serde_json::{Map, Value, json};
 
+use super::php_string;
 use super::phpcs::relative_path;
 use crate::lock::{Package, Root};
 
@@ -220,11 +221,6 @@ fn render_array(entries: &[(String, &Value)], indent: usize, quote_keys: bool) -
     out.push_str(&" ".repeat(indent));
     out.push(')');
     out
-}
-
-/// A PHP single-quoted string literal: only `\` and `'` need escaping.
-fn php_string(s: &str) -> String {
-    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 #[cfg(test)]

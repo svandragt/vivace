@@ -25,6 +25,8 @@ use serde_json::Value;
 
 use crate::lock::Root;
 
+use super::php_string;
+
 /// `Plugin::INTERFACE_MAP`: for every supported virtual `*-implementation`
 /// package, the interfaces `ClassDiscovery` looks up an implementation for.
 const INTERFACE_MAP: &[(&str, &[&str])] = &[
@@ -116,11 +118,6 @@ fn interfaces_for(abstraction: &str) -> Result<Vec<String>> {
         "Invalid \"extra.discovery\" pinned in composer.json: \"{abstraction}\" is not one of [\"{}\"].",
         known.join("\", \"")
     )
-}
-
-/// A PHP single-quoted string literal: only `\` and `'` need escaping.
-fn php_string(s: &str) -> String {
-    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 #[cfg(test)]
