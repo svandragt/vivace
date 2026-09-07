@@ -686,6 +686,71 @@ fn mkdir_755(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether a symlink at `link` (already bounded under `dest` by `sanitise`)
+/// pointing at `target` would resolve outside `dest`: an absolute target, or
+/// one whose `..`s (resolved lexically, no filesystem lookup) pop past the
+/// root. Composer/PHP's extraction never checks this, but nothing else
+/// bounds where a symlink's *target* lands the way `sanitise` bounds its own
+/// path, and unlike the path itself, a target only takes effect once
+/// something dereferences it later.
+fn symlink_target_escapes(dest: &Path, link: &Path, target: &str) -> bool {
+    if Path::new(target).is_absolute() {
+        return true;
+    }
+    let mut stack: Vec<&std::ffi::OsStr> = link
+        .parent()
+        .and_then(|p| p.strip_prefix(dest).ok())
+        .into_iter()
+        .flat_map(Path::components)
+        .map(Component::as_os_str)
+        .collect();
+    for component in Path::new(target).components() {
+        match component {
+            Component::Normal(part) => stack.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if stack.pop().is_none() {
+                    return true;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return true,
+        }
+    }
+    false
+}
+
+/// Create every deferred symlink entry (see `extract_tar_entries` /
+/// `extract_zip`): held back until every real file and directory of the
+/// archive is on disk, so a symlinked directory earlier in the archive can
+/// never receive a later entry's write (`foo -> /tmp` then `foo/x`) — `foo`
+/// simply doesn't exist as a symlink until this runs.
+fn create_pending_symlinks(dest: &Path, pending: Vec<(PathBuf, String)>) -> Result<()> {
+    for (path, target) in pending {
+        if symlink_target_escapes(dest, &path, &target) {
+            tracing::warn!(
+                "skipping symlink entry {}: target {target:?} escapes the package root",
+                path.display()
+            );
+            continue;
+        }
+        // A real directory here means an entry order trick (or a legitimate
+        // name clash) already wrote through this path before the symlink
+        // that would have shadowed it; never replace real content.
+        if path.is_dir() {
+            tracing::warn!(
+                "skipping symlink entry {}: real content already there",
+                path.display()
+            );
+            continue;
+        }
+        if path.symlink_metadata().is_ok() {
+            fs_err::remove_file(&path)?;
+        }
+        fs_err::os::unix::fs::symlink(&target, &path)?;
+    }
+    Ok(())
+}
+
 /// Turn an archive entry name (zip or tar) into a path safely nested under
 /// the extraction root. Follows uv's `SanitizedArchivePath`: components are
 /// walked so `..` pops rather than escapes, and absolute or
@@ -882,6 +947,7 @@ fn extract_tar_entries<R: std::io::Read>(
     limits: &mut ExtractLimits<'_>,
 ) -> Result<()> {
     let mut archive = tar::Archive::new(reader);
+    let mut pending_symlinks = Vec::new();
     for entry in archive.entries()? {
         limits.count_entry()?;
         let mut entry = entry?;
@@ -891,8 +957,8 @@ fn extract_tar_entries<R: std::io::Read>(
             .ok_or_else(|| anyhow::anyhow!("tar entry is not valid UTF-8"))?
             .to_owned();
         let entry_type = entry.header().entry_type();
-        if entry_type.is_symlink() || entry_type.is_hard_link() {
-            tracing::warn!("skipping symlink entry {name} in archive");
+        if entry_type.is_hard_link() {
+            tracing::warn!("skipping hard link entry {name} in archive");
             continue;
         }
         let path = dest.join(sanitise(&name)?);
@@ -902,6 +968,18 @@ fn extract_tar_entries<R: std::io::Read>(
         }
         if let Some(parent) = path.parent() {
             mkdir_755(parent)?;
+        }
+        if entry_type.is_symlink() {
+            let target = entry
+                .link_name()?
+                .ok_or_else(|| anyhow::anyhow!("tar symlink entry {name} has no link name"))?
+                .to_str()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("tar symlink entry {name} target is not valid UTF-8")
+                })?
+                .to_owned();
+            pending_symlinks.push((path, target));
+            continue;
         }
         // A repeated entry name would otherwise hit EACCES: the first pass
         // already chmod'd the file read-only.
@@ -919,12 +997,13 @@ fn extract_tar_entries<R: std::io::Read>(
                 0o444
             }))?;
     }
+    create_pending_symlinks(dest, pending_symlinks)?;
     strip_single_top_dir(dest)
 }
 
 /// Extract `bytes` into `dest`, applying Composer's single-top-directory
 /// rule. Files become 0444, or 0555 when the entry carried any exec bit; the
-/// rest of the zip mode is ignored. Symlink entries are skipped.
+/// rest of the zip mode is ignored.
 fn extract_zip<R: std::io::Read + std::io::Seek>(
     package: &str,
     reader: R,
@@ -933,6 +1012,7 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
 ) -> Result<()> {
     let mut limits = ExtractLimits::new(package, archive_len);
     let mut archive = zip::ZipArchive::new(reader)?;
+    let mut pending_symlinks = Vec::new();
     for index in 0..archive.len() {
         limits.count_entry()?;
         let mut entry = archive.by_index(index)?;
@@ -944,12 +1024,18 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
             mkdir_755(&path)?;
             continue;
         }
-        if entry.is_symlink() {
-            tracing::warn!("skipping symlink entry {name} in archive");
-            continue;
-        }
         if let Some(parent) = path.parent() {
             mkdir_755(parent)?;
+        }
+        if entry.is_symlink() {
+            let mut target = Vec::new();
+            std::io::copy(&mut entry, &mut limits.counted(&mut target))
+                .with_context(|| format!("reading zip symlink target {name}"))?;
+            let target = String::from_utf8(target).map_err(|_| {
+                anyhow::anyhow!("zip symlink entry {name} target is not valid UTF-8")
+            })?;
+            pending_symlinks.push((path, target));
+            continue;
         }
         // A repeated entry name would otherwise hit EACCES: the first pass
         // already chmod'd the file read-only.
@@ -967,6 +1053,7 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
                 0o444
             }))?;
     }
+    create_pending_symlinks(dest, pending_symlinks)?;
     strip_single_top_dir(dest)
 }
 
@@ -1544,8 +1631,12 @@ mod tests {
         );
     }
 
+    /// Composer's `PharData` extraction preserves a tar symlink entry
+    /// verbatim; viv must match it byte-for-byte instead of dropping the
+    /// entry (#gotenberg/gotenberg-php's AGENTS.md/CLAUDE.md/GEMINI.md, each
+    /// a symlink to CONTRIBUTING.md, missing from viv's vendor/ output).
     #[test]
-    fn tar_skips_symlink_entries() {
+    fn tar_extracts_symlink_entries() {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path()).unwrap();
         let mut builder = tar::Builder::new(Vec::new());
@@ -1570,7 +1661,96 @@ mod tests {
             .add_archive(&tar_package("acme/pkg", "abc"), &tar)
             .unwrap();
         assert!(dir.join("real").is_file());
-        assert!(!dir.join("link").exists());
+        let link = dir.join("link");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs_err::read_link(&link).unwrap(), Path::new("real"));
+    }
+
+    /// Same as `tar_extracts_symlink_entries`, for zip: a unix-mode symlink
+    /// entry (`S_IFLNK`) whose content is the link target string, exactly
+    /// how `gotenberg/gotenberg-php`'s dist zip stores its symlinked docs.
+    #[test]
+    fn zip_extracts_symlink_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("real", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"1").unwrap();
+        writer
+            .add_symlink("link", "real", SimpleFileOptions::default())
+            .unwrap();
+        let zip = writer.finish().unwrap().into_inner();
+
+        let dir = store
+            .add_archive(&package("acme/pkg", "abc"), &zip)
+            .unwrap();
+        assert!(dir.join("real").is_file());
+        let link = dir.join("link");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs_err::read_link(&link).unwrap(), Path::new("real"));
+    }
+
+    /// A symlinked directory earlier in the archive must not let a later
+    /// entry write through it: `evil` is deferred, so `evil/passwd` lands in
+    /// a real (harmless, in-store) directory instead of at `outside`/passwd.
+    #[test]
+    fn zip_symlinked_directory_cannot_receive_a_later_entrys_write() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("composer.json", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"{}").unwrap();
+        writer
+            .add_symlink(
+                "evil",
+                outside.path().to_str().unwrap(),
+                SimpleFileOptions::default(),
+            )
+            .unwrap();
+        writer
+            .start_file("evil/passwd", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"pwned").unwrap();
+        let zip = writer.finish().unwrap().into_inner();
+
+        let dir = store
+            .add_archive(&package("acme/pkg", "abc"), &zip)
+            .unwrap();
+        assert!(
+            !dir.join("evil")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!outside.path().join("passwd").exists());
+    }
+
+    /// A symlink whose target's `..`s (resolved lexically) pop past the
+    /// package root is skipped, not written pointing outside the store.
+    #[test]
+    fn zip_rejects_symlink_target_that_escapes_the_package_root() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("composer.json", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"{}").unwrap();
+        writer
+            .add_symlink("a/link", "../../..", SimpleFileOptions::default())
+            .unwrap();
+        let zip = writer.finish().unwrap().into_inner();
+
+        let dir = store
+            .add_archive(&package("acme/pkg", "abc"), &zip)
+            .unwrap();
+        assert!(!dir.join("a/link").exists());
     }
 
     #[test]

@@ -457,4 +457,3 @@ impl CompiledConstraint {
         }))
     }
 }
-
