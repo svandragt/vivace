@@ -17,7 +17,7 @@ vivace reproduces byte for byte. Derived from Composer's source
 | `platform_check.php` | `config.platform-check` not `false` and at least one PHP or ext requirement, else deleted |
 | `ClassLoader.php`, `InstalledVersions.php`, `LICENSE` | verbatim copies from Composer (MIT); vivace embeds them from `src/autoload/templates/` |
 | `installed.json`, `installed.php` | always |
-| `vendor/bin/*` | packages with `bin`; not in v0.1 |
+| `vendor/bin/*` | packages with `bin`, per `config.bin-compat` (`src/bin.rs`) |
 
 No `.gitignore` is written. Files are only rewritten when their bytes change.
 
@@ -101,7 +101,7 @@ order depends on the filesystem.
 Each package is the lock entry re-dumped by `ArrayDumper` in this key order:
 `name`, `version`, `version_normalized`, `target-dir`, `source`, `dist`,
 `require`, `conflict`, `provide`, `replace`, `require-dev`, `suggest`, `time`,
-`default-branch`, `bin`, `type`, `extra`, `installation-source` (`"dist"`),
+`default-branch`, `bin`, `type`, `extra`, `installation-source`,
 `autoload`, `autoload-dev`, `notification-url`, `include-path`, `php-ext`,
 `archive`, `scripts`, `license`, `authors`, `description`, `homepage`,
 `keywords`, `repositories`, `support`, `funding`, `abandoned`,
@@ -109,6 +109,11 @@ Each package is the lock entry re-dumped by `ArrayDumper` in this key order:
 `ksort`ed, `keywords` sorted, empty arrays and nulls dropped, `shasum: ""`
 kept. JSON is pretty-printed with 4 spaces, unescaped slashes and unicode,
 trailing newline.
+
+`installation-source` is `"source"` when the package has no `dist` at all, or
+`config.preferred-install` picked source over dist (#43); otherwise `"dist"`.
+A metapackage is never downloaded, so Composer leaves the key out
+entirely rather than writing it null.
 
 ## installed.php
 
@@ -150,6 +155,16 @@ lists of pretty constraints; `self.version` becomes the provider's version.
 Null renders as lowercase `null`. Version normalisation: pad to four numeric
 components (`3.11.0` becomes `3.11.0.0`), root without a version is
 `1.0.0+no-version-set` / `1.0.0.0`.
+
+`aliases` combines two independent mechanisms, both of which can apply to the
+same package (see `tests/fixtures/root-alias`): a branch alias
+(`extra.branch-alias`, or `default-branch: true` falling back to
+`9999999-dev`) and a root alias (the root `composer.json`'s `dev-master as
+1.0.0`, recorded in the lock's top-level `aliases` array). The combined list
+is sorted with `SORT_NATURAL` (case-sensitive `strnatcmp`), so a root alias
+like `1.0.0` sorts before a branch alias's `9999999-dev`. `installed.json` is
+untouched by a root alias — Composer's `AliasPackage` is skipped when it
+dumps real installed packages.
 
 ## platform_check.php
 

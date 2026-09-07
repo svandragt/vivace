@@ -16,13 +16,17 @@ WordPress project):
 | johnpbloch/wordpress-core-installer | Install path of `wordpress-core` packages from `extra.wordpress-install-dir` | Yes, pure path mapping |
 | dealerdirect/phpcodesniffer-composer-installer | Runs `phpcs --config-set installed_paths` after install | Native (`src/plugins/phpcs.rs`) |
 | phpstan/extension-installer | Writes `GeneratedConfig.php` listing every `extra.phpstan` package | Native (`src/plugins/phpstan.rs`) |
-| php-http/discovery | Adds packages to the resolver and generates a discovery file | Partly; the generated file, not the resolver hook |
+| php-http/discovery | Adds packages to the resolver and generates a discovery file | Not yet ported, refused (rule 3); the generated file is in scope, its resolver hook isn't |
 | tbachert/spi | Generates a service-provider map file after autoload dump | Native (`src/plugins/spi.rs`), `extra.spi` only |
+| cweagans/composer-patches | Applies patches from `extra.patches`/a patches file | Native (`src/plugins/patches.rs`), git-apply path only (#53) |
 
-Plugins named in issue #12 but not seen in any lock yet: cweagans/composer-patches
-(applies patches, portable with `patch` or `git apply`), symfony/flex (rewrites
-composer.json and recipes, not portable), bamarni/composer-bin-plugin (nested
-installs, portable by running viv in each `vendor-bin/*`).
+Plugins named in issue #12 but not seen in any lock yet: symfony/flex
+(rewrites composer.json and recipes, not portable), bamarni/composer-bin-plugin
+(nested installs, portable by running viv in each `vendor-bin/*`).
+
+Not yet ported: `ffraenz/private-composer-installer` (substitutes a licence
+key from `.env` into a paid plugin's dist URL) — three local client projects
+need it; see #98 (Adapter for ffraenz/private-composer-installer).
 
 ## Rule
 
@@ -46,12 +50,17 @@ are ignored, as Composer ignores them.
 
 1. composer/installers and johnpbloch/wordpress-core-installer, plus the
    refusal in rule 3. Without these a WordPress project installs into the
-   wrong directories.
+   wrong directories. Done.
 2. dealerdirect/phpcodesniffer-composer-installer, tbachert/spi,
-   phpstan/extension-installer: post-install file or command generators.
-3. cweagans/composer-patches, bamarni/composer-bin-plugin.
-4. php-http/discovery: the generated file only; its resolver hook belongs to
-   `viv update` and is out of scope until the resolver ships.
+   phpstan/extension-installer: post-install file or command generators. Done.
+3. cweagans/composer-patches. Done (#53). bamarni/composer-bin-plugin is
+   still refused.
+4. ffraenz/private-composer-installer (#98): three local client projects
+   need it for paid-plugin dist URLs.
+5. php-http/discovery: the generated file only; its resolver hook is out of
+   scope even with the resolver shipped, since it needs `viv update` to
+   treat the discovered packages as additional requirements, not just a
+   file to write.
 
 symfony/flex stays refused. Its value is in `composer require`, which is
 where Symfony users should keep using Composer.

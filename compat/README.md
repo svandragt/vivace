@@ -30,6 +30,7 @@ Useful environment variables:
 | Variable | Default | Meaning |
 |---|---|---|
 | `COMPAT_SCRATCH` | `mktemp -d` | Root for caches and checkouts |
+| `COMPAT_CORPUS` | `compat/corpus.toml` | Corpus file to sweep, for a local, untracked file with `path` entries |
 | `COMPAT_SEED` | `date +%Y%m%d` | Seed for the random sample's `shuf` |
 | `COMPAT_RANDOM` | `10` | Number of random packages to sample |
 | `COMPAT_ONLY` | (unset) | Comma-separated project/package names to run, skipping the rest |
@@ -37,6 +38,7 @@ Useful environment variables:
 | `COMPAT_RESULTS_DIR` | `compat/results` | Where the report, logs and sample cache are written |
 | `COMPAT_AUTH_FILE` | (unset) | Path to an `auth.json` to copy into the scratch `COMPOSER_HOME`, for corpus entries behind a private registry |
 | `COMPAT_SKIP_PLUGINS` | (unset) | Set to `1` to skip a project whose lock requires a Composer plugin instead of running it with `--no-plugins` on both sides |
+| `COMPAT_SKIP_VCS` | (unset) | Set to `1` to skip a project whose `composer.json` declares a `path` or `vcs` repository (#13) instead of running it anyway |
 
 The report's header prints the Composer flags used
 (`--no-scripts --no-plugins --no-interaction` for `install`, plus
@@ -48,13 +50,14 @@ project/mode combination is one of:
 - **identical** — Composer and viv produced byte-identical `vendor/` trees.
 - **differs** — the trees diverge; the first ten differing paths are listed.
 - **skipped** — a known-unsupported feature, an unmet platform requirement,
-  or a Composer command that failed, not a failure: path/vcs repositories
-  (#13), a required plugin under `COMPAT_SKIP_PLUGINS=1` (#12; both sides
-  otherwise run with `--no-plugins`), `preferred-install: source` (#43), an
-  unmet platform requirement (`platform: ...`), or a missing
-  `composer.lock` that `composer update --no-install` also failed to
-  generate. A project without a committed lock that *does* generate one is
-  still run; its Details column notes `lock generated`.
+  or a Composer command that failed, not a failure: a `path`/`vcs` repository
+  under `COMPAT_SKIP_VCS=1` (#13), a required plugin under
+  `COMPAT_SKIP_PLUGINS=1` (#12; both sides otherwise run with
+  `--no-plugins`), `preferred-install: source` (#43), an unmet platform
+  requirement (`platform: ...`), or a missing `composer.lock` that
+  `composer update --no-install` also failed to generate. A project without
+  a committed lock that *does* generate one is still run; its Details
+  column notes `lock generated`.
 - **viv error** — `viv install` itself exited non-zero; the stderr tail is
   recorded.
 

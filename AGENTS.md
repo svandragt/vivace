@@ -4,11 +4,12 @@ Guidance for coding agents working in this repository.
 
 ## What this is
 
-vivace (`viv`) installs PHP dependencies from an existing `composer.lock` and
-produces a `vendor/` directory that is a drop-in for Composer's. No dependency
-solving in v0.1. Read `ARCHITECTURE.md` for the pipeline and
-`docs/composer-contract.md` for the exact output rules. `JOURNAL.md` is a
-public engineering log: append an entry at the end of every working session.
+vivace (`viv`) is a byte-compatible reimplementation of Composer: it solves
+`composer.json` into a `composer.lock` and installs a lock into a `vendor/`
+directory that is a drop-in for Composer's. Read `ARCHITECTURE.md` for the
+pipeline and `docs/composer-contract.md` for the exact output rules.
+`JOURNAL.md` is a public engineering log: append an entry at the end of every
+working session.
 
 ## Commands
 
@@ -24,7 +25,13 @@ make hooks                         # install the pre-commit hook that runs `make
 make fixtures                      # regenerate the monolog fixture's expected Composer output
 make fuzz                          # cargo-fuzz, 30s per target (#44); nightly toolchain required
 make coverage                      # cargo-llvm-cov via nextest, per-file report, no threshold (#45)
+make compat                        # release build + compat/run.sh, byte-diffs vendor/ against Composer
+make compat-refresh                # rewrite compat/corpus.toml's repo pins to their current heads
 ```
+
+`make compat`'s behaviour (scratch dir, random sample, skip reasons) is
+controlled by the `COMPAT_*` environment variables documented in
+`compat/README.md`; read that before changing the sweep itself.
 
 Fallback, or for anything not wrapped:
 
@@ -80,6 +87,15 @@ Prose in the repo follows British English and the Google developer style
 guide. Comments explain why, not what. Deliberate shortcuts carry a
 `ponytail:` comment naming the ceiling.
 
+## Shared worktree
+
+Several agents can hold uncommitted changes in this tree at once. Before
+editing a file, check `git status`/`git diff` for it: a file already showing
+changes you didn't make is a stop-and-report, not something to overwrite.
+Never `git checkout`, `reset`, `stash`, or `clean` to "tidy up" — that erases
+another agent's work. Verify a change against the file as it stands on disk,
+not against an assumption of what HEAD looks like.
+
 ## Performance rule
 
 No change may make `viv` slower. A feature that touches the install path is
@@ -99,3 +115,16 @@ not Sander's machine, so it isn't written by a local run: a maintainer
 downloads the `baseline-candidate` artifact from a green CI run and commits it
 as `bench/results/baseline.json`. Run `make bench-check` to reproduce the same
 check locally against the committed baseline.
+
+## Before a release
+
+1. Refresh the docs against the code: `README.md`, `ARCHITECTURE.md`,
+   `AGENTS.md`, `docs/*.md`, `compat/README.md`, `bench/results/README.md`
+   (command list, flags, numbers table, install snippet tag, scope in/out).
+2. Run the bench gate (`make bench-check`) and update the README numbers
+   table.
+3. Run the compat sweep (`make compat`) and commit
+   `compat/results/<tag>.md`.
+4. Add a `JOURNAL.md` entry.
+5. Bump `Cargo.toml`'s version, tag, and push (`release.yml` publishes it as
+   a pre-release).
