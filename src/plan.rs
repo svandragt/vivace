@@ -215,6 +215,7 @@ mod tests {
         Lock {
             content_hash: None,
             packages,
+            aliases: vec![],
         }
     }
 
@@ -417,6 +418,7 @@ mod tests {
         let lock = Lock {
             content_hash: None,
             packages: vec![package],
+            aliases: vec![],
         };
 
         let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();

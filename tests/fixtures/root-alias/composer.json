@@ -1,0 +1,8 @@
+{
+    "name": "vivace/fixture-root-alias",
+    "license": "proprietary",
+    "type": "project",
+    "require": {
+        "xwp/shortcode-ui-richtext": "dev-master as 1.0.0"
+    }
+}

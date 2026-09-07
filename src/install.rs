@@ -628,7 +628,7 @@ fn regenerate_vendor_metadata(
     )?;
     write_atomic(
         &vendor_dir.join("composer/installed.php"),
-        installed_php(root, packages, dev)?.as_bytes(),
+        installed_php(root, lock, packages, dev)?.as_bytes(),
     )?;
     write_atomic(state_path, &serde_json::to_vec(state)?)?;
     tracing::debug!(

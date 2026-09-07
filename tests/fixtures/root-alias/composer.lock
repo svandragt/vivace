@@ -1,0 +1,39 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "0000000000000000000000000000000000",
+    "packages": [
+        {
+            "name": "xwp/shortcode-ui-richtext",
+            "version": "dev-master",
+            "source": {
+                "type": "git",
+                "url": "https://example.test/xwp/shortcode-ui-richtext.git",
+                "reference": "4a060a3922cf989332d3586612d60578405992a0"
+            },
+            "type": "wordpress-plugin",
+            "default-branch": true
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [
+        {
+            "package": "xwp/shortcode-ui-richtext",
+            "version": "9999999-dev",
+            "alias": "1.0.0",
+            "alias_normalized": "1.0.0.0"
+        }
+    ],
+    "minimum-stability": "dev",
+    "stability-flags": {
+        "xwp/shortcode-ui-richtext": 20
+    },
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": [],
+    "platform-dev": [],
+    "plugin-api-version": "2.6.0"
+}

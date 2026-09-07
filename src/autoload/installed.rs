@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use crate::autoload::generator::find_shortest_path;
 use crate::autoload::sort::natcmp;
-use crate::lock::{Package, Root};
+use crate::lock::{Lock, Package, Root};
 use crate::version;
 
 /// `PlatformRepository::PLATFORM_PACKAGE_REGEX`: an exact match against the
@@ -229,7 +229,7 @@ fn reference(package: &Package) -> Value {
 }
 
 /// `installed.php`, `FilesystemRepository::generateInstalledVersions` shape.
-pub fn installed_php(root: &Root, packages: &[&Package], dev: bool) -> Result<String> {
+pub fn installed_php(root: &Root, lock: &Lock, packages: &[&Package], dev: bool) -> Result<String> {
     let root_name = root.name.clone().unwrap_or_else(|| "__root__".into());
     let root_pretty = root
         .version
@@ -254,10 +254,19 @@ pub fn installed_php(root: &Root, packages: &[&Package], dev: bool) -> Result<St
             "install_path".into(),
             install_path(package).map_or(Value::Null, Value::String),
         );
-        entry.insert(
-            "aliases".into(),
-            Value::Array(branch_alias(package).map_or_else(Vec::new, |a| vec![a.into()])),
+        // A branch alias (`extra.branch-alias`/`default-branch`) and a root
+        // alias (composer.json's `dev-master as 1.0.0`, the lock's top-level
+        // `aliases` array) are independent mechanisms that can both apply to
+        // the same package (#found-in-the-wild: a `default-branch` package
+        // also root-aliased to a stable version).
+        let mut aliases: Vec<Value> = branch_alias(package).into_iter().map(Into::into).collect();
+        aliases.extend(
+            lock.aliases
+                .iter()
+                .filter(|alias| alias.package == package.name)
+                .map(|alias| Value::from(alias.alias.clone())),
         );
+        entry.insert("aliases".into(), Value::Array(aliases));
         entry.insert("dev_requirement".into(), package.dev.into());
         versions.insert(package.name.clone(), Value::Object(entry));
     }
@@ -507,7 +516,7 @@ mod tests {
     use serde_json::json;
 
     use super::{installed_json, installed_php};
-    use crate::lock::{Dist, Package, Root, TransportOptions, read_lock, read_root};
+    use crate::lock::{Dist, Lock, Package, Root, TransportOptions, read_lock, read_root};
 
     fn fixture(name: &str) -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -519,16 +528,26 @@ mod tests {
         fs_err::read_to_string(fixture(&format!("expected/{mode}/composer/{file}"))).unwrap()
     }
 
-    fn monolog(dev: bool) -> (Root, Vec<Package>) {
+    /// A `Lock` with no packages and no aliases, for tests that build their
+    /// package list by hand rather than through [`read_lock`].
+    fn empty_lock() -> Lock {
+        Lock {
+            content_hash: None,
+            packages: vec![],
+            aliases: vec![],
+        }
+    }
+
+    fn monolog(dev: bool) -> (Root, Lock, Vec<Package>) {
         let root = read_root(&fixture("composer.json")).unwrap();
         let lock = read_lock(&fixture("composer.lock")).unwrap();
         let packages = lock.packages(dev).cloned().collect();
-        (root, packages)
+        (root, lock, packages)
     }
 
     #[test]
     fn installed_json_matches_monolog_dev() {
-        let (_, packages) = monolog(true);
+        let (_, _, packages) = monolog(true);
         let refs: Vec<&Package> = packages.iter().collect();
         assert_eq!(
             installed_json(&refs, true).unwrap(),
@@ -538,7 +557,7 @@ mod tests {
 
     #[test]
     fn installed_json_matches_monolog_no_dev() {
-        let (_, packages) = monolog(false);
+        let (_, _, packages) = monolog(false);
         let refs: Vec<&Package> = packages.iter().collect();
         assert_eq!(
             installed_json(&refs, false).unwrap(),
@@ -548,20 +567,20 @@ mod tests {
 
     #[test]
     fn installed_php_matches_monolog_dev() {
-        let (root, packages) = monolog(true);
+        let (root, lock, packages) = monolog(true);
         let refs: Vec<&Package> = packages.iter().collect();
         assert_eq!(
-            installed_php(&root, &refs, true).unwrap(),
+            installed_php(&root, &lock, &refs, true).unwrap(),
             expected("dev", "installed.php")
         );
     }
 
     #[test]
     fn installed_php_matches_monolog_no_dev() {
-        let (root, packages) = monolog(false);
+        let (root, lock, packages) = monolog(false);
         let refs: Vec<&Package> = packages.iter().collect();
         assert_eq!(
-            installed_php(&root, &refs, false).unwrap(),
+            installed_php(&root, &lock, &refs, false).unwrap(),
             expected("no-dev", "installed.php")
         );
     }
@@ -636,7 +655,7 @@ mod tests {
         meta.r#type = "metapackage".into();
 
         let packages = [&provider, &provider2, &replacer, &c, &meta];
-        let out = installed_php(&root, &packages, true).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, true).unwrap();
 
         let block = |text: &str, name: &str| -> String {
             let start = text.find(&format!("        '{name}' => array(\n")).unwrap();
@@ -698,7 +717,7 @@ mod tests {
         let installers = package("composer/installers", "1.0", Some("abc"));
         let normal = package("psr/log", "1.0", Some("def"));
         let packages = [&installers, &normal];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         assert!(out.contains("'install_path' => __DIR__ . '/./installers',"));
         assert!(out.contains("'install_path' => __DIR__ . '/../psr/log',"));
     }
@@ -716,7 +735,7 @@ mod tests {
             "extra": {"branch-alias": {"dev-main": "3.x-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         assert!(out.contains("        'acme/lib' => array(\n"));
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
@@ -739,7 +758,7 @@ mod tests {
             "extra": {"branch-alias": {"dev-2.x": "2.x-dev", "dev-master": "3.x-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         let start = out.find("'nesbot/carbon' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(
@@ -763,7 +782,7 @@ mod tests {
             "extra": {"branch-alias": {"dev-master": "1.8-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(
@@ -787,7 +806,7 @@ mod tests {
             "extra": {"branch-alias": {"2.0-dev": "3.0.x-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(block.contains("'aliases' => array(),\n"), "{block}");
@@ -806,7 +825,7 @@ mod tests {
             "extra": {"branch-alias": {"2.x-dev": "2.0.x-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(
@@ -829,7 +848,7 @@ mod tests {
             "extra": {"branch-alias": {"dev-master": "1.8"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(block.contains("'aliases' => array(),\n"), "{block}");
@@ -847,7 +866,7 @@ mod tests {
             "default-branch": true,
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(
@@ -870,7 +889,7 @@ mod tests {
             "default-branch": true,
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(block.contains("'aliases' => array(),\n"), "{block}");
@@ -887,7 +906,7 @@ mod tests {
             "extra": {"branch-alias": {"dev-main": "3.x-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(block.contains("'aliases' => array(),\n"), "{block}");
@@ -905,7 +924,7 @@ mod tests {
         let mut b = package("b/provider", "1.0", Some("def"));
         b.provide = links(&[("php-http/client-implementation", "*")]);
         let packages = [&a, &b];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         let start = out
             .find("'php-http/client-implementation' => array(\n")
             .unwrap();
@@ -932,7 +951,7 @@ mod tests {
             ("composer-runtime-api", "*"),
         ]);
         let packages = [&pkg];
-        let out = installed_php(&root, &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
         for name in [
             "php",
             "php-64bit",

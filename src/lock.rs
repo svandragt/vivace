@@ -10,11 +10,20 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use crate::solver::transaction::AliasEntry;
+
 /// A parsed `composer.lock`.
 #[derive(Debug, Clone)]
 pub struct Lock {
     pub content_hash: Option<String>,
     pub packages: Vec<Package>,
+    /// The lock's root-level `aliases` array: `composer.json` requiring
+    /// `some/package: dev-master as 1.0.0` (`Locker::getLockedRepository`
+    /// wraps the locked package in a `CompleteAliasPackage` for each entry
+    /// here, matched on `package` alone). Separate from a package's own
+    /// `extra.branch-alias`/`default-branch` metadata (`branch_alias` in
+    /// `autoload/installed.rs`) — both can apply to the same package.
+    pub aliases: Vec<AliasEntry>,
 }
 
 impl Lock {
@@ -196,9 +205,25 @@ pub fn read_lock(path: &Path) -> Result<Lock> {
         }
     }
 
+    let aliases = raw
+        .get("aliases")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            Some(AliasEntry {
+                package: entry.get("package")?.as_str()?.to_owned(),
+                version: entry.get("version")?.as_str()?.to_owned(),
+                alias: entry.get("alias")?.as_str()?.to_owned(),
+                alias_normalized: entry.get("alias_normalized")?.as_str()?.to_owned(),
+            })
+        })
+        .collect();
+
     Ok(Lock {
         content_hash,
         packages,
+        aliases,
     })
 }
 
