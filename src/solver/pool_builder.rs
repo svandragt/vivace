@@ -1,7 +1,9 @@
 //! Port of `DependencyResolver/PoolBuilder.php`, `Installer.php`'s request
-//! wiring (`createRequest`/`requirePackagesForUpdate`, ~line 900-1070),
-//! `Package/Loader/RootPackageLoader.php`'s alias/stability-flag extraction
-//! and `Repository/PlatformRepository.php`'s fixed platform packages.
+//! wiring (`createRequest`/`requirePackagesForUpdate`, ~line 900-1070) and
+//! `Package/Loader/RootPackageLoader.php`'s alias/stability-flag extraction.
+//! `Repository/PlatformRepository.php`'s fixed platform packages live in
+//! `platform.rs`, split out once this section grew past that file's own
+//! switch statement.
 //!
 //! Full update only (`docs/resolver-design.md` stage 3): no partial-update
 //! allow-list or path-repo unlocking, security-advisory/filter-list pool
@@ -31,7 +33,6 @@
 //! through the ordinary `Pool::whatProvides` walk.
 
 use std::collections::{HashMap, HashSet};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -43,6 +44,7 @@ use crate::repository::{
     ClosureRoot, DevAcceptance, PackageVersion, Repository, Transport, branch_alias_target,
 };
 use crate::semver;
+use crate::solver::platform::platform_packages;
 use crate::solver::policy::DefaultPolicy;
 use crate::solver::pool::{Link, Package, Pool};
 use crate::solver::pool_optimizer;
@@ -934,67 +936,6 @@ fn push_package_version(
     Ok(())
 }
 
-/// `Installer::createRequest`'s platform-fixing loop, backed by a
-/// deliberately small stand-in for `Repository/PlatformRepository.php`:
-/// the running PHP's own version plus its loaded extensions, each given
-/// the interpreter's version rather than the real per-library version
-/// `PlatformRepository::initialize` painstakingly parses from
-/// `phpinfo()`-style extension info.
-///
-/// ponytail: exact library versions (`lib-openssl`, `lib-icu`, ...) are not
-/// reproduced; a `composer.json` pinning one of those (`"lib-openssl":
-/// "^1.1"`, rather than the common `"ext-openssl": "*"`) will not resolve.
-/// Widen `extension_package` if a fixture needs it.
-///
-/// `overrides` is `config.platform` verbatim (`Installer::doUpdate`'s
-/// `$this->config->get('platform')`): a name -> pretty-version string pins
-/// that platform package's version instead of detecting it from the host,
-/// and a name -> `false` removes it outright (`PlatformRepository`'s own
-/// `platform-overrides`/`platform` handling). Hermetic tests use this to
-/// avoid depending on the host `php` build; a name not already detected on
-/// the host is not added (ponytail: only pinning an existing platform
-/// package is supported, not inventing a new one).
-pub(crate) fn platform_packages(overrides: &Map<String, Value>) -> Result<Vec<Package>> {
-    let php_pretty = detect_php_version().unwrap_or_else(|| "8.3.0".to_string());
-
-    let mut pretty: Vec<(String, String)> = vec![
-        ("php".to_string(), php_pretty.clone()),
-        ("composer-plugin-api".to_string(), "2.9.0".to_string()),
-        ("composer-runtime-api".to_string(), "2.2.2".to_string()),
-    ];
-
-    for extension in detect_extensions() {
-        let lower = extension.to_ascii_lowercase();
-        if lower == "core" || lower == "standard" {
-            continue;
-        }
-        let package_name = format!("ext-{}", lower.replace(' ', "-"));
-        pretty.push((package_name, php_pretty.clone()));
-    }
-
-    for (name, value) in overrides {
-        match value {
-            Value::String(version) => {
-                if let Some(entry) = pretty.iter_mut().find(|(n, _)| n == name) {
-                    entry.1.clone_from(version);
-                } else {
-                    pretty.push((name.clone(), version.clone()));
-                }
-            }
-            Value::Bool(false) => pretty.retain(|(n, _)| n != name),
-            _ => {}
-        }
-    }
-
-    pretty
-        .into_iter()
-        .map(|(name, version)| {
-            let normalized = semver::normalize(&version)?;
-            Ok(platform_package(&name, &version, normalized))
-        })
-        .collect()
-}
-
 /// Lowercased targets of root `replace` (`RootPackageLoader`'s `replace`
 /// section, `ArrayLoader::parseLinks`): never fetched by the closure walk,
 /// matching `PoolBuilder::buildPool`'s `loadedPackages[$link->getTarget()]
@@ -1036,7 +977,7 @@ pub(crate) fn root_package(root: &Value, cache: &mut ConstraintCache) -> Result<
     let provides = parse_links(&string_map(root, "provide"), &name, &pretty_version, cache)?;
     let replaces = parse_links(&string_map(root, "replace"), &name, &pretty_version, cache)?;
     // Never reached: `transaction::resolved_packages` drops fixed packages
-    // before a lock ever sees them (`platform_package`'s same stand-in).
+    // before a lock ever sees them (platform packages' same stand-in).
     let raw = Arc::new(serde_json::json!({ "name": name, "version": pretty_version }));
 
     Ok(Package {
@@ -1054,57 +995,4 @@ pub(crate) fn root_package(root: &Value, cache: &mut ConstraintCache) -> Result<
         has_self_version_requires: false,
         raw,
     })
-}
-
-fn platform_package(
-    name: &str,
-    pretty_version: &str,
-    version: semver::NormalizedVersion,
-) -> Package {
-    Package {
-        name: name.to_string(),
-        stability: semver::stability(version.as_str()),
-        is_dev: false,
-        version,
-        pretty_version: pretty_version.to_string(),
-        requires: Vec::new(),
-        conflicts: Vec::new(),
-        provides: Vec::new(),
-        replaces: Vec::new(),
-        alias_of: None,
-        is_root_package_alias: false,
-        has_self_version_requires: false,
-        raw: Arc::new(serde_json::json!({ "name": name, "version": pretty_version })),
-    }
-}
-
-fn detect_php_version() -> Option<String> {
-    let output = Command::new("php")
-        .args(["-r", "echo PHP_VERSION;"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let version = String::from_utf8(output.stdout).ok()?;
-    (!version.is_empty()).then_some(version)
-}
-
-fn detect_extensions() -> Vec<String> {
-    let Some(output) = Command::new("php")
-        .args(["-r", "echo implode(',', get_loaded_extensions());"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-    else {
-        return Vec::new();
-    };
-    let Ok(text) = String::from_utf8(output.stdout) else {
-        return Vec::new();
-    };
-    text.split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
 }

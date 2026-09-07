@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::auth::composer_home;
 use crate::lock::{self, Lock, Root};
 use crate::plugins;
-use crate::solver::pool_builder::platform_packages;
+use crate::solver::platform::platform_packages;
 use crate::store::Store;
 
 #[derive(Args)]

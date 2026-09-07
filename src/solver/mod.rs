@@ -22,6 +22,7 @@
 //! | `pool_optimizer.rs` | `PoolOptimizer.php`, run from `pool_builder::build`/`build_partial` between pool build and rule generation (#76) |
 
 pub mod decisions;
+pub(crate) mod platform;
 pub mod policy;
 pub mod pool;
 pub mod pool_builder;
