@@ -16,19 +16,20 @@ raw data in [`bench/results/`](bench/results/README.md).
 
 | Tool | Cold | Warm cache | No-op | Update, warm metadata |
 |---|---|---|---|---|
-| composer 2.10.2 | 7.32 s | 1.05 s | 0.48 s | 1.16 s |
-| riff 0.0.7 | 1.62 s | 0.25 s | 0.23 s | n/a\* |
-| viv 0.6.0 | 2.21 s | 0.042 s | 0.007 s | 4.55 s |
+| composer 2.10.2 | 7.28 s | 1.05 s | 0.47 s | 1.23 s |
+| riff 0.0.7 | 1.74 s | 0.24 s | 0.24 s | n/a\* |
+| viv (main, after 0.6.0) | 2.26 s | 0.043 s | 0.008 s | 1.12 s |
 
 \* riff 0.0.7 can't resolve this lock's `update`: see
 [`bench/results/README.md`](bench/results/README.md#update-warm-metadata).
 
-The update column is the one viv still loses to Composer: the lock it
-writes is identical to Composer's, 0.5 pruned the pool and 0.6 cached
-parsed constraints, and what remains is the metadata round trips
-([#90](https://github.com/svandragt/vivace/issues/90)) and the solver
-itself ([#91](https://github.com/svandragt/vivace/issues/91)). Tracked per
-release like the install numbers.
+Update is at Composer's speed since the pool builder was made to load
+only the versions the accumulated constraints allow, as Composer's does:
+108 metadata requests instead of 251 and a pool of 615 packages instead
+of 5169 on this lock, with the written lock still identical to
+Composer's. Cold install is the one column riff wins, bounded by GitHub's
+zipball throttling ([`bench/results/profile.md`](bench/results/profile.md)).
+Tracked per release like the install numbers.
 
 ## Beyond Composer
 
