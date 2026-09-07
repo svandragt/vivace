@@ -190,6 +190,12 @@ laravel/framework's unusually long version list). `bench/run.sh` reports the
 failure and moves on rather than aborting the whole run; the Numbers table's
 `n/a` for riff's update column stands until upstream fixes it.
 
+`bench/corpus.sh` skips known per-project failures like this one rather than
+re-running them every night; see `bench/skips.txt` for the list. To retry a
+skip once a tool's fixed it, delete the skip's line, or bump its pinned
+version to match the tool's actual current release so the entry stops
+matching.
+
 | Release | Lock | viv | composer 2.10.2 | ratio |
 |---|---|---|---|---|
 | 0.4.0 | laravel, 101 packages | 8.7 s | 1.2 s | 7.2x slower |

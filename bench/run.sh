@@ -86,6 +86,7 @@ update_cmd_for() {
 # `/p2/` provider file revalidates with a 304 instead of a cold fetch; only
 # composer.json/composer.lock are reset before each timed run, since update
 # rewrites the lock.
+skip_update=${BENCH_SKIP_UPDATE:-}
 for tool in $tools; do
   case $tool in
     composer|viv) ;;
@@ -94,6 +95,9 @@ for tool in $tools; do
   esac
   case " $failed " in
     *" $tool "*) echo "run.sh: $tool update-warm skipped, install failed" >&2; continue ;;
+  esac
+  case " $skip_update " in
+    *" $tool "*) echo "run.sh: $tool update-warm skipped (bench/skips.txt)" >&2; continue ;;
   esac
   dir="$work/$tool-update"; rm -rf "$dir"; mkdir -p "$dir"
   cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"

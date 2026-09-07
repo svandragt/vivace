@@ -161,10 +161,17 @@ bench_project() {
   rm -rf "$out" "$work/bench"
   mkdir -p "$out"
 
+  local skip_tools skip_update run_tools
+  skips_for "$name"
+  run_tools="composer riff viv"
+  for tool in $skip_tools; do
+    run_tools=$(sed "s/\b$tool\b//" <<< "$run_tools")
+  done
+
   log "benchmarking $name ($packages packages, $runs runs)"
   if ! run_out=$(BENCH_FLAGS="--no-plugins --no-scripts" BENCH_RUNS="$runs" \
-      BENCH_WORK="$work/bench" BENCH_OUT="$out" \
-      "$root/bench/run.sh" "$srcdir" composer riff viv 2>&1); then
+      BENCH_WORK="$work/bench" BENCH_OUT="$out" BENCH_SKIP_UPDATE="$skip_update" \
+      "$root/bench/run.sh" "$srcdir" $run_tools 2>&1); then
     log "bench/run.sh reported a problem for $name (see footnote per affected tool)"
   fi
 
@@ -178,13 +185,24 @@ bench_project() {
     upd=$(mean_for "$update_json" "$tool update-warm")
     echo "| $name | $packages | $tool | $(fmt "$cold") | $(fmt "$warm") | $(fmt "$noop") | $(fmt "$upd") |" \
       >> "$report"
-    if [ -z "$cold" ] || [ -z "$upd" ]; then
+    case " $skip_tools " in *" $tool "*) continue ;; esac
+    if [ -z "$cold" ]; then
       local reason
       # `|| true`: an unmatched grep exits 1, and pipefail would otherwise
       # propagate that through `set -e` and kill the whole script (#106).
       reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
       [ -n "$reason" ] || reason=$(last_line "$run_out")
       footnotes+=("$name/$tool: $(redact <<< "$reason")")
+    elif [ -z "$upd" ]; then
+      case " $skip_update " in
+        *" $tool "*) : ;;  # already footnoted by skips_for
+        *)
+          local reason
+          reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
+          [ -n "$reason" ] || reason=$(last_line "$run_out")
+          footnotes+=("$name/$tool: $(redact <<< "$reason")")
+          ;;
+      esac
     fi
   done
 
@@ -192,6 +210,45 @@ bench_project() {
 }
 
 ver_from() { "$@" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
+skips=${BENCH_SKIPS:-$root/bench/skips.txt}
+
+# Known-failure skips (bench/skips.txt): matches on tool+version+project, so
+# a newer release is retried automatically. Sets $skip_tools (space-
+# separated tools to drop from bench/run.sh's tool list) and $skip_update
+# (forwarded as BENCH_SKIP_UPDATE) for one project, and appends a footnote
+# per skip.
+skips_for() {
+  local name=$1
+  skip_tools=""
+  skip_update=""
+  [ -f "$skips" ] || return 0
+  local tool ver proj scenario tool_ver
+  while read -r tool ver proj scenario; do
+    [ -z "$tool" ] && continue
+    case $tool in \#*) continue ;; esac
+    [ "$proj" = "$name" ] || continue
+    tool_ver=$(ver_from "$(tool_bin "$tool")")
+    [ "$tool_ver" = "$ver" ] || continue
+    case $scenario in
+      install)
+        skip_tools="$skip_tools $tool"
+        footnotes+=("$name/$tool: skipped, known failure at $tool $ver (bench/skips.txt)")
+        ;;
+      update-warm)
+        skip_update="$skip_update $tool"
+        footnotes+=("$name/$tool: skipped, known failure at $tool $ver (bench/skips.txt)")
+        ;;
+    esac
+  done < <(grep -v '^ *#' "$skips" | grep -v '^ *$')
+}
+
+tool_bin() {
+  case $1 in
+    composer) echo composer ;;
+    riff) echo "$riff_bin" ;;
+    viv) echo "$viv_bin" ;;
+  esac
+}
 
 {
   echo ""

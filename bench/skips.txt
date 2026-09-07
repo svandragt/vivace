@@ -1,0 +1,15 @@
+# Known per-project bench failures to skip instead of re-running.
+# Format: <tool> <version> <project> <scenario>
+#   scenario "install" skips the tool for the whole project (cold, warm,
+#   no-op and update-warm); "update-warm" skips only that scenario.
+# An entry is ignored once the tool reports a different version, so a
+# newer release is retried automatically. bench/corpus.sh records each
+# skip it applies as a footnote in corpus.md.
+
+riff 0.0.7 yiisoft/yii2-app-basic install
+riff 0.0.7 laravel/laravel update-warm
+riff 0.0.7 drupal/recommended-project update-warm
+riff 0.0.7 roots/bedrock update-warm
+riff 0.0.7 phpunit/phpunit update-warm
+riff 0.0.7 slimphp/Slim-Skeleton update-warm
+riff 0.0.7 statamic/statamic update-warm
