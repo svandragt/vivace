@@ -5,17 +5,20 @@
 //! its selection logic (`findLatestPackage`/`VersionSelector`) lives here
 //! too rather than in a second file.
 //!
-//! Deliberately not ported, all for the same reason — a fixture recorded
-//! today drifts from a rerun tomorrow, or needs an SPDX licence database
-//! this crate doesn't otherwise need: the detail view's `released`/
-//! `license`/`suggests`/`provides` lines, `--sort-by-age`, and the `outdated
-//! --format=json`'s `release-age`/`release-date`/`latest-release-date`
-//! fields (`ShowCommand::getRelativeTime`, `SpdxLicenses`). Also skipped:
-//! `--available`/`--all`/`--platform`/`--self`/`--path`, and platform
-//! requirement filtering in `findLatestPackage`
-//! (`--ignore-platform-req(s)`) — `require.rs`'s own `version_selector`
-//! module skips the same thing for the same reason (not wired at this
-//! stage).
+//! The detail view's `released`/`license`/`suggests`/`provides` lines and
+//! `outdated --format=json`'s `release-age`/`release-date`/
+//! `latest-release-date` fields are ported (#94): `released`'s relative
+//! age (`ShowCommand::getRelativeTime`) reads a wall clock overridable via
+//! `VIV_TEST_NOW` (`now()`, below) so a recorded fixture never drifts out
+//! from under a later run, and `license` looks identifiers up in
+//! `composer/spdx-licenses`' own resource file (`src/spdx-licenses.json`,
+//! `spdx_licenses`, below).
+//!
+//! Still not ported: `--sort-by-age`, `--available`/`--all`/`--platform`/
+//! `--self`/`--path`, and platform requirement filtering in
+//! `findLatestPackage` (`--ignore-platform-req(s)`) — `require.rs`'s own
+//! `version_selector` module skips the same thing for the same reason (not
+//! wired at this stage).
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -276,6 +279,8 @@ pub fn run_outdated(args: &OutdatedArgs, cache_dir: Option<&Path>, offline: bool
             homepage: str_field(pkg, "homepage"),
             source_view: view_source_url(pkg),
             abandoned: pkg.get("abandoned").cloned().unwrap_or(Value::Bool(false)),
+            time: pkg.get("time").and_then(Value::as_str).map(str::to_string),
+            latest_time: latest.time.clone(),
         });
     }
     rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -647,8 +652,12 @@ fn print_detail(source: &PackageSource, project_dir: &Path, name: &str) -> Resul
     writeln!(buf, "descrip. : {}", str_field(pkg, "description"))?;
     writeln!(buf, "keywords : {}", join_str_array(pkg, "keywords"))?;
     writeln!(buf, "versions : * {}", str_field(pkg, "version"))?;
+    if let Some(line) = released_line(pkg) {
+        writeln!(buf, "released : {line}")?;
+    }
     let package_type = pkg.get("type").and_then(Value::as_str).unwrap_or("library");
     writeln!(buf, "type     : {package_type}")?;
+    print_licenses(&mut buf, pkg)?;
     writeln!(buf, "homepage : {}", str_field(pkg, "homepage"))?;
     writeln!(buf, "source   : {}", source_line(pkg))?;
     writeln!(buf, "dist     : {}", dist_line(pkg))?;
@@ -713,6 +722,8 @@ fn print_detail(source: &PackageSource, project_dir: &Path, name: &str) -> Resul
 
     print_links(&mut buf, pkg, "require", "requires")?;
     print_links(&mut buf, pkg, "require-dev", "requires (dev)")?;
+    print_links(&mut buf, pkg, "suggest", "suggests")?;
+    print_links(&mut buf, pkg, "provide", "provides")?;
 
     write!(std::io::stdout(), "{buf}")?;
     Ok(())
@@ -797,6 +808,236 @@ fn print_links(buf: &mut String, pkg: &Value, key: &str, title: &str) -> std::fm
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// Release age (`released`, `outdated --format=json`'s `release-age`) and
+// licence (`license`) lines
+// ---------------------------------------------------------------------
+
+/// `composer/spdx-licenses`' own `res/spdx-licenses.json`
+/// (`src/spdx-licenses.json`, copied verbatim, README's Licence section),
+/// `{id: [full name, osi-approved, deprecated]}`. Parsed once, keyed
+/// lowercase like `SpdxLicenses::getLicenseByIdentifier` itself does; the
+/// deprecated flag is dropped, matching `ShowCommand::printLicenses`,
+/// which never reads it either.
+fn spdx_licenses() -> &'static HashMap<String, SpdxLicense> {
+    static LICENSES: std::sync::OnceLock<HashMap<String, SpdxLicense>> = std::sync::OnceLock::new();
+    LICENSES.get_or_init(|| {
+        let raw: HashMap<String, (String, bool, bool)> =
+            serde_json::from_str(include_str!("spdx-licenses.json"))
+                .expect("src/spdx-licenses.json is valid JSON");
+        raw.into_iter()
+            .map(|(id, (name, osi, _deprecated))| {
+                (id.to_ascii_lowercase(), SpdxLicense { id, name, osi })
+            })
+            .collect()
+    })
+}
+
+/// One `spdx-licenses.json` entry. `id` is the list's canonical casing:
+/// `SpdxLicenses::getLicenseByIdentifier` builds the licence-text URL from
+/// it, while the identifier echoed in parentheses keeps the caller's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpdxLicense {
+    id: String,
+    name: String,
+    osi: bool,
+}
+
+/// Case-insensitive lookup, as `getLicenseByIdentifier` lowercases too.
+fn spdx_license(identifier: &str) -> Option<&'static SpdxLicense> {
+    spdx_licenses().get(&identifier.to_ascii_lowercase())
+}
+
+/// `ShowCommand::printLicenses`: one `license` line per `license` array
+/// entry, expanded through [`spdx_license`] when known, else the raw
+/// identifier verbatim (Composer's own fallback for an unrecognised one).
+fn print_licenses(buf: &mut String, pkg: &Value) -> std::fmt::Result {
+    let Some(licenses) = pkg.get("license").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for identifier in licenses.iter().filter_map(Value::as_str) {
+        let line = match spdx_license(identifier) {
+            Some(SpdxLicense {
+                id,
+                name,
+                osi: true,
+            }) => format!(
+                "{name} ({identifier}) (OSI approved) https://spdx.org/licenses/{id}.html#licenseText"
+            ),
+            Some(SpdxLicense {
+                id,
+                name,
+                osi: false,
+            }) => {
+                format!("{name} ({identifier}) https://spdx.org/licenses/{id}.html#licenseText")
+            }
+            None => identifier.to_string(),
+        };
+        writeln!(buf, "license  : {line}")?;
+    }
+    Ok(())
+}
+
+/// A calendar date, no time-of-day: `getRelativeTime`'s own age buckets
+/// (week/month/year) never need finer than day precision, so dropping the
+/// hour/minute/second a package's `time` field also carries keeps the
+/// epoch-day math below to two small, well-known conversions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Ymd {
+    y: i64,
+    m: u32,
+    d: u32,
+}
+
+/// Composer's own `time` field shape: `Y-m-d\TH:i:sP` (`DATE_ATOM`). Only
+/// the date part is kept (see [`Ymd`]).
+fn parse_time(value: &str) -> Option<Ymd> {
+    let date = value.split('T').next()?;
+    let mut parts = date.splitn(3, '-');
+    Some(Ymd {
+        y: parts.next()?.parse().ok()?,
+        m: parts.next()?.parse().ok()?,
+        d: parts.next()?.parse().ok()?,
+    })
+}
+
+/// Wall-clock "now" for the age math below, overridable via
+/// `VIV_TEST_NOW` (same shape as [`parse_time`]) so a fixture recorded
+/// once never drifts out from under a later test run (`#94`).
+fn now() -> Ymd {
+    if let Some(value) = std::env::var("VIV_TEST_NOW")
+        .ok()
+        .and_then(|value| parse_time(&value))
+    {
+        return value;
+    }
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs() / 86_400).unwrap_or(0));
+    civil_from_days(days)
+}
+
+/// Howard Hinnant's `days_from_civil`: days since the Unix epoch for a
+/// proleptic-Gregorian calendar date.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (i64::from(m) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The inverse of [`days_from_civil`], for the real (non-`VIV_TEST_NOW`)
+/// wall clock.
+fn civil_from_days(z: i64) -> Ymd {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    Ymd {
+        y: y + i64::from(m <= 2),
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "m is 1..=12 by construction"
+        )]
+        m: m as u32,
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "d is 1..=31 by construction"
+        )]
+        d: d as u32,
+    }
+}
+
+/// `DateTimeImmutable::diff`'s year/month components between two dates:
+/// borrow a month when the day-of-month regressed, then a year when that
+/// pushes the month component negative. `getRelativeTime` only branches on
+/// whether each is zero or `>= 1`, so the day itself is never returned.
+fn calendar_diff(from: Ymd, to: Ymd) -> (i64, u32) {
+    let mut years = to.y - from.y;
+    let mut months = i64::from(to.m) - i64::from(from.m);
+    if i64::from(to.d) - i64::from(from.d) < 0 {
+        months -= 1;
+    }
+    if months < 0 {
+        years -= 1;
+        months += 12;
+    }
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "just added back up to 0..12 above"
+    )]
+    (years, months as u32)
+}
+
+/// `ShowCommand::getRelativeTime`.
+fn relative_time(release: Ymd, now: Ymd) -> String {
+    if release == now {
+        return "today".to_string();
+    }
+    let days =
+        days_from_civil(now.y, now.m, now.d) - days_from_civil(release.y, release.m, release.d);
+    if days < 7 {
+        return "this week".to_string();
+    }
+    if days < 14 {
+        return "last week".to_string();
+    }
+    let (years, months) = calendar_diff(release, now);
+    if years < 1 && days < 31 {
+        return format!("{} weeks ago", days / 7);
+    }
+    if years < 1 {
+        return format!("{months} month{} ago", if months > 1 { "s" } else { "" });
+    }
+    format!("{years} year{} ago", if years > 1 { "s" } else { "" })
+}
+
+/// `ShowCommand::printMeta`'s `released` line: `Y-m-d`, then the relative
+/// age. `None` when the package carries no `time` (Composer's own
+/// `getReleaseDate() !== null` guard).
+fn released_line(pkg: &Value) -> Option<String> {
+    let release = parse_time(pkg.get("time").and_then(Value::as_str)?)?;
+    Some(format!(
+        "{:04}-{:02}-{:02}, {}",
+        release.y,
+        release.m,
+        release.d,
+        relative_time(release, now())
+    ))
+}
+
+/// `outdated --format=json`'s `release-age`/`release-date` fields:
+/// `getRelativeTime`'s own text with `" ago"` turned into `" old"`, `"from
+/// "`-prefixed when that swap didn't fire (`"today"`/`"this week"`/`"last
+/// week"` never contain `" ago"`), alongside the raw `time` field
+/// unchanged — it's already `DATE_ATOM`, Composer's own JSON date shape.
+fn release_age_fields(time: Option<&str>) -> (String, String) {
+    let Some(time) = time else {
+        return (String::new(), String::new());
+    };
+    let Some(release) = parse_time(time) else {
+        return (String::new(), String::new());
+    };
+    let relative = relative_time(release, now()).replace(" ago", " old");
+    let age = if relative.contains(" old") {
+        relative
+    } else {
+        format!("from {relative}")
+    };
+    (age, time.to_string())
 }
 
 // ---------------------------------------------------------------------
@@ -1073,6 +1314,7 @@ fn write_tree_line(out: &mut String, raw: &str) {
 // Outdated view
 // ---------------------------------------------------------------------
 
+#[derive(Clone)]
 struct OutdatedRow {
     name: String,
     direct: bool,
@@ -1083,6 +1325,10 @@ struct OutdatedRow {
     homepage: String,
     source_view: String,
     abandoned: Value,
+    /// Installed and latest packages' own `time` field, `--format=json`'s
+    /// `release-age`/`release-date`/`latest-release-date` (#94).
+    time: Option<String>,
+    latest_time: Option<String>,
 }
 
 /// `ShowCommand::findLatestPackage`/`VersionSelector::findBestCandidate`,
@@ -1212,20 +1458,7 @@ fn print_outdated_group(rows: &[&OutdatedRow]) -> Result<()> {
         err_out("Everything up to date");
         return Ok(());
     }
-    let owned: Vec<OutdatedRow> = rows
-        .iter()
-        .map(|r| OutdatedRow {
-            name: r.name.clone(),
-            direct: r.direct,
-            version: r.version.clone(),
-            latest: r.latest.clone(),
-            marker: r.marker,
-            description: r.description.clone(),
-            homepage: r.homepage.clone(),
-            source_view: r.source_view.clone(),
-            abandoned: r.abandoned.clone(),
-        })
-        .collect();
+    let owned: Vec<OutdatedRow> = rows.iter().map(|r| (*r).clone()).collect();
     let as_rows: Vec<Row> = owned.iter().map(outdated_row_as_row).collect();
     print_list_text(&as_rows, true, true, Some(&LatestColumn { rows: &owned }))
 }
@@ -1252,12 +1485,19 @@ fn print_outdated_json(rows: &[OutdatedRow]) -> Result<()> {
             obj.insert("homepage".into(), Value::String(row.homepage.clone()));
             obj.insert("source".into(), Value::String(row.source_view.clone()));
             obj.insert("version".into(), Value::String(row.version.clone()));
+            let (release_age, release_date) = release_age_fields(row.time.as_deref());
+            obj.insert("release-age".into(), Value::String(release_age));
+            obj.insert("release-date".into(), Value::String(release_date));
             obj.insert("latest".into(), Value::String(row.latest.clone()));
             let status = match row.marker {
                 '!' => "semver-safe-update",
                 _ => "update-possible",
             };
             obj.insert("latest-status".into(), Value::String(status.to_string()));
+            obj.insert(
+                "latest-release-date".into(),
+                Value::String(row.latest_time.clone().unwrap_or_default()),
+            );
             obj.insert("description".into(), Value::String(row.description.clone()));
             obj.insert("abandoned".into(), row.abandoned.clone());
             Value::Object(obj)
@@ -1420,5 +1660,56 @@ mod tests {
             .await
             .unwrap();
         assert!(!versions.is_empty());
+    }
+
+    use super::{SpdxLicense, Ymd, relative_time, spdx_license};
+
+    /// `composer/spdx-licenses`' own resource file, not the old
+    /// hand-picked handful: a lowercase lookup on two identifiers
+    /// (`SpdxLicenses::getLicenseByIdentifier` lowercases too, #94).
+    #[test]
+    fn spdx_license_resolves_known_identifiers_case_insensitively() {
+        assert_eq!(
+            spdx_license("Apache-2.0"),
+            Some(&SpdxLicense {
+                id: "Apache-2.0".to_string(),
+                name: "Apache License 2.0".to_string(),
+                osi: true,
+            })
+        );
+        // The URL takes the list's casing, not the caller's.
+        assert_eq!(
+            spdx_license("bsd-3-clause").map(|l| l.id.as_str()),
+            Some("BSD-3-Clause")
+        );
+    }
+
+    /// `ShowCommand::getRelativeTime`: a real Composer 2.10.2
+    /// `outdated --format=json` run on `outdated-monolog` (monolog/monolog
+    /// 3.9.0, `time: "2025-03-24T10:02:05+00:00"`) recorded
+    /// `"release-age": "1 year old"` on 2026-09-07 (`#94`).
+    #[test]
+    fn relative_time_matches_composers_recorded_release_age() {
+        let release = Ymd {
+            y: 2025,
+            m: 3,
+            d: 24,
+        };
+        let now = Ymd {
+            y: 2026,
+            m: 9,
+            d: 7,
+        };
+        assert_eq!(relative_time(release, now), "1 year ago");
+    }
+
+    #[test]
+    fn relative_time_same_day_is_today() {
+        let day = Ymd {
+            y: 2026,
+            m: 9,
+            d: 7,
+        };
+        assert_eq!(relative_time(day, day), "today");
     }
 }

@@ -182,5 +182,6 @@ was decided and why, including the study of
 
 MIT. `src/autoload/templates/` contains Composer's `ClassLoader.php`,
 `InstalledVersions.php` and licence, copied verbatim under Composer's MIT
-licence. Test fixtures under `tests/fixtures/composer/` are Composer's own,
-also MIT.
+licence. `src/spdx-licenses.json` is `composer/spdx-licenses`' own resource
+file, also copied verbatim under its MIT licence. Test fixtures under
+`tests/fixtures/composer/` are Composer's own, also MIT.

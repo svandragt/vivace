@@ -2,7 +2,9 @@ name     : monolog/monolog
 descrip. : Sends your logs to files, sockets, inboxes, databases and various web services
 keywords : log, logging, psr-3
 versions : * 3.11.0
+released : 2026-09-02, 2 years ago
 type     : library
+license  : MIT License (MIT) (OSI approved) https://spdx.org/licenses/MIT.html#licenseText
 homepage : https://github.com/Seldaek/monolog
 source   : [git] https://github.com/Seldaek/monolog.git 147f303310f06334f03f409e49d7ad1e275ff05a
 dist     : [zip] https://api.github.com/repos/Seldaek/monolog/zipball/147f303310f06334f03f409e49d7ad1e275ff05a 147f303310f06334f03f409e49d7ad1e275ff05a
@@ -41,3 +43,22 @@ rollbar/rollbar ^4.0
 ruflin/elastica ^7 || ^8
 symfony/mailer ^5.4 || ^6
 symfony/mime ^5.4 || ^6
+
+suggests
+aws/aws-sdk-php Allow sending log messages to AWS services like DynamoDB
+doctrine/couchdb Allow sending log messages to a CouchDB server
+elasticsearch/elasticsearch Allow sending log messages to an Elasticsearch server via official client
+ext-amqp Allow sending log messages to an AMQP server (1.0+ required)
+ext-curl Required to send log messages using the IFTTTHandler, the LogglyHandler, the SendGridHandler, the SlackWebhookHandler or the TelegramBotHandler
+ext-mbstring Allow to work properly with unicode symbols
+ext-mongodb Allow sending log messages to a MongoDB server (via driver)
+ext-openssl Required to send log messages using SSL
+ext-sockets Allow sending log messages to a Syslog server (via UDP driver)
+graylog2/gelf-php Allow sending log messages to a GrayLog2 server
+mongodb/mongodb Allow sending log messages to a MongoDB server (via library)
+php-amqplib/php-amqplib Allow sending log messages to an AMQP server using php-amqplib
+rollbar/rollbar Allow sending log messages to Rollbar
+ruflin/elastica Allow sending log messages to an Elastic Search server
+
+provides
+psr/log-implementation 3.0.0

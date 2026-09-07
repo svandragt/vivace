@@ -5,13 +5,10 @@
 //! devbox run -- composer -d tests/fixtures/monolog show --no-ansi [flags]
 //! ```
 //!
-//! `tests/fixtures/show/expected/monolog-detail.txt` is not the full
-//! recorded output: Composer's detail view also prints `released`
-//! (relative to *today*, so a fixture recorded once would drift out from
-//! under a later test run) and `license` (needs an SPDX database this
-//! crate has no other use for), plus `suggests`/`provides`, none of which
-//! `src/show.rs`'s module doc lists as ported. Those lines are stripped
-//! from the fixture; everything that remains must still match verbatim.
+//! `tests/fixtures/show/expected/monolog-detail.txt` is the full recorded
+//! output, including `released`/`license`/`suggests`/`provides` (#94):
+//! `released`'s relative age is pinned with `VIV_TEST_NOW` so the fixture
+//! never drifts out from under a later test run.
 //! `viv outdated`'s own byte-parity check
 //! (`find_latest_matches_composers_recorded_outdated` et al.) lives as a
 //! unit test inside `src/show.rs` instead, since it needs a fixture
@@ -151,8 +148,11 @@ fn tree_command_matches_show_tree() {
     assert_eq!(stdout_of(&ctx, &["tree"]), expected("monolog-tree.txt"));
 }
 
+/// `released`'s relative age is pinned two years past the fixture's
+/// recorded `time` (2026-09-02) via `VIV_TEST_NOW`, matching
+/// `monolog-detail.txt`'s "2 years ago".
 #[test]
-fn show_detail_matches_composer_minus_the_skipped_lines() {
+fn show_detail_matches_composer() {
     let ctx = TestContext::new();
     project_with_installed_json(ctx.project.path());
     // Composer prints the realpath, so canonicalise like macOS's /var symlink
@@ -161,7 +161,16 @@ fn show_detail_matches_composer_minus_the_skipped_lines() {
         .expect("fixture package dir exists");
     let want =
         expected("monolog-detail.txt").replace("[PATH]", &install_path.display().to_string());
-    assert_eq!(stdout_of(&ctx, &["show", "monolog/monolog"]), want);
+    let mut cmd = ctx.viv();
+    cmd.env("VIV_TEST_NOW", "2028-09-02T00:00:00+00:00")
+        .args(["show", "monolog/monolog"]);
+    let output = cmd.output().expect("failed to run viv");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), want);
 }
 
 /// `viv tree --invert psr/log` matches Composer's own `composer why
