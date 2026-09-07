@@ -52,9 +52,8 @@ Full columns and footnotes in [`bench/results/corpus.md`](bench/results/corpus.m
 Warm install and no-op are an order of magnitude under both tools on every
 project. Cold install beats Composer everywhere and sits level with riff
 within run-to-run noise. yiisoft/yii2-app-basic is in the corpus but not in
-the table: riff fails its install (it applies a dependency's patches under
-`--no-plugins`), and the bench stops at the first failing tool per project
-row only since 2026-09-07.
+the table: riff fails its install by applying a dependency's patches under
+`--no-plugins`; Composer and viv install it.
 
 ## Beyond Composer
 

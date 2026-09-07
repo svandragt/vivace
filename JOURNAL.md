@@ -642,3 +642,51 @@ Also today: a question about composer-patches and shared hardlinks. The
 adapter relinks the patched package as a copy through `link_tree`'s
 temp-directory swap, so the store is never written through; a regression
 test asserting that is parked.
+
+## 2026-09-07, night: the corpus closes the update gap
+
+The corpus bench, fixed to write footnotes per project and to keep going
+past a failing tool, turned the evening's "update is slower on three
+projects" into five bugs and three profiles.
+
+**Bugs, all found by benching real projects and all closed today.** The
+constraint-filtered closure walk parsed `self.version` literally (#115,
+drupal and bedrock). The pool optimiser remapped `request.fixed` after
+pruning but not each alias's `alias_of` (#116, phpunit panicked).
+The solver ignored the root package's `replace` and `provide`, so
+symfony/demo's lock gained four polyfills Composer omits (#117). The
+platform repository stopped at `php` and `ext-*`; `php-64bit` and `lib-*`
+are now ported from PlatformRepository, 84 of 84 names and versions
+matching `composer show --platform` (#118, statamic and craft). A v2
+repository's `available-package-patterns` was ignored, so bedrock asked
+repo.wp-packages.org about every name (#119). And the lock's `time`
+field went out verbatim where Composer rewrites it as RFC 3339 with
+`+00:00` (#121, one wp-theme entry).
+
+**Speed, from measurement rather than guesswork.** A request timeline
+showed the lock-seeded prefetch opening 153 streams on one HTTP/2
+connection whose server limit is 128, with per-request latency rising
+from 136 ms under 50 in flight to 905 ms above 100; the burst now goes
+through a cap of 100, chosen by a sweep (#120). Provider bodies over 64 KB
+are parsed on the blocking pool (an ungated version slowed bench/laravel
+by 18%, so the gate matters). And the constraint scan re-tested every
+rejected version against the whole constraint list on every widen;
+symfony/http-foundation alone saw 280k `matches` calls in statamic's
+closure. Testing only the constraints added since the last scan cut
+statamic's closure from 1565 ms to 977 ms.
+
+**Where the corpus stands.** Warm update: viv ahead of Composer on every
+project that completes, from laravel HEAD (1.43 s vs 1.75) to statamic
+(1.88 s vs 2.40). Warm install and no-op an order of magnitude ahead of
+both tools everywhere. Cold: ahead of Composer everywhere, level with
+riff within noise. yii2-app-basic drops out because riff applies a
+dependency's patches under `--no-plugins` and fails; Composer and viv
+install it. #106 closed with a corpus table in the README.
+
+**Method notes.** Four lanes on one tree with named file ownership held
+up, but two lanes copied a helper rather than widen one, the audit's
+finding repeating in miniature; one lane's mis-typed test truncated a
+committed JSON and restored it. Bench numbers under concurrent compiles
+are unusable; every before/after tonight was taken on a quiet machine or
+from a worktree build of HEAD against the working tree. riff was
+reinstalled so its column is measured, not carried over.
