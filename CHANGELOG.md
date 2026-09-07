@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-07
+### Added
+- CHANGELOG.md generated from closed milestone issues at release time ([#80](https://github.com/svandragt/vivace/issues/80))
+- Homebrew tap and Debian package built from the release tarballs ([#82](https://github.com/svandragt/vivace/issues/82))
+- Stability policy: what viv promises and how it versions ([#83](https://github.com/svandragt/vivace/issues/83))
+- Run the compat sweep on a schedule, not only on tags ([#84](https://github.com/svandragt/vivace/issues/84))
+- Add riff to the update-warm benchmark ([#87](https://github.com/svandragt/vivace/issues/87))
+- Cache parsed constraints when building pool packages ([#89](https://github.com/svandragt/vivace/issues/89))
+- Normalise composer.json on update, require and remove, not on install ([#95](https://github.com/svandragt/vivace/issues/95))
+- viv update rejects --no-plugins and --no-scripts that install accepts ([#96](https://github.com/svandragt/vivace/issues/96))
+- viv update refuses a composer.json with a vcs repository ([#97](https://github.com/svandragt/vivace/issues/97))
+- Aliases: viv add for require, viv rm for remove ([#99](https://github.com/svandragt/vivace/issues/99))
+- Adapter for php-http/discovery ([#101](https://github.com/svandragt/vivace/issues/101))
+
+### Changed
+- make install should not put the composer shim on PATH by default ([#103](https://github.com/svandragt/vivace/issues/103))
+- update, require and remove should install after writing the lock, as Composer does ([#104](https://github.com/svandragt/vivace/issues/104))
+
 ## [0.5.0] - 2026-09-07
 ### Added
 - Release workflow: prebuilt binaries for Linux and macOS on tag push ([#65](https://github.com/svandragt/vivace/issues/65))
@@ -90,3 +108,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [0.3.0]: https://github.com/svandragt/vivace/releases/tag/v0.3.0
 [0.4.0]: https://github.com/svandragt/vivace/releases/tag/v0.4.0
 [0.5.0]: https://github.com/svandragt/vivace/releases/tag/v0.5.0
+[0.6.0]: https://github.com/svandragt/vivace/releases/tag/v0.6.0

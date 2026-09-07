@@ -489,3 +489,72 @@ back with a dirty `composer.json`. Now `update`, `require` and `remove`
 normalise when they write, which is where merge conflicts arise anyway,
 and `install` and `dump-autoload` leave the file alone. `--no-normalize`
 on install is a hidden no-op for one release (#95).
+
+## 2026-09-07, afternoon: milestone 0.6 closed
+
+Four hours, fourteen issues, one morning's sweep of thirteen client
+projects driving the priorities. The milestone was renamed from "faster
+than riff" to "client projects and update speed" once it was clear that
+half the value was making `update` work on real projects at all.
+
+**Update works on real projects.** Every client project declares a `vcs`
+repository, and `viv update` refused all of them. A VCS repository is now a
+source like a Composer one: list refs, read `composer.json` at each, feed
+the same `PackageVersion` list to the pool. A git driver mirrors the remote
+under the cache; a GitHub driver uses the API through the existing
+transport with `auth.json`'s token and falls back to git. The byte-diff
+test against Composer caught one thing on the first pass: Composer strips
+`file://` from a local URL before the driver sees it, so `source.url` in
+the lock never carries the scheme.
+
+**Update installs.** `viv update`, `require` and `remove` wrote the lock
+and stopped. Composer installs in the same run and fires the update
+events. They now chain into the install path, `pre-update-cmd` before
+resolving and `post-update-cmd` after the install, never the install-cmd
+pair. `--no-install` keeps the old behaviour. Found while landing flag
+parity for `--no-plugins` and `--no-scripts`, which `update` rejected.
+
+**Speed.** Parsed constraints are cached across the pool builder and the
+optimiser; warm update on the Laravel lock went from 5.18 s to 4.55 s
+with an identical lock. The metadata closure fetch turned out to be a
+latency floor, not a hotspot: 251 provider requests over nine dependency
+levels, already concurrent within a level. Removing the per-level barrier
+landed as a tidy-up and moved nothing. The real fix is to seed the closure
+from the lock's package names so nine levels become two; filed for 0.7.
+riff gained an update-warm column and could not fill it: riff 0.0.7 reports
+zero versions of laravel/framework whatever the constraint. Tracked locally
+for an upstream report.
+
+**Adoption.** php-http/discovery gets a native adapter for its generated
+strategy file, from a real-Composer golden. `viv add` and `viv rm`.
+`make install` no longer puts the composer shim on PATH. A weekly
+scheduled sweep opens a drift issue when a pinned project starts
+differing. Debian packages and a Homebrew formula ship with each release,
+and release notes come from the milestone's closed issues. A stability
+policy says what viv promises.
+
+**Corpus check before the tag.** All ten testable client projects are
+byte-identical to Composer in both modes; the three that need
+`ffraenz/private-composer-installer` stay skipped (#98).
+
+Not closed: the four-column target. viv beats riff warm and no-op by an
+order of magnitude and Composer on update is the remaining loss; cold
+install sits at 2.2 s against riff's 1.6 s, bounded by GitHub's zipball
+throttling rather than anything in the pipeline. Carried to 0.7 with the
+resolver-speed work.
+
+**Bench on the three largest client projects**, install from lock,
+`--no-plugins --no-scripts`, three runs, network included so cold moves
+with the day:
+
+| Project | Packages | composer cold / warm / no-op | viv cold / warm / no-op |
+|---|---|---|---|
+| A | 26 | 30.3 s / 1.58 s / 0.68 s | 7.9 s / 0.043 s / 0.006 s |
+| B | 473 | 33.0 s / 2.11 s / 0.49 s | 8.8 s / 0.100 s / 0.050 s |
+| C | 442 | 26.3 s / 2.49 s / 0.55 s | 23.1 s / 0.301 s / 0.049 s |
+
+riff installed none of them. And the bench found the next bug: `viv
+update` on all three fails on wpackagist's metadata, whose provider files
+key versions by string instead of the v2 list. `install` is unaffected.
+Filed as the first P1 of 0.7 (#105); 0.6 ships with update working on
+Packagist, Satis and VCS repositories and not yet on wpackagist.
