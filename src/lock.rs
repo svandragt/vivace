@@ -754,7 +754,7 @@ pub fn parse_root(bytes: &[u8]) -> Result<Root> {
 
 /// Composer's `Locker::getContentHash`: an md5 of the sorted, compact JSON
 /// of the `composer.json` keys that decide what a lock should contain.
-fn content_hash(root_json: &[u8]) -> Result<String> {
+pub(crate) fn content_hash(root_json: &[u8]) -> Result<String> {
     const RELEVANT: &[&str] = &[
         "name",
         "version",

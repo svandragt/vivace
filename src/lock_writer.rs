@@ -2,17 +2,12 @@
 //! key order, `fixupJsonDataType`) and `lockPackages` (`ArrayDumper::dump`
 //! reused for each package entry, then `version_normalized`/`installation-source`
 //! dropped and `time` moved to the end).
-//!
-//! `content_hash`/`php_json_encode` below are copied from `lock.rs` rather
-//! than called (they aren't `pub` there, and that module belongs to another
-//! lane right now, so widening their visibility isn't this lane's call to
-//! make): `Locker::getContentHash`'s md5-of-sorted-compact-JSON is a stable,
-//! small piece of logic, worth duplicating rather than gated on that.
-
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
+
+use crate::lock::content_hash;
 
 use crate::solver::transaction::{AliasEntry, ResolvedPackage};
 
@@ -319,113 +314,6 @@ fn dump_aliases(aliases: &[AliasEntry]) -> Value {
             })
             .collect(),
     )
-}
-
-/// `Locker::getContentHash`: an md5 of the sorted, compact JSON of the
-/// `composer.json` keys that decide what a lock should contain. Duplicated
-/// from `lock.rs`'s private `content_hash` (see the module doc).
-fn content_hash(root_json: &[u8]) -> Result<String> {
-    const RELEVANT: &[&str] = &[
-        "name",
-        "version",
-        "require",
-        "require-dev",
-        "conflict",
-        "replace",
-        "provide",
-        "minimum-stability",
-        "prefer-stable",
-        "repositories",
-        "extra",
-    ];
-    let content: Value = serde_json::from_slice(root_json).context("parsing composer.json")?;
-    let mut relevant = std::collections::BTreeMap::new();
-    if let Some(root) = content.as_object() {
-        for key in RELEVANT {
-            if let Some(value) = root.get(*key) {
-                relevant.insert((*key).to_string(), value.clone());
-            }
-        }
-        if let Some(platform) = root.get("config").and_then(|c| c.get("platform")) {
-            relevant.insert(
-                "config".to_string(),
-                serde_json::json!({ "platform": platform }),
-            );
-        }
-    }
-    let encoded = php_json_encode(&Value::Object(
-        relevant.into_iter().collect::<Map<String, Value>>(),
-    ));
-    Ok(format!("{:x}", md5::compute(encoded)))
-}
-
-/// PHP's `json_encode($value, 0)`: like `serde_json`'s compact encoding, but
-/// `/` is escaped as `\/` and non-ASCII characters are escaped as `\uXXXX`.
-/// Duplicated from `lock.rs` alongside `content_hash` (see the module doc).
-fn php_json_encode(value: &Value) -> String {
-    let mut out = String::new();
-    write_php_json(value, &mut out);
-    out
-}
-
-fn write_php_json(value: &Value, out: &mut String) {
-    match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => out.push_str(&n.to_string()),
-        Value::String(s) => write_php_json_string(s, out),
-        Value::Array(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_php_json(item, out);
-            }
-            out.push(']');
-        }
-        Value::Object(map) => {
-            out.push('{');
-            for (i, (key, item)) in map.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_php_json_string(key, out);
-                out.push(':');
-                write_php_json(item, out);
-            }
-            out.push('}');
-        }
-    }
-}
-
-fn write_php_json_string(s: &str, out: &mut String) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '/' => out.push_str("\\/"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                use std::fmt::Write as _;
-                write!(out, "\\u{:04x}", c as u32).expect("write! to String never fails");
-            }
-            c if c.is_ascii() => out.push(c),
-            c => {
-                let mut units = [0u16; 2];
-                for unit in c.encode_utf16(&mut units) {
-                    use std::fmt::Write as _;
-                    write!(out, "\\u{unit:04x}").expect("write! to String never fails");
-                }
-            }
-        }
-    }
-    out.push('"');
 }
 
 #[cfg(test)]
