@@ -25,6 +25,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
+use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -124,7 +126,8 @@ pub async fn build<T: Transport>(
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
     let mut constraint_cache: ConstraintCache = ConstraintCache::new();
-    for versions in closure.values() {
+    let push_started = Instant::now();
+    for versions in closure.into_values() {
         for version in versions {
             push_package_version(
                 &mut packages,
@@ -136,6 +139,11 @@ pub async fn build<T: Transport>(
             )?;
         }
     }
+    tracing::debug!(
+        elapsed_ms = push_started.elapsed().as_millis(),
+        packages = packages.len(),
+        "converted the metadata closure into pool packages"
+    );
 
     let pool = Pool::new(packages);
     let request = Request {
@@ -143,7 +151,13 @@ pub async fn build<T: Transport>(
         fixed,
     };
     let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
+    let optimize_started = Instant::now();
     let optimized = pool_optimizer::optimize(&request, pool, &policy, &mut constraint_cache)?;
+    tracing::debug!(
+        elapsed_ms = optimize_started.elapsed().as_millis(),
+        pool_packages = optimized.pool.len(),
+        "pruned the pool before rule generation"
+    );
     // `optimize` only borrows `request`; `requires` is still ours to move
     // into the final, remapped `Request` (`fixed` alone changes, `optimize`
     // reindexes it to match the pruned pool).
@@ -348,7 +362,8 @@ pub async fn build_partial<T: Transport>(
         }
     }
 
-    for versions in closure.values() {
+    let push_started = Instant::now();
+    for versions in closure.into_values() {
         for version in versions {
             push_package_version(
                 &mut packages,
@@ -360,6 +375,11 @@ pub async fn build_partial<T: Transport>(
             )?;
         }
     }
+    tracing::debug!(
+        elapsed_ms = push_started.elapsed().as_millis(),
+        packages = packages.len(),
+        "converted the metadata closure into pool packages"
+    );
 
     let pool = Pool::new(packages);
     let request = Request {
@@ -367,7 +387,13 @@ pub async fn build_partial<T: Transport>(
         fixed,
     };
     let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
+    let optimize_started = Instant::now();
     let optimized = pool_optimizer::optimize(&request, pool, &policy, &mut constraint_cache)?;
+    tracing::debug!(
+        elapsed_ms = optimize_started.elapsed().as_millis(),
+        pool_packages = optimized.pool.len(),
+        "pruned the pool before rule generation"
+    );
     let Request { requires, .. } = request;
 
     Ok(BuildResult {
@@ -430,7 +456,7 @@ fn package_from_lock_entry(entry: &Value, cache: &mut ConstraintCache) -> Result
         alias_of: None,
         is_root_package_alias: false,
         has_self_version_requires: false,
-        raw: entry.clone(),
+        raw: Arc::new(entry.clone()),
     })
 }
 
@@ -728,7 +754,7 @@ fn parse_links(
 /// final tie-break.
 fn push_package_version(
     packages: &mut Vec<Package>,
-    pv: &PackageVersion,
+    pv: PackageVersion,
     acceptable: &HashSet<&'static str>,
     stability_flags: &HashMap<String, &'static str>,
     root_aliases: &HashMap<String, Vec<(String, String, String)>>,
@@ -747,8 +773,16 @@ fn push_package_version(
     let provides = parse_links(&pv.provide, &name, &pv.version, cache)?;
     let replaces = parse_links(&pv.replace, &name, &pv.version, cache)?;
     let is_dev = stability == "dev";
+    let alias_target = branch_alias_target(&pv);
+    // Moved once, not deep-cloned per push: a branch-alias or root-alias
+    // version pushes two or three `Package`s off this one `pv`, and the
+    // pool holds 45k+ of these on a Laravel-sized closure — an `Arc::clone`
+    // for the extra pushes instead of re-cloning the whole JSON tree
+    // (`bench/results/profile.md`'s named candidate).
+    let raw = Arc::new(pv.raw);
+    let pretty_version = pv.version;
 
-    let real_index = if let Some(alias_normalized) = branch_alias_target(pv) {
+    let real_index = if let Some(alias_normalized) = alias_target {
         let alias_index = packages.len();
         let real_index = alias_index + 1;
         packages.push(Package {
@@ -769,12 +803,12 @@ fn push_package_version(
             // correctly (`parse_links`'s doc comment) even though this flag
             // doesn't track it.
             has_self_version_requires: false,
-            raw: pv.raw.clone(),
+            raw: Arc::clone(&raw),
         });
         packages.push(Package {
             name: name.clone(),
             version,
-            pretty_version: pv.version.clone(),
+            pretty_version: pretty_version.clone(),
             stability,
             is_dev,
             requires,
@@ -784,7 +818,7 @@ fn push_package_version(
             alias_of: None,
             is_root_package_alias: false,
             has_self_version_requires: false,
-            raw: pv.raw.clone(),
+            raw: Arc::clone(&raw),
         });
         real_index
     } else {
@@ -792,7 +826,7 @@ fn push_package_version(
         packages.push(Package {
             name: name.clone(),
             version,
-            pretty_version: pv.version.clone(),
+            pretty_version: pretty_version.clone(),
             stability,
             is_dev,
             requires,
@@ -802,7 +836,7 @@ fn push_package_version(
             alias_of: None,
             is_root_package_alias: false,
             has_self_version_requires: false,
-            raw: pv.raw.clone(),
+            raw,
         });
         index
     };
@@ -926,7 +960,7 @@ fn platform_package(
         alias_of: None,
         is_root_package_alias: false,
         has_self_version_requires: false,
-        raw: serde_json::json!({ "name": name, "version": pretty_version }),
+        raw: Arc::new(serde_json::json!({ "name": name, "version": pretty_version })),
     }
 }
 

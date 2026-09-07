@@ -69,7 +69,15 @@ pub struct Package {
     /// them again. Platform packages carry a synthetic stand-in (never
     /// reached: `transaction::resolved_packages` drops fixed packages
     /// before a lock ever sees them).
-    pub raw: Value,
+    ///
+    /// `Arc`, not `Value`: `push_package_version` pushes a branch-alias or
+    /// root-alias version as two or three `Package`s sharing the same raw
+    /// entry, and `clone_package`'s dev-split second solve clones every
+    /// first-solve package again — a deep JSON clone each time would be one
+    /// of the largest per-package costs in `pool_builder::build` (`bench/
+    /// results/profile.md`'s "string cloning in `PackageVersion` -> `Package`
+    /// conversion" candidate), where an `Arc::clone` is a pointer copy.
+    pub raw: Arc<Value>,
 }
 
 impl Package {

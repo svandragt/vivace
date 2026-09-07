@@ -61,7 +61,7 @@ pub fn resolved_packages(
         .map(|package| ResolvedPackage {
             name: package.name.clone(),
             pretty_version: package.pretty_version.clone(),
-            raw: package.raw.clone(),
+            raw: (*package.raw).clone(),
         })
         .collect()
 }

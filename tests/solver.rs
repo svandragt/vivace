@@ -157,7 +157,7 @@ fn package(name: &str, pretty_version: &str) -> Package {
         alias_of: None,
         is_root_package_alias: false,
         has_self_version_requires: false,
-        raw: serde_json::json!({ "name": name, "version": pretty_version }),
+        raw: std::sync::Arc::new(serde_json::json!({ "name": name, "version": pretty_version })),
     }
 }
 
