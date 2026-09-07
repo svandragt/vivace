@@ -1,18 +1,19 @@
 //! Native adapters for the Composer plugins vivace ports
 //! (`docs/plugin-strategy.md`'s rules 1, 2 and 3: `composer/installers` and the
 //! `wordpress-core-installer` pair map install paths;
-//! `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`
-//! and `tbachert/spi` generate a file or run a command after install;
-//! `cweagans/composer-patches` applies patches after each package lands),
-//! plus rule 3's refusal for every other `composer-plugin` in the lock.
+//! `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`,
+//! `tbachert/spi` and `php-http/discovery` generate a file or run a command
+//! after install; `cweagans/composer-patches` applies patches after each
+//! package lands), plus rule 3's refusal for every other `composer-plugin` in
+//! the lock.
 //!
 //! The path-mapping pair only ever changes *where* a package lands on disk:
 //! this module computes a project-relative install directory per package;
 //! every downstream consumer (`link_tree`'s target, `installed.json`/`.php`,
 //! the autoload paths, `vendor/bin` proxies, the plan's keep/remove diff)
 //! already renders whatever absolute or relative path it is given, vendor or
-//! not, so none of them need to know a plugin was involved at all. The three
-//! generator adapters (`phpcs`, `phpstan`, `spi`) instead run once,
+//! not, so none of them need to know a plugin was involved at all. The four
+//! generator adapters (`phpcs`, `phpstan`, `spi`, `discovery`) instead run once,
 //! after every package has landed in its final spot, from `src/install.rs`'s
 //! own `post-install-cmd`/`pre-autoload-dump` hook points. [`patches`] runs
 //! earlier still, right after linking and before the autoloader is
@@ -23,6 +24,7 @@ use serde_json::Value;
 
 use crate::lock::{Lock, Package, Root};
 
+mod discovery;
 pub mod patches;
 mod phpcs;
 mod phpstan;
@@ -37,6 +39,7 @@ const NATIVE_ADAPTERS: &[&str] = &[
     "phpstan/extension-installer",
     "tbachert/spi",
     "cweagans/composer-patches",
+    "php-http/discovery",
 ];
 
 /// Composer plugins that only affect commands vivace doesn't implement
@@ -58,6 +61,7 @@ pub struct Plugins {
     phpstan: bool,
     spi: bool,
     patches: bool,
+    discovery: bool,
 }
 
 /// Resolve which native adapters apply and check every other enabled
@@ -88,6 +92,7 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
                     "phpstan/extension-installer" => plugins.phpstan = true,
                     "cweagans/composer-patches" => plugins.patches = true,
                     "tbachert/spi" => plugins.spi = true,
+                    "php-http/discovery" => plugins.discovery = true,
                     other => unreachable!("{other} is in NATIVE_ADAPTERS but has no adapter arm"),
                 }
             }
@@ -123,8 +128,9 @@ impl Plugins {
         None
     }
 
-    /// `tbachert/spi`'s `PRE_AUTOLOAD_DUMP` listener: runs from both `install`
-    /// and `dump-autoload`, since both regenerate the autoloader.
+    /// `tbachert/spi`'s and `php-http/discovery`'s `PRE_AUTOLOAD_DUMP`
+    /// listeners: run from both `install` and `dump-autoload`, since both
+    /// regenerate the autoloader.
     pub fn apply_pre_autoload_dump(
         &self,
         root: &Root,
@@ -133,6 +139,9 @@ impl Plugins {
     ) -> Result<()> {
         if self.spi {
             spi::apply(root, vendor_dir, packages)?;
+        }
+        if self.discovery {
+            discovery::apply(root, vendor_dir)?;
         }
         Ok(())
     }
@@ -989,6 +998,7 @@ mod tests {
             phpstan: false,
             spi: false,
             patches: false,
+            discovery: false,
         };
         let root = root(json!({}));
         let dir = plugins
@@ -1006,6 +1016,7 @@ mod tests {
             phpstan: false,
             spi: false,
             patches: false,
+            discovery: false,
         };
         let root = root(json!({
             "extra": {
@@ -1029,6 +1040,7 @@ mod tests {
             phpstan: false,
             spi: false,
             patches: false,
+            discovery: false,
         };
         let root = root(json!({
             "extra": {
@@ -1054,6 +1066,7 @@ mod tests {
             phpstan: false,
             spi: false,
             patches: false,
+            discovery: false,
         };
         let root = root(json!({
             "extra": {
@@ -1078,6 +1091,7 @@ mod tests {
             phpstan: false,
             spi: false,
             patches: false,
+            discovery: false,
         };
         let root = root(json!({}));
         assert!(
@@ -1096,6 +1110,7 @@ mod tests {
             phpstan: false,
             spi: false,
             patches: false,
+            discovery: false,
         };
         let root = root(json!({}));
         let dir = plugins
@@ -1116,6 +1131,7 @@ mod tests {
             phpstan: false,
             spi: false,
             patches: false,
+            discovery: false,
         };
         let root = root(json!({"extra": {"wordpress-install-dir": "wp"}}));
         let dir = plugins
@@ -1136,6 +1152,7 @@ mod tests {
             phpstan: false,
             spi: false,
             patches: false,
+            discovery: false,
         };
         let root = root(json!({
             "extra": {"wordpress-install-dir": {"johnpbloch/wordpress-core": "web/wp"}}
@@ -1158,6 +1175,7 @@ mod tests {
             phpstan: false,
             spi: false,
             patches: false,
+            discovery: false,
         };
         let raw = json!({
             "name": "acme/wp",

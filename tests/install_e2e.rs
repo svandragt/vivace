@@ -1136,8 +1136,9 @@ fn offline_install_errors_naming_a_package_not_in_the_store() {
 }
 
 /// #52: native adapters for `dealerdirect/phpcodesniffer-composer-installer`,
-/// `phpstan/extension-installer` and `tbachert/spi`, each byte-diffed against
-/// the artifact the real plugin generates with Composer 2.10.2.
+/// `phpstan/extension-installer` and `tbachert/spi`; #101 adds
+/// `php-http/discovery`. Each is byte-diffed against the artifact the real
+/// plugin generates with Composer 2.10.2.
 mod plugin_generators {
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1274,6 +1275,36 @@ mod plugin_generators {
                 .unwrap();
         let got =
             fs::read_to_string(project.join("vendor/composer/GeneratedServiceProviderData.php"))
+                .unwrap();
+        assert_eq!(got, want);
+    }
+
+    /// #101: `php-http/discovery` writes `vendor/composer/GeneratedDiscoveryStrategy.php`,
+    /// a `switch` mapping each interface pinned in root `extra.discovery` to
+    /// its chosen implementation class; the resolver half (`postUpdate`,
+    /// adding a missing `*-implementation` provider to `composer.json`) isn't
+    /// ported (`docs/plugin-strategy.md`).
+    #[test]
+    fn discovery_generated_strategy_matches_composer() {
+        if skip_without_network() {
+            return;
+        }
+        let ctx = TestContext::new();
+        let project = ctx.project.path();
+        copy_lock_sources(&fixture("discovery"), project);
+
+        ctx.viv()
+            .arg("install")
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("Installed 4 packages"));
+
+        let want = fs::read_to_string(
+            fixture("discovery").join("expected/GeneratedDiscoveryStrategy.php"),
+        )
+        .unwrap();
+        let got =
+            fs::read_to_string(project.join("vendor/composer/GeneratedDiscoveryStrategy.php"))
                 .unwrap();
         assert_eq!(got, want);
     }

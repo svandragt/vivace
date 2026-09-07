@@ -1,0 +1,21 @@
+{
+    "name": "vivace/fixture-discovery",
+    "license": "proprietary",
+    "type": "project",
+    "require": {
+        "php-http/discovery": "^1.20",
+        "nyholm/psr7": "^1.8"
+    },
+    "extra": {
+        "discovery": {
+            "psr/http-factory-implementation": "Nyholm\\Psr7\\Factory\\Psr17Factory"
+        }
+    },
+    "config": {
+        "secure-http": true,
+        "autoloader-suffix": "VivaceFixture",
+        "allow-plugins": {
+            "php-http/discovery": true
+        }
+    }
+}

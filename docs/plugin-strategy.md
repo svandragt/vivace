@@ -16,7 +16,7 @@ WordPress project):
 | johnpbloch/wordpress-core-installer | Install path of `wordpress-core` packages from `extra.wordpress-install-dir` | Yes, pure path mapping |
 | dealerdirect/phpcodesniffer-composer-installer | Runs `phpcs --config-set installed_paths` after install | Native (`src/plugins/phpcs.rs`) |
 | phpstan/extension-installer | Writes `GeneratedConfig.php` listing every `extra.phpstan` package | Native (`src/plugins/phpstan.rs`) |
-| php-http/discovery | Adds packages to the resolver and generates a discovery file | Not yet ported, refused (rule 3); the generated file is in scope, its resolver hook isn't |
+| php-http/discovery | Adds packages to the resolver and generates a discovery file | Native (`src/plugins/discovery.rs`), `preAutoloadDump`/`extra.discovery` only; the resolver half (`postUpdate`) isn't ported |
 | tbachert/spi | Generates a service-provider map file after autoload dump | Native (`src/plugins/spi.rs`), `extra.spi` only |
 | cweagans/composer-patches | Applies patches from `extra.patches`/a patches file | Native (`src/plugins/patches.rs`), git-apply path only (#53) |
 
@@ -57,10 +57,10 @@ are ignored, as Composer ignores them.
    still refused.
 4. ffraenz/private-composer-installer (#98): three local client projects
    need it for paid-plugin dist URLs.
-5. php-http/discovery: the generated file only; its resolver hook is out of
-   scope even with the resolver shipped, since it needs `viv update` to
-   treat the discovered packages as additional requirements, not just a
-   file to write.
+5. php-http/discovery (#101): the generated file only. Done. Its resolver
+   hook (`postUpdate`) is still out of scope, even with the resolver
+   shipped, since it needs `viv update` to treat the discovered packages as
+   additional requirements, not just a file to write.
 
 symfony/flex stays refused. Its value is in `composer require`, which is
 where Symfony users should keep using Composer.
