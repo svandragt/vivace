@@ -10,6 +10,15 @@ use std::path::Path;
 use assert_cmd::Command;
 use tempfile::tempdir;
 
+/// Serializes each test's fake-`composer`-copy + spawn against the others.
+/// `fs::copy` briefly holds its destination open for write; a concurrent
+/// thread's `Command::spawn` forks (inheriting that fd process-wide) and,
+/// if it hasn't exec'd yet when this thread execs its own freshly-copied
+/// binary, the kernel sees a write-open fd on that inode and returns
+/// `ETXTBSY` ("text file busy"). Holding this lock for the whole test body
+/// keeps the copy-then-exec sequences from interleaving.
+static SHIM_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A shell script on `PATH` that prints its own name and argv, one per line.
 fn fake_bin(dir: &Path, name: &str) {
     let path = dir.join(name);
@@ -39,6 +48,9 @@ fn shim_in(dir: &Path) -> Command {
 
 #[test]
 fn install_with_supported_flags_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempdir().unwrap();
     fake_bin(dir.path(), "composer");
     fake_bin(dir.path(), "viv");
@@ -52,6 +64,9 @@ fn install_with_supported_flags_calls_viv() {
 
 #[test]
 fn update_delegates_to_real_composer() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempdir().unwrap();
     fake_bin(dir.path(), "composer");
     fake_bin(dir.path(), "viv");
@@ -65,6 +80,9 @@ fn update_delegates_to_real_composer() {
 
 #[test]
 fn install_with_unknown_flag_delegates_to_real_composer() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempdir().unwrap();
     fake_bin(dir.path(), "composer");
     fake_bin(dir.path(), "viv");
@@ -78,6 +96,9 @@ fn install_with_unknown_flag_delegates_to_real_composer() {
 
 #[test]
 fn missing_real_composer_exits_with_message() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempdir().unwrap();
     // No fake `composer` on PATH: only `viv` is present, so `update` (which
     // the shim never handles) has nowhere to delegate to.
