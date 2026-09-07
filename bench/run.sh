@@ -65,7 +65,7 @@ done
 update_cmd_for() {
   case $1 in
     composer) echo "composer update --no-interaction --no-progress --quiet --no-install $flags" ;;
-    riff)     echo "${RIFF:-riff} update $flags" ;;
+    riff)     echo "${RIFF:-riff} update --no-interaction --no-progress --quiet --no-install $flags" ;;
     viv)      echo "${VIV:-$root/target/release/viv} update $flags" ;;
   esac
 }
@@ -85,5 +85,6 @@ for tool in $tools; do
   cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"
   cmd="cd $dir && cp $proj/composer.json $proj/composer.lock . && export $(env_for "$tool") && $(update_cmd_for "$tool") >/dev/null 2>&1"
   hyperfine --warmup 1 --runs "$runs" --export-json "$out/$tool-update.json" \
-    --command-name "$tool update-warm" "$cmd"
+    --command-name "$tool update-warm" "$cmd" \
+    || echo "warning: $tool update-warm failed, skipping (see bench/results/README.md)" >&2
 done

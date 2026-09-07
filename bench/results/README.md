@@ -168,6 +168,24 @@ metadata cache already populated, so every Packagist file revalidates with a
 304. It measures the resolver, not the network, but the revalidation round
 trips still make it noisy enough to report rather than gate in CI.
 
+riff (#87): `bench/run.sh` runs `riff update --no-interaction --no-progress
+--quiet --no-install --no-blocking` (`--no-blocking` disables riff's
+resolve-time security-advisory check, which otherwise rejects
+`phpunit/phpunit` before it gets anywhere near the lock comparison). Even so,
+riff 0.0.7 can't resolve `bench/laravel`'s own root requirement: it fetches
+`laravel/framework`'s full provider metadata (990 KB, 1,290 versions) over
+the network fine, but `riff_core::solver::rule_generator` then logs "Pool has
+0 versions of laravel/framework" and fails, for every constraint tried
+(`^12.0`, an exact `12.69.1`, even `^11.0`) and with or without a warm cache.
+A minimal repro (a fresh project requiring only `laravel/framework`, any
+constraint) reproduces it; the same repro shape with `monolog/monolog`
+resolves normally, so this isn't riff being unreachable or the lock/flags
+being wrong, it's specific to this package's metadata (likely riff's
+expansion of Packagist's minified `composer/2.0` provider format choking on
+laravel/framework's unusually long version list). `bench/run.sh` reports the
+failure and moves on rather than aborting the whole run; the Numbers table's
+`n/a` for riff's update column stands until upstream fixes it.
+
 | Release | Lock | viv | composer 2.10.2 | ratio |
 |---|---|---|---|---|
 | 0.4.0 | laravel, 101 packages | 8.7 s | 1.2 s | 7.2x slower |

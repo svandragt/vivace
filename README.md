@@ -16,16 +16,19 @@ raw data in [`bench/results/`](bench/results/README.md).
 
 | Tool | Cold | Warm cache | No-op | Update, warm metadata |
 |---|---|---|---|---|
-| composer 2.10.2 | 8.28 s | 1.69 s | 0.50 s | 1.2 s |
-| riff 0.0.7 | 1.75 s | 0.26 s | 0.23 s | n/a |
-| viv 0.5.0 | 2.0 s | 0.042 s | 0.007 s | 4.9 s |
+| composer 2.10.2 | 7.32 s | 1.05 s | 0.48 s | 1.16 s |
+| riff 0.0.7 | 1.62 s | 0.25 s | 0.23 s | n/a\* |
+| viv 0.5.0 | 2.21 s | 0.042 s | 0.007 s | 5.11 s |
 
-The update column is the one viv still loses: the lock it writes is
-identical to Composer's, and 0.5 halved the time by pruning the pool and
-compiling constraints once, but two hotspots remain
+\* riff 0.0.7 can't resolve this lock's `update`: see
+[`bench/results/README.md`](bench/results/README.md#update-warm-metadata).
+
+The update column is the one viv still loses to Composer: the lock it
+writes is identical to Composer's, and 0.5 halved the time by pruning the
+pool and compiling constraints once, but two hotspots remain
 ([#89](https://github.com/svandragt/vivace/issues/89),
 [#90](https://github.com/svandragt/vivace/issues/90)). Tracked per release
-like the install numbers; 0.6's target is to beat riff on every column.
+like the install numbers; 0.6's target is to beat Composer here too.
 
 ## Beyond Composer
 
