@@ -13,16 +13,22 @@
 //! right after the raw pool is assembled, exactly where
 //! `PoolBuilder::buildPool`'s own `runOptimizer` call sits (#76).
 //!
-//! Not modelled: the root `composer.json` package itself as a *pool*
-//! member (`Installer::createRequest` also does
-//! `$request->fixPackage($rootPackage)`). Its own `require`/`require-dev`
-//! links become `request.requires` directly, which is the exact same
-//! constraint a root package's own `RULE_PACKAGE_REQUIRES` rules would add
-//! on top (the root is always force-installed, so `-root` is never true,
+//! The root `composer.json` package is a fixed pool member too
+//! (`root_package`, `Installer::createRequest`'s `$request->fixPackage($rootPackage)`),
+//! but only carrying its `replace`/`provide` links: its own `require`/
+//! `require-dev` links become `request.requires` directly instead, the
+//! exact same constraint a root `RULE_PACKAGE_REQUIRES` rule would add on
+//! top (the root is always force-installed, so `-root` is never true,
 //! collapsing that rule to the same "install one of" disjunction the
-//! `RULE_ROOT_REQUIRE` rule already states). Root `conflict`/`replace`/
-//! `provide` sections would need the root modelled as a real pool package;
-//! add it if a fixture ever needs one.
+//! `RULE_ROOT_REQUIRE` rule already states) — so `Package::requires` stays
+//! empty to avoid generating it twice. Root `conflict` is still not
+//! modelled; add it if a fixture ever needs one. A name the root
+//! `replace`s is never fetched at all (`root_replaced_names`, mirroring
+//! `PoolBuilder::buildPool`'s `foreach ($package->getReplaces() as $link)
+//! $this->loadedPackages[$link->getTarget()] = new MatchAllConstraint();`);
+//! a `provide`d name has no such closure-skip (a real package by that name
+//! can still be a candidate), it only satisfies other packages' requires
+//! through the ordinary `Pool::whatProvides` walk.
 
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
@@ -138,7 +144,7 @@ pub async fn build_seeded<T: Transport>(
         .load_closure_seeded(
             &roots,
             dev_acceptance,
-            &HashSet::new(),
+            &root_replaced_names(root),
             seed,
             &|name, stability| is_acceptable(name, stability, &acceptable, &stability_flags),
             &mut constraint_cache,
@@ -151,6 +157,7 @@ pub async fn build_seeded<T: Transport>(
         .cloned()
         .unwrap_or_default();
     let mut packages = platform_packages(&platform_overrides)?;
+    packages.push(root_package(root, &mut constraint_cache)?);
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
     let push_started = Instant::now();
@@ -362,11 +369,12 @@ pub async fn build_partial_seeded<T: Transport>(
             DevAcceptance::NonDevOnly
         };
 
-    let skip: HashSet<String> = locked_by_name
+    let mut skip: HashSet<String> = locked_by_name
         .keys()
         .filter(|name| !allow_names.contains(*name))
         .cloned()
         .collect();
+    skip.extend(root_replaced_names(root));
 
     // `PoolBuilder::buildPool`'s `getFixedOrLockedPackages` loop calls
     // `loadPackage` on every locked-out package too (`propagateUpdate =
@@ -416,6 +424,7 @@ pub async fn build_partial_seeded<T: Transport>(
         .cloned()
         .unwrap_or_default();
     let mut packages = platform_packages(&platform_overrides)?;
+    packages.push(root_package(root, &mut constraint_cache)?);
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
     for name in &skip {
@@ -984,6 +993,67 @@ pub(crate) fn platform_packages(overrides: &Map<String, Value>) -> Result<Vec<Pa
             Ok(platform_package(&name, &version, normalized))
         })
         .collect()
+}
+
+/// Lowercased targets of root `replace` (`RootPackageLoader`'s `replace`
+/// section, `ArrayLoader::parseLinks`): never fetched by the closure walk,
+/// matching `PoolBuilder::buildPool`'s `loadedPackages[$link->getTarget()]
+/// = new MatchAllConstraint()` for every fixed package's replace link. Not
+/// `provide`: a `provide`d name still admits a real package of that name as
+/// a candidate, only a `replace` conflicts with every version of the name.
+pub(crate) fn root_replaced_names(root: &Value) -> HashSet<String> {
+    string_map(root, "replace")
+        .keys()
+        .map(|name| name.to_ascii_lowercase())
+        .collect()
+}
+
+/// The root `composer.json` package as a fixed pool member
+/// (`Installer::createRequest`'s `$request->fixPackage($rootPackage)`,
+/// `RootPackageLoader`): carries `replace`/`provide` as `Link`s so
+/// `Pool::whatProvides` satisfies another package's require of a replaced
+/// or provided name exactly as a real Composer rule would
+/// (`RuleSetGenerator::addRulesForPackage`'s `$this->pool->whatProvides`
+/// call is name-based, blind to whether the provider is the root). No
+/// `requires`/`conflicts`: see this module's doc comment for why the root's
+/// own requires stay modelled as `request.requires` only.
+pub(crate) fn root_package(root: &Value, cache: &mut ConstraintCache) -> Result<Package> {
+    let name = root
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("__root__")
+        .to_ascii_lowercase();
+    // `RootPackageLoader::load`: `$config['version'] = '1.0.0'` when
+    // nothing (no `version` key, no VCS guess) supplies one.
+    let pretty_version = root
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("1.0.0")
+        .to_string();
+    let version = semver::normalize(&pretty_version)?;
+    let stability = semver::stability(version.as_str());
+
+    let provides = parse_links(&string_map(root, "provide"), &name, &pretty_version, cache)?;
+    let replaces = parse_links(&string_map(root, "replace"), &name, &pretty_version, cache)?;
+    // Never reached: `transaction::resolved_packages` drops fixed packages
+    // before a lock ever sees them (`platform_package`'s same stand-in).
+    let raw = Arc::new(serde_json::json!({ "name": name, "version": pretty_version }));
+
+    Ok(Package {
+        name,
+        stability,
+        is_dev: stability == "dev",
+        version,
+        pretty_version,
+        requires: Vec::new(),
+        conflicts: Vec::new(),
+        provides,
+        replaces,
+        alias_of: None,
+        is_root_package_alias: false,
+        has_self_version_requires: false,
+        raw,
+    })
 }
 
 fn platform_package(

@@ -115,6 +115,21 @@ async fn update_reproduces_the_monolog_lock() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// #117: `symfony/string` requires the four `symfony/polyfill-*` packages
+/// this fixture's root `replace`s (mirroring `symfony/demo`'s own shape).
+/// Composer's own lock (`tests/fixtures/root-replace/composer.lock`) never
+/// lists them: the root package's `replace` satisfies `symfony/string`'s
+/// requires directly (`Pool::whatProvides`), and
+/// `PoolBuilder::buildPool`'s `getFixedOrLockedPackages` loop never even
+/// fetches a replaced name's provider file. Before `pool_builder::root_package`/
+/// `root_replaced_names`, viv fetched and locked all four anyway.
+#[tokio::test]
+async fn update_omits_polyfills_the_root_replaces() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/root-replace");
+    let got = update_lock(&fixture).await;
+    assert_matches_expected(&got, &fixture.join("composer.lock"));
+}
+
 /// #90: seeding the closure walk with names from the prior lock is a
 /// prefetch, never a pool change. `acme/unreachable` doesn't exist anywhere
 /// in the fixtures and is no longer (never was) required by the monolog

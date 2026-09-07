@@ -1,0 +1,14 @@
+{
+    "name": "vivace/root-replace-fixture",
+    "description": "Fixture: root replace/provide satisfying a transitive polyfill require (#117)",
+    "type": "project",
+    "require": {
+        "symfony/string": "^7.0"
+    },
+    "replace": {
+        "symfony/polyfill-ctype": "*",
+        "symfony/polyfill-intl-grapheme": "*",
+        "symfony/polyfill-intl-normalizer": "*",
+        "symfony/polyfill-mbstring": "*"
+    }
+}
