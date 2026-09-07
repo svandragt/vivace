@@ -378,3 +378,19 @@ fn update_lock_matches_update_lock_flag() {
     let got = fs::read_to_string(project.join("composer.lock")).unwrap();
     assert_eq!(got, want);
 }
+
+/// `--no-plugins`/`--no-scripts` (#96) must parse on `update` (and, via the
+/// same `UpdateArgs`, `update-lock`), not just `install`: clap previously
+/// swallowed them as positional `packages` values and exited 2.
+#[test]
+fn update_lock_accepts_install_only_flags() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    for name in ["composer.json", "composer.lock"] {
+        fs::copy(fixture().join(name), project.join(name)).unwrap();
+    }
+
+    let mut cmd = ctx.viv();
+    cmd.args(["update-lock", "--no-plugins", "--no-scripts"]);
+    viv_snapshot!(ctx, cmd);
+}

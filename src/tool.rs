@@ -133,6 +133,8 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             dry_run: false,
             no_normalize: false,
             project_dir: env_dir.clone(),
+            no_scripts: false,
+            no_plugins: false,
         };
         update::run(&update_args, Some(&cache_dir), offline)
             .with_context(|| format!("resolving {spec}"))?;

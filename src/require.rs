@@ -68,9 +68,22 @@ pub struct RequireArgs {
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
+    /// Reserved: `require` does not run lifecycle scripts yet, so there is
+    /// nothing to skip. Accepted (like Composer's own flag) so it can sit
+    /// alongside `install`'s flags of the same name in a single invocation.
+    #[arg(long)]
+    pub no_scripts: bool,
+    /// Reserved: `require` does not run `install`'s plugin step, so there is
+    /// nothing to skip. Accepted for the same reason as `--no-scripts`.
+    #[arg(long)]
+    pub no_plugins: bool,
 }
 
 /// `viv remove` flags.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Composer's remove flags"
+)]
 #[derive(Args, Debug, Clone)]
 pub struct RemoveArgs {
     /// `vendor/package`, one or more.
@@ -89,6 +102,15 @@ pub struct RemoveArgs {
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
+    /// Reserved: `remove` does not run lifecycle scripts yet, so there is
+    /// nothing to skip. Accepted (like Composer's own flag) so it can sit
+    /// alongside `install`'s flags of the same name in a single invocation.
+    #[arg(long)]
+    pub no_scripts: bool,
+    /// Reserved: `remove` does not run `install`'s plugin step, so there is
+    /// nothing to skip. Accepted for the same reason as `--no-scripts`.
+    #[arg(long)]
+    pub no_plugins: bool,
 }
 
 pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>) -> Result<()> {

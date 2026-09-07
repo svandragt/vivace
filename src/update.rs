@@ -84,6 +84,15 @@ pub struct UpdateArgs {
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
+    /// Reserved: `update` does not run lifecycle scripts yet, so there is
+    /// nothing to skip. Accepted (like Composer's own flag) so it can sit
+    /// alongside `install`'s flags of the same name in a single invocation.
+    #[arg(long)]
+    pub no_scripts: bool,
+    /// Reserved: `update` does not run `install`'s plugin step, so there is
+    /// nothing to skip. Accepted for the same reason as `--no-scripts`.
+    #[arg(long)]
+    pub no_plugins: bool,
 }
 
 pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -132,6 +141,8 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
 
     fs_err::write(lock_path, lock)?;
     let _ = args.no_dev; // `--no-dev` only changes `install`'s selection, not the lock.
+    let _ = args.no_scripts; // reserved: `update` does not run scripts yet.
+    let _ = args.no_plugins; // reserved: `update` does not run `install`'s plugin step.
     if !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
         warn_out(&format!("Normalized {}", composer_json_path.display()));
     }
