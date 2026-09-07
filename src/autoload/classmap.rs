@@ -453,12 +453,23 @@ pub struct ScanKey {
     pub psr: Option<(String, String)>,
 }
 
-/// [`ClassMap`] as written to an archive's cache sidecar: paths relative to
-/// the scanned root, so a cached scan applies wherever that root is linked
-/// next (a rebuilt `vendor/`, or another project's) — the `canonical` map
-/// only earns its keep mid-scan, deduping symlinks a cache hit never walks.
+/// One archive's classmap-scan sidecar, as written: paths relative to the
+/// scanned root, so a cached scan applies wherever that root is linked next
+/// (a rebuilt `vendor/`, or another project's) — the `canonical` map only
+/// earns its keep mid-scan, deduping symlinks a cache hit never walks.
+///
+/// A `Vec` of entries, not one: an archive commonly gets scanned under more
+/// than one [`ScanKey`] — a package with several classmap directories, a
+/// PSR-4 namespace mapped onto more than one directory (`vendor/symfony/
+/// polyfill-*`'s base dir plus its `Resources/stubs`), or both a classmap and
+/// a PSR-4 rule over the same subpath (`nette/schema`). #77: storing only the
+/// latest key made every other one thrash — evicted and rescanned on every
+/// single warm run, not once.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct Sidecar(Vec<CachedScan>);
+
 #[derive(Debug, Serialize, Deserialize)]
-struct CachedClassMap {
+struct CachedScan {
     key: ScanKey,
     /// `(hex-encoded class name, path relative to the scanned root)`: a JSON
     /// object needs string keys, and a class name is raw bytes.
@@ -478,61 +489,108 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Read a cached scan from `sidecar`, re-rooting its relative paths onto
-/// `dir`. A missing file, corrupt content, or a `key` mismatch (a different
-/// exclude/subpath/PSR rule scanning the same archive) is a cache miss, not
-/// an error: the caller always has [`scan_paths`] to fall back to.
-pub fn read_cached_scan(sidecar: &Path, key: &ScanKey, dir: &Path) -> Option<ClassMap> {
-    let bytes = fs_err::read(sidecar).ok()?;
-    let cached: CachedClassMap = serde_json::from_slice(&bytes).ok()?;
-    if cached.key != *key {
-        return None;
+impl CachedScan {
+    fn from_found(key: ScanKey, dir: &Path, found: &ClassMap) -> Self {
+        let relative = |p: &Path| p.strip_prefix(dir).unwrap_or(p).to_path_buf();
+        CachedScan {
+            key,
+            classes: found
+                .map
+                .iter()
+                .map(|(class, path)| (to_hex(class), relative(path)))
+                .collect(),
+            ambiguous: found
+                .ambiguous
+                .iter()
+                .map(|(class, a, b)| (to_hex(class), relative(a), relative(b)))
+                .collect(),
+        }
     }
-    let mut class_map = ClassMap::default();
-    for (class, path) in cached.classes {
-        class_map.map.insert(from_hex(&class)?, dir.join(path));
+
+    /// Re-root this entry's paths onto `dir`, or `None` for corrupt hex (a
+    /// hand-edited or truncated sidecar) — a cache miss, not an error.
+    fn to_class_map(&self, dir: &Path) -> Option<ClassMap> {
+        let mut class_map = ClassMap::default();
+        for (class, path) in &self.classes {
+            class_map.map.insert(from_hex(class)?, dir.join(path));
+        }
+        for (class, a, b) in &self.ambiguous {
+            class_map
+                .ambiguous
+                .push((from_hex(class)?, dir.join(a), dir.join(b)));
+        }
+        Some(class_map)
     }
-    for (class, a, b) in cached.ambiguous {
-        class_map
-            .ambiguous
-            .push((from_hex(&class)?, dir.join(a), dir.join(b)));
-    }
-    Some(class_map)
 }
 
-/// Write a fresh [`scan_paths`] result for `dir` to `sidecar`, for
-/// [`read_cached_scan`] to pick up on a later scan of the same archive.
-/// Temp file plus rename, like [`crate::store`]'s `.ok` marker, so a
-/// concurrent reader never observes a partial write.
+impl Sidecar {
+    /// Read every cached scan `sidecar` holds, once. A missing file or
+    /// corrupt content is an empty sidecar (a miss on every key), not an
+    /// error: the caller always has [`scan_paths`] to fall back to.
+    pub(crate) fn read(sidecar: &Path) -> Self {
+        fs_err::read(sidecar)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn get(&self, key: &ScanKey, dir: &Path) -> Option<ClassMap> {
+        self.0.iter().find(|e| e.key == *key)?.to_class_map(dir)
+    }
+
+    /// Replace or add `key`'s entry and persist the whole sidecar again:
+    /// every other key this archive already had stays cached, so a later
+    /// scan of a different subpath in the same archive is still a hit
+    /// rather than evicting and rewriting on every run (#77).
+    ///
+    /// Temp file plus rename, like [`crate::store`]'s `.ok` marker, so a
+    /// concurrent reader never observes a partial write.
+    pub(crate) fn insert_and_write(
+        &mut self,
+        sidecar: &Path,
+        key: &ScanKey,
+        dir: &Path,
+        found: &ClassMap,
+    ) -> Result<()> {
+        let entry = CachedScan::from_found(key.clone(), dir, found);
+        match self.0.iter_mut().find(|e| e.key == *key) {
+            Some(existing) => *existing = entry,
+            None => self.0.push(entry),
+        }
+        let parent = sidecar
+            .parent()
+            .expect("sidecar is nested under the archive dir");
+        let mut temp = tempfile::Builder::new()
+            .prefix(".tmp-classmap-")
+            .tempfile_in(parent)?;
+        serde_json::to_writer(&mut temp, &self.0)?;
+        temp.persist(sidecar)?;
+        Ok(())
+    }
+}
+
+/// Read a cached scan from `sidecar` for `key`, re-rooting its relative
+/// paths onto `dir`. A missing file, corrupt content, or no entry matching
+/// `key` is a cache miss, not an error: the caller always has
+/// [`scan_paths`] to fall back to. A one-shot convenience over [`Sidecar`]
+/// for callers (mainly tests) that don't need to reuse the parsed sidecar
+/// across more than one key; [`Sidecar::read`]/[`Sidecar::get`] do that.
+pub fn read_cached_scan(sidecar: &Path, key: &ScanKey, dir: &Path) -> Option<ClassMap> {
+    Sidecar::read(sidecar).get(key, dir)
+}
+
+/// Write a fresh [`scan_paths`] result for `dir` under `key` into `sidecar`,
+/// alongside whatever other keys that archive was already cached under.
+/// Best-effort like [`Sidecar::insert_and_write`]; see its doc for the
+/// merge-not-overwrite rationale.
 pub fn write_cached_scan(
     sidecar: &Path,
     key: &ScanKey,
     dir: &Path,
     found: &ClassMap,
 ) -> Result<()> {
-    let relative = |p: &Path| p.strip_prefix(dir).unwrap_or(p).to_path_buf();
-    let cached = CachedClassMap {
-        key: key.clone(),
-        classes: found
-            .map
-            .iter()
-            .map(|(class, path)| (to_hex(class), relative(path)))
-            .collect(),
-        ambiguous: found
-            .ambiguous
-            .iter()
-            .map(|(class, a, b)| (to_hex(class), relative(a), relative(b)))
-            .collect(),
-    };
-    let parent = sidecar
-        .parent()
-        .expect("sidecar is nested under the archive dir");
-    let mut temp = tempfile::Builder::new()
-        .prefix(".tmp-classmap-")
-        .tempfile_in(parent)?;
-    serde_json::to_writer(&mut temp, &cached)?;
-    temp.persist(sidecar)?;
-    Ok(())
+    let mut cache = Sidecar::read(sidecar);
+    cache.insert_and_write(sidecar, key, dir, found)
 }
 
 fn does_not_exist(path: &Path) -> anyhow::Error {

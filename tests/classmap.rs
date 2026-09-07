@@ -388,3 +388,35 @@ fn read_cached_scan_is_none_for_a_missing_sidecar() {
     };
     assert!(read_cached_scan(&dir.path().join("missing"), &key, dir.path()).is_none());
 }
+
+/// #77: one archive commonly gets scanned under more than one key (a
+/// package with several classmap directories, a PSR-4 namespace mapped onto
+/// more than one directory, or both a classmap and a PSR-4 rule over the
+/// same subpath). Writing a second key must not evict the first — the bug
+/// that made every one of those keys a permanent, every-run cache miss.
+#[test]
+fn writing_a_second_key_keeps_the_first_cached() {
+    let archive = tempfile::tempdir().expect("tempdir");
+    std::fs::write(archive.path().join("A.php"), "<?php\nclass A {}").unwrap();
+    let found = scan_paths(archive.path(), None).expect("scan should succeed");
+    let sidecar = archive.path().with_extension("classmap-v0");
+
+    let key_a = ScanKey {
+        subpath: "a".to_string(),
+        exclude: None,
+        psr: None,
+    };
+    let key_b = ScanKey {
+        subpath: "b".to_string(),
+        exclude: None,
+        psr: None,
+    };
+    write_cached_scan(&sidecar, &key_a, archive.path(), &found).expect("write should succeed");
+    write_cached_scan(&sidecar, &key_b, archive.path(), &found).expect("write should succeed");
+
+    assert!(
+        read_cached_scan(&sidecar, &key_a, archive.path()).is_some(),
+        "key_a must still hit after key_b was written"
+    );
+    assert!(read_cached_scan(&sidecar, &key_b, archive.path()).is_some());
+}

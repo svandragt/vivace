@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::{Map, Value};
 
-use super::classmap::{ClassName, ScanKey, read_cached_scan, scan_paths, write_cached_scan};
+use super::classmap::{ClassName, ScanKey, Sidecar, scan_paths};
 use super::php::{Key, Php, export_bytes, export_static, export_str, loader_properties};
 use super::sort::sort_packages;
 
@@ -241,9 +241,14 @@ pub fn generate(input: &Input) -> Result<Generated> {
         scanned: HashSet::new(),
         warnings: Vec::new(),
         regex_cache: HashMap::new(),
+        sidecars: HashMap::new(),
         cache_hits: 0,
         cache_misses: 0,
         scan_paths_elapsed: std::time::Duration::ZERO,
+        cache_read_elapsed: std::time::Duration::ZERO,
+        merge_elapsed: std::time::Duration::ZERO,
+        setup_elapsed: std::time::Duration::ZERO,
+        cache_write_elapsed: std::time::Duration::ZERO,
     };
     let scan_started = std::time::Instant::now();
     for dir in &autoloads.classmap {
@@ -266,7 +271,10 @@ pub fn generate(input: &Input) -> Result<Generated> {
                     } else {
                         format!("{base}/{dir}")
                     });
-                    if !Path::new(&dir).is_dir() {
+                    let is_dir_started = std::time::Instant::now();
+                    let is_dir = Path::new(&dir).is_dir();
+                    scanner.setup_elapsed += is_dir_started.elapsed();
+                    if !is_dir {
                         continue;
                     }
                     scanner.scan(&dir, Some((namespace, kind)))?;
@@ -278,6 +286,10 @@ pub fn generate(input: &Input) -> Result<Generated> {
         cache_hits = scanner.cache_hits,
         cache_misses = scanner.cache_misses,
         scan_paths_ms = scanner.scan_paths_elapsed.as_millis(),
+        cache_read_ms = scanner.cache_read_elapsed.as_millis(),
+        merge_ms = scanner.merge_elapsed.as_millis(),
+        setup_ms = scanner.setup_elapsed.as_millis(),
+        cache_write_ms = scanner.cache_write_elapsed.as_millis(),
         elapsed_ms = scan_started.elapsed().as_millis(),
         "scanned classmap/PSR directories"
     );
@@ -770,12 +782,30 @@ struct Scanner<'a> {
     /// autoload with no vendor-dir overlap trimming) share one `Regex::new`
     /// instead of paying to compile it again per directory.
     regex_cache: HashMap<String, Regex>,
+    /// #77: one archive's sidecar parsed at most once per install, however
+    /// many distinct `ScanKey`s (classmap dirs, PSR-4 namespaces mapped onto
+    /// more than one directory, ...) that archive gets scanned under.
+    sidecars: HashMap<PathBuf, Sidecar>,
     /// #54: whether the classmap-scan sidecar cache is actually paying off,
     /// and how much of `scan()`'s time is the filesystem walk/tokenizing
     /// (`scan_paths`) itself versus everything else in `scan()`.
     cache_hits: usize,
     cache_misses: usize,
     scan_paths_elapsed: std::time::Duration,
+    /// #77: sidecar open/read/parse time on a cache hit, isolated from the
+    /// per-file merge loop below it (both run for a hit; only the merge
+    /// loop also runs for a miss).
+    cache_read_elapsed: std::time::Duration,
+    /// #77: time spent folding a scan's (cached or fresh) result into
+    /// `self.map` — path normalizing, PSR filtering, ambiguity bookkeeping.
+    merge_elapsed: std::time::Duration,
+    /// #77 (measurement only): exclusion-regex build plus `ArchiveIndex`
+    /// lookup and `ScanKey` construction, run once per `scan()` call
+    /// regardless of hit/miss.
+    setup_elapsed: std::time::Duration,
+    /// #77 (measurement only): sidecar write time on a miss, isolated from
+    /// `scan_paths` (the walk/tokenize) above it.
+    cache_write_elapsed: std::time::Duration,
 }
 
 /// Maps an absolute, normalised scan directory back to the store archive dir
@@ -822,6 +852,7 @@ impl Scanner<'_> {
     /// `dir` is a classmap entry as written (relative to the project) or, for
     /// PSR rules, an absolute normalised directory.
     fn scan(&mut self, dir: &str, psr: Option<(&str, &str)>) -> Result<()> {
+        let setup_started = std::time::Instant::now();
         let abs_dir = normalize_path(&if is_absolute(dir) {
             dir.to_string()
         } else {
@@ -850,9 +881,19 @@ impl Scanner<'_> {
                 };
                 (crate::store::archive_classmap_sidecar(archive_dir), key)
             });
-        let cached = cache
-            .as_ref()
-            .and_then(|(sidecar, key)| read_cached_scan(sidecar, key, Path::new(&abs_dir)));
+        self.setup_elapsed += setup_started.elapsed();
+        let read_started = std::time::Instant::now();
+        // The sidecar itself is read (and parsed) at most once per archive
+        // per install, however many distinct keys that archive is scanned
+        // under — a `HashMap` entry, not a file read, on every key after
+        // the first (#77).
+        let cached = cache.as_ref().and_then(|(sidecar, key)| {
+            self.sidecars
+                .entry(sidecar.clone())
+                .or_insert_with(|| Sidecar::read(sidecar))
+                .get(key, Path::new(&abs_dir))
+        });
+        self.cache_read_elapsed += read_started.elapsed();
         let found = if let Some(found) = cached {
             self.cache_hits += 1;
             found
@@ -864,12 +905,22 @@ impl Scanner<'_> {
             if let Some((sidecar, key)) = &cache {
                 // Best-effort: a failed write (read-only cache, permissions)
                 // must not fail the install that triggered it, only cost it
-                // a cache miss next time.
-                let _ = write_cached_scan(sidecar, key, Path::new(&abs_dir), &found);
+                // a cache miss next time. Merges into whatever this archive's
+                // sidecar already held instead of overwriting it, so a
+                // different key already cached for the same archive doesn't
+                // get evicted (#77).
+                let write_started = std::time::Instant::now();
+                let _ = self
+                    .sidecars
+                    .entry(sidecar.clone())
+                    .or_insert_with(|| Sidecar::read(sidecar))
+                    .insert_and_write(sidecar, key, Path::new(&abs_dir), &found);
+                self.cache_write_elapsed += write_started.elapsed();
             }
             found
         };
 
+        let merge_started = std::time::Instant::now();
         let mut per_file: BTreeMap<PathBuf, Vec<ClassName>> = BTreeMap::new();
         for (class, path) in &found.map {
             per_file
@@ -935,6 +986,7 @@ impl Scanner<'_> {
                 }
             }
         }
+        self.merge_elapsed += merge_started.elapsed();
         Ok(())
     }
 }
