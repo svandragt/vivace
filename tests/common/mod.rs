@@ -3,9 +3,66 @@
 //! and timings into stable placeholders before snapshotting.
 #![allow(dead_code, reason = "not every test binary uses every helper here")]
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin;
 use tempfile::TempDir;
+use vivace::repository::Transport;
+
+pub(crate) const FIXED_LAST_MODIFIED: &str = "Mon, 01 Jan 2024 00:00:00 GMT";
+
+pub(crate) fn fixtures_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packagist/repo.packagist.org")
+}
+
+/// Reads `lock`'s `packages`/`packages-dev` entries into a lowercased
+/// name -> entry map, the shape `solve_partial_update` wants for its
+/// already-locked packages, shared by `tests/require.rs`/`tests/update.rs`.
+pub(crate) fn locked_by_name(lock: &Path) -> HashMap<String, serde_json::Value> {
+    let lock: serde_json::Value = serde_json::from_slice(&fs_err::read(lock).unwrap()).unwrap();
+    let mut by_name = HashMap::new();
+    for key in ["packages", "packages-dev"] {
+        for entry in lock[key].as_array().unwrap() {
+            by_name.insert(
+                entry["name"].as_str().unwrap().to_ascii_lowercase(),
+                entry.clone(),
+            );
+        }
+    }
+    by_name
+}
+
+/// Fixture-replaying transport shared by `tests/require.rs`,
+/// `tests/update.rs` and `tests/solver.rs`.
+pub(crate) struct FixtureTransport {
+    pub(crate) root: PathBuf,
+}
+
+impl Transport for &FixtureTransport {
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn get(
+        &self,
+        url: &reqwest::Url,
+        if_modified_since: Option<&str>,
+    ) -> anyhow::Result<vivace::fetch::Conditional> {
+        if if_modified_since == Some(FIXED_LAST_MODIFIED) {
+            return Ok(vivace::fetch::Conditional::NotModified);
+        }
+        let path = self.root.join(url.path().trim_start_matches('/'));
+        match fs_err::read(&path) {
+            Ok(body) => Ok(vivace::fetch::Conditional::Fresh {
+                body,
+                last_modified: Some(FIXED_LAST_MODIFIED.to_string()),
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Ok(vivace::fetch::Conditional::NotFound)
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+}
 
 pub(crate) struct TestContext {
     pub(crate) project: TempDir,

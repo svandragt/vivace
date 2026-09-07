@@ -4,51 +4,19 @@
 //! outcomes (a conflict that forces a backjump, an unsatisfiable root
 //! require).
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+mod common;
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use common::{FixtureTransport, fixtures_root};
 use serde_json::Value;
-use vivace::repository::{Repository, Transport};
+use vivace::repository::Repository;
 use vivace::semver;
 use vivace::solver::policy::DefaultPolicy;
 use vivace::solver::pool::{Link, Package, Pool};
 use vivace::solver::request::Request;
 use vivace::solver::solver;
-
-const FIXED_LAST_MODIFIED: &str = "Mon, 01 Jan 2024 00:00:00 GMT";
-
-fn fixtures_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packagist/repo.packagist.org")
-}
-
-/// Same fixture-replaying transport as `tests/repository.rs`.
-struct FixtureTransport {
-    root: PathBuf,
-}
-
-impl Transport for &FixtureTransport {
-    #[allow(clippy::unused_async_trait_impl)]
-    async fn get(
-        &self,
-        url: &reqwest::Url,
-        if_modified_since: Option<&str>,
-    ) -> anyhow::Result<vivace::fetch::Conditional> {
-        if if_modified_since == Some(FIXED_LAST_MODIFIED) {
-            return Ok(vivace::fetch::Conditional::NotModified);
-        }
-        let path = self.root.join(url.path().trim_start_matches('/'));
-        match fs_err::read(&path) {
-            Ok(body) => Ok(vivace::fetch::Conditional::Fresh {
-                body,
-                last_modified: Some(FIXED_LAST_MODIFIED.to_string()),
-            }),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                Ok(vivace::fetch::Conditional::NotFound)
-            }
-            Err(err) => Err(err.into()),
-        }
-    }
-}
 
 #[tokio::test]
 async fn full_update_reproduces_the_monolog_lock() {

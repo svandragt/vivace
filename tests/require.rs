@@ -29,48 +29,13 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::TestContext;
+use common::{FixtureTransport, TestContext, fixtures_root};
 use serde_json::Value;
-use vivace::repository::{Repository, Transport};
+use vivace::repository::Repository;
 use vivace::solver::{self, pool_builder::UpdateAllowMode};
-
-const FIXED_LAST_MODIFIED: &str = "Mon, 01 Jan 2024 00:00:00 GMT";
-
-fn fixtures_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packagist/repo.packagist.org")
-}
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/require-psr-container")
-}
-
-/// Same fixture-replaying transport as `tests/update.rs`/`tests/solver.rs`.
-struct FixtureTransport {
-    root: PathBuf,
-}
-
-impl Transport for &FixtureTransport {
-    #[allow(clippy::unused_async_trait_impl)]
-    async fn get(
-        &self,
-        url: &reqwest::Url,
-        if_modified_since: Option<&str>,
-    ) -> anyhow::Result<vivace::fetch::Conditional> {
-        if if_modified_since == Some(FIXED_LAST_MODIFIED) {
-            return Ok(vivace::fetch::Conditional::NotModified);
-        }
-        let path = self.root.join(url.path().trim_start_matches('/'));
-        match fs_err::read(&path) {
-            Ok(body) => Ok(vivace::fetch::Conditional::Fresh {
-                body,
-                last_modified: Some(FIXED_LAST_MODIFIED.to_string()),
-            }),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                Ok(vivace::fetch::Conditional::NotFound)
-            }
-            Err(err) => Err(err.into()),
-        }
-    }
 }
 
 fn assert_matches_expected(got: &str, expected_path: &Path) {
@@ -94,22 +59,9 @@ async fn require_reproduces_composers_lock() {
     let composer_json = fs_err::read(fixture.join("composer.json.after")).unwrap();
     let root: Value = serde_json::from_slice(&composer_json).unwrap();
 
-    let lock_before: Value = serde_json::from_slice(
-        &fs_err::read(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/composer.lock"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let mut locked_by_name = std::collections::HashMap::new();
-    for key in ["packages", "packages-dev"] {
-        for entry in lock_before[key].as_array().unwrap() {
-            locked_by_name.insert(
-                entry["name"].as_str().unwrap().to_ascii_lowercase(),
-                entry.clone(),
-            );
-        }
-    }
+    let locked_by_name = common::locked_by_name(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/composer.lock"),
+    );
 
     let cache = tempfile::tempdir().unwrap();
     let transport = FixtureTransport {
@@ -157,22 +109,9 @@ async fn remove_reproduces_composers_lock() {
     let composer_json = fs_err::read(fixture.join("composer.json.after")).unwrap();
     let root: Value = serde_json::from_slice(&composer_json).unwrap();
 
-    let lock_before: Value = serde_json::from_slice(
-        &fs_err::read(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/composer.lock"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let mut locked_by_name = std::collections::HashMap::new();
-    for key in ["packages", "packages-dev"] {
-        for entry in lock_before[key].as_array().unwrap() {
-            locked_by_name.insert(
-                entry["name"].as_str().unwrap().to_ascii_lowercase(),
-                entry.clone(),
-            );
-        }
-    }
+    let locked_by_name = common::locked_by_name(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/composer.lock"),
+    );
 
     let cache = tempfile::tempdir().unwrap();
     let transport = FixtureTransport {

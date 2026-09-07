@@ -13,16 +13,14 @@
 mod common;
 
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-use common::TestContext;
+use common::{FixtureTransport, TestContext, fixtures_root};
 use serde_json::Value;
-use vivace::repository::{Repository, Transport};
+use vivace::repository::Repository;
 use vivace::solver;
 use vivace::store::Store;
-
-const FIXED_LAST_MODIFIED: &str = "Mon, 01 Jan 2024 00:00:00 GMT";
 
 /// Same recursive copy as `tests/install_e2e.rs`'s helper of the same name:
 /// the monolog fixture's `src`/`lib` autoload sources, needed for `composer
@@ -37,39 +35,6 @@ fn copy_tree(from: &Path, to: &Path) {
             copy_tree(&entry.path(), &target);
         } else {
             std::fs::copy(entry.path(), target).unwrap();
-        }
-    }
-}
-
-fn fixtures_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packagist/repo.packagist.org")
-}
-
-/// Same fixture-replaying transport as `tests/solver.rs`/`tests/repository.rs`.
-struct FixtureTransport {
-    root: PathBuf,
-}
-
-impl Transport for &FixtureTransport {
-    #[allow(clippy::unused_async_trait_impl)]
-    async fn get(
-        &self,
-        url: &reqwest::Url,
-        if_modified_since: Option<&str>,
-    ) -> anyhow::Result<vivace::fetch::Conditional> {
-        if if_modified_since == Some(FIXED_LAST_MODIFIED) {
-            return Ok(vivace::fetch::Conditional::NotModified);
-        }
-        let path = self.root.join(url.path().trim_start_matches('/'));
-        match fs_err::read(&path) {
-            Ok(body) => Ok(vivace::fetch::Conditional::Fresh {
-                body,
-                last_modified: Some(FIXED_LAST_MODIFIED.to_string()),
-            }),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                Ok(vivace::fetch::Conditional::NotFound)
-            }
-            Err(err) => Err(err.into()),
         }
     }
 }
@@ -152,6 +117,14 @@ async fn update_reproduces_the_monolog_lock() {
 
 #[tokio::test]
 async fn update_reproduces_the_legacy_lock() {
+    if Command::new("php").arg("--version").output().is_err() {
+        eprintln!(
+            "skipping update_reproduces_the_legacy_lock: php is not on PATH (platform \
+             extensions come from the host php)"
+        );
+        return;
+    }
+
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy");
     let got = update_lock(&fixture).await;
     assert_matches_expected(&got, &fixture.join("composer.lock"));
@@ -177,18 +150,7 @@ async fn partial_update_keeps_the_unlisted_package_locked() {
 
     let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
     let root: Value = serde_json::from_slice(&composer_json).unwrap();
-    let lock_before: Value =
-        serde_json::from_slice(&fs_err::read(fixture.join("lock-before.json")).unwrap()).unwrap();
-
-    let mut locked_by_name = std::collections::HashMap::new();
-    for key in ["packages", "packages-dev"] {
-        for entry in lock_before[key].as_array().unwrap() {
-            locked_by_name.insert(
-                entry["name"].as_str().unwrap().to_ascii_lowercase(),
-                entry.clone(),
-            );
-        }
-    }
+    let locked_by_name = common::locked_by_name(&fixture.join("lock-before.json"));
 
     let result = vivace::solver::solve_partial_update(
         &repo,
@@ -259,19 +221,7 @@ async fn partial_update_finds_a_transitive_allow_listed_package() {
 
         let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
         let root: Value = serde_json::from_slice(&composer_json).unwrap();
-        let lock_before: Value =
-            serde_json::from_slice(&fs_err::read(fixture.join("lock-before.json")).unwrap())
-                .unwrap();
-
-        let mut locked_by_name = std::collections::HashMap::new();
-        for key in ["packages", "packages-dev"] {
-            for entry in lock_before[key].as_array().unwrap() {
-                locked_by_name.insert(
-                    entry["name"].as_str().unwrap().to_ascii_lowercase(),
-                    entry.clone(),
-                );
-            }
-        }
+        let locked_by_name = common::locked_by_name(&fixture.join("lock-before.json"));
 
         let result = vivace::solver::solve_partial_update(
             &repo,
@@ -513,17 +463,7 @@ async fn offline_partial_update_context() -> TestContext {
         .unwrap();
     let root: Value =
         serde_json::from_slice(&fs_err::read(project.join("composer.json")).unwrap()).unwrap();
-    let lock_before: Value =
-        serde_json::from_slice(&fs_err::read(fixture.join("lock-before.json")).unwrap()).unwrap();
-    let mut locked_by_name = std::collections::HashMap::new();
-    for key in ["packages", "packages-dev"] {
-        for entry in lock_before[key].as_array().unwrap() {
-            locked_by_name.insert(
-                entry["name"].as_str().unwrap().to_ascii_lowercase(),
-                entry.clone(),
-            );
-        }
-    }
+    let locked_by_name = common::locked_by_name(&fixture.join("lock-before.json"));
     vivace::solver::solve_partial_update(
         &repo,
         &root,
