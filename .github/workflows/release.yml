@@ -58,6 +58,18 @@ jobs:
         with:
           name: dist-${{ matrix.target }}
           path: vivace-*.tar.gz
+      # Debian packaging only makes sense for the musl (Linux) targets.
+      - name: Install cargo-deb
+        if: matrix.musl
+        run: cargo install cargo-deb --version 3.8.0 --locked
+      - name: Build .deb package
+        if: matrix.musl
+        run: cargo deb --no-build --target ${{ matrix.target }} -o dist/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: matrix.musl
+        with:
+          name: dist-deb-${{ matrix.target }}
+          path: dist/*.deb
 
   release:
     needs: build
@@ -77,7 +89,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          sha256sum vivace-*.tar.gz > SHA256SUMS
+          sha256sum vivace-*.tar.gz *.deb > SHA256SUMS
+          version=$(echo "$TAG" | sed 's/^v//')
+          ../scripts/brew-formula.sh "$version" SHA256SUMS > vivace.rb
+          # Formula is ready to copy into the svandragt/homebrew-tap repository;
+          # creating and maintaining that tap is out of scope for this workflow.
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # Match the milestone whose title starts with the tag's major.minor,
             # e.g. v0.6.0 -> "0.6 ...". Falls back to auto-generated notes if
@@ -85,7 +101,6 @@ jobs:
             minor=$(echo "$TAG" | sed -E 's/^v?([0-9]+\.[0-9]+).*/\1/')
             milestone=$(gh api "repos/$GITHUB_REPOSITORY/milestones?state=all" \
               --jq "[.[] | select(.title | startswith(\"$minor\"))][0].title")
-            version=$(echo "$TAG" | sed 's/^v//')
             if [ -n "$milestone" ]; then
               ../scripts/changelog.sh "$milestone" "$version" >notes.md
               gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --notes-file notes.md
@@ -93,4 +108,4 @@ jobs:
               gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --generate-notes
             fi
           fi
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber vivace-*.tar.gz SHA256SUMS
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber vivace-*.tar.gz *.deb SHA256SUMS vivace.rb

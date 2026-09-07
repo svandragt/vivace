@@ -53,6 +53,16 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
+[package.metadata.deb]
+maintainer = "Sander van Dragt <sander@vandragt-humanmade.com>"
+depends = "$auto"
+section = "devel"
+priority = "optional"
+assets = [
+    ["target/release/viv", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/vivace/README.md", "644"],
+]
+
 [package.metadata.binstall]
 pkg-url = "https://github.com/svandragt/vivace/releases/download/v{ version }/vivace-v{ version }-{ target }.tar.gz"
 bin-dir = "vivace-v{ version }-{ target }/{ bin }"
