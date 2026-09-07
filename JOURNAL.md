@@ -558,3 +558,16 @@ update` on all three fails on wpackagist's metadata, whose provider files
 key versions by string instead of the v2 list. `install` is unaffected.
 Filed as the first P1 of 0.7 (#105); 0.6 ships with update working on
 Packagist, Satis and VCS repositories and not yet on wpackagist.
+
+**Correction, same afternoon.** The 0.6 tag above was withdrawn within
+minutes. Two release criteria were set: `update` must work on the client
+projects, and viv must be faster than Composer on every benchmark column.
+The first was met the same afternoon: wpackagist's provider files key
+versions by label rather than listing them, and the client rejected them;
+fixed with a recorded fixture and a lock-identity test against the real
+registry. The second is open: warm update on the Laravel lock is 3.99 s
+against Composer's 1.16 s after sharing package metadata by `Arc`, with
+the metadata round trips and the pool optimiser's string keys as the next
+two targets. A corpus benchmark over the pinned public projects landed so
+riff can be compared on projects it can install; its first run is partial.
+0.6 stays open on #88, #90, #91 and #106.
