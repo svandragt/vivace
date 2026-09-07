@@ -1387,6 +1387,18 @@ struct NameState {
     /// reprocessing (and re-queueing the requires of) versions already
     /// loaded under a narrower one.
     scanned: HashSet<String>,
+    /// How many of `constraints`'s entries every not-yet-`scanned` version
+    /// has already been tested against. A widen only appends to
+    /// `constraints` (union/OR semantics: an already-failed constraint never
+    /// starts passing), so [`ClosureWalk::process`] only needs to test a
+    /// still-rejected version against the *new* tail on each rescan rather
+    /// than the whole growing `Vec` again — without this, a heavily
+    /// required package (`symfony/http-foundation` at 38 distinct requirer
+    /// constraints on statamic/statamic) re-tests every one of its rejected
+    /// versions against every constraint on every widen, an O(versions ×
+    /// widens²) cost that measured as `ClosureWalk::process`'s single
+    /// largest contributor to the closure's serial time.
+    constraints_tested: usize,
 }
 
 /// The constraint-narrowed breadth-first walk [`Repository::load_closure_seeded`]
@@ -1440,6 +1452,7 @@ impl ClosureWalk<'_> {
                         constraints: vec![constraint],
                         locked,
                         scanned: HashSet::new(),
+                        constraints_tested: 0,
                     },
                 );
                 if let Some(versions) = self.stashed.remove(&name) {
@@ -1474,15 +1487,27 @@ impl ClosureWalk<'_> {
     fn process(&mut self, name: &str) -> Result<()> {
         let mut newly_matched = Vec::new();
         if let Some(versions) = self.versions_by_name.get(name) {
-            let constraints = self.states[name].constraints.clone();
+            // Only the constraints added since this name's last scan: an
+            // already-rejected version was already tested against every
+            // earlier one (union/OR semantics mean that verdict can't
+            // change), so re-testing the whole `Vec` on every widen would
+            // be wasted work that grows with the number of widens. Only
+            // advance `constraints_tested` here, once versions actually
+            // exist to test against — a `discover()`-triggered `process`
+            // ahead of the fetch landing must leave it untouched, or
+            // `land`'s later call would see nothing left to test at all.
+            let tested = self.states[name].constraints_tested;
+            let new_constraints = &self.states[name].constraints[tested..];
             for pv in versions {
                 if self.states[name].scanned.contains(&pv.version_normalized) {
                     continue;
                 }
-                if is_version_loaded(pv, name, &constraints, self.accept)? {
+                if is_version_loaded(pv, name, new_constraints, self.accept)? {
                     newly_matched.push(pv.clone());
                 }
             }
+            let state = self.states.get_mut(name).expect("marked before process");
+            state.constraints_tested = state.constraints.len();
         }
         if newly_matched.is_empty() {
             return Ok(());
