@@ -62,9 +62,12 @@ jobs:
       - name: Install cargo-deb
         if: matrix.musl
         run: cargo install cargo-deb --version 3.8.0 --locked
+      # --no-strip: cargo-deb strips with the host's strip, which cannot read
+      # the aarch64 binary on an x86_64 runner; the tarballs ship unstripped
+      # too, so the .deb matches them.
       - name: Build .deb package
         if: matrix.musl
-        run: cargo deb --no-build --target ${{ matrix.target }} -o dist/
+        run: cargo deb --no-build --no-strip --target ${{ matrix.target }} -o dist/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: matrix.musl
         with:
