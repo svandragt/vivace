@@ -71,6 +71,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,6 +79,18 @@ jobs:
           cd dist
           sha256sum vivace-*.tar.gz > SHA256SUMS
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --generate-notes
+            # Match the milestone whose title starts with the tag's major.minor,
+            # e.g. v0.6.0 -> "0.6 ...". Falls back to auto-generated notes if
+            # no such milestone exists.
+            minor=$(echo "$TAG" | sed -E 's/^v?([0-9]+\.[0-9]+).*/\1/')
+            milestone=$(gh api "repos/$GITHUB_REPOSITORY/milestones?state=all" \
+              --jq "[.[] | select(.title | startswith(\"$minor\"))][0].title")
+            version=$(echo "$TAG" | sed 's/^v//')
+            if [ -n "$milestone" ]; then
+              ../scripts/changelog.sh "$milestone" "$version" >notes.md
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --notes-file notes.md
+            else
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --generate-notes
+            fi
           fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber vivace-*.tar.gz SHA256SUMS
