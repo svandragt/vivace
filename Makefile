@@ -1,7 +1,7 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install install-shim build test check bench bench-check profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
+.PHONY: install install-shim build test check bench bench-check bench-corpus profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
 
 install:
 	cargo install --path . --locked --bin viv
@@ -43,6 +43,11 @@ bench-check:
 	devbox run -- bench/run.sh tests/fixtures/monolog composer viv
 	python3 bench/compare.py bench/results/viv.json --baseline bench/results/baseline.json
 
+# #106: same cold/warm/noop/update-warm scenarios as `bench`, across the
+# whole pinned compat corpus (compat/corpus.toml) instead of just Laravel.
+bench-corpus:
+	devbox run -- bench/corpus.sh
+
 # Flamegraphs for #54/#55 (bench/results/profile.md). Needs `perf` access
 # (`perf_event_paranoid <= 2` or `CAP_PERFMON`); errors with a message
 # pointing at that setting otherwise, which is what happened in the sandbox
@@ -82,6 +87,9 @@ record-packagist:
 record-satis:
 	devbox run -- ./tests/fixtures/satis/record.sh
 
+record-wpackagist:
+	./tests/fixtures/wpackagist/record.sh
+
 compat:
 	devbox run -- cargo build --release
 	devbox run -- compat/run.sh
@@ -112,6 +120,3 @@ coverage:
 # make changelog MILESTONE="0.6 adoption: client projects and update speed" VERSION=0.6.0
 changelog:
 	scripts/changelog.sh "$(MILESTONE)" "$(VERSION)" --write
-
-record-wpackagist:
-	./tests/fixtures/wpackagist/record.sh

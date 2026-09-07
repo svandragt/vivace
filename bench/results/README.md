@@ -5,6 +5,10 @@ Machine: AMD Ryzen 9 7900X3D, ext4, Linux 7.0, PHP 8.4.24, 2026-09-06.
 Vendor directory and caches on the same filesystem (hardlinks need that;
 across filesystems `viv` falls back to copying with a warning).
 
+For the same scenarios run across the pinned public compat corpus
+(`compat/corpus.toml`) rather than just Laravel, see `bench/results/corpus.md`,
+produced by `bench/corpus.sh`.
+
 Scenarios: cold is no cache and no `vendor/`; warm is cache present, no
 `vendor/`; no-op is `vendor/` present and up to date.
 
