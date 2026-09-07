@@ -1,0 +1,13 @@
+{
+    "packages": [],
+    "includes": {
+        "include/all$4ae9453fbc2d1eb8ca15488af8260b6e90d3e69f.json": {
+            "sha1": "4ae9453fbc2d1eb8ca15488af8260b6e90d3e69f"
+        }
+    },
+    "metadata-url": "/p2/%package%.json",
+    "available-packages": [
+        "psr/container",
+        "psr/log"
+    ]
+}

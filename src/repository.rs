@@ -1,14 +1,21 @@
-//! Packagist v2 repository client: `packages.json`, `/p2/` metadata
-//! (`ComposerRepository::loadAsyncPackages`/`whatProvides`), minified
+//! Repository clients: Packagist v2 (`packages.json`, `/p2/` metadata,
+//! `ComposerRepository::loadAsyncPackages`/`whatProvides`) and the v1
+//! protocol Satis and older Private Packagist still serve (`providers-url`,
+//! `providers-lazy-url`, `provider-includes`, `includes`), plus the
+//! multi-repository construction `RepositoryFactory`/`Config`/
+//! `FilterRepository` do from `composer.json`'s `repositories` (order,
+//! `exclude`/`only`/`canonical`, `packagist.org: false`). Minified
 //! expansion (`composer/metadata-minifier`) and an HTTP cache that mirrors
 //! Composer's own disk format. No solving: `docs/resolver-design.md`'s
 //! stage 2, the pool builder's metadata loader.
 //!
 //! Skipped, with a clear error where it matters: `available-packages` and
-//! `available-package-patterns` are parsed but never acted on,
-//! `providers-api`, `security-advisories`, v1 provider repositories and
-//! `path`/`vcs`/`artifact` repositories are not supported (a repo missing
-//! `metadata-url` is treated as one of these and rejected).
+//! `available-package-patterns` are ignored outright (an optimisation, not
+//! a correctness concern), `providers-api`, `security-advisories`, and
+//! `path`/`vcs`/`artifact` repositories are not supported (a repository
+//! whose `type` isn't `"composer"` is rejected; a `"composer"` repository
+//! missing every provider mechanism below is treated as empty rather than
+//! erroring, matching `whatProvides`'s own `return []`).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -21,8 +28,16 @@ use futures::stream::{self, StreamExt};
 use regex::Regex;
 use reqwest::Url;
 use serde_json::{Map, Value};
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 
 use crate::fetch::{Conditional, Fetcher};
+use crate::store::hex;
+
+/// `Config::$defaultRepositories`: the implicit last (lowest-priority)
+/// repository, unless `composer.json` disables it (`packagist.org: false`)
+/// or redefines a `composer`-type repository at this same URL.
+pub const PACKAGIST_URL: &str = "https://repo.packagist.org";
 
 /// `PoolBuilder::LOAD_BATCH_SIZE`: names are loaded breadth-first in waves
 /// of this many concurrent fetches.
@@ -48,7 +63,9 @@ pub(crate) fn is_platform_package(name: &str) -> bool {
 /// Where the repository client gets bytes for a URL, conditional on a
 /// cached `Last-Modified`. Production wraps [`Fetcher`]; tests serve
 /// recorded fixtures and count calls, so a test can assert a warm cache
-/// makes none.
+/// makes none. Every content-addressed (sha1/sha256-verified) fetch also
+/// goes through this same method with `if_modified_since: None`: an
+/// unconditional GET, since a hash mismatch is the only reason to ask again.
 pub trait Transport {
     fn get(
         &self,
@@ -74,6 +91,10 @@ impl Transport for HttpTransport<'_> {
 /// mirroring `loadAsyncPackages`'s `$acceptableStabilities` handling
 /// (`ComposerRepository.php:1289-1298`): dev is skipped entirely unless
 /// acceptable, and the non-dev file is skipped when only dev is acceptable.
+/// Meaningless for a v1 source (`Provider::Providers`/`Provider::Eager`):
+/// those protocols never split dev out into its own file, so every version
+/// is always returned and the pool builder's own stability filter
+/// (`push_package_version`) is what actually discards an unacceptable one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevAcceptance {
     NonDevOnly,
@@ -208,128 +229,286 @@ pub struct ClosureRoot<'a> {
     pub require_dev: &'a Map<String, Value>,
 }
 
-/// A loaded Packagist v2 repository: `packages.json` plus a cache of
-/// fetched `/p2/` provider files.
-pub struct Repository<T: Transport> {
-    transport: T,
-    base_url: Url,
-    metadata_url: String,
-    /// Inline `packages` from `packages.json` (`ComposerRepository.php:413`):
-    /// name -> version label -> version object, the same shape a v1
-    /// `providers` file uses. Cheap to support, so it's supported.
-    inline_packages: Map<String, Value>,
-    /// `packages.json`'s `notify-batch` (falling back to the older `notify`),
-    /// canonicalized against `base_url` (`ComposerRepository::canonicalizeUrl`):
-    /// every loaded version without its own `notification-url` gets this one
-    /// (`ComposerRepository.php:1709-1710`), which is how a lock's package
-    /// entries end up with `"notification-url":
-    /// "https://packagist.org/downloads/"` despite no provider-file version
-    /// entry carrying it.
-    notify_url: Option<String>,
-    /// Parsed but never acted on; `PoolBuilder`'s optimisation, not a
-    /// correctness concern at this stage.
-    #[allow(dead_code)]
-    pub available_packages: Option<Vec<String>>,
-    #[allow(dead_code)]
-    pub available_package_patterns: Option<Vec<String>>,
-    cache_dir: PathBuf,
-    /// In-memory memoization keyed by lowercased provider file name
-    /// (including a trailing `~dev` for the dev file): a repeat
-    /// `load_package`/`load_closure` call over names already loaded this
-    /// run costs zero transport calls.
-    loaded: Mutex<HashMap<String, Vec<PackageVersion>>>,
-    /// Count of `transport.get` calls issued for a provider file (#55):
-    /// every one of these is a real request, warm cache or not — a warm
-    /// metadata cache still revalidates with `If-Modified-Since`, it just
-    /// gets a 304 back instead of a body.
-    requests: AtomicUsize,
+/// `FilterRepository`: which names a source is even asked about (`only`/
+/// `exclude`, package-name globs compiled the way
+/// `BasePackage::packageNamesToRegexp` does), and whether finding a name
+/// here stops lower-priority sources from being asked about it at all
+/// (`canonical`, default `true`).
+#[derive(Debug)]
+struct RepoFilters {
+    only: Option<Regex>,
+    exclude: Option<Regex>,
+    canonical: bool,
 }
 
-impl<T: Transport> Repository<T> {
-    /// Fetch `packages.json` from `base_url` and build a client caching
-    /// under `<cache_root>/repo/<repo-host>/`.
-    pub async fn load(base_url: &str, cache_root: &Path, transport: T) -> Result<Repository<T>> {
-        let base_url =
-            Url::parse(base_url).with_context(|| format!("invalid repository URL {base_url:?}"))?;
-        let host = base_url
+impl Default for RepoFilters {
+    fn default() -> Self {
+        RepoFilters {
+            only: None,
+            exclude: None,
+            canonical: true,
+        }
+    }
+}
+
+impl RepoFilters {
+    fn parse(obj: &Map<String, Value>, repo_label: &str) -> Result<RepoFilters> {
+        let names = |key: &str| -> Result<Option<Vec<String>>> {
+            match obj.get(key) {
+                None => Ok(None),
+                Some(Value::Array(items)) => Ok(Some(
+                    items
+                        .iter()
+                        .map(|v| {
+                            v.as_str().map(str::to_string).with_context(|| {
+                                format!("{repo_label}: {key:?} entries must be strings")
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                )),
+                Some(_) => bail!("{repo_label}: {key:?} must be an array of package names"),
+            }
+        };
+        let only = names("only")?;
+        let exclude = names("exclude")?;
+        if only.is_some() && exclude.is_some() {
+            bail!("{repo_label}: only one of \"only\" and \"exclude\" can be specified");
+        }
+        let canonical = match obj.get("canonical") {
+            None => true,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => bail!("{repo_label}: \"canonical\" must be a boolean"),
+        };
+        Ok(RepoFilters {
+            only: only.as_deref().map(names_to_regex).transpose()?,
+            exclude: exclude.as_deref().map(names_to_regex).transpose()?,
+            canonical,
+        })
+    }
+
+    fn allows(&self, name: &str) -> bool {
+        if let Some(only) = &self.only {
+            return only.is_match(name);
+        }
+        if let Some(exclude) = &self.exclude {
+            return !exclude.is_match(name);
+        }
+        true
+    }
+}
+
+/// `BasePackage::packageNamesToRegexp`: each name is a literal, case
+/// insensitive, glob-quoted match, except a bare `*` which becomes `.*`.
+fn names_to_regex(names: &[String]) -> Result<Regex> {
+    let alternation = names
+        .iter()
+        .map(|n| regex::escape(n).replace(r"\*", ".*"))
+        .collect::<Vec<_>>()
+        .join("|");
+    Regex::new(&format!("(?i)^(?:{alternation})$")).context("building an only/exclude pattern")
+}
+
+/// A source's provider-lookup strategy, decided once from `packages.json`'s
+/// root fields (`ComposerRepository::loadRootServerFile`'s priority: v2's
+/// `metadata-url` wins outright; else v1's `providers-url` (with a
+/// `provider-includes` listing built once, up front); else v1's older
+/// `providers-lazy-url` alone, which behaves exactly like `metadata-url`
+/// (same substitution, same tolerant-404 lazy fetch); else nothing but
+/// `includes`/inline `packages` (Satis's own default output, and any other
+/// legacy repo with no provider mechanism at all), loaded eagerly, once,
+/// with nothing left to fetch afterwards.
+enum Provider {
+    Lazy {
+        metadata_url: String,
+    },
+    Providers {
+        providers_url: String,
+        /// name (lowercased) -> sha256, from `provider-includes`.
+        listing: HashMap<String, String>,
+    },
+    Eager {
+        packages: HashMap<String, Vec<PackageVersion>>,
+    },
+}
+
+/// One loaded `composer`-type repository: `packages.json`, its provider
+/// mechanism, and the on-disk cache directory Composer itself would use
+/// for this host.
+struct Source {
+    base_url: Url,
+    provider: Provider,
+    /// v2's partial inline `packages` (`hasPartialPackages`), checked
+    /// before the lazy `/p2/` fetch. `Provider::Eager`'s own inline
+    /// `packages` are already folded into its `packages` map; this field
+    /// is only ever non-empty alongside `Provider::Lazy`.
+    inline_packages: Map<String, Value>,
+    /// `packages.json`'s `notify-batch` (falling back to the older
+    /// `notify`), canonicalized against `base_url`: every version this
+    /// source loads without its own `notification-url` gets this one
+    /// (`ComposerRepository.php:1709-1710`).
+    notify_url: Option<String>,
+    cache_dir: PathBuf,
+    filters: RepoFilters,
+}
+
+impl Source {
+    /// Fetch `packages.json` from `url` and set up this source's provider
+    /// mechanism, caching under `<cache_root>/repo/<repo-host>/`
+    /// (`ComposerRepository::getCache`'s per-repo directory, keyed the same
+    /// way this crate already keyed a single Packagist repo).
+    async fn load<T: Transport>(
+        url: &str,
+        cache_root: &Path,
+        transport: &T,
+        filters: RepoFilters,
+    ) -> Result<Source> {
+        let configured =
+            Url::parse(url).with_context(|| format!("invalid repository URL {url:?}"))?;
+        let host = configured
             .host_str()
-            .with_context(|| format!("repository URL {base_url} has no host"))?
+            .with_context(|| format!("repository URL {configured} has no host"))?
             .to_string();
-        let packages_url = base_url
-            .join("packages.json")
-            .context("joining packages.json to the repository URL")?;
-        // Cached the same way a provider file is (below): offline (#23),
-        // this is what lets a warm cache serve `packages.json` itself
-        // without a request, rather than failing before a single provider
-        // file is even reached.
         let cache_dir = cache_root.join("repo").join(&host);
+
+        // `ComposerRepository::getPackagesJsonUrl`: a URL that already
+        // names a `.json` file is used as-is; otherwise `/packages.json` is
+        // appended (string concatenation, not URL-relative resolution, so
+        // a repository whose URL has its own path component isn't
+        // truncated the way `Url::join` would truncate it).
+        let packages_url = if configured.path().contains(".json") {
+            configured.clone()
+        } else {
+            let mut joined = configured.as_str().trim_end_matches('/').to_string();
+            joined.push_str("/packages.json");
+            Url::parse(&joined).context("joining packages.json to the repository URL")?
+        };
+        let base_url = configured;
+
         let packages_cache_path = cache_dir.join("packages.json");
-        let root = match get_cached_json(&transport, &packages_url, &packages_cache_path).await? {
+        let root = match get_cached_json(transport, &packages_url, &packages_cache_path).await? {
             CachedJson::NotFound => bail!("{packages_url}: not found"),
             CachedJson::Data(data) => data,
         };
-        let metadata_url = root
-            .get("metadata-url")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .with_context(|| {
-                format!(
-                    "{packages_url}: no metadata-url (v1 provider repositories are not \
-                     supported in vivace v0.1)"
-                )
-            })?;
-        let inline_packages = root
-            .get("packages")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let available_packages = string_list(&root, "available-packages");
-        let available_package_patterns = string_list(&root, "available-package-patterns");
+        let requests = AtomicUsize::new(0);
+        let requests = &requests;
+
+        let provider = if let Some(metadata_url) = root.get("metadata-url").and_then(Value::as_str)
+        {
+            Provider::Lazy {
+                metadata_url: metadata_url.to_string(),
+            }
+        } else if let Some(providers_url) = root.get("providers-url").and_then(Value::as_str) {
+            let empty = Map::new();
+            let provider_includes = root
+                .get("provider-includes")
+                .and_then(Value::as_object)
+                .unwrap_or(&empty);
+            let listing = load_provider_listing(
+                transport,
+                requests,
+                &base_url,
+                &cache_dir,
+                provider_includes,
+            )
+            .await?;
+            Provider::Providers {
+                providers_url: providers_url.to_string(),
+                listing,
+            }
+        } else if let Some(providers_lazy_url) =
+            root.get("providers-lazy-url").and_then(Value::as_str)
+        {
+            Provider::Lazy {
+                metadata_url: providers_lazy_url.to_string(),
+            }
+        } else {
+            let packages =
+                load_eager_packages(transport, requests, &base_url, &cache_dir, &root).await?;
+            Provider::Eager { packages }
+        };
+
+        let inline_packages = if matches!(provider, Provider::Lazy { .. }) {
+            root.get("packages")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Map::new()
+        };
         let notify_url = root
             .get("notify-batch")
             .or_else(|| root.get("notify"))
             .and_then(Value::as_str)
             .map(|url| canonicalize_url(&base_url, url));
-        Ok(Repository {
-            transport,
+
+        Ok(Source {
             base_url,
-            metadata_url,
+            provider,
             inline_packages,
             notify_url,
-            available_packages,
-            available_package_patterns,
             cache_dir,
-            loaded: Mutex::new(HashMap::new()),
-            requests: AtomicUsize::new(0),
+            filters,
         })
     }
 
-    /// Provider-file requests issued so far (#55): excludes the initial
-    /// `packages.json` fetch and any name served from `inline_packages`
-    /// without a request.
-    pub fn request_count(&self) -> usize {
-        self.requests.load(Ordering::Relaxed)
-    }
-
-    /// Fetch a package's non-dev and/or `~dev` provider file, expanding it
-    /// if minified. A missing package (404) is `Ok(vec![])`, not an error
-    /// (`whatProvides` treats 404/499 the same way).
-    pub async fn load_package(
+    /// This source's versions for `name` (already lowercased), applying its
+    /// own `notify_url` to whichever entries don't already carry one. `dev`
+    /// only matters for `Provider::Lazy`, which is the only mechanism that
+    /// splits dev out into a separate `~dev` file.
+    async fn load_versions<T: Transport>(
         &self,
+        transport: &T,
+        requests: &AtomicUsize,
         name: &str,
         dev: DevAcceptance,
     ) -> Result<Vec<PackageVersion>> {
-        let key = name.to_ascii_lowercase();
-        if let Some(cached) = self.loaded.lock().expect("loaded mutex").get(&key) {
-            return Ok(cached.clone());
-        }
-        let mut versions = Vec::new();
-        if dev.wants_non_dev() {
-            versions.extend(self.fetch_provider(&key, false).await?);
-        }
-        if dev.wants_dev() {
-            versions.extend(self.fetch_provider(&key, true).await?);
-        }
+        let mut versions = match &self.provider {
+            Provider::Lazy { metadata_url } => {
+                let mut versions = Vec::new();
+                if dev.wants_non_dev() {
+                    versions.extend(
+                        self.fetch_lazy(transport, requests, metadata_url, name, false)
+                            .await?,
+                    );
+                }
+                if dev.wants_dev() {
+                    versions.extend(
+                        self.fetch_lazy(transport, requests, metadata_url, name, true)
+                            .await?,
+                    );
+                }
+                versions
+            }
+            Provider::Providers {
+                providers_url,
+                listing,
+            } => {
+                let Some(hash) = listing.get(name) else {
+                    return Ok(Vec::new());
+                };
+                let path = providers_url
+                    .replace("%package%", name)
+                    .replace("%hash%", hash);
+                let url = self
+                    .base_url
+                    .join(&path)
+                    .with_context(|| format!("invalid providers-url substitution {path:?}"))?;
+                let cache_path = self
+                    .cache_dir
+                    .join(format!("provider-{}.json", name.replace('/', "$")));
+                let data = get_hash_verified_json(
+                    transport,
+                    requests,
+                    &url,
+                    &cache_path,
+                    hash,
+                    HashKind::Sha256,
+                )
+                .await?;
+                parse_provider_versions(&data, name)?
+            }
+            Provider::Eager { packages } => packages.get(name).cloned().unwrap_or_default(),
+        };
         if let Some(notify_url) = &self.notify_url {
             for version in &mut versions {
                 if let Value::Object(obj) = &mut version.raw
@@ -342,14 +521,17 @@ impl<T: Transport> Repository<T> {
                 }
             }
         }
-        self.loaded
-            .lock()
-            .expect("loaded mutex")
-            .insert(key, versions.clone());
         Ok(versions)
     }
 
-    async fn fetch_provider(&self, name: &str, dev_file: bool) -> Result<Vec<PackageVersion>> {
+    async fn fetch_lazy<T: Transport>(
+        &self,
+        transport: &T,
+        requests: &AtomicUsize,
+        metadata_url: &str,
+        name: &str,
+        dev_file: bool,
+    ) -> Result<Vec<PackageVersion>> {
         if !dev_file && let Some(inline) = self.inline_packages.get(name) {
             return parse_inline_versions(name, inline);
         }
@@ -358,26 +540,382 @@ impl<T: Transport> Repository<T> {
         } else {
             name.to_string()
         };
-        let url = self.provider_url(&file_name)?;
-        let cache_path = self.cache_path(&file_name);
-        self.requests.fetch_add(1, Ordering::Relaxed);
-        match get_cached_json(&self.transport, &url, &cache_path).await? {
+        let path = metadata_url.replace("%package%", &file_name);
+        let url = self
+            .base_url
+            .join(&path)
+            .with_context(|| format!("invalid metadata-url substitution {path:?}"))?;
+        let cache_path = self
+            .cache_dir
+            .join(format!("provider-{}.json", file_name.replace('/', "$")));
+        requests.fetch_add(1, Ordering::Relaxed);
+        match get_cached_json(transport, &url, &cache_path).await? {
             CachedJson::NotFound => Ok(Vec::new()),
             CachedJson::Data(data) => parse_provider_versions(&data, name),
         }
     }
+}
 
-    fn provider_url(&self, file_name: &str) -> Result<Url> {
-        let path = self.metadata_url.replace("%package%", file_name);
-        self.base_url
-            .join(&path)
-            .with_context(|| format!("invalid metadata-url substitution {path:?}"))
+/// `ComposerRepository::loadProviderListings`, breadth-first rather than
+/// recursive (an included file may itself list further `provider-includes`):
+/// each file is sha256-verified against the hash `provider-includes` named
+/// it with, and only fetched at all when the cache doesn't already match
+/// (`Cache::sha256`, immutable-content-addressed so a match can never be
+/// stale). Cache key strips `%hash%` and `$` from the include's own key
+/// (`ComposerRepository.php:1635`), since the real hash already lives in
+/// the URL and would otherwise churn the cache on every release.
+async fn load_provider_listing<T: Transport>(
+    transport: &T,
+    requests: &AtomicUsize,
+    base_url: &Url,
+    cache_dir: &Path,
+    root_includes: &Map<String, Value>,
+) -> Result<HashMap<String, String>> {
+    let mut listing = HashMap::new();
+    let mut queue: VecDeque<Map<String, Value>> = VecDeque::new();
+    if !root_includes.is_empty() {
+        queue.push_back(root_includes.clone());
+    }
+    while let Some(includes) = queue.pop_front() {
+        for (include, metadata) in &includes {
+            let sha256 = metadata
+                .get("sha256")
+                .and_then(Value::as_str)
+                .with_context(|| format!("{include}: provider-includes entry missing sha256"))?;
+            let path = include.replace("%hash%", sha256);
+            let url = base_url
+                .join(&path)
+                .with_context(|| format!("invalid provider-includes path {path:?}"))?;
+            let cache_key = include.replace("%hash%", "").replace('$', "");
+            let cache_path = cache_dir.join(&cache_key);
+            let data = get_hash_verified_json(
+                transport,
+                requests,
+                &url,
+                &cache_path,
+                sha256,
+                HashKind::Sha256,
+            )
+            .await?;
+            if let Some(providers) = data.get("providers").and_then(Value::as_object) {
+                for (name, entry) in providers {
+                    if let Some(hash) = entry.get("sha256").and_then(Value::as_str) {
+                        listing.insert(name.to_ascii_lowercase(), hash.to_string());
+                    }
+                }
+            }
+            if let Some(nested) = data.get("provider-includes").and_then(Value::as_object)
+                && !nested.is_empty()
+            {
+                queue.push_back(nested.clone());
+            }
+        }
+    }
+    Ok(listing)
+}
+
+/// `ComposerRepository::loadIncludes`: eagerly loads every package this
+/// source has, following `includes` breadth-first and merging every
+/// `packages` map found along the way (the root file's own `packages` key
+/// included, via `root` being the first item in the queue). Each include is
+/// sha1-verified (`Cache::sha1`) the same content-addressed way
+/// `provider-includes` is sha256-verified.
+async fn load_eager_packages<T: Transport>(
+    transport: &T,
+    requests: &AtomicUsize,
+    base_url: &Url,
+    cache_dir: &Path,
+    root: &Value,
+) -> Result<HashMap<String, Vec<PackageVersion>>> {
+    let mut packages: HashMap<String, Vec<PackageVersion>> = HashMap::new();
+    let mut queue: VecDeque<Value> = VecDeque::new();
+    queue.push_back(root.clone());
+    while let Some(data) = queue.pop_front() {
+        if let Some(obj) = data.get("packages").and_then(Value::as_object) {
+            for (name, versions) in obj {
+                let Some(versions) = versions.as_object() else {
+                    continue;
+                };
+                let key = name.to_ascii_lowercase();
+                let entry = packages.entry(key).or_default();
+                for version in versions.values() {
+                    entry.push(PackageVersion::from_value(version)?);
+                }
+            }
+        }
+        if let Some(includes) = data.get("includes").and_then(Value::as_object) {
+            for (include, metadata) in includes {
+                let url = base_url
+                    .join(include)
+                    .with_context(|| format!("invalid includes path {include:?}"))?;
+                let cache_path = cache_dir.join(include.as_str());
+                let included = if let Some(sha1) = metadata.get("sha1").and_then(Value::as_str) {
+                    get_hash_verified_json(
+                        transport,
+                        requests,
+                        &url,
+                        &cache_path,
+                        sha1,
+                        HashKind::Sha1,
+                    )
+                    .await?
+                } else {
+                    requests.fetch_add(1, Ordering::Relaxed);
+                    match transport.get(&url, None).await? {
+                        Conditional::Fresh { body, .. } => serde_json::from_slice(&body)
+                            .with_context(|| format!("{url}: not valid JSON"))?,
+                        Conditional::NotFound => bail!("{url}: not found"),
+                        Conditional::NotModified => {
+                            bail!("{url}: unexpected 304 for an unconditional request")
+                        }
+                    }
+                };
+                queue.push_back(included);
+            }
+        }
+    }
+    Ok(packages)
+}
+
+/// Which digest a content-addressed v1 file is verified with: `sha256` for
+/// `provider-includes`/`providers-url`, `sha1` for `includes`
+/// (`Cache::sha256`/`Cache::sha1` upstream).
+#[derive(Clone, Copy)]
+enum HashKind {
+    Sha1,
+    Sha256,
+}
+
+fn digest_hex(bytes: &[u8], kind: HashKind) -> String {
+    match kind {
+        HashKind::Sha1 => hex(Sha1::digest(bytes)),
+        HashKind::Sha256 => hex(Sha256::digest(bytes)),
+    }
+}
+
+/// A content-addressed fetch: the cache key's expected hash is known up
+/// front (unlike `get_cached_json`'s `Last-Modified` revalidation), so a
+/// cache hit needs no transport call at all, and a miss is an unconditional
+/// GET (`if_modified_since: None`) rather than a conditional one.
+async fn get_hash_verified_json<T: Transport>(
+    transport: &T,
+    requests: &AtomicUsize,
+    url: &Url,
+    cache_path: &Path,
+    expected_hash: &str,
+    kind: HashKind,
+) -> Result<Value> {
+    if let Ok(bytes) = fs_err::read(cache_path)
+        && digest_hex(&bytes, kind).eq_ignore_ascii_case(expected_hash)
+    {
+        return serde_json::from_slice(&bytes)
+            .with_context(|| format!("{}: cached file is not valid JSON", cache_path.display()));
+    }
+    requests.fetch_add(1, Ordering::Relaxed);
+    let body = match transport.get(url, None).await? {
+        Conditional::Fresh { body, .. } => body,
+        Conditional::NotFound => bail!("{url}: not found"),
+        Conditional::NotModified => bail!("{url}: unexpected 304 for an unconditional request"),
+    };
+    if let Some(parent) = cache_path.parent() {
+        fs_err::create_dir_all(parent)?;
+    }
+    fs_err::write(cache_path, &body)
+        .with_context(|| format!("writing {}", cache_path.display()))?;
+    serde_json::from_slice(&body).with_context(|| format!("{url}: not valid JSON"))
+}
+
+/// One `composer.json` `repositories[]` entry, already resolved to a
+/// `"composer"`-type URL and its filters: everything else (`type`
+/// dispatch, `packagist.org` defaulting/disabling) is settled by
+/// [`parse_repositories`] before this is built.
+#[derive(Debug)]
+struct RepoEntry {
+    url: String,
+    filters: RepoFilters,
+}
+
+/// `RepositoryFactory::createRepos` + `Config::merge`'s `repositories`
+/// defaulting, restricted to the one repository `type` this crate supports.
+/// `composer.json`'s own repositories always win over the default
+/// `packagist.org` (added last, i.e. lowest priority), matching Composer's
+/// "explicit repos come first" ordering; `{"packagist.org": false}` (an
+/// object key, or a single-key `{"name": false}` array entry) disables the
+/// default without redeclaring it, and so does redefining a `composer`-type
+/// repository whose URL already points at `packagist.org`
+/// (`Config::merge`'s auto-deactivate).
+fn parse_repositories(root: &Value) -> Result<Vec<RepoEntry>> {
+    static PACKAGIST_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)^https?://(?:[a-z0-9-]+\.)?packagist\.org(/|$)").unwrap()
+    });
+
+    let mut disable_packagist = false;
+    let mut entries = Vec::new();
+
+    let disables_default = |name: &str| matches!(name, "packagist.org" | "packagist");
+
+    if let Some(repos) = root.get("repositories") {
+        match repos {
+            Value::Object(map) => {
+                for (name, repo) in map {
+                    if repo == &Value::Bool(false) {
+                        disable_packagist |= disables_default(name);
+                        continue;
+                    }
+                    let entry = parse_repo_entry(name, repo)?;
+                    disable_packagist |= PACKAGIST_URL_RE.is_match(&entry.url);
+                    entries.push(entry);
+                }
+            }
+            Value::Array(list) => {
+                for repo in list {
+                    if let Value::Object(map) = repo
+                        && map.len() == 1
+                        && let Some((name, Value::Bool(false))) = map.iter().next()
+                    {
+                        disable_packagist |= disables_default(name);
+                        continue;
+                    }
+                    let entry = parse_repo_entry("(unnamed)", repo)?;
+                    disable_packagist |= PACKAGIST_URL_RE.is_match(&entry.url);
+                    entries.push(entry);
+                }
+            }
+            Value::Null => {}
+            _ => bail!("composer.json's \"repositories\" must be an array or object"),
+        }
+    }
+    if !disable_packagist {
+        entries.push(RepoEntry {
+            url: PACKAGIST_URL.to_string(),
+            filters: RepoFilters::default(),
+        });
+    }
+    Ok(entries)
+}
+
+fn parse_repo_entry(name: &str, repo: &Value) -> Result<RepoEntry> {
+    let obj = repo
+        .as_object()
+        .with_context(|| format!("repository {name:?} must be an object"))?;
+    let repo_type = obj
+        .get("type")
+        .and_then(Value::as_str)
+        .with_context(|| format!("repository {name:?} must have a \"type\""))?;
+    if repo_type != "composer" {
+        bail!(
+            "repository {name:?}: type {repo_type:?} is not supported in vivace v0.1 (only \
+             \"composer\" repositories; path/vcs/artifact are not supported)"
+        );
+    }
+    let url = obj
+        .get("url")
+        .and_then(Value::as_str)
+        .with_context(|| format!("repository {name:?} (type \"composer\") must have a \"url\""))?
+        .to_string();
+    let filters = RepoFilters::parse(obj, &url)?;
+    Ok(RepoEntry { url, filters })
+}
+
+/// A loaded set of repositories: one or more `composer`-type sources,
+/// consulted in priority order, plus a cache of fetched provider files.
+pub struct Repository<T: Transport> {
+    transport: T,
+    sources: Vec<Source>,
+    /// In-memory memoization keyed by lowercased name: a repeat
+    /// `load_package`/`load_closure` call over names already loaded this
+    /// run costs zero transport calls.
+    loaded: Mutex<HashMap<String, Vec<PackageVersion>>>,
+    /// Count of `transport.get` calls issued for a provider file (#55):
+    /// every one of these is a real request, warm cache or not, for a
+    /// `Last-Modified`-revalidated fetch — a warm metadata cache still
+    /// revalidates, it just gets a 304 back instead of a body. A
+    /// content-addressed (hash-verified) fetch is the exception: a cache
+    /// hit there never calls `transport.get` at all, so it doesn't count.
+    requests: AtomicUsize,
+}
+
+impl<T: Transport> Repository<T> {
+    /// Load a single Packagist-shaped repository at `base_url`, with no
+    /// filters and nothing else in front of or behind it. Used directly by
+    /// callers that only ever talk to one repository (`require.rs`); `viv
+    /// update`'s multi-repository construction goes through
+    /// [`Repository::from_composer_json`] instead.
+    pub async fn load(base_url: &str, cache_root: &Path, transport: T) -> Result<Repository<T>> {
+        let source = Source::load(base_url, cache_root, &transport, RepoFilters::default()).await?;
+        Ok(Repository {
+            transport,
+            sources: vec![source],
+            loaded: Mutex::new(HashMap::new()),
+            requests: AtomicUsize::new(0),
+        })
     }
 
-    /// `provider-<name with / replaced by $>.json` (`ComposerRepository.php:1130`).
-    fn cache_path(&self, file_name: &str) -> PathBuf {
-        self.cache_dir
-            .join(format!("provider-{}.json", file_name.replace('/', "$")))
+    /// Builds every source named in the root `composer.json`'s
+    /// `repositories` (plus the implicit `packagist.org`, unless disabled),
+    /// in priority order (`docs/resolver-design.md`'s Metadata section,
+    /// extended by `#67` to more than one repository).
+    pub async fn from_composer_json(
+        root: &Value,
+        cache_root: &Path,
+        transport: T,
+    ) -> Result<Repository<T>> {
+        let entries = parse_repositories(root)?;
+        let mut sources = Vec::with_capacity(entries.len());
+        for entry in entries {
+            sources.push(Source::load(&entry.url, cache_root, &transport, entry.filters).await?);
+        }
+        Ok(Repository {
+            transport,
+            sources,
+            loaded: Mutex::new(HashMap::new()),
+            requests: AtomicUsize::new(0),
+        })
+    }
+
+    /// Provider-file requests issued so far (#55): excludes the initial
+    /// `packages.json` fetch(es) and any name served from a cache/inline
+    /// map without a request.
+    pub fn request_count(&self) -> usize {
+        self.requests.load(Ordering::Relaxed)
+    }
+
+    /// Fetch a package's versions across every source in priority order
+    /// (`RepositorySet`/`PoolBuilder::loadPackagesMarkedForLoading`): a
+    /// source whose `only`/`exclude` filter rejects `name` is skipped
+    /// entirely; otherwise its versions are merged in, and if it's
+    /// `canonical` (the default) and found at least one, no further,
+    /// lower-priority source is even asked about this name — a
+    /// non-canonical source's versions are added but never stop the
+    /// search. A missing package everywhere is `Ok(vec![])`, not an error.
+    pub async fn load_package(
+        &self,
+        name: &str,
+        dev: DevAcceptance,
+    ) -> Result<Vec<PackageVersion>> {
+        let key = name.to_ascii_lowercase();
+        if let Some(cached) = self.loaded.lock().expect("loaded mutex").get(&key) {
+            return Ok(cached.clone());
+        }
+        let mut versions = Vec::new();
+        for source in &self.sources {
+            if !source.filters.allows(&key) {
+                continue;
+            }
+            let found = source
+                .load_versions(&self.transport, &self.requests, &key, dev)
+                .await?;
+            let canonical_hit = source.filters.canonical && !found.is_empty();
+            versions.extend(found);
+            if canonical_hit {
+                break;
+            }
+        }
+        self.loaded
+            .lock()
+            .expect("loaded mutex")
+            .insert(key, versions.clone());
+        Ok(versions)
     }
 
     /// Breadth-first metadata load, batching `LOAD_BATCH_SIZE` concurrent
@@ -470,15 +1008,6 @@ fn canonicalize_url(base: &Url, url: &str) -> String {
         .map_or_else(|_| url.to_string(), |u| u.to_string())
 }
 
-fn string_list(root: &Value, key: &str) -> Option<Vec<String>> {
-    root.get(key)?.as_array().map(|values| {
-        values
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect()
-    })
-}
-
 /// A repo's inline `packages[name]` entry (`ComposerRepository.php:413`) is
 /// keyed by version label, not a plain list; the labels aren't otherwise
 /// used, only the version objects they hold.
@@ -547,8 +1076,8 @@ enum CachedJson {
 }
 
 /// The conditional-GET-against-a-disk-cache dance `packages.json` and every
-/// provider file share: read a cached body and its `Last-Modified`, send
-/// that back as `If-Modified-Since`, and cache a fresh response before
+/// v2/lazy provider file share: read a cached body and its `Last-Modified`,
+/// send that back as `If-Modified-Since`, and cache a fresh response before
 /// returning it. Offline (#23), this is also what serves a warm cache
 /// without a request: [`Fetcher::get_conditional`]'s own offline branch
 /// answers a conditional request (`since` is `Some`) with a synthetic
@@ -638,5 +1167,55 @@ mod tests {
         });
         let parsed = PackageVersion::from_value(&entry).unwrap();
         assert_eq!(parsed.version_normalized, "1.0.0.0");
+    }
+
+    #[test]
+    fn names_to_regex_matches_globs_case_insensitively() {
+        let re = names_to_regex(&["acme/*".to_string(), "foo/bar".to_string()]).unwrap();
+        assert!(re.is_match("acme/anything"));
+        assert!(re.is_match("FOO/BAR"));
+        assert!(!re.is_match("other/pkg"));
+    }
+
+    #[test]
+    fn repo_filters_only_and_exclude_are_mutually_exclusive() {
+        let obj: Map<String, Value> =
+            serde_json::from_str(r#"{"only": ["a/b"], "exclude": ["c/d"]}"#).unwrap();
+        let err = RepoFilters::parse(&obj, "test").unwrap_err().to_string();
+        assert!(err.contains("only one of"), "{err}");
+    }
+
+    #[test]
+    fn parse_repositories_disables_default_packagist_by_name() {
+        let root = serde_json::json!({"repositories": {"packagist.org": false}});
+        let entries = parse_repositories(&root).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_repositories_disables_default_via_array_form() {
+        let root = serde_json::json!({"repositories": [{"packagist.org": false}]});
+        let entries = parse_repositories(&root).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_repositories_appends_packagist_last_by_default() {
+        let root = serde_json::json!({
+            "repositories": [{"type": "composer", "url": "https://satis.example/"}],
+        });
+        let entries = parse_repositories(&root).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].url, "https://satis.example/");
+        assert_eq!(entries[1].url, PACKAGIST_URL);
+    }
+
+    #[test]
+    fn parse_repositories_rejects_unsupported_type() {
+        let root = serde_json::json!({
+            "repositories": [{"type": "vcs", "url": "https://github.com/acme/pkg"}],
+        });
+        let err = parse_repositories(&root).unwrap_err().to_string();
+        assert!(err.contains("vcs"), "{err}");
     }
 }

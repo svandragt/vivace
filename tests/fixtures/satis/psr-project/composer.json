@@ -1,0 +1,9 @@
+{
+    "name": "vivace/satis-fixture",
+    "require": {"psr/log": "^3.0", "psr/container": "^2.0"},
+    "repositories": [
+        {"type": "composer", "url": "http://127.0.0.1:8791"},
+        {"packagist.org": false}
+    ],
+    "config": {"secure-http": false}
+}

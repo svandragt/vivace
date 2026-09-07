@@ -1,5 +1,7 @@
 //! `viv update`: full and partial updates (`docs/resolver-design.md` stages
-//! 4 and 5). Reads the root `composer.json`, solves against Packagist
+//! 4 and 5). Reads the root `composer.json`, builds every repository its
+//! `repositories` names (`Repository::from_composer_json`, `#67`) plus the
+//! implicit `packagist.org`, solves against them
 //! (`solver::solve_update`/`solver::solve_partial_update`, the merged first
 //! solve plus the require-only second solve for the dev split), and writes
 //! a `composer.lock` (`lock_writer::write`). `--lock` skips solving
@@ -78,8 +80,6 @@ pub struct UpdateArgs {
     pub project_dir: PathBuf,
 }
 
-const PACKAGIST_URL: &str = "https://repo.packagist.org";
-
 pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
@@ -156,7 +156,7 @@ async fn solve(
         .secure_http(secure_http)
         .offline(offline);
     let transport = HttpTransport { fetcher: &fetcher };
-    let repo = Repository::load(PACKAGIST_URL, &cache_dir, transport).await?;
+    let repo = Repository::from_composer_json(root, &cache_dir, transport).await?;
 
     if args.packages.is_empty() {
         return solver::solve_update(&repo, root, prefer_stable, args.prefer_lowest).await;
