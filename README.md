@@ -14,11 +14,16 @@ against Composer on pinned popular projects and a random Packagist sample.
 Laravel-sized lock, 101 packages, same machine, three runs each. Details and
 raw data in [`bench/results/`](bench/results/README.md).
 
-| Tool | Cold | Warm cache | No-op |
-|---|---|---|---|
-| composer 2.10.2 | 8.28 s | 1.69 s | 0.50 s |
-| riff 0.0.7 | 1.75 s | 0.26 s | 0.23 s |
-| viv 0.4.0 | 2.1 s | 0.042 s | 0.007 s |
+| Tool | Cold | Warm cache | No-op | Update, warm metadata |
+|---|---|---|---|---|
+| composer 2.10.2 | 8.28 s | 1.69 s | 0.50 s | 1.2 s |
+| riff 0.0.7 | 1.75 s | 0.26 s | 0.23 s | n/a |
+| viv 0.4.0 | 2.1 s | 0.042 s | 0.007 s | 8.7 s |
+
+The update column is the one viv loses today: the lock it writes is identical
+to Composer's, but the solver works on an unpruned pool of every reachable
+version ([#76](https://github.com/svandragt/vivace/issues/76)). It is tracked
+per release like the install numbers.
 
 ## How it works
 

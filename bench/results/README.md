@@ -160,3 +160,19 @@ viv's warm time is 526 ms of system time: one `link()` per file. The rerun
 with `vendor/` present is a no-op. Cold install 8.3 s, dominated by the
 private downloads. Output: every file under `vendor/composer` and the whole
 package tree byte-identical to Composer's, `vendor/bin` included.
+
+## Update, warm metadata
+
+`update-warm` runs `viv update` (and `composer update --no-install`) with the
+metadata cache already populated, so every Packagist file revalidates with a
+304. It measures the resolver, not the network, but the revalidation round
+trips still make it noisy enough to report rather than gate in CI.
+
+| Release | Lock | viv | composer 2.10.2 | ratio |
+|---|---|---|---|---|
+| 0.4.0 | laravel, 101 packages | 8.7 s | 1.2 s | 7.2x slower |
+| 0.4.0 | monolog, 3 packages | 0.20 s | 0.62 s | 3x faster |
+
+The Laravel gap is rule generation over a 45,604-version pool; see
+`profile.md` and #76. Record this table for every release next to the install
+numbers.
