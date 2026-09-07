@@ -523,6 +523,28 @@ fn autoload_only_run_uses_composers_nothing_to_install_wording() {
     assert!(!stdout.contains("Installed"), "stdout: {stdout}");
 }
 
+/// #95: `install` must never write `composer.json` — normalizing moved to
+/// `require`/`remove`/`update`, the commands that already rewrite it. The
+/// path fixture's `composer.json` orders `repositories` before `require`,
+/// which is not schema order, so a pre-#95 `install` would have rewritten
+/// it; this asserts the file survives byte for byte instead.
+#[test]
+fn install_never_touches_composer_json() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+    let json_path = project.join("composer.json");
+    let before = fs::read(&json_path).unwrap();
+
+    ctx.viv().arg("install").assert().success();
+
+    let after = fs::read(&json_path).unwrap();
+    assert_eq!(
+        after, before,
+        "viv install rewrote composer.json; it must only write under vendor/"
+    );
+}
+
 /// #13: a dist-less, `source.type: git` lock entry. Built against a throwaway
 /// local repo (no `.git` fixture ever committed), isolated from any global
 /// git hooks/config a developer machine may have (`core.hooksPath` rewrites

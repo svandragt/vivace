@@ -77,7 +77,7 @@ fn install_warns_when_the_lock_is_stale() {
     fs::write(&composer_json, serde_json::to_vec(&json).unwrap()).unwrap();
 
     let mut cmd = ctx.viv();
-    cmd.args(["install", "--dry-run", "--no-normalize"]);
+    cmd.args(["install", "--dry-run"]);
     viv_snapshot!(ctx, cmd);
 }
 
@@ -94,7 +94,7 @@ fn install_fails_when_a_requirement_is_missing_from_the_lock() {
     fs::write(&composer_json, serde_json::to_vec(&json).unwrap()).unwrap();
 
     let mut cmd = ctx.viv();
-    cmd.args(["install", "--dry-run", "--no-normalize"]);
+    cmd.args(["install", "--dry-run"]);
     viv_snapshot!(ctx, cmd);
 }
 

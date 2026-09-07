@@ -1,7 +1,8 @@
 //! `viv require`/`viv remove`: constraint synthesis (a `VersionSelector`
 //! port) and a format-preserving `composer.json` edit (a `JsonManipulator`
-//! port), then a partial update of the touched package(s)
-//! (`docs/resolver-design.md` stage 5, composer/composer#42).
+//! port), then normalizing that edit (`--no-normalize` opts out, #95) and a
+//! partial update of the touched package(s) (`docs/resolver-design.md`
+//! stage 5, composer/composer#42).
 //!
 //! `viv require` stops at the lock: unlike `composer require`, it does not
 //! also run `install` (see `RequireArgs`'s doc comment). Run `viv install`
@@ -24,6 +25,7 @@ use serde_json::Value;
 
 use crate::auth::Auth;
 use crate::fetch::Fetcher;
+use crate::normalize;
 use crate::repository::{HttpTransport, Repository};
 use crate::solver::{self, pool_builder::UpdateAllowMode};
 
@@ -59,6 +61,10 @@ pub struct RequireArgs {
     /// partial update alike.
     #[arg(long)]
     pub prefer_stable: bool,
+    /// Don't normalize `composer.json` (key order, whitespace) after
+    /// writing it.
+    #[arg(long)]
+    pub no_normalize: bool,
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
@@ -76,6 +82,10 @@ pub struct RemoveArgs {
     /// Edit `composer.json` only; don't resolve or touch `composer.lock`.
     #[arg(long = "no-update")]
     pub no_update: bool,
+    /// Don't normalize `composer.json` (key order, whitespace) after
+    /// writing it.
+    #[arg(long)]
+    pub no_normalize: bool,
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
@@ -122,6 +132,9 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>) -> Result<()> {
     manipulator.remove_main_key_if_empty(remove_key)?;
 
     fs_err::write(&composer_json_path, manipulator.get_contents())?;
+    if !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
+        warn_out(&format!("Normalized {}", composer_json_path.display()));
+    }
 
     if args.no_update {
         return Ok(());
@@ -157,6 +170,9 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>) -> Result<()> {
     manipulator.remove_main_key_if_empty(link_type)?;
 
     fs_err::write(&composer_json_path, manipulator.get_contents())?;
+    if !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
+        warn_out(&format!("Normalized {}", composer_json_path.display()));
+    }
 
     if args.no_update {
         return Ok(());
@@ -252,6 +268,13 @@ fn partial_update(
         crate::lock_writer::write(&result.non_dev, Some(&result.dev), &options, &composer_json)?;
     fs_err::write(lock_path, lock)?;
     Ok(())
+}
+
+/// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint
+/// (`install.rs`'s own `warn_out` does the same).
+fn warn_out(message: &str) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr().lock(), "{message}");
 }
 
 /// Same merge as `update::locked_packages_by_name` (private there); kept as

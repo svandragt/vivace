@@ -480,3 +480,12 @@ repository, which every one of these projects does.
 Housekeeping: the sweep's default `mktemp -d` scratch was never removed;
 twenty of them held 18 GB. It now cleans up on exit unless
 `COMPAT_SCRATCH` names the directory.
+
+**Normalisation moved off `install`.** Since 0.2 `viv install` rewrote
+`composer.json` into normalised form before reading it. That was landed
+with four other changes and never argued for in this journal. It breaks
+the contract that install writes only under `vendor/`: a CI checkout came
+back with a dirty `composer.json`. Now `update`, `require` and `remove`
+normalise when they write, which is where merge conflicts arise anyway,
+and `install` and `dump-autoload` leave the file alone. `--no-normalize`
+on install is a hidden no-op for one release (#95).

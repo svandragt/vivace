@@ -29,11 +29,12 @@ like the install numbers; 0.6's target is to beat riff on every column.
 
 ## Beyond Composer
 
-**Fewer merge conflicts.** `viv install` normalises `composer.json` before
-reading it: stable key order and whitespace, the same result as
-`composer normalize`. Two branches that each add a dependency then merge
-cleanly instead of fighting over ordering. Pass `--no-normalize` to leave the
-file alone; `viv normalize --check` reports without writing.
+**Fewer merge conflicts.** `viv update`, `viv require` and `viv remove`
+normalise `composer.json` when they write it: stable key order and
+whitespace, the same result as `composer normalize`. Two branches that each
+add a dependency then merge cleanly instead of fighting over ordering. `viv
+install` never touches `composer.json`. Pass `--no-normalize` to opt out;
+`viv normalize --check` reports without writing.
 
 **Run a tool without installing it.** `viv x vendor/package[:constraint]`
 installs the package into an isolated, content-hashed environment under the
@@ -75,7 +76,7 @@ aarch64) are attached to each [release](https://github.com/svandragt/vivace/rele
 # download a tarball from the releases page, or:
 cargo binstall vivace
 # or build from source:
-cargo install --git https://github.com/svandragt/vivace --tag v0.3.0 vivace
+cargo install --git https://github.com/svandragt/vivace --tag v0.5.0 vivace
 ```
 
 ## Usage
@@ -91,7 +92,7 @@ target/release/viv update psr/log -w     # partial update with dependencies
 target/release/viv require psr/container # edits composer.json, updates the lock
 target/release/viv remove psr/container
 target/release/viv dump-autoload -o
-target/release/viv normalize --check     # composer.json is also normalised on install
+target/release/viv normalize --check     # update/require/remove also normalise when they write
 target/release/viv cache prune
 ```
 
@@ -141,9 +142,10 @@ size caps, tar.bz2, `viv cache size`, a classmap cache for `-o`.
 
 Out for now: other Composer plugins (refused, see the plugin strategy),
 `--minimal-changes`, private repositories that are not Packagist-compatible,
-Composer's condensed multi-cause problem messages, and `viv update` speed:
-it resolves correctly but takes about seven times longer than Composer on a
-large lock until the pool is pruned (#76).
+Composer's condensed multi-cause problem messages, and update speed: it
+resolves correctly, but at about four times Composer's time on a large lock,
+tracked in [#89](https://github.com/svandragt/vivace/issues/89) and
+[#90](https://github.com/svandragt/vivace/issues/90).
 
 ## Development
 

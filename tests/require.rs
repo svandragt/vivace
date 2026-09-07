@@ -253,8 +253,13 @@ fn viv_require_matches_composer_and_validates() {
     )
     .unwrap();
 
+    // Composer's own `JsonManipulator` output is what `composer.json.after`
+    // records; `viv require` reproduces it byte for byte only with
+    // `--no-normalize` (#95: without it, `viv require` also normalizes the
+    // file after writing it, which this fixture's formatting doesn't
+    // already match).
     ctx.viv()
-        .args(["require", "psr/container"])
+        .args(["require", "psr/container", "--no-normalize"])
         .assert()
         .success();
 
@@ -279,6 +284,42 @@ fn viv_require_matches_composer_and_validates() {
         "composer validate --strict failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&validate.stdout),
         String::from_utf8_lossy(&validate.stderr)
+    );
+
+    // Without `--no-normalize`, the same edit followed by normalizing must
+    // equal `viv normalize`'s own output on Composer's `composer.json.after`.
+    let normalized_ctx = TestContext::new();
+    let normalized_project = normalized_ctx.project.path();
+    fs_err::copy(
+        fixture.join("composer.json.before"),
+        normalized_project.join("composer.json"),
+    )
+    .unwrap();
+    fs_err::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/composer.lock"),
+        normalized_project.join("composer.lock"),
+    )
+    .unwrap();
+    normalized_ctx
+        .viv()
+        .args(["require", "psr/container"])
+        .assert()
+        .success();
+    let got_normalized = fs_err::read_to_string(normalized_project.join("composer.json")).unwrap();
+
+    let want_normalized_ctx = TestContext::new();
+    let want_normalized_path = want_normalized_ctx.project.path().join("composer.json");
+    fs_err::write(&want_normalized_path, &want_json).unwrap();
+    want_normalized_ctx
+        .viv()
+        .arg("normalize")
+        .assert()
+        .success();
+    let want_normalized = fs_err::read_to_string(&want_normalized_path).unwrap();
+
+    assert_eq!(
+        got_normalized, want_normalized,
+        "viv require without --no-normalize should match `viv normalize`'s output"
     );
 }
 
@@ -311,8 +352,10 @@ fn viv_remove_matches_composer_and_validates() {
     )
     .unwrap();
 
+    // See `viv_require_matches_composer_and_validates`'s comment: byte-exact
+    // parity with Composer's own edit needs `--no-normalize`.
     ctx.viv()
-        .args(["remove", "psr/container", "--dev"])
+        .args(["remove", "psr/container", "--dev", "--no-normalize"])
         .assert()
         .success();
 
@@ -337,5 +380,41 @@ fn viv_remove_matches_composer_and_validates() {
         "composer validate --strict failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&validate.stdout),
         String::from_utf8_lossy(&validate.stderr)
+    );
+
+    // Without `--no-normalize`, the same edit followed by normalizing must
+    // equal `viv normalize`'s own output on Composer's `composer.json.after`.
+    let normalized_ctx = TestContext::new();
+    let normalized_project = normalized_ctx.project.path();
+    fs_err::copy(
+        fixture.join("composer.json.before"),
+        normalized_project.join("composer.json"),
+    )
+    .unwrap();
+    fs_err::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/composer.lock"),
+        normalized_project.join("composer.lock"),
+    )
+    .unwrap();
+    normalized_ctx
+        .viv()
+        .args(["remove", "psr/container", "--dev"])
+        .assert()
+        .success();
+    let got_normalized = fs_err::read_to_string(normalized_project.join("composer.json")).unwrap();
+
+    let want_normalized_ctx = TestContext::new();
+    let want_normalized_path = want_normalized_ctx.project.path().join("composer.json");
+    fs_err::write(&want_normalized_path, &want_json).unwrap();
+    want_normalized_ctx
+        .viv()
+        .arg("normalize")
+        .assert()
+        .success();
+    let want_normalized = fs_err::read_to_string(&want_normalized_path).unwrap();
+
+    assert_eq!(
+        got_normalized, want_normalized,
+        "viv remove without --no-normalize should match `viv normalize`'s output"
     );
 }

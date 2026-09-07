@@ -4,9 +4,10 @@
 //! implicit `packagist.org`, solves against them
 //! (`solver::solve_update`/`solver::solve_partial_update`, the merged first
 //! solve plus the require-only second solve for the dev split), and writes
-//! a `composer.lock` (`lock_writer::write`). `--lock` skips solving
-//! entirely: it re-derives the lock from itself, matching `composer update
-//! --lock`'s own Locker round-trip.
+//! a `composer.lock` (`lock_writer::write`), then normalizes `composer.json`
+//! (`--no-normalize` opts out, #95: `viv install` never does this). `--lock`
+//! skips solving entirely: it re-derives the lock from itself, matching
+//! `composer update --lock`'s own Locker round-trip.
 //!
 //! Not reachable from `src/install.rs`/`src/main.rs`'s `install` path
 //! (`AGENTS.md`'s Performance rule only gates `install`).
@@ -22,6 +23,7 @@ use serde_json::Value;
 
 use crate::auth::Auth;
 use crate::fetch::Fetcher;
+use crate::normalize;
 use crate::repository::{HttpTransport, Repository};
 use crate::solver::{self, pool_builder::UpdateAllowMode, transaction::ResolvedPackage};
 
@@ -75,6 +77,10 @@ pub struct UpdateArgs {
     /// Solve and print, but don't write `composer.lock`.
     #[arg(long)]
     pub dry_run: bool,
+    /// Don't normalize `composer.json` (key order, whitespace) after
+    /// writing `composer.lock`.
+    #[arg(long)]
+    pub no_normalize: bool,
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
@@ -126,6 +132,9 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
 
     fs_err::write(lock_path, lock)?;
     let _ = args.no_dev; // `--no-dev` only changes `install`'s selection, not the lock.
+    if !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
+        warn_out(&format!("Normalized {}", composer_json_path.display()));
+    }
     Ok(())
 }
 
@@ -189,6 +198,12 @@ async fn solve(
         mode,
     )
     .await
+}
+
+/// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint
+/// (`install.rs`'s own `warn_out` does the same).
+fn warn_out(message: &str) {
+    let _ = writeln!(std::io::stderr().lock(), "{message}");
 }
 
 /// The current lock's `packages`+`packages-dev`, keyed by lowercased name:

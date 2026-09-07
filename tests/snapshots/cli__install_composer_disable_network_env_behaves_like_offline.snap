@@ -1,6 +1,5 @@
 ---
 source: tests/cli.rs
-assertion_line: 177
 expression: snapshot
 ---
 success: false
@@ -8,7 +7,6 @@ exit_code: 1
 ----- stdout -----
 
 ----- stderr -----
-Normalized [PROJECT]/composer.json
 Network disabled, request canceled: not in the store (3 packages):
   monolog/monolog (3.11.0)
   psr/log (3.0.2)

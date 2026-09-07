@@ -131,6 +131,7 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             prefer_lowest: false,
             prefer_stable: false,
             dry_run: false,
+            no_normalize: false,
             project_dir: env_dir.clone(),
         };
         update::run(&update_args, Some(&cache_dir), offline)
@@ -146,7 +147,10 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             apcu_autoloader: false,
             apcu_autoloader_prefix: None,
             no_scripts: false,
-            no_normalize: true,
+            // `install` never touches `composer.json` any more (#95); this
+            // flag is a no-op kept only for old invocations, so leave it
+            // unset rather than trip its deprecation warning on every run.
+            no_normalize: false,
             no_plugins: false,
         };
         install::run(&install_args, Some(&cache_dir), offline)

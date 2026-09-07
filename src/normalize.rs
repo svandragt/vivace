@@ -23,9 +23,9 @@ use serde_json::{Map, Value};
 
 use crate::autoload::sort::natcmp;
 
-/// `viv normalize`'s own default, and the indent `viv install`/
-/// `viv dump-autoload` normalize with (they have no `--indent-size` flag of
-/// their own).
+/// `viv normalize`'s own default, and the indent `viv require`/`viv remove`/
+/// `viv update` normalize with (they have no `--indent-size` flag of their
+/// own).
 const DEFAULT_INDENT_SIZE: usize = 4;
 
 /// `viv normalize` flags.
@@ -132,9 +132,11 @@ pub fn run(args: &NormalizeArgs) -> Result<()> {
     Ok(())
 }
 
-/// `viv install`/`viv dump-autoload`'s pre-read step (unless `--no-normalize`):
-/// rewrite `composer.json` in place if normalizing it changes any bytes,
-/// using the same default indent as a bare `viv normalize`. A file that
+/// `viv require`/`viv remove`/`viv update`'s post-write step (unless
+/// `--no-normalize`): rewrite `composer.json` in place if normalizing it
+/// changes any bytes, using the same default indent as a bare
+/// `viv normalize`. Not called by `viv install`/`viv dump-autoload` (#95):
+/// those only read `composer.json` and must never write to it. A file that
 /// can't be read or fails to parse is left untouched so the caller's own
 /// read/parse reports the real error instead of this one masking it.
 /// Returns whether it rewrote the file, for the caller's one stderr line.

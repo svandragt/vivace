@@ -1,5 +1,5 @@
 //! `viv install`: wire lock parsing, planning, fetch/store/link and the
-//! autoloader together into the one command vivace v0.1 ships.
+//! autoloader together into `viv`'s core command.
 //!
 //! See `docs/composer-contract.md` for the exact output rules the autoload
 //! and installed.* steps defer to; this module only decides *when* to run
@@ -31,7 +31,6 @@ use crate::link::{LinkMode, link_tree};
 use crate::lock::{
     self, Lock, MISSING_REQUIREMENTS_HINT, Package, Root, STALE_LOCK_WARNING, read_lock,
 };
-use crate::normalize;
 use crate::plan::{self, Plan};
 use crate::plugins;
 use crate::scripts;
@@ -88,9 +87,10 @@ pub struct InstallArgs {
     /// every other root `scripts` listener.
     #[arg(long)]
     pub no_scripts: bool,
-    /// Don't normalize `composer.json` (key order, whitespace) before
-    /// reading it.
-    #[arg(long)]
+    /// No-op since 0.6 (#95): `install` never writes `composer.json`, so
+    /// there is nothing left to skip. Kept, hidden, for one release so an
+    /// old invocation doesn't fail; prints a deprecation warning instead.
+    #[arg(long, hide = true)]
     pub no_normalize: bool,
     /// Install every package under `vendor/`, as Composer does with the same
     /// flag: the native `composer/installers`/`wordpress-core-installer`
@@ -133,9 +133,10 @@ pub struct DumpAutoloadArgs {
     /// `scripts` listener.
     #[arg(long)]
     pub no_scripts: bool,
-    /// Don't normalize `composer.json` (key order, whitespace) before
-    /// reading it.
-    #[arg(long)]
+    /// No-op since 0.6 (#95): `dump-autoload` never writes `composer.json`,
+    /// so there is nothing left to skip. Kept, hidden, for one release so an
+    /// old invocation doesn't fail; prints a deprecation warning instead.
+    #[arg(long, hide = true)]
     pub no_normalize: bool,
     /// Regenerate every package's autoload entry at its plain `vendor/`
     /// location: the native installer adapters are disabled, same as
@@ -232,22 +233,17 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Resul
     let lock_path = project_dir.join("composer.lock");
     if !lock_path.is_file() {
         bail!(
-            "composer.lock not found; vivace v0.1 installs from an existing lock, run \
-             `composer update` first"
+            "composer.lock not found; viv installs from an existing composer.lock, run \
+             `viv update` to create one"
         );
     }
 
-    // `--dry-run` promises no filesystem writes, so normalizing (which
-    // rewrites composer.json when it changes) is skipped, not just deferred.
-    let composer_json_path = project_dir.join("composer.json");
-    let normalize_started = Instant::now();
-    if !args.no_normalize && !args.dry_run && normalize::maybe_normalize(&composer_json_path)? {
-        warn_out(&format!("Normalized {}", composer_json_path.display()));
+    // `install` never writes `composer.json` (#95): normalizing moved to
+    // `require`/`remove`/`update`, the commands that already rewrite it.
+    if args.no_normalize {
+        warn_no_normalize_is_a_noop("install");
     }
-    tracing::debug!(
-        elapsed_ms = normalize_started.elapsed().as_millis(),
-        "checked composer.json normalization"
-    );
+    let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
     let read_lock_started = Instant::now();
@@ -648,16 +644,18 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
     let lock_path = project_dir.join("composer.lock");
     if !lock_path.is_file() {
         bail!(
-            "composer.lock not found; vivace v0.1 installs from an existing lock, run \
-             `composer update` first"
+            "composer.lock not found; viv installs from an existing composer.lock, run \
+             `viv update` to create one"
         );
     }
     // Composer's `DumpAutoloadCommand` never checks lock freshness or
     // missing requirements (unlike `InstallCommand`), so neither does this.
-    let composer_json_path = project_dir.join("composer.json");
-    if !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
-        warn_out(&format!("Normalized {}", composer_json_path.display()));
+    // `dump-autoload` never writes `composer.json` either (#95): see
+    // `run`'s own comment.
+    if args.no_normalize {
+        warn_no_normalize_is_a_noop("dump-autoload");
     }
+    let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
     let mut lock = read_lock(&lock_path)?;
@@ -1217,6 +1215,16 @@ fn out(message: &str) {
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint.
 fn warn_out(message: &str) {
     let _ = writeln!(std::io::stderr().lock(), "{message}");
+}
+
+/// `--no-normalize`'s deprecation notice on `install`/`dump-autoload` (#95):
+/// the flag is hidden and does nothing now that neither command touches
+/// `composer.json`, but a script that still passes it shouldn't fail.
+fn warn_no_normalize_is_a_noop(command: &str) {
+    warn_out(&format!(
+        "--no-normalize is a no-op on {command} since 0.6; {command} no longer touches \
+         composer.json"
+    ));
 }
 
 /// `--adopt`'s TTY confirmation: `y`/`yes` (any case) continues, anything
