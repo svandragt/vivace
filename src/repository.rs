@@ -24,7 +24,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -36,6 +36,8 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use crate::fetch::{Conditional, Fetcher};
+use crate::semver::{self, Constraint};
+use crate::solver::{ConstraintCache, parse_constraint_cached};
 use crate::store::hex;
 use crate::vcs;
 
@@ -1024,14 +1026,21 @@ impl<T: Transport> Repository<T> {
     /// concurrency figure, not its wave-by-wave batching: #90 found waiting
     /// for a whole wave to land before starting the next one serialises one
     /// round trip per BFS level for no reason). Discovers further names from
-    /// each loaded version's `require` only; platform packages are never
-    /// queued (`PlatformRepository::isPlatformPackage`).
+    /// each *loaded* version's `require` only (`is_acceptable`/`accept`); a
+    /// version outside the accumulated constraint or stability for its name
+    /// never contributes its own requires, and never lands in the returned
+    /// closure (#90: this is the difference between fetching Composer's own
+    /// discovery breadth and every version of every name reachable at all).
+    /// Platform packages are never queued
+    /// (`PlatformRepository::isPlatformPackage`).
     pub async fn load_closure(
         &self,
         roots: &[ClosureRoot<'_>],
         dev: DevAcceptance,
+        accept: &dyn Fn(&str, &str) -> bool,
+        constraint_cache: &mut ConstraintCache,
     ) -> Result<HashMap<String, Vec<PackageVersion>>> {
-        self.load_closure_seeded(roots, dev, &HashSet::new(), &[])
+        self.load_closure_seeded(roots, dev, &HashSet::new(), &[], accept, constraint_cache)
             .await
     }
 
@@ -1040,15 +1049,19 @@ impl<T: Transport> Repository<T> {
     /// `PoolBuilder::loadPackage`'s `if (isset($this->loadedPackages[$name]))
     /// continue;` fast path, which is how a partial update's locked-out
     /// packages (`solver::pool_builder::build_partial`, already loaded
-    /// straight from the lock) stop the closure walk from re-fetching them
-    /// or their own requirements' remote alternatives.
+    /// straight from the lock and effectively carrying a `MatchAllConstraint`)
+    /// stop the closure walk from re-fetching them or their own
+    /// requirements' remote alternatives.
     pub async fn load_closure_skipping(
         &self,
         roots: &[ClosureRoot<'_>],
         dev: DevAcceptance,
         skip: &HashSet<String>,
+        accept: &dyn Fn(&str, &str) -> bool,
+        constraint_cache: &mut ConstraintCache,
     ) -> Result<HashMap<String, Vec<PackageVersion>>> {
-        self.load_closure_seeded(roots, dev, skip, &[]).await
+        self.load_closure_seeded(roots, dev, skip, &[], accept, constraint_cache)
+            .await
     }
 
     /// Same walk as [`Repository::load_closure_skipping`], but every
@@ -1060,27 +1073,60 @@ impl<T: Transport> Repository<T> {
     /// round-trip levels into ~2 — everything the lock already knew about is
     /// in flight from the first wave, and only genuinely new names still
     /// wait on a parent's response). A seed is a *prefetch*, never a pool
-    /// change: its fetch is started and cached here, but it only lands in
-    /// the returned closure if the walk below actually reaches it from
-    /// `roots` (`discovered`, unchanged from the unseeded walk); a seed name
-    /// no longer required by `roots` (removed from `composer.json`) is
-    /// fetched for nothing and then dropped, exactly as if it had never been
-    /// seeded. `skip` wins over `seed`: a locked-out name is never fetched
-    /// either way.
+    /// change: its fetch is started and cached here, but it only contributes
+    /// versions to the returned closure if the walk below actually reaches
+    /// it from `roots` with a constraint some of its versions satisfy; a
+    /// seed name no longer required by `roots` (removed from
+    /// `composer.json`) is fetched for nothing and then dropped, exactly as
+    /// if it had never been seeded. `skip` wins over `seed`: a locked-out
+    /// name is never fetched either way.
+    ///
+    /// `accept(name, stability)` is `PoolBuilder`'s stability filter
+    /// (`StabilityFilter::isPackageAcceptable`, already folding in
+    /// `minimum-stability` and any per-package `@stability` flag): only a
+    /// version whose own stability, or its branch alias's, passes this
+    /// *and* matches some constraint every requirer of `name` has
+    /// contributed is loaded at all (`ComposerRepository::isVersionAcceptable`)
+    /// — this is what narrows the closure to Composer's own discovery
+    /// breadth (#90) rather than every stability-acceptable version of
+    /// every reachable name. `constraint_cache` is the same
+    /// `solver::ConstraintCache` `pool_builder` parses `Link`s through, so a
+    /// require string repeated across thousands of versions parses once.
     pub async fn load_closure_seeded(
         &self,
         roots: &[ClosureRoot<'_>],
         dev: DevAcceptance,
         skip: &HashSet<String>,
         seed: &[String],
+        accept: &dyn Fn(&str, &str) -> bool,
+        constraint_cache: &mut ConstraintCache,
     ) -> Result<HashMap<String, Vec<PackageVersion>>> {
         let closure_started = Instant::now();
         let requests_before = self.request_count();
-        let mut discovered: HashSet<String> = skip.clone();
-        let mut queue = VecDeque::new();
+
+        let mut walk = ClosureWalk {
+            skip,
+            accept,
+            constraint_cache,
+            states: HashMap::new(),
+            versions_by_name: HashMap::new(),
+            stashed: HashMap::new(),
+            queue: VecDeque::new(),
+            result: HashMap::new(),
+        };
+        // `PoolBuilder::buildPool`'s `foreach ($request->getRequires() ...)`
+        // loop plus `maxExtendedReqs`: every root require/require-dev
+        // (`build_partial_seeded` passes locked-out packages' own requires
+        // as a second `ClosureRoot` here too, per this port's
+        // simplification of `getFixedOrLockedPackages`) is marked with
+        // exactly its own constraint, and that mark never widens no matter
+        // what a later-discovered dependant requires of the same name.
         for root in roots {
-            for name in root.require.keys().chain(root.require_dev.keys()) {
-                queue_name(name, &mut discovered, &mut queue);
+            for (name, value) in root.require.iter().chain(root.require_dev.iter()) {
+                let text = value
+                    .as_str()
+                    .with_context(|| format!("require {name}: constraint is not a string"))?;
+                walk.discover(name, text, true)?;
             }
         }
 
@@ -1113,34 +1159,18 @@ impl<T: Transport> Repository<T> {
             }
         }
 
-        // A seed's fetch can land before the walk proves it's reachable (or
-        // ever proves it at all). `stashed` holds that result until either
-        // the walk reaches the name — `queue_name` above already added it to
-        // `discovered`, so the fill loop below folds the stashed versions in
-        // without a second fetch — or the walk finishes without ever
-        // reaching it, in which case it's simply dropped with `stashed`.
-        let mut stashed: HashMap<String, Vec<PackageVersion>> = HashMap::new();
-        let mut result = HashMap::new();
         let mut waves = usize::from(!in_flight.is_empty());
         loop {
             let was_empty = in_flight.is_empty();
             while in_flight.len() < LOAD_BATCH_SIZE {
-                let Some(name) = queue.pop_front() else {
+                let Some(name) = walk.queue.pop_front() else {
                     break;
                 };
-                if let Some(versions) = stashed.remove(&name) {
-                    for version in &versions {
-                        for req in version.require.keys() {
-                            queue_name(req, &mut discovered, &mut queue);
-                        }
-                    }
-                    result.insert(name, versions);
-                    continue;
-                }
                 if prefetching.contains(&name) {
                     // Already in flight from the seed wave above; its
-                    // completion lands with `name` now in `discovered`, so
-                    // the branch below folds it in without a second fetch.
+                    // completion lands via `ClosureWalk::land`, which finds
+                    // `name` already discovered and folds it in without a
+                    // second fetch.
                     continue;
                 }
                 in_flight.push(self.fetch_named(name, dev));
@@ -1153,36 +1183,235 @@ impl<T: Transport> Repository<T> {
             };
             let versions = versions?;
             prefetching.remove(&name);
-            if discovered.contains(&name) {
-                for version in &versions {
-                    for req in version.require.keys() {
-                        queue_name(req, &mut discovered, &mut queue);
-                    }
-                }
-                result.insert(name, versions);
-            } else {
-                stashed.insert(name, versions);
-            }
+            walk.land(name, versions)?;
         }
         tracing::debug!(
-            packages = result.len(),
+            packages = walk.result.len(),
             requests = self.request_count() - requests_before,
             waves,
             elapsed_ms = closure_started.elapsed().as_millis(),
             "loaded metadata closure"
         );
-        Ok(result)
+        Ok(walk.result)
     }
 }
 
-fn queue_name(name: &str, discovered: &mut HashSet<String>, queue: &mut VecDeque<String>) {
-    let name = name.to_ascii_lowercase();
-    if is_platform_package(&name) || name == "__root__" {
-        return;
+/// Per-name bookkeeping for [`ClosureWalk`]: `PoolBuilder`'s
+/// `$loadedPackages`/`$packagesToLoad` constraint tracking, minus
+/// `Intervals::isSubsetOf` (#90's design note: a plain "any of these
+/// matches" `Vec`, deduped by constraint *text* rather than by interval
+/// subset, is enough — the union semantics are what narrows the closure,
+/// the subset check is only Composer's own optimisation against re-parsing
+/// work this port already avoids via `constraint_cache`).
+struct NameState {
+    /// Constraint text already folded in, so a require repeating the exact
+    /// same string (extremely common: `"php": "^7.2.5 || ^8.0.0"` across
+    /// thousands of versions) doesn't grow `constraints` or trigger a
+    /// rescan for nothing.
+    texts: HashSet<String>,
+    /// Every distinct constraint text's parsed form; a version is loaded if
+    /// it matches *any* of these (`MultiConstraint::create([...], false)`,
+    /// composer's own union-not-intersection semantics for "two packages
+    /// require the same dependency differently").
+    constraints: Vec<Arc<Constraint>>,
+    /// `PoolBuilder::maxExtendedReqs`: once true (a root require, or —
+    /// per this port's simplification — either `ClosureRoot`), no later
+    /// discovery ever extends `constraints` past its first entry.
+    locked: bool,
+    /// `version_normalized` values already folded into `result[name]`
+    /// (`ComposerRepository::loadAsyncPackages`'s `$alreadyLoaded`), so a
+    /// widened constraint only rescans genuinely new candidates rather than
+    /// reprocessing (and re-queueing the requires of) versions already
+    /// loaded under a narrower one.
+    scanned: HashSet<String>,
+}
+
+/// The constraint-narrowed breadth-first walk [`Repository::load_closure_seeded`]
+/// drives. Not `Send`/shared across the async fetches themselves — every
+/// method here is synchronous bookkeeping the driving loop calls between
+/// `.await` points, on data already in hand (a landed fetch's full,
+/// unfiltered version list, or a require's own constraint text).
+struct ClosureWalk<'a> {
+    skip: &'a HashSet<String>,
+    accept: &'a dyn Fn(&str, &str) -> bool,
+    constraint_cache: &'a mut ConstraintCache,
+    states: HashMap<String, NameState>,
+    /// A name's full, unfiltered fetch result, once landed
+    /// (`ComposerRepository::loadAsyncPackages`'s own per-repo cache of the
+    /// raw provider file: `Repository::load_package` already fetches every
+    /// version over the wire, this just remembers them across a later
+    /// widen so a widen never re-fetches).
+    versions_by_name: HashMap<String, Vec<PackageVersion>>,
+    /// A landed fetch for a name not yet discovered (a seed prefetch that
+    /// raced ahead of the require chain reaching it, or one `roots` never
+    /// actually needs): held here until [`ClosureWalk::discover`] reaches
+    /// it, or dropped unread if the walk finishes first.
+    stashed: HashMap<String, Vec<PackageVersion>>,
+    queue: VecDeque<String>,
+    result: HashMap<String, Vec<PackageVersion>>,
+}
+
+impl ClosureWalk<'_> {
+    /// `PoolBuilder::markPackageNameForLoading`: `name` (as some requirer's
+    /// link target) must now also satisfy `text`. Platform packages,
+    /// `__root__` and a `skip`-listed name (already loaded straight from
+    /// the lock, `MatchAllConstraint`-equivalent) are a no-op. A brand-new
+    /// name is queued for fetching, unless a seed prefetch already
+    /// [`ClosureWalk::land`]ed it — then its stash is claimed straight into
+    /// `versions_by_name` instead of fetching it twice. Either way, once
+    /// `name`'s constraint set actually grows (new, or a genuinely new
+    /// constraint text on one already `versions_by_name`-resident),
+    /// [`ClosureWalk::process`] rescans it for newly matching versions.
+    fn discover(&mut self, name: &str, text: &str, locked: bool) -> Result<()> {
+        let name = name.to_ascii_lowercase();
+        if is_platform_package(&name) || name == "__root__" || self.skip.contains(&name) {
+            return Ok(());
+        }
+        let constraint = parse_constraint_cached(self.constraint_cache, text)?;
+        let grew = match self.states.get_mut(&name) {
+            None => {
+                self.states.insert(
+                    name.clone(),
+                    NameState {
+                        texts: std::iter::once(text.to_string()).collect(),
+                        constraints: vec![constraint],
+                        locked,
+                        scanned: HashSet::new(),
+                    },
+                );
+                if let Some(versions) = self.stashed.remove(&name) {
+                    self.versions_by_name.insert(name.clone(), versions);
+                } else {
+                    self.queue.push_back(name.clone());
+                }
+                true
+            }
+            Some(state) => {
+                if state.locked || !state.texts.insert(text.to_string()) {
+                    false
+                } else {
+                    state.constraints.push(constraint);
+                    true
+                }
+            }
+        };
+        if grew {
+            self.process(&name)?;
+        }
+        Ok(())
     }
-    if discovered.insert(name.clone()) {
-        queue.push_back(name);
+
+    /// Rescans `name`'s landed (`versions_by_name`) versions for ones not
+    /// yet in `scanned` that now match its current constraint set, folds
+    /// each into `result`, and [`ClosureWalk::discover`]s its own
+    /// `require` links in turn (`PoolBuilder::loadPackage`'s own walk over
+    /// `$package->getRequires()`, done once per *version*, run here once
+    /// per newly accepted [`PackageVersion`]). A no-op if `name` hasn't
+    /// landed yet, or has landed but nothing new is accepted.
+    fn process(&mut self, name: &str) -> Result<()> {
+        let mut newly_matched = Vec::new();
+        if let Some(versions) = self.versions_by_name.get(name) {
+            let constraints = self.states[name].constraints.clone();
+            for pv in versions {
+                if self.states[name].scanned.contains(&pv.version_normalized) {
+                    continue;
+                }
+                if is_version_loaded(pv, name, &constraints, self.accept)? {
+                    newly_matched.push(pv.clone());
+                }
+            }
+        }
+        if newly_matched.is_empty() {
+            return Ok(());
+        }
+        let state = self.states.get_mut(name).expect("marked before process");
+        for pv in &newly_matched {
+            state.scanned.insert(pv.version_normalized.clone());
+        }
+        for pv in &newly_matched {
+            for (req_name, value) in &pv.require {
+                let Some(text) = value.as_str() else {
+                    continue;
+                };
+                self.discover(req_name, text, false)?;
+            }
+        }
+        self.result
+            .entry(name.to_string())
+            .or_default()
+            .extend(newly_matched);
+        Ok(())
     }
+
+    /// A fetch has landed: `name` reached via `roots`/a require chain
+    /// already has a [`NameState`] to filter against, so store its raw
+    /// versions and [`ClosureWalk::process`] them immediately; otherwise
+    /// it's a seed prefetch racing ahead of discovery, so [`stash`
+    /// it][`ClosureWalk::stashed`] for `discover` to claim later.
+    fn land(&mut self, name: String, versions: Vec<PackageVersion>) -> Result<()> {
+        if self.states.contains_key(&name) {
+            self.versions_by_name.insert(name.clone(), versions);
+            self.process(&name)
+        } else {
+            self.stashed.insert(name, versions);
+            Ok(())
+        }
+    }
+}
+
+/// `ComposerRepository::isVersionAcceptable`: `pv` is loaded if either its
+/// `version_normalized` or its branch alias (`branch_alias_target`) is both
+/// stability-acceptable for `name` (`accept`) and matches at least one of
+/// `constraints` — the same version can pass on its alias even when its own
+/// (`dev-*`) stability wouldn't, which is why a plain `is_acceptable` check
+/// on `pv.version_normalized` alone isn't enough.
+fn is_version_loaded(
+    pv: &PackageVersion,
+    name: &str,
+    constraints: &[Arc<Constraint>],
+    accept: &dyn Fn(&str, &str) -> bool,
+) -> Result<bool> {
+    let mut candidates = vec![pv.version_normalized.clone()];
+    candidates.extend(branch_alias_target(pv));
+    for candidate in candidates {
+        let normalized = semver::normalize(&candidate)?;
+        if !accept(name, semver::stability(normalized.as_str())) {
+            continue;
+        }
+        if constraints.iter().any(|c| c.matches(&normalized)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// `ArrayLoader::getBranchAlias`: `extra.branch-alias` names, for a `dev-*`
+/// version, the normalized target branch it stands in for. `pub(crate)`:
+/// both `pool_builder::push_package_version` (the pool package it also
+/// pushes for the alias) and this module's own [`is_version_loaded`] (the
+/// alias's stability/constraint match) need it.
+pub(crate) fn branch_alias_target(pv: &PackageVersion) -> Option<String> {
+    if !(pv.version.starts_with("dev-") || pv.version.ends_with("-dev")) {
+        return None;
+    }
+    let target = pv
+        .branch_alias
+        .as_ref()?
+        .as_object()?
+        .get(&pv.version)?
+        .as_str()?;
+    if !target.ends_with("-dev") {
+        return None;
+    }
+    if target == "9999999-dev" {
+        return Some(target.to_string());
+    }
+    let branch_name = &target[..target.len() - 4];
+    let normalized = semver::normalize_branch(branch_name);
+    if !normalized.ends_with("-dev") {
+        return None;
+    }
+    Some(normalized)
 }
 
 /// `ComposerRepository::canonicalizeUrl`: a root-relative `notify-batch`

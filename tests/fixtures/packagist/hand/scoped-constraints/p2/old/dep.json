@@ -1,0 +1,7 @@
+{
+    "packages": {
+        "old/dep": [
+            {"name": "old/dep", "version": "1.0.0", "version_normalized": "1.0.0.0"}
+        ]
+    }
+}

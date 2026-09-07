@@ -36,6 +36,10 @@ fn wpackagist_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wpackagist/wpackagist.org")
 }
 
+fn scoped_constraints_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packagist/hand/scoped-constraints")
+}
+
 /// Serves recorded/hand-built fixtures by mapping a URL's host onto a root
 /// directory and its path onto a file under that root, and counts every
 /// call so tests can assert a warm cache makes none. A test with a single
@@ -61,6 +65,10 @@ impl FixtureTransport {
 
     fn call_count(&self) -> usize {
         self.calls.lock().unwrap().len()
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
     }
 }
 
@@ -120,8 +128,14 @@ async fn monolog_closure_reproduces_composers_package_set() {
         require_dev: &root_require_dev,
     }];
 
+    let mut constraint_cache = solver::ConstraintCache::new();
     let closure = repo
-        .load_closure(&roots, DevAcceptance::NonDevOnly)
+        .load_closure(
+            &roots,
+            DevAcceptance::NonDevOnly,
+            &|_, _| true,
+            &mut constraint_cache,
+        )
         .await
         .unwrap();
 
@@ -144,13 +158,19 @@ async fn monolog_closure_reproduces_composers_package_set() {
         .map(|v| v.version.as_str())
         .collect();
     assert!(monolog_versions.contains(&"3.11.0"), "{monolog_versions:?}");
-    assert!(monolog_versions.contains(&"1.0.0"), "{monolog_versions:?}");
+    // #90: the root's own `^3.0` constraint narrows the closure to
+    // monolog's 3.x versions only, not every version Packagist ever
+    // published.
+    assert!(!monolog_versions.contains(&"1.0.0"), "{monolog_versions:?}");
 
     let psr_log_versions: Vec<&str> = closure["psr/log"]
         .iter()
         .map(|v| v.version.as_str())
         .collect();
     assert!(psr_log_versions.contains(&"3.0.2"), "{psr_log_versions:?}");
+    // monolog 3.x only ever requires `psr/log: ^2.0 || ^3.0`, so psr/log's
+    // own 1.x line is never even a candidate.
+    assert!(!psr_log_versions.contains(&"1.0.0"), "{psr_log_versions:?}");
 }
 
 #[tokio::test]
@@ -168,16 +188,92 @@ async fn second_load_closure_on_warm_cache_makes_no_transport_calls() {
         require_dev: &root_require_dev,
     }];
 
-    repo.load_closure(&roots, DevAcceptance::NonDevOnly)
-        .await
-        .unwrap();
+    let mut constraint_cache = solver::ConstraintCache::new();
+    repo.load_closure(
+        &roots,
+        DevAcceptance::NonDevOnly,
+        &|_, _| true,
+        &mut constraint_cache,
+    )
+    .await
+    .unwrap();
     let calls_after_first = transport.call_count();
     assert!(calls_after_first > 0);
 
-    repo.load_closure(&roots, DevAcceptance::NonDevOnly)
+    let mut constraint_cache = solver::ConstraintCache::new();
+    repo.load_closure(
+        &roots,
+        DevAcceptance::NonDevOnly,
+        &|_, _| true,
+        &mut constraint_cache,
+    )
+    .await
+    .unwrap();
+    assert_eq!(transport.call_count(), calls_after_first);
+}
+
+// #90: `PoolBuilder::markPackageNameForLoading`/`loadPackage` only ever load
+// (and only ever queue the requires of) the versions of a name that satisfy
+// the accumulated constraint every requirer of that name has contributed —
+// not every stability-acceptable version of every reachable name. `acme/a`'s
+// 1.x line requires `old/dep`, its 2.x line requires `new/dep`; a root
+// requiring `acme/a: ^2.0` must never even fetch `old/dep`, and must return
+// only `acme/a`'s 2.x versions.
+#[tokio::test]
+async fn constraint_narrows_the_closure_to_versions_the_root_can_actually_use() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport::with_roots([(
+        "scoped-constraints".to_string(),
+        scoped_constraints_root(),
+    )]);
+    let repo = Repository::load("https://scoped-constraints", cache.path(), &transport)
         .await
         .unwrap();
-    assert_eq!(transport.call_count(), calls_after_first);
+
+    let root_require = require(&[("acme/a", "^2.0")]);
+    let root_require_dev = Map::new();
+    let roots = [ClosureRoot {
+        require: &root_require,
+        require_dev: &root_require_dev,
+    }];
+
+    let mut constraint_cache = solver::ConstraintCache::new();
+    let closure = repo
+        .load_closure(
+            &roots,
+            DevAcceptance::NonDevOnly,
+            &|_, _| true,
+            &mut constraint_cache,
+        )
+        .await
+        .unwrap();
+
+    let a_versions: Vec<&str> = closure["acme/a"]
+        .iter()
+        .map(|v| v.version.as_str())
+        .collect();
+    assert_eq!(a_versions.len(), 2, "{a_versions:?}");
+    assert!(a_versions.contains(&"2.0.0"), "{a_versions:?}");
+    assert!(a_versions.contains(&"2.5.0"), "{a_versions:?}");
+
+    assert!(
+        closure.contains_key("new/dep"),
+        "{:?}",
+        closure.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !closure.contains_key("old/dep"),
+        "{:?}",
+        closure.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !transport
+            .calls()
+            .iter()
+            .any(|url| url.contains("old/dep") || url.contains("old%2Fdep")),
+        "{:?}",
+        transport.calls()
+    );
 }
 
 #[tokio::test]

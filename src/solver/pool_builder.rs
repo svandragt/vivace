@@ -5,11 +5,12 @@
 //!
 //! Full update only (`docs/resolver-design.md` stage 3): no partial-update
 //! allow-list or path-repo unlocking, security-advisory/filter-list pool
-//! filters. `Repository::load_closure` already does the breadth-first,
-//! batched metadata load `PoolBuilder::loadPackagesMarkedForLoading`
-//! performs in real Composer, so this only needs to turn that closure into
-//! `Package`s and filter/alias them. `pool_optimizer::optimize` runs right
-//! after the raw pool is assembled, exactly where
+//! filters. `Repository::load_closure_seeded` already does the breadth-first,
+//! batched, constraint-narrowed metadata load
+//! `PoolBuilder::loadPackagesMarkedForLoading`/`markPackageNameForLoading`
+//! perform in real Composer (#90), so this only needs to turn that closure
+//! into `Package`s and filter/alias them. `pool_optimizer::optimize` runs
+//! right after the raw pool is assembled, exactly where
 //! `PoolBuilder::buildPool`'s own `runOptimizer` call sits (#76).
 //!
 //! Not modelled: the root `composer.json` package itself as a *pool*
@@ -32,7 +33,9 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::{Map, Value};
 
-use crate::repository::{ClosureRoot, DevAcceptance, PackageVersion, Repository, Transport};
+use crate::repository::{
+    ClosureRoot, DevAcceptance, PackageVersion, Repository, Transport, branch_alias_target,
+};
 use crate::semver;
 use crate::solver::policy::DefaultPolicy;
 use crate::solver::pool::{Link, Package, Pool};
@@ -130,8 +133,16 @@ pub async fn build_seeded<T: Transport>(
         require: &require,
         require_dev: &require_dev,
     }];
+    let mut constraint_cache: ConstraintCache = ConstraintCache::new();
     let closure = repo
-        .load_closure_seeded(&roots, dev_acceptance, &HashSet::new(), seed)
+        .load_closure_seeded(
+            &roots,
+            dev_acceptance,
+            &HashSet::new(),
+            seed,
+            &|name, stability| is_acceptable(name, stability, &acceptable, &stability_flags),
+            &mut constraint_cache,
+        )
         .await?;
 
     let platform_overrides = root
@@ -142,7 +153,6 @@ pub async fn build_seeded<T: Transport>(
     let mut packages = platform_packages(&platform_overrides)?;
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
-    let mut constraint_cache: ConstraintCache = ConstraintCache::new();
     let push_started = Instant::now();
     for versions in closure.into_values() {
         for version in versions {
@@ -388,8 +398,16 @@ pub async fn build_partial_seeded<T: Transport>(
             require_dev: &empty_require_dev,
         },
     ];
+    let mut constraint_cache: ConstraintCache = ConstraintCache::new();
     let closure = repo
-        .load_closure_seeded(&roots, dev_acceptance, &skip, seed)
+        .load_closure_seeded(
+            &roots,
+            dev_acceptance,
+            &skip,
+            seed,
+            &|name, stability| is_acceptable(name, stability, &acceptable, &stability_flags),
+            &mut constraint_cache,
+        )
         .await?;
 
     let platform_overrides = root
@@ -400,7 +418,6 @@ pub async fn build_partial_seeded<T: Transport>(
     let mut packages = platform_packages(&platform_overrides)?;
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
-    let mut constraint_cache: ConstraintCache = ConstraintCache::new();
     for name in &skip {
         if let Some(entry) = locked_by_name.get(name) {
             packages.push(package_from_lock_entry(entry, &mut constraint_cache)?);
@@ -673,32 +690,6 @@ fn is_acceptable(
         Some(&flag) => stability_rank(stability) <= stability_rank(flag),
         None => acceptable.contains(stability),
     }
-}
-
-/// `ArrayLoader::getBranchAlias`: `extra.branch-alias` names, for a `dev-*`
-/// version, the normalized target branch it stands in for.
-fn branch_alias_target(pv: &PackageVersion) -> Option<String> {
-    if !(pv.version.starts_with("dev-") || pv.version.ends_with("-dev")) {
-        return None;
-    }
-    let target = pv
-        .branch_alias
-        .as_ref()?
-        .as_object()?
-        .get(&pv.version)?
-        .as_str()?;
-    if !target.ends_with("-dev") {
-        return None;
-    }
-    if target == "9999999-dev" {
-        return Some(target.to_string());
-    }
-    let branch_name = &target[..target.len() - 4];
-    let normalized = semver::normalize_branch(branch_name);
-    if !normalized.ends_with("-dev") {
-        return None;
-    }
-    Some(normalized)
 }
 
 /// `Preg::replace('{(\.9{7})+}', '.x', $aliasNormalized)`.

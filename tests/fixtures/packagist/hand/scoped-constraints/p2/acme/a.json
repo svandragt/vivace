@@ -1,0 +1,30 @@
+{
+    "packages": {
+        "acme/a": [
+            {
+                "name": "acme/a",
+                "version": "1.0.0",
+                "version_normalized": "1.0.0.0",
+                "require": {"old/dep": "^1.0"}
+            },
+            {
+                "name": "acme/a",
+                "version": "1.5.0",
+                "version_normalized": "1.5.0.0",
+                "require": {"old/dep": "^1.0"}
+            },
+            {
+                "name": "acme/a",
+                "version": "2.0.0",
+                "version_normalized": "2.0.0.0",
+                "require": {"new/dep": "^1.0"}
+            },
+            {
+                "name": "acme/a",
+                "version": "2.5.0",
+                "version_normalized": "2.5.0.0",
+                "require": {"new/dep": "^1.0"}
+            }
+        ]
+    }
+}
