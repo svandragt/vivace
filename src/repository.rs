@@ -916,11 +916,28 @@ async fn get_hash_verified_json<T: Transport>(
     expected_hash: &str,
     kind: HashKind,
 ) -> Result<Value> {
-    if let Ok(bytes) = fs_err::read(cache_path)
-        && digest_hex(&bytes, kind).eq_ignore_ascii_case(expected_hash)
-    {
-        return serde_json::from_slice(&bytes)
-            .with_context(|| format!("{}: cached file is not valid JSON", cache_path.display()));
+    if let Ok(bytes) = fs_err::read(cache_path) {
+        let context = format!("{}: cached file is not valid JSON", cache_path.display());
+        let verify = |bytes: &[u8]| {
+            digest_hex(bytes, kind)
+                .eq_ignore_ascii_case(expected_hash)
+                .then(|| serde_json::from_slice::<Value>(bytes))
+        };
+        let verified = if bytes.len() <= INLINE_PARSE_MAX_BYTES {
+            verify(&bytes)
+        } else {
+            let expected_hash = expected_hash.to_string();
+            tokio::task::spawn_blocking(move || {
+                digest_hex(&bytes, kind)
+                    .eq_ignore_ascii_case(&expected_hash)
+                    .then(|| serde_json::from_slice::<Value>(&bytes))
+            })
+            .await
+            .context("cache verify task panicked")?
+        };
+        if let Some(parsed) = verified {
+            return parsed.with_context(|| context);
+        }
     }
     requests.fetch_add(1, Ordering::Relaxed);
     let body = match transport.get(url, None).await? {
@@ -933,7 +950,7 @@ async fn get_hash_verified_json<T: Transport>(
     }
     fs_err::write(cache_path, &body)
         .with_context(|| format!("writing {}", cache_path.display()))?;
-    serde_json::from_slice(&body).with_context(|| format!("{url}: not valid JSON"))
+    parse_json_blocking(body, format!("{url}: not valid JSON")).await
 }
 
 /// One `composer.json` `repositories[]` entry, resolved to a supported
@@ -1645,15 +1662,44 @@ fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<Packa
         .collect()
 }
 
+/// The other big-body CPU still on the fetch loop after `parse_provider_versions`:
+/// every reader of a provider file's raw bytes — a fresh
+/// network response or a warm disk cache — pays for `serde_json::from_slice`
+/// itself, and a provider file the size of `laravel/framework.json` (990 KB)
+/// makes that real work. One `spawn_blocking` here, called from
+/// [`read_cache_file`], [`get_cached_json`] and [`get_hash_verified_json`],
+/// covers every one of them.
+/// Below this, `spawn_blocking`'s own thread-hop costs more than the parse it
+/// would hide: most provider files are a few KB (`bench/laravel`'s median is
+/// ~20 KB) and inlining those, rather than queuing every one of them onto the
+/// blocking pool, is what keeps a corpus of small files from getting slower
+/// even as a `laravel/framework.json`-sized one gets faster.
+/// ponytail: a fixed size cutoff, not a measured per-file cost; revisit if a
+/// profile ever shows a file just above it still worth deferring.
+const INLINE_PARSE_MAX_BYTES: usize = 64 * 1024;
+
+async fn parse_json_blocking(bytes: Vec<u8>, context: String) -> Result<Value> {
+    if bytes.len() <= INLINE_PARSE_MAX_BYTES {
+        return serde_json::from_slice(&bytes).with_context(|| context);
+    }
+    tokio::task::spawn_blocking(move || serde_json::from_slice::<Value>(&bytes))
+        .await
+        .context("JSON parse task panicked")?
+        .with_context(|| context)
+}
+
 /// Reads a cache file written by [`write_cache_file`]: the raw provider
 /// JSON with a `last-modified` key merged in, mirroring Composer's own
 /// `Cache` format for this file (`ComposerRepository.php:1793-1797`) so the
 /// value can be sent back as `If-Modified-Since` next time.
-fn read_cache_file(path: &Path) -> Result<Option<(Value, Option<String>)>> {
+async fn read_cache_file(path: &Path) -> Result<Option<(Value, Option<String>)>> {
     match fs_err::read(path) {
         Ok(bytes) => {
-            let data: Value = serde_json::from_slice(&bytes)
-                .with_context(|| format!("{}: cached file is not valid JSON", path.display()))?;
+            let data = parse_json_blocking(
+                bytes,
+                format!("{}: cached file is not valid JSON", path.display()),
+            )
+            .await?;
             let last_modified = data
                 .get("last-modified")
                 .and_then(Value::as_str)
@@ -1695,7 +1741,7 @@ async fn get_cached_json<T: Transport>(
     url: &Url,
     cache_path: &Path,
 ) -> Result<CachedJson> {
-    let cached = read_cache_file(cache_path)?;
+    let cached = read_cache_file(cache_path).await?;
     let since = cached.as_ref().and_then(|(_, lm)| lm.as_deref());
     match transport.get(url, since).await? {
         Conditional::NotFound => Ok(CachedJson::NotFound),
@@ -1706,8 +1752,7 @@ async fn get_cached_json<T: Transport>(
             body,
             last_modified,
         } => {
-            let mut data: Value =
-                serde_json::from_slice(&body).with_context(|| format!("{url}: not valid JSON"))?;
+            let mut data = parse_json_blocking(body, format!("{url}: not valid JSON")).await?;
             if let (Some(lm), Value::Object(obj)) = (&last_modified, &mut data) {
                 obj.insert("last-modified".to_string(), Value::String(lm.clone()));
             }
