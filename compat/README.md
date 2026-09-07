@@ -22,6 +22,8 @@ make compat          # runs compat/run.sh, writes compat/results/<tag>.md
 Everything happens under a scratch directory (`mktemp -d`, or
 `COMPAT_SCRATCH` to pick one) with its own viv cache and `COMPOSER_HOME` /
 `COMPOSER_CACHE_DIR` — the real cache and Composer auth are never touched.
+The default scratch (the `mktemp -d` one) is removed on exit; set
+`COMPAT_SCRATCH` to keep it around.
 
 Useful environment variables:
 
@@ -32,6 +34,9 @@ Useful environment variables:
 | `COMPAT_RANDOM` | `10` | Number of random packages to sample |
 | `COMPAT_ONLY` | (unset) | Comma-separated project/package names to run, skipping the rest |
 | `VIV` | `target/release/viv` | Binary under test |
+| `COMPAT_RESULTS_DIR` | `compat/results` | Where the report, logs and sample cache are written |
+| `COMPAT_AUTH_FILE` | (unset) | Path to an `auth.json` to copy into the scratch `COMPOSER_HOME`, for corpus entries behind a private registry |
+| `COMPAT_SKIP_PLUGINS` | (unset) | Set to `1` to skip a project whose lock requires a Composer plugin instead of running it with `--no-plugins` on both sides |
 
 The report's header prints the Composer flags used
 (`--no-scripts --no-plugins --no-interaction` for `install`, plus
@@ -44,7 +49,8 @@ project/mode combination is one of:
 - **differs** — the trees diverge; the first ten differing paths are listed.
 - **skipped** — a known-unsupported feature, an unmet platform requirement,
   or a Composer command that failed, not a failure: path/vcs repositories
-  (#13), a required plugin (#12), `preferred-install: source` (#43), an
+  (#13), a required plugin under `COMPAT_SKIP_PLUGINS=1` (#12; both sides
+  otherwise run with `--no-plugins`), `preferred-install: source` (#43), an
   unmet platform requirement (`platform: ...`), or a missing
   `composer.lock` that `composer update --no-install` also failed to
   generate. A project without a committed lock that *does* generate one is
@@ -88,3 +94,9 @@ For a project that's assembled via `composer create-project` rather than
 cloned (no installable git tree), use `version` instead of `repo`/`commit`.
 `make compat-refresh` rewrites every `repo`-based pin to its current
 default-branch head; re-run and commit the result to update the corpus.
+
+Use `path` instead of `repo`/`commit`/`version` to sweep a project that
+already lives on disk, such as a client codebase you don't want named in this
+repo. The sweep copies it into scratch (excluding `vendor/`, `node_modules/`
+and `.git/`) and never modifies the original; keep any such entries in a
+local, untracked corpus file passed via `COMPAT_CORPUS`.

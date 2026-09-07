@@ -438,3 +438,45 @@ to beat riff on every column.
 Process lesson, again: three of today's broken HEADs came from committing
 a shared file by eye while another agent was editing it. Every landing now
 goes through a worktree at HEAD with exactly the staged files copied in.
+
+## 2026-09-07, evening: first sweep over real client projects
+
+Thirteen WordPress projects from daily work, every one plugin-heavy
+(`composer/installers`, core installers, patches, Altis), most with private
+Satis or Packagist repositories. Copied only `composer.json` and
+`composer.lock` into a staging dir; the sweep never touches the originals.
+
+Ten install byte-identical to Composer in both modes. One did not:
+`installed.php` listed one alias where Composer listed two. The lock's
+top-level `aliases` array (root `dev-master as 1.0.0`) was parsed and
+dropped. Composer's `Locker` turns each entry into an `AliasPackage` that
+stacks on the package's own branch alias, root alias first. Fixed with a
+fixture whose golden is real Composer output. The other two rows were sweep
+bugs, not viv bugs: one project sets `config.vendor-dir`, and the diff
+compared `vendor/` that neither side wrote; and a download failure was
+labelled "platform" because Composer's text mentioned
+`--ignore-platform-req`. The remaining three projects need
+`ffraenz/private-composer-installer` to sign the Gravity Forms download URL,
+so with `--no-plugins` Composer itself fetches an HTML page and fails: no
+baseline to diff. Plugin-adapter candidate.
+
+Speed on the same lock files, install from lock, `--no-plugins --no-scripts`,
+three runs, means. riff could not install any of them: it has no way to
+read the private-registry credentials that the project-level `auth.json`
+holds, and it refuses `composer/installers`.
+
+| Project (anonymised) | Packages | composer cold / warm / no-op | viv cold / warm / no-op |
+|---|---|---|---|
+| A | 26 | 25.1 s / 1.14 s / 0.39 s | 3.0 s / 0.042 s / 0.006 s |
+| B | 473 | 31.8 s / 2.11 s / 0.48 s | 5.4 s / 0.093 s / 0.051 s |
+| C | 442 | 28.7 s / 2.56 s / 0.48 s | 14.8 s / 0.296 s / 0.051 s |
+
+Project C's cold number is a git clone: one package has no dist and viv
+clones it serially after the archives. Two gaps surfaced for `update`:
+`viv update` rejects `--no-plugins` and `--no-scripts`, which `install`
+accepts, and it refuses any lock whose `composer.json` declares a `vcs`
+repository, which every one of these projects does.
+
+Housekeeping: the sweep's default `mktemp -d` scratch was never removed;
+twenty of them held 18 GB. It now cleans up on exit unless
+`COMPAT_SCRATCH` names the directory.

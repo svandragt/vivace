@@ -12,6 +12,9 @@ proj=$(cd "$1" && pwd); shift
 tools=${*:-"composer riff viv"}
 work=${BENCH_WORK:-/tmp/vivace-bench}
 runs=${BENCH_RUNS:-5}
+# Extra flags for every tool's install/update command, e.g. "--no-plugins --no-scripts"
+# to compare plugin-heavy projects on the install-from-lock path alone.
+flags=${BENCH_FLAGS:-}
 out=${BENCH_OUT:-bench/results}; mkdir -p "$out"
 
 # Every tool gets its cache under $work, never the user's real ~/.cache — see #17.
@@ -25,10 +28,10 @@ done
 
 cmd_for() {
   case $1 in
-    composer) echo "composer install --no-interaction --no-progress --quiet" ;;
-    riff)     echo "${RIFF:-riff} install --no-interaction" ;;
+    composer) echo "composer install --no-interaction --no-progress --quiet $flags" ;;
+    riff)     echo "${RIFF:-riff} install --no-interaction $flags" ;;
     presto)   echo "${PRESTO:-presto} install" ;;
-    viv)      echo "${VIV:-$root/target/release/viv} install" ;;
+    viv)      echo "${VIV:-$root/target/release/viv} install $flags" ;;
   esac
 }
 env_for() {
@@ -61,9 +64,9 @@ done
 
 update_cmd_for() {
   case $1 in
-    composer) echo "composer update --no-interaction --no-progress --quiet --no-install" ;;
-    riff)     echo "${RIFF:-riff} update" ;;
-    viv)      echo "${VIV:-$root/target/release/viv} update" ;;
+    composer) echo "composer update --no-interaction --no-progress --quiet --no-install $flags" ;;
+    riff)     echo "${RIFF:-riff} update $flags" ;;
+    viv)      echo "${VIV:-$root/target/release/viv} update $flags" ;;
   esac
 }
 

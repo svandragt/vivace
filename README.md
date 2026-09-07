@@ -27,6 +27,25 @@ compiling constraints once, but two hotspots remain
 [#90](https://github.com/svandragt/vivace/issues/90)). Tracked per release
 like the install numbers; 0.6's target is to beat riff on every column.
 
+## Beyond Composer
+
+**Fewer merge conflicts.** `viv install` normalises `composer.json` before
+reading it: stable key order and whitespace, the same result as
+`composer normalize`. Two branches that each add a dependency then merge
+cleanly instead of fighting over ordering. Pass `--no-normalize` to leave the
+file alone; `viv normalize --check` reports without writing.
+
+**Run a tool without installing it.** `viv x vendor/package[:constraint]`
+installs the package into an isolated, content-hashed environment under the
+cache and runs its binary, the way `uvx` and `npx` do. Nothing is added to
+the project's `composer.json` or `vendor/`:
+
+```sh
+viv x phpunit/phpunit:^11 tests      # 27 packages, 0.07 s on a warm cache
+viv x friendsofphp/php-cs-fixer fix src
+viv x --list                         # environments in the cache
+```
+
 ## How it works
 
 Each package archive is extracted once into a global store under

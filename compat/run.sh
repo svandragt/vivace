@@ -8,7 +8,12 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 label=${1:-$(git -C "$root" describe --tags --always)}
-scratch=${COMPAT_SCRATCH:-$(mktemp -d)}
+if [ -n "${COMPAT_SCRATCH:-}" ]; then
+  scratch=$COMPAT_SCRATCH
+else
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+fi
 viv=${VIV:-$root/target/release/viv}
 corpus=${COMPAT_CORPUS:-$root/compat/corpus.toml}
 seed=${COMPAT_SEED:-$(date +%Y%m%d)}
@@ -23,6 +28,15 @@ mkdir -p "$cache_dir" "$composer_home" "$composer_cache" "$scratch/src" "$scratc
 export COMPOSER_HOME="$composer_home"
 export COMPOSER_CACHE_DIR="$composer_cache"
 
+# Private-registry credentials, if any: copied into the scratch COMPOSER_HOME
+# so both Composer and viv (which also reads $COMPOSER_HOME/auth.json) can
+# authenticate. Never the user's real auth.json — this is an explicit copy.
+auth_file=${COMPAT_AUTH_FILE:-}
+if [ -n "$auth_file" ] && [ -f "$auth_file" ]; then
+  cp "$auth_file" "$composer_home/auth.json"
+  chmod 600 "$composer_home/auth.json"
+fi
+
 # --ignore-platform-reqs on `install` changes what Composer writes
 # (vendor/composer/platform_check.php, autoload_real.php's require of it),
 # which breaks the byte-diff this sweep exists to run — so it's only used
@@ -30,7 +44,7 @@ export COMPOSER_CACHE_DIR="$composer_cache"
 composer_install_flags=(--no-scripts --no-plugins --no-interaction)
 composer_update_flags=(--no-scripts --no-plugins --no-interaction --ignore-platform-reqs)
 
-results_dir="$root/compat/results"
+results_dir=${COMPAT_RESULTS_DIR:-$root/compat/results}
 logs_dir="$results_dir/$label-logs"
 mkdir -p "$results_dir" "$logs_dir"
 report="$results_dir/$label.md"
@@ -83,17 +97,17 @@ save_log() {
 # support yet, or nothing if it looks installable.
 skip_reason_for() {
   local dir=$1
-  if [ -f "$dir/composer.json" ] && jq -e '
+  if [ "${COMPAT_SKIP_VCS:-0}" = "1" ] && [ -f "$dir/composer.json" ] && jq -e '
       (.repositories // [] | (if type == "object" then [.[]] else . end)
         | any(.type == "path" or .type == "vcs"))
     ' "$dir/composer.json" > /dev/null 2>&1; then
     echo "path/vcs repo in composer.json (#13)"
     return
   fi
-  if [ -f "$dir/composer.lock" ] && jq -e '
+  if [ "${COMPAT_SKIP_PLUGINS:-0}" = "1" ] && [ -f "$dir/composer.lock" ] && jq -e '
       ([.packages[]?, ."packages-dev"[]?] | any(.type == "composer-plugin"))
     ' "$dir/composer.lock" > /dev/null 2>&1; then
-    echo "plugins required (#12)"
+    echo "plugins required, --no-plugins on both sides (#12)"
     return
   fi
   if [ -f "$dir/composer.json" ] && jq -e '
@@ -110,11 +124,15 @@ skip_reason_for() {
 
 run_mode() {
   local name=$1 srcdir=$2 mode=$3 note=${4:-}
-  local safe workdir mode_flag composer_dir viv_dir prefix=""
+  local safe workdir mode_flag composer_dir viv_dir prefix="" vendor_dir
   safe=$(echo "$name" | tr '/' '_')
   mode_flag=""
   [ "$mode" = "no-dev" ] && mode_flag="--no-dev"
   [ -n "$note" ] && prefix="$note; "
+  vendor_dir="vendor"
+  if [ -f "$srcdir/composer.json" ]; then
+    vendor_dir=$(jq -r '.config."vendor-dir" // "vendor"' "$srcdir/composer.json")
+  fi
 
   workdir="$scratch/work/$safe/$mode"
   rm -rf "$workdir"
@@ -123,7 +141,7 @@ run_mode() {
   viv_dir="$workdir/viv"
   cp -a "$srcdir" "$composer_dir"
   cp -a "$srcdir" "$viv_dir"
-  rm -rf "$composer_dir/vendor" "$viv_dir/vendor"
+  rm -rf "$composer_dir/$vendor_dir" "$viv_dir/$vendor_dir"
 
   local composer_out composer_ms
   local start end
@@ -136,6 +154,7 @@ run_mode() {
       local platform_line
       platform_line=$(grep -im1 -E 'requires php|your php version|platform' <<< "$composer_out")
       [ -n "$platform_line" ] || platform_line=$(grep -v '^$' <<< "$composer_out" | tail -1)
+      save_log "$composer_out" "$name-$mode"
       emit_row "$name" "$mode" "skipped" "-" "${prefix}platform: $platform_line"
     else
       save_log "$composer_out" "$name-$mode"
@@ -159,7 +178,7 @@ run_mode() {
   viv_ms=$(((end - start) / 1000000))
 
   local diff_out
-  if diff_out=$(diff -rq --exclude=.vivace-state --exclude=.git "$composer_dir/vendor" "$viv_dir/vendor" 2>&1); then
+  if diff_out=$(diff -rq --exclude=.vivace-state --exclude=.git "$composer_dir/$vendor_dir" "$viv_dir/$vendor_dir" 2>&1); then
     emit_row "$name" "$mode" "identical" "${viv_ms}ms" "${prefix}composer ${composer_ms}ms"
   else
     failures=1
@@ -198,26 +217,36 @@ process_project() {
 # reader for ten records.
 parse_corpus() {
   awk '
-    /^\[\[project\]\]/ { if (name != "") print name "|" repo "|" commit "|" version
-                          name = ""; repo = ""; commit = ""; version = ""; next }
+    /^\[\[project\]\]/ { if (name != "") print name "|" repo "|" commit "|" version "|" path
+                          name = ""; repo = ""; commit = ""; version = ""; path = ""; next }
     /^name *=/    { v = $0; sub(/^name *= *"/, "", v); sub(/" *$/, "", v); name = v }
     /^repo *=/    { v = $0; sub(/^repo *= *"/, "", v); sub(/" *$/, "", v); repo = v }
     /^commit *=/  { v = $0; sub(/^commit *= *"/, "", v); sub(/" *$/, "", v); commit = v }
     /^version *=/ { v = $0; sub(/^version *= *"/, "", v); sub(/" *$/, "", v); version = v }
-    END { if (name != "") print name "|" repo "|" commit "|" version }
+    /^path *=/    { v = $0; sub(/^path *= *"/, "", v); sub(/" *$/, "", v); path = v }
+    END { if (name != "") print name "|" repo "|" commit "|" version "|" path }
   ' "$corpus"
 }
 
 run_pinned() {
   echo "## Pinned corpus" >> "$report"
   table_header
-  local name repo commit version safe srcdir
-  while IFS="|" read -r name repo commit version; do
+  local name repo commit version path safe srcdir
+  while IFS="|" read -r name repo commit version path; do
     wanted "$name" || continue
     safe=$(echo "$name" | tr '/' '_')
     srcdir="$scratch/src/$safe"
     rm -rf "$srcdir"
-    if [ -n "$repo" ]; then
+    if [ -n "$path" ]; then
+      log "copying $name from $path"
+      mkdir -p "$srcdir"
+      if command -v rsync > /dev/null 2>&1; then
+        rsync -a --exclude=vendor --exclude=node_modules --exclude=.git "$path/" "$srcdir/"
+      else
+        cp -a "$path/." "$srcdir/"
+        rm -rf "$srcdir/vendor" "$srcdir/node_modules" "$srcdir/.git"
+      fi
+    elif [ -n "$repo" ]; then
       log "cloning $name @ $commit"
       git clone --quiet "$repo" "$srcdir"
       git -C "$srcdir" checkout --quiet "$commit"
@@ -304,7 +333,7 @@ run_random() {
 {
   echo "# Compatibility sweep — $label"
   echo ""
-  echo "Composer install flags: \`${composer_install_flags[*]}\`; viv gets the same plus \`--no-plugins\` (viv refuses plugin-using projects otherwise)."
+  echo "Composer install flags: \`${composer_install_flags[*]}\`; viv gets the same plus \`--no-plugins\`."
   echo "Composer update flags, used only to generate a missing lock: \`${composer_update_flags[*]}\`."
   echo "A project whose platform requirements aren't met is reported as \`skipped: platform\`, not a failure."
   echo "Git-source checkouts have their \`.git\` stripped before installing, so the vendor diff excludes \`.git\` metadata on both sides."
