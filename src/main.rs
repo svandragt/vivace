@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use vivace::audit::{self, AuditArgs};
+use vivace::diagnose::{self, DiagnoseArgs};
 use vivace::install::{self, CacheArgs, DumpAutoloadArgs, InstallArgs};
 use vivace::normalize::{self, NormalizeArgs};
 use vivace::require::{self, RemoveArgs, RequireArgs};
@@ -124,6 +125,10 @@ enum Command {
     Run(RunArgs),
     /// Exec a `vendor/bin` binary with `vendor/bin` prepended to `PATH`.
     Exec(ExecArgs),
+    /// Environment and configuration report to paste into a bug report:
+    /// cache, auth sources (names only), PHP/git/Composer, platform
+    /// packages and the plugin decision per lock entry.
+    Diagnose(DiagnoseArgs),
 }
 
 fn main() -> ExitCode {
@@ -242,6 +247,13 @@ fn main() -> ExitCode {
             }
         },
         Command::Exec(args) => match tool::run_exec(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::Diagnose(args) => match diagnose::run(&args, cli.cache_dir.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 err_out(&format!("{err:#}"));

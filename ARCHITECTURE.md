@@ -62,6 +62,7 @@ composer.json + composer.lock
 | `install` | Wires lock parsing, plugins, planning, fetch/store/link, autoload and scripts together for `viv install`, plus cache maintenance (`viv cache prune/clean/size`) and `viv dump-autoload`. |
 | `show` | `viv show`/`viv tree`/`viv why`/`viv outdated`: read-only inspection of installed packages. |
 | `audit` | `viv audit`: security advisories and abandoned packages from Packagist's security-advisories API. |
+| `diagnose` | `viv diagnose`: a read-only, plain-text environment/config report (cache, auth sources by host name only, PHP/git/Composer, platform packages, plugin decisions) to paste into a bug report; not byte-compatible with `composer diagnose`. |
 | `validate` | `viv validate`: a native `ConfigValidator`/`ValidatingArrayLoader` port for `composer.json`, plus lock freshness/completeness checks. |
 | `normalize` | `viv normalize`: a native `ergebnis/composer-normalize` for `composer.json`'s key order and formatting. |
 | `tool` | `viv x`/`viv run`/`viv exec`: npx-style one-off tool execution, `scripts::Runner` entry points, and a bare `vendor/bin` exec. |

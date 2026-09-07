@@ -100,6 +100,7 @@ target/release/viv remove psr/container  # same, minus the package (--no-install
 target/release/viv dump-autoload -o
 target/release/viv normalize --check     # update/require/remove also normalise when they write
 target/release/viv cache prune
+target/release/viv diagnose              # environment/config report to paste into a bug report
 ```
 
 `install` runs the root's lifecycle scripts (`pre-install-cmd`,
@@ -124,12 +125,13 @@ viv aims to replace Composer for the commands people run every day, not the
 whole command reference. Covered, byte for byte where output is a file or
 Composer's plain text: `install`, `update`, `update-lock`, `require`,
 `remove`, `dump-autoload`, `normalize`, `show`, `tree`, `why`, `outdated`,
-`audit`, `validate`, `run`, `exec`, the lifecycle scripts, the cache
+`audit`, `validate`, `run`, `exec`, `diagnose` (viv's own report, not
+Composer's text), the lifecycle scripts, the cache
 commands, and Satis or Private Packagist repositories. Beyond Composer:
 `viv x vendor/tool` runs a Packagist tool without installing it into the
 project, the way uvx does. Everything else
 (`create-project`, `init`, `search`, `config`, `global`, `self-update`,
-`diagnose`, `licenses`, `depends` and friends) stays with Composer, and the
+`licenses`, `depends` and friends) stays with Composer, and the
 `composer` shim hands those through unchanged.
 
 ### What is in and out
