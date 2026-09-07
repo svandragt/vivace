@@ -12,10 +12,14 @@
 //! Skipped, with a clear error where it matters: `available-packages` and
 //! `available-package-patterns` are ignored outright (an optimisation, not
 //! a correctness concern), `providers-api`, `security-advisories`, and
-//! `path`/`vcs`/`artifact` repositories are not supported (a repository
-//! whose `type` isn't `"composer"` is rejected; a `"composer"` repository
-//! missing every provider mechanism below is treated as empty rather than
-//! erroring, matching `whatProvides`'s own `return []`).
+//! `path`/`artifact` repositories are not supported (a repository whose
+//! `type` isn't `"composer"`, `"vcs"`, `"git"` or `"github"` is rejected; a
+//! `"composer"` repository missing every provider mechanism below is
+//! treated as empty rather than erroring, matching `whatProvides`'s own
+//! `return []`). `"vcs"`/`"git"`/`"github"` repositories are handled by
+//! [`crate::vcs`] (`VcsRepository`/`Vcs\GitDriver`/`Vcs\GitHubDriver`);
+//! every other VCS driver (GitLab, Bitbucket, Forgejo, Mercurial,
+//! Perforce, Fossil, SVN) is not supported.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -33,6 +37,7 @@ use sha2::{Digest, Sha256};
 
 use crate::fetch::{Conditional, Fetcher};
 use crate::store::hex;
+use crate::vcs;
 
 /// `Config::$defaultRepositories`: the implicit last (lowest-priority)
 /// repository, unless `composer.json` disables it (`packagist.org: false`)
@@ -135,7 +140,13 @@ pub struct PackageVersion {
 }
 
 impl PackageVersion {
-    fn from_value(raw: &Value) -> Result<Self> {
+    /// `pub(crate)`: [`crate::vcs`] builds a provider-file-shaped `Value`
+    /// from a VCS ref's `composer.json` (`name`/`version`/
+    /// `version_normalized`/`dist`/`source`/`time` overridden onto the
+    /// parsed file) and feeds it
+    /// through this same constructor rather than duplicating its field
+    /// extraction.
+    pub(crate) fn from_value(raw: &Value) -> Result<Self> {
         let obj = raw
             .as_object()
             .context("provider version entry is not an object")?;
@@ -334,7 +345,7 @@ enum Provider {
 /// One loaded `composer`-type repository: `packages.json`, its provider
 /// mechanism, and the on-disk cache directory Composer itself would use
 /// for this host.
-struct Source {
+struct ComposerSource {
     base_url: Url,
     provider: Provider,
     /// v2's partial inline `packages` (`hasPartialPackages`), checked
@@ -348,10 +359,9 @@ struct Source {
     /// (`ComposerRepository.php:1709-1710`).
     notify_url: Option<String>,
     cache_dir: PathBuf,
-    filters: RepoFilters,
 }
 
-impl Source {
+impl ComposerSource {
     /// Fetch `packages.json` from `url` and set up this source's provider
     /// mechanism, caching under `<cache_root>/repo/<repo-host>/`
     /// (`ComposerRepository::getCache`'s per-repo directory, keyed the same
@@ -360,8 +370,7 @@ impl Source {
         url: &str,
         cache_root: &Path,
         transport: &T,
-        filters: RepoFilters,
-    ) -> Result<Source> {
+    ) -> Result<ComposerSource> {
         let configured =
             Url::parse(url).with_context(|| format!("invalid repository URL {url:?}"))?;
         let host = configured
@@ -441,13 +450,12 @@ impl Source {
             .and_then(Value::as_str)
             .map(|url| canonicalize_url(&base_url, url));
 
-        Ok(Source {
+        Ok(ComposerSource {
             base_url,
             provider,
             inline_packages,
             notify_url,
             cache_dir,
-            filters,
         })
     }
 
@@ -552,6 +560,63 @@ impl Source {
         match get_cached_json(transport, &url, &cache_path).await? {
             CachedJson::NotFound => Ok(Vec::new()),
             CachedJson::Data(data) => parse_provider_versions(&data, name),
+        }
+    }
+}
+
+/// One entry from `composer.json`'s `repositories[]`, loaded: either a
+/// `"composer"`-type [`ComposerSource`], or a `"vcs"`/`"git"`/`"github"`
+/// [`vcs::VcsSource`] (one package, whose name is resolved lazily —
+/// [`Source::load_versions`] asks the VCS source for `name`'s versions and
+/// gets back an empty list until `name` matches the package the VCS repo
+/// actually holds).
+struct Source {
+    filters: RepoFilters,
+    kind: SourceKind,
+}
+
+enum SourceKind {
+    Composer(ComposerSource),
+    Vcs(vcs::VcsSource),
+}
+
+impl Source {
+    async fn load<T: Transport>(
+        entry: RepoEntry,
+        cache_root: &Path,
+        transport: &T,
+    ) -> Result<Source> {
+        let kind = match &entry.kind {
+            RepoKind::Composer => {
+                SourceKind::Composer(ComposerSource::load(&entry.url, cache_root, transport).await?)
+            }
+            RepoKind::Vcs { repo_type } => SourceKind::Vcs(
+                vcs::VcsSource::load(&entry.url, repo_type, cache_root, transport).await?,
+            ),
+        };
+        Ok(Source {
+            filters: entry.filters,
+            kind,
+        })
+    }
+
+    /// This source's versions for `name` (already lowercased); `dev` only
+    /// affects a `"composer"` source (`ComposerSource::load_versions`'s own
+    /// doc comment). A VCS source ignores it: it has no separate dev file,
+    /// and returns either the one package it holds (every version) or
+    /// nothing, depending on whether `name` matches that package.
+    async fn load_versions<T: Transport>(
+        &self,
+        transport: &T,
+        requests: &AtomicUsize,
+        name: &str,
+        dev: DevAcceptance,
+    ) -> Result<Vec<PackageVersion>> {
+        match &self.kind {
+            SourceKind::Composer(source) => {
+                source.load_versions(transport, requests, name, dev).await
+            }
+            SourceKind::Vcs(source) => source.load_versions(transport, requests, name).await,
         }
     }
 }
@@ -725,14 +790,26 @@ async fn get_hash_verified_json<T: Transport>(
     serde_json::from_slice(&body).with_context(|| format!("{url}: not valid JSON"))
 }
 
-/// One `composer.json` `repositories[]` entry, already resolved to a
-/// `"composer"`-type URL and its filters: everything else (`type`
-/// dispatch, `packagist.org` defaulting/disabling) is settled by
-/// [`parse_repositories`] before this is built.
+/// One `composer.json` `repositories[]` entry, resolved to a supported
+/// `type` and its filters: `packagist.org` defaulting/disabling is settled
+/// by [`parse_repositories`] before this is built.
 #[derive(Debug)]
 struct RepoEntry {
     url: String,
     filters: RepoFilters,
+    kind: RepoKind,
+}
+
+/// Which loader a [`RepoEntry`] needs: a `"composer"`-type `packages.json`
+/// source, or a VCS one, keyed by the `type` string as written in
+/// `composer.json` (`"vcs"`, `"git"` or `"github"`) since that's what
+/// decides which driver [`vcs::VcsSource::load`] picks — `"git"`/`"github"`
+/// force a driver outright the way Composer's own `$this->drivers[$type]`
+/// does, `"vcs"` autodetects.
+#[derive(Debug)]
+enum RepoKind {
+    Composer,
+    Vcs { repo_type: String },
 }
 
 /// `RepositoryFactory::createRepos` + `Config::merge`'s `repositories`
@@ -789,6 +866,7 @@ fn parse_repositories(root: &Value) -> Result<Vec<RepoEntry>> {
         entries.push(RepoEntry {
             url: PACKAGIST_URL.to_string(),
             filters: RepoFilters::default(),
+            kind: RepoKind::Composer,
         });
     }
     Ok(entries)
@@ -802,19 +880,23 @@ fn parse_repo_entry(name: &str, repo: &Value) -> Result<RepoEntry> {
         .get("type")
         .and_then(Value::as_str)
         .with_context(|| format!("repository {name:?} must have a \"type\""))?;
-    if repo_type != "composer" {
-        bail!(
-            "repository {name:?}: type {repo_type:?} is not supported in vivace v0.1 (only \
-             \"composer\" repositories; path/vcs/artifact are not supported)"
-        );
-    }
+    let kind = match repo_type {
+        "composer" => RepoKind::Composer,
+        "vcs" | "git" | "github" => RepoKind::Vcs {
+            repo_type: repo_type.to_string(),
+        },
+        _ => bail!(
+            "repository {name:?}: type {repo_type:?} is not supported (composer, vcs and git \
+             repositories are)"
+        ),
+    };
     let url = obj
         .get("url")
         .and_then(Value::as_str)
-        .with_context(|| format!("repository {name:?} (type \"composer\") must have a \"url\""))?
+        .with_context(|| format!("repository {name:?} (type {repo_type:?}) must have a \"url\""))?
         .to_string();
     let filters = RepoFilters::parse(obj, &url)?;
-    Ok(RepoEntry { url, filters })
+    Ok(RepoEntry { url, filters, kind })
 }
 
 /// A loaded set of repositories: one or more `composer`-type sources,
@@ -842,7 +924,12 @@ impl<T: Transport> Repository<T> {
     /// update`'s multi-repository construction goes through
     /// [`Repository::from_composer_json`] instead.
     pub async fn load(base_url: &str, cache_root: &Path, transport: T) -> Result<Repository<T>> {
-        let source = Source::load(base_url, cache_root, &transport, RepoFilters::default()).await?;
+        let entry = RepoEntry {
+            url: base_url.to_string(),
+            filters: RepoFilters::default(),
+            kind: RepoKind::Composer,
+        };
+        let source = Source::load(entry, cache_root, &transport).await?;
         Ok(Repository {
             transport,
             sources: vec![source],
@@ -863,7 +950,7 @@ impl<T: Transport> Repository<T> {
         let entries = parse_repositories(root)?;
         let mut sources = Vec::with_capacity(entries.len());
         for entry in entries {
-            sources.push(Source::load(&entry.url, cache_root, &transport, entry.filters).await?);
+            sources.push(Source::load(entry, cache_root, &transport).await?);
         }
         Ok(Repository {
             transport,
@@ -1213,9 +1300,36 @@ mod tests {
     #[test]
     fn parse_repositories_rejects_unsupported_type() {
         let root = serde_json::json!({
-            "repositories": [{"type": "vcs", "url": "https://github.com/acme/pkg"}],
+            "repositories": [{"type": "path", "url": "../acme/pkg"}],
         });
         let err = parse_repositories(&root).unwrap_err().to_string();
-        assert!(err.contains("vcs"), "{err}");
+        assert!(err.contains("path"), "{err}");
+        assert!(!err.contains("v0.1"), "{err}");
+    }
+
+    #[test]
+    fn parse_repositories_accepts_vcs_git_and_github_types() {
+        let root = serde_json::json!({
+            "repositories": [
+                {"type": "vcs", "url": "https://example.com/acme/pkg.git"},
+                {"type": "git", "url": "https://example.com/acme/other.git"},
+                {"type": "github", "url": "https://github.com/acme/third"},
+            ],
+        });
+        let entries = parse_repositories(&root).unwrap();
+        assert!(matches!(
+            entries[0].kind,
+            RepoKind::Vcs { ref repo_type } if repo_type == "vcs"
+        ));
+        assert!(matches!(
+            entries[1].kind,
+            RepoKind::Vcs { ref repo_type } if repo_type == "git"
+        ));
+        assert!(matches!(
+            entries[2].kind,
+            RepoKind::Vcs { ref repo_type } if repo_type == "github"
+        ));
+        // packagist.org is still appended last, unaffected by a vcs entry.
+        assert!(matches!(entries[3].kind, RepoKind::Composer));
     }
 }

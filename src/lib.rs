@@ -21,4 +21,5 @@ pub mod store;
 pub mod tool;
 pub mod update;
 pub mod validate;
+pub mod vcs;
 pub mod version;
