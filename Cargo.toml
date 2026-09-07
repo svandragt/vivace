@@ -54,7 +54,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [package.metadata.deb]
-maintainer = "Sander van Dragt <sander@vandragt-humanmade.com>"
+maintainer = "Sander van Dragt <sander@vandragt.com>"
 depends = "$auto"
 section = "devel"
 priority = "optional"
