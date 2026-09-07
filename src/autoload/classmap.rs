@@ -572,16 +572,16 @@ impl Sidecar {
 /// Read a cached scan from `sidecar` for `key`, re-rooting its relative
 /// paths onto `dir`. A missing file, corrupt content, or no entry matching
 /// `key` is a cache miss, not an error: the caller always has
-/// [`scan_paths`] to fall back to. A one-shot convenience over [`Sidecar`]
+/// [`scan_paths`] to fall back to. A one-shot convenience over `Sidecar`
 /// for callers (mainly tests) that don't need to reuse the parsed sidecar
-/// across more than one key; [`Sidecar::read`]/[`Sidecar::get`] do that.
+/// across more than one key; `Sidecar::read`/`Sidecar::get` do that.
 pub fn read_cached_scan(sidecar: &Path, key: &ScanKey, dir: &Path) -> Option<ClassMap> {
     Sidecar::read(sidecar).get(key, dir)
 }
 
 /// Write a fresh [`scan_paths`] result for `dir` under `key` into `sidecar`,
 /// alongside whatever other keys that archive was already cached under.
-/// Best-effort like [`Sidecar::insert_and_write`]; see its doc for the
+/// Best-effort like `Sidecar::insert_and_write`; see its doc for the
 /// merge-not-overwrite rationale.
 pub fn write_cached_scan(
     sidecar: &Path,

@@ -11,7 +11,7 @@
 //! has no CLI surface in vivace to gate, so this always runs.
 //!
 //! Two passes, in Composer's own order:
-//! - [`optimize_by_identical_dependencies`]: among same-name versions that
+//! - `optimize_by_identical_dependencies`: among same-name versions that
 //!   satisfy the same external requirement/conflict constraint and share an
 //!   identical dependency fingerprint (requires+conflicts+replaces+provides),
 //!   keeps only the one [`DefaultPolicy::select_preferred_packages`] would
