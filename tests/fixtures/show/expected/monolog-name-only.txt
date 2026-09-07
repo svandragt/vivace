@@ -1,0 +1,3 @@
+monolog/monolog
+psr/container
+psr/log

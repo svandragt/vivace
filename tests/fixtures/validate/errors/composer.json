@@ -1,0 +1,8 @@
+{
+    "name": "acme/errors-project",
+    "description": "A valid root, with an installed dependency that has a bad name and an unparseable constraint.",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.1"
+    }
+}

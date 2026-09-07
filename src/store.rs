@@ -28,6 +28,9 @@ use crate::lock::Package;
 
 const ARCHIVE_BUCKET: &str = "archive-v0";
 const DISTS_BUCKET: &str = "dists-v0";
+/// `viv x`'s (#85) per-tool synthetic-root envs: `tools-v0/<vendor>/<name>/<key>/`,
+/// see [`Store::tool_env_dir`].
+pub(crate) const TOOLS_BUCKET: &str = "tools-v0";
 const LOCK_FILE: &str = ".lock";
 
 /// An opened store. Dropping it releases the shared lock.
@@ -67,6 +70,22 @@ impl Store {
 
     fn dists_dir(&self) -> PathBuf {
         self.root.join(DISTS_BUCKET)
+    }
+
+    /// `tools-v0/<vendor>/<name>/<key>/`: `viv x`'s per-tool synthetic-root
+    /// env dir, `key` the sha256 of the requested constraint (and the
+    /// resolving PHP version) so a different constraint or interpreter gets
+    /// its own resolve and install instead of silently reusing a stale one.
+    pub fn tool_env_dir(&self, vendor: &str, name: &str, key: &str) -> Result<PathBuf> {
+        sanitise_path_component("tool vendor", vendor)?;
+        sanitise_path_component("tool package name", name)?;
+        sanitise_path_component("tool cache key", key)?;
+        Ok(self
+            .root
+            .join(TOOLS_BUCKET)
+            .join(vendor)
+            .join(name)
+            .join(key))
     }
 
     /// `dists-v0/<vendor>/<name>/<reference>`. Falls back to Composer's own
@@ -294,7 +313,7 @@ impl Store {
         for entry in fs_err::read_dir(&self.root)? {
             let entry = entry?;
             let name = entry.file_name();
-            if [ARCHIVE_BUCKET, DISTS_BUCKET, LOCK_FILE]
+            if [ARCHIVE_BUCKET, DISTS_BUCKET, TOOLS_BUCKET, LOCK_FILE]
                 .iter()
                 .any(|keep| name == *keep)
             {
@@ -422,7 +441,7 @@ impl Store {
         }
         for entry in fs_err::read_dir(dir)? {
             let name = entry?.file_name();
-            if ![ARCHIVE_BUCKET, DISTS_BUCKET, LOCK_FILE]
+            if ![ARCHIVE_BUCKET, DISTS_BUCKET, TOOLS_BUCKET, LOCK_FILE]
                 .iter()
                 .any(|keep| name == *keep)
             {

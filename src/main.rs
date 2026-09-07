@@ -13,7 +13,9 @@ use vivace::normalize::{self, NormalizeArgs};
 use vivace::require::{self, RemoveArgs, RequireArgs};
 use vivace::show::{self, OutdatedArgs, ShowArgs};
 use vivace::solver::problem::SolverError;
+use vivace::tool::{self, ExecArgs, RunArgs, XArgs};
 use vivace::update::{self, UpdateArgs};
+use vivace::validate::{self, ValidateArgs};
 
 #[derive(Parser)]
 #[command(
@@ -78,6 +80,9 @@ enum Command {
     /// Resolve composer.json and write a composer.lock (full or partial
     /// update).
     Update(UpdateArgs),
+    /// `update --lock`'s own first-class subcommand (#86): re-derive
+    /// `composer.lock` from itself without solving.
+    UpdateLock(UpdateArgs),
     /// Add a dependency to composer.json and resolve it. Stops at the
     /// lock: run `viv install` afterwards (vivace does not chain into
     /// install the way `composer require` does).
@@ -100,9 +105,23 @@ enum Command {
     Show(ShowArgs),
     /// `show --tree`'s spelling (#86).
     Tree(ShowArgs),
+    /// `composer why`/`depends`'s alias (#86): `tree --invert`, listing
+    /// which installed packages require `package`.
+    Why(ShowArgs),
     /// List installed packages with a newer version available
     /// (`show --latest --outdated`).
     Outdated(OutdatedArgs),
+    /// Validate a composer.json (and composer.lock) against Composer's own
+    /// hand-written rules.
+    Validate(ValidateArgs),
+    /// Install (if needed) and run a package's bin in an isolated,
+    /// content-hashed env, npx-style (#85).
+    #[command(name = "x")]
+    X(XArgs),
+    /// Run a `scripts` entry from the root composer.json.
+    Run(RunArgs),
+    /// Exec a `vendor/bin` binary with `vendor/bin` prepended to `PATH`.
+    Exec(ExecArgs),
 }
 
 fn main() -> ExitCode {
@@ -121,6 +140,13 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => resolver_error(&err),
         },
+        Command::UpdateLock(mut args) => {
+            args.lock = true;
+            match update::run(&args, cli.cache_dir.as_deref(), offline) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => resolver_error(&err),
+            }
+        }
         Command::Require(args) => match require::run_require(&args, cli.cache_dir.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => resolver_error(&err),
@@ -171,6 +197,13 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Command::Why(args) => match show::run_why(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
         Command::Outdated(args) => {
             match show::run_outdated(&args, cli.cache_dir.as_deref(), offline) {
                 Ok(true) => ExitCode::from(1),
@@ -181,6 +214,34 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Validate(args) => match validate::run(&args) {
+            Ok(status) => ExitCode::from(status),
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::X(args) => match tool::run_x(&args, cli.cache_dir.as_deref(), offline) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::Run(args) => match tool::run_run(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::Exec(args) => match tool::run_exec(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
     }
 }
 

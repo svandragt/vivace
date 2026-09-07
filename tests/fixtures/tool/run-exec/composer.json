@@ -1,0 +1,6 @@
+{
+    "scripts": {
+        "build": "echo building",
+        "echoargs": "echo hi"
+    }
+}

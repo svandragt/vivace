@@ -1,0 +1,9 @@
+{
+    "name": "acme/valid-project",
+    "description": "A valid project, everything Composer's validate checks pass clean.",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.1",
+        "psr/log": "^3.0"
+    }
+}

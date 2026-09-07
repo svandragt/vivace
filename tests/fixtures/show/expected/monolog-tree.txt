@@ -1,0 +1,8 @@
+monolog/monolog 3.11.0 Sends your logs to files, sockets, inboxes, databases and various web services
+|--php >=8.1
+`--psr/log ^2.0 || ^3.0
+   `--php >=8.0.0
+psr/container 2.0.2 Common Container Interface (PHP FIG PSR-11)
+`--php >=7.4.0
+psr/log 3.0.2 Common interface for logging libraries
+`--php >=8.0.0

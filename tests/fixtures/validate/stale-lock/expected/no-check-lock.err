@@ -1,0 +1,2 @@
+# Lock file warnings
+- The lock file is not up to date with the latest changes in composer.json, it is recommended that you run `composer update` or `composer update <package name>`.

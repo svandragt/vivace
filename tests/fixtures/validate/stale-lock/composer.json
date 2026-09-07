@@ -1,0 +1,9 @@
+{
+    "name": "acme/stale-lock-project",
+    "description": "A valid project whose composer.lock is stale.",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.1",
+        "psr/log": "^3.0 || ^2.0"
+    }
+}

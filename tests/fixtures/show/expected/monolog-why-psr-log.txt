@@ -1,0 +1,2 @@
+vivace/fixture-monolog -      requires psr/log (^3.0)         
+monolog/monolog        3.11.0 requires psr/log (^2.0 || ^3.0) 

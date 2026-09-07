@@ -1,0 +1,31 @@
+{
+    "installed": [
+        {
+            "name": "monolog/monolog",
+            "direct-dependency": true,
+            "homepage": "https://github.com/Seldaek/monolog",
+            "source": "https://github.com/Seldaek/monolog/tree/3.11.0",
+            "version": "3.11.0",
+            "description": "Sends your logs to files, sockets, inboxes, databases and various web services",
+            "abandoned": false
+        },
+        {
+            "name": "psr/container",
+            "direct-dependency": true,
+            "homepage": "https://github.com/php-fig/container",
+            "source": "https://github.com/php-fig/container/tree/2.0.2",
+            "version": "2.0.2",
+            "description": "Common Container Interface (PHP FIG PSR-11)",
+            "abandoned": false
+        },
+        {
+            "name": "psr/log",
+            "direct-dependency": true,
+            "homepage": "https://github.com/php-fig/log",
+            "source": "https://github.com/php-fig/log/tree/3.0.2",
+            "version": "3.0.2",
+            "description": "Common interface for logging libraries",
+            "abandoned": false
+        }
+    ]
+}

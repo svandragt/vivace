@@ -1,0 +1,7 @@
+acme/broken-dep is invalid, the following errors/warnings were found:
+# General errors
+- name : Does not match the regex pattern ^[a-z0-9]([_.-]?[a-z0-9]+)*/[a-z0-9](([_.]|-{1,2})?[a-z0-9]+)*$
+- name : BadName is invalid, it should have a vendor name, a forward slash, and a package name. The vendor and package name can be words separated by -, . or _. The complete name should match "^[a-z0-9]([_.-]?[a-z0-9]+)*/[a-z0-9](([_.]?|-{0,2})[a-z0-9]+)*$".
+- require.psr/log : invalid version constraint (Could not parse version constraint not-a-constraint: Invalid version string "not-a-constraint")
+# Publish errors
+- Name "BadName" does not match the best practice (e.g. lower-cased/with-dashes). We suggest using "bad-name" instead. As such you will not be able to submit it to Packagist.

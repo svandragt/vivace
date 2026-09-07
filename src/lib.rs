@@ -18,5 +18,7 @@ pub mod show;
 pub mod solver;
 pub mod source;
 pub mod store;
+pub mod tool;
 pub mod update;
+pub mod validate;
 pub mod version;

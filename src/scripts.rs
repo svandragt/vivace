@@ -48,6 +48,13 @@ pub struct Runner {
     enabled: bool,
     env: HashMap<String, Option<String>>,
     active: Vec<String>,
+    /// Set for the duration of a [`Runner::run_named`] call (`viv run`'s
+    /// `run-script <script> -- <args>`), appended (shell-escaped) to every
+    /// shell command this invocation runs, including a `@chained` one:
+    /// Composer's own `Event` carries `getArguments()` through recursive
+    /// dispatch the same way. Empty for every event `install`/`dump-autoload`
+    /// dispatch on their own, which never pass extra arguments.
+    pass_args: Vec<String>,
 }
 
 impl Runner {
@@ -70,6 +77,7 @@ impl Runner {
             enabled,
             env: HashMap::new(),
             active: Vec::new(),
+            pass_args: Vec::new(),
         }
     }
 
@@ -87,6 +95,22 @@ impl Runner {
             return Ok(());
         }
         self.run_event(event)
+    }
+
+    /// `viv run <script> [args]`: Composer's `run-script <script> -- <args>`.
+    /// Unlike `dispatch`, `script` need not be one of the four events
+    /// `install`/`dump-autoload` auto-dispatch — any key under the root
+    /// `scripts` object qualifies, matching Composer's own `run-script`
+    /// command. `args` are appended to every shell command this script's
+    /// chain runs.
+    pub fn run_named(&mut self, script: &str, args: &[String]) -> Result<()> {
+        if self.listeners(script).is_none() {
+            bail!("Script \"{script}\" is not defined in this package");
+        }
+        self.pass_args = args.to_vec();
+        let result = self.run_event(script);
+        self.pass_args.clear();
+        result
     }
 
     fn run_event(&mut self, event: &str) -> Result<()> {
@@ -176,6 +200,7 @@ impl Runner {
         let mut command = Command::new(exe);
         command
             .args(rest.split_whitespace())
+            .args(&self.pass_args)
             .current_dir(&self.project_dir);
         self.apply_env(&mut command);
         let status = command
@@ -189,16 +214,25 @@ impl Runner {
     /// command, both via `sh -c`, matching Composer's own shell-backed
     /// execution (no Windows `cmd.exe` path — vivace is Linux-only).
     fn run_shell(&self, event: &str, listener: &str, command_line: &str) -> Result<()> {
+        let mut line = command_line.to_string();
+        for arg in &self.pass_args {
+            line.push(' ');
+            line.push_str(&Self::shell_escape(arg));
+        }
         let mut command = Command::new("sh");
-        command
-            .arg("-c")
-            .arg(command_line)
-            .current_dir(&self.project_dir);
+        command.arg("-c").arg(&line).current_dir(&self.project_dir);
         self.apply_env(&mut command);
         let status = command
             .status()
             .with_context(|| format!("{event}: running `{listener}`"))?;
         Self::check_status(event, listener, status)
+    }
+
+    /// `ProcessExecutor::escapeArgument` on non-Windows: single-quote,
+    /// doubling any embedded quote. Duplicated from `src/bin.rs`'s own copy
+    /// (private there, and small enough not to widen for one more caller).
+    fn shell_escape(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "'\\''"))
     }
 
     fn check_status(event: &str, listener: &str, status: ExitStatus) -> Result<()> {

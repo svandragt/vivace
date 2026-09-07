@@ -1,0 +1,8 @@
+{
+    "name": "acme/warnings-project",
+    "description": "A project with warnings only: unbound constraint and no license.",
+    "require": {
+        "php": ">=8.1",
+        "psr/log": "*"
+    }
+}

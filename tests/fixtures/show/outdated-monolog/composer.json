@@ -1,0 +1,15 @@
+{
+    "name": "vivace/fixture-outdated",
+    "license": "proprietary",
+    "type": "project",
+    "repositories": [
+        { "type": "composer", "url": "file:///home/sander/dev/rust/vivace/tests/fixtures/packagist/repo.packagist.org" },
+        { "packagist.org": false }
+    ],
+    "require": {
+        "monolog/monolog": "3.9.0"
+    },
+    "config": {
+        "secure-http": false
+    }
+}

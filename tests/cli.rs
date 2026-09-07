@@ -360,3 +360,21 @@ fn dump_autoload_matches_composer() {
         "files differing from composer (no-dev): {mismatches:?}"
     );
 }
+
+/// `viv update-lock` (#86) delegates to the same function as `viv update
+/// --lock`: both round-trip the monolog fixture's already-canonical lock
+/// byte-identically.
+#[test]
+fn update_lock_matches_update_lock_flag() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    for name in ["composer.json", "composer.lock"] {
+        fs::copy(fixture().join(name), project.join(name)).unwrap();
+    }
+
+    ctx.viv().arg("update-lock").assert().success();
+
+    let want = fs::read_to_string(fixture().join("composer.lock")).unwrap();
+    let got = fs::read_to_string(project.join("composer.lock")).unwrap();
+    assert_eq!(got, want);
+}
