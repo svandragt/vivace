@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 
 use crate::lock::content_hash;
+use crate::time::{civil_from_days, days_from_civil};
 
 use crate::solver::transaction::{AliasEntry, ResolvedPackage};
 
@@ -253,10 +254,89 @@ fn dump_package(raw: &Value) -> Result<Value> {
         out.insert(key.into(), value);
     }
     // `lockPackages`: `time` is unset then re-added, moving it to the end.
-    if let Some(time) = raw.get("time").filter(|v| !is_empty_for_composer(v)) {
-        out.insert("time".into(), time.clone());
+    if let Some(time) = raw
+        .get("time")
+        .filter(|v| !is_empty_for_composer(v))
+        .and_then(Value::as_str)
+        .and_then(normalize_time)
+    {
+        out.insert("time".into(), Value::String(time));
     }
     Ok(Value::Object(out))
+}
+
+/// `ArrayLoader::load`'s `time` handling (`ctype_digit($config['time']) ?
+/// '@'.$config['time'] : $config['time']`, then `new \DateTime($time, new
+/// \DateTimeZone('UTC'))`) and `ArrayDumper::dump`'s `$data['time'] =
+/// $package->getReleaseDate()->format(DATE_RFC3339)` (`Y-m-d\TH:i:sP`):
+/// PHP only falls back to the `UTC` zone argument when
+/// the string carries none of its own, so a `Z` or `±HH:MM` suffix shifts
+/// the clock and `P` always renders UTC as `+00:00`. Handles the shapes
+/// real repositories emit: RFC 3339 with `Z` or an offset (optional
+/// fractional seconds), the space- or `T`-separated `Y-m-d H:i:s` shape
+/// with no zone (taken as UTC, like `ArrayLoader`), and a bare unix
+/// timestamp. Returns `None` for anything else, matching `ArrayLoader`'s
+/// `catch` leaving the release date, and so the dumped `time` key, unset.
+#[allow(clippy::many_single_char_names)]
+fn normalize_time(value: &str) -> Option<String> {
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(format_utc(value.parse().ok()?));
+    }
+    let (date, rest) = value.split_once(['T', ' '])?;
+    let mut parts = date.splitn(3, '-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: u32 = parts.next()?.parse().ok()?;
+    let d: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if rest.len() < 8 || rest.as_bytes()[2] != b':' || rest.as_bytes()[5] != b':' {
+        return None;
+    }
+    let h: i64 = rest[0..2].parse().ok()?;
+    let mi: i64 = rest[3..5].parse().ok()?;
+    let s: i64 = rest[6..8].parse().ok()?;
+    let mut tail = &rest[8..];
+    if let Some(frac) = tail.strip_prefix('.') {
+        let digits = frac.bytes().take_while(u8::is_ascii_digit).count();
+        tail = &frac[digits..];
+    }
+    let offset_seconds: i64 = match tail {
+        "" | "Z" => 0,
+        _ => {
+            let sign = match tail.as_bytes().first()? {
+                b'+' => 1,
+                b'-' => -1,
+                _ => return None,
+            };
+            let offset = &tail[1..];
+            if offset.len() != 5 || offset.as_bytes()[2] != b':' {
+                return None;
+            }
+            let oh: i64 = offset[0..2].parse().ok()?;
+            let om: i64 = offset[3..5].parse().ok()?;
+            sign * (oh * 3600 + om * 60)
+        }
+    };
+    let total = days_from_civil(y, m, d) * 86_400 + h * 3600 + mi * 60 + s - offset_seconds;
+    Some(format_utc(total))
+}
+
+/// Renders epoch seconds as `DATE_RFC3339`'s `Y-m-d\TH:i:sP`, always
+/// `+00:00` since the seconds passed in are already UTC.
+fn format_utc(epoch_seconds: i64) -> String {
+    let days = epoch_seconds.div_euclid(86_400);
+    let secs_of_day = epoch_seconds.rem_euclid(86_400);
+    let date = civil_from_days(days);
+    let (h, m, s) = (
+        secs_of_day / 3600,
+        (secs_of_day % 3600) / 60,
+        secs_of_day % 60,
+    );
+    format!(
+        "{:04}-{:02}-{:02}T{h:02}:{m:02}:{s:02}+00:00",
+        date.y, date.m, date.d
+    )
 }
 
 /// PHP's `empty($value)`: null, `false`, `0`, `"0"`, `""` and an empty
@@ -350,5 +430,44 @@ mod tests {
             "PLUGIN_API_VERSION {PLUGIN_API_VERSION:?} does not match the installed Composer's \
              bundled plugin API: {line:?}"
         );
+    }
+
+    #[test]
+    fn normalize_time_rewrites_z_to_offset() {
+        assert_eq!(
+            normalize_time("2026-05-20T21:56:34Z").as_deref(),
+            Some("2026-05-20T21:56:34+00:00")
+        );
+    }
+
+    #[test]
+    fn normalize_time_shifts_a_non_utc_offset_to_utc() {
+        // 03:04:05+02:00 is 01:04:05Z: the hour must move, not just the
+        // suffix, otherwise this would still read `03:04:05`.
+        assert_eq!(
+            normalize_time("2020-01-02T03:04:05+02:00").as_deref(),
+            Some("2020-01-02T01:04:05+00:00")
+        );
+    }
+
+    #[test]
+    fn normalize_time_treats_a_space_separated_zoneless_stamp_as_utc() {
+        assert_eq!(
+            normalize_time("2020-01-02 03:04:05").as_deref(),
+            Some("2020-01-02T03:04:05+00:00")
+        );
+    }
+
+    #[test]
+    fn normalize_time_parses_a_unix_timestamp() {
+        assert_eq!(
+            normalize_time("1700000000").as_deref(),
+            Some("2023-11-14T22:13:20+00:00")
+        );
+    }
+
+    #[test]
+    fn normalize_time_is_none_for_unparseable_input() {
+        assert_eq!(normalize_time("not a date"), None);
     }
 }

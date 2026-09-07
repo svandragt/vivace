@@ -880,28 +880,7 @@ fn print_licenses(buf: &mut String, pkg: &Value) -> std::fmt::Result {
     Ok(())
 }
 
-/// A calendar date, no time-of-day: `getRelativeTime`'s own age buckets
-/// (week/month/year) never need finer than day precision, so dropping the
-/// hour/minute/second a package's `time` field also carries keeps the
-/// epoch-day math below to two small, well-known conversions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Ymd {
-    y: i64,
-    m: u32,
-    d: u32,
-}
-
-/// Composer's own `time` field shape: `Y-m-d\TH:i:sP` (`DATE_ATOM`). Only
-/// the date part is kept (see [`Ymd`]).
-fn parse_time(value: &str) -> Option<Ymd> {
-    let date = value.split('T').next()?;
-    let mut parts = date.splitn(3, '-');
-    Some(Ymd {
-        y: parts.next()?.parse().ok()?,
-        m: parts.next()?.parse().ok()?,
-        d: parts.next()?.parse().ok()?,
-    })
-}
+use crate::time::{Ymd, civil_from_days, days_from_civil, parse_time};
 
 /// Wall-clock "now" for the age math below, overridable via
 /// `VIV_TEST_NOW` (same shape as [`parse_time`]) so a fixture recorded
@@ -917,47 +896,6 @@ fn now() -> Ymd {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs() / 86_400).unwrap_or(0));
     civil_from_days(days)
-}
-
-/// Howard Hinnant's `days_from_civil`: days since the Unix epoch for a
-/// proleptic-Gregorian calendar date.
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (i64::from(m) + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// The inverse of [`days_from_civil`], for the real (non-`VIV_TEST_NOW`)
-/// wall clock.
-fn civil_from_days(z: i64) -> Ymd {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    Ymd {
-        y: y + i64::from(m <= 2),
-        #[allow(
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation,
-            reason = "m is 1..=12 by construction"
-        )]
-        m: m as u32,
-        #[allow(
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation,
-            reason = "d is 1..=31 by construction"
-        )]
-        d: d as u32,
-    }
 }
 
 /// `DateTimeImmutable::diff`'s year/month components between two dates:
