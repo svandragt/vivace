@@ -195,6 +195,15 @@ pub fn optimize(
         remap.insert(index, kept.len());
         kept.push(package);
     }
+    // An alias's `alias_of` is still a pre-pruning pool index at this point
+    // (#116): `keep_package`/`mark_irremovable` always keep an alias and its
+    // base together, so every surviving alias's base is in `remap` too — but
+    // a second pass is needed since an alias can precede its base in `kept`.
+    for package in &mut kept {
+        if let Some(alias_of) = package.alias_of {
+            package.alias_of = Some(remap[&alias_of]);
+        }
+    }
     let fixed = request.fixed.iter().map(|index| remap[index]).collect();
 
     Ok(Optimized {
@@ -521,6 +530,7 @@ fn optimize_impossible_packages_away(
 mod tests {
     use super::*;
     use crate::solver::request::RootRequire;
+    use crate::solver::rule_set_generator;
 
     fn version(v: &str) -> semver::NormalizedVersion {
         semver::normalize(v).unwrap()
@@ -651,6 +661,64 @@ mod tests {
                 .pretty_version,
             "8.3.0"
         );
+    }
+
+    /// #116: a pruned identical-dependency duplicate shifts every later
+    /// index, so a surviving alias's `alias_of` (still pointing at its
+    /// *pre*-pruning index) must be rewritten through the same remap
+    /// `request.fixed` gets — otherwise `rule_set_generator` indexes the
+    /// pruned pool with a stale index and panics.
+    #[test]
+    fn remaps_alias_of_after_pruning() {
+        // Five identical-dependency duplicates ahead of `base` in the pool
+        // (indices 0..=4) so `base`'s pre-pruning index (5) lands *past* the
+        // pruned pool's length (3) once they're collapsed away — the same
+        // shape as #116's real phpunit/phpunit panic (pool shrunk from 143
+        // to 89, a stale `alias_of` of 118 indexed out of bounds).
+        let mut packages = Vec::new();
+        for patch in 0..5 {
+            let mut dup = package("vendor/dep", &format!("1.0.{patch}"));
+            dup.requires = vec![link_c("vendor/leaf", "^1.0")];
+            packages.push(dup);
+        }
+        let mut base = package("vendor/dep", "1.0.5");
+        base.requires = vec![link_c("vendor/leaf", "^1.0")];
+        packages.push(base); // index 5, the pre-pruning `alias_of` target.
+        let mut alias = package("vendor/dep", "1.0.5");
+        alias.requires = vec![link_c("vendor/leaf", "^1.0")];
+        alias.alias_of = Some(5);
+        packages.push(alias); // index 6.
+        packages.push(package("vendor/leaf", "1.0.0")); // index 7.
+        let pool = Pool::new(packages);
+        let request = require("vendor/dep", "^1.0");
+        let policy = DefaultPolicy::new(false, false);
+
+        let optimized = optimize(&request, pool, &policy, &mut ConstraintCache::new()).unwrap();
+
+        assert_eq!(
+            optimized.pool.packages().len(),
+            3,
+            "the five identical-dependency duplicates must still be pruned"
+        );
+        let alias_package = optimized
+            .pool
+            .packages()
+            .iter()
+            .find(|p| p.is_alias())
+            .expect("alias must survive alongside its base");
+        let base_index = alias_package
+            .alias_of
+            .expect("alias_of must still be set after remap");
+        assert_eq!(
+            optimized.pool.packages()[base_index].pretty_version,
+            "1.0.5",
+            "alias_of must point at the base's *post*-pruning index, not its stale pre-pruning one"
+        );
+
+        // The stale index would have panicked `rule_set_generator` (#116)
+        // exactly the way it did over the real phpunit/phpunit pool.
+        let rules = rule_set_generator::rules_for(&optimized.pool, &request);
+        assert!(!rules.is_empty());
     }
 
     /// `optimizeImpossiblePackagesAway`: a locked package's own require
