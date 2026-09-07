@@ -50,8 +50,10 @@ log() { echo "corpus: $*" >&2; }
 # since this file gets committed straight into results/).
 redact() { sed -E 's/(token|password|authorization)[=: ]+[^ ]+/\1=[redacted]/Ig'; }
 
-# Last non-empty line of $1, for a one-line failure footnote.
-last_line() { grep -v '^$' <<< "$1" | tail -1 | redact; }
+# Last non-empty line of $1, for a one-line failure footnote. `|| true`
+# because `grep -v` exits 1 when $1 is all-blank, and pipefail would
+# otherwise propagate that through `set -e` and kill the whole script.
+last_line() { grep -v '^$' <<< "$1" | tail -1 | redact || true; }
 
 # corpus.toml line parser, copied from compat/run.sh's parse_corpus (kept in
 # sync by hand; see compat/run.sh if this schema changes).
@@ -80,6 +82,25 @@ mean_for() {
 fmt() { [ -n "$1" ] && printf '%.3f\n' "$1" || echo "n/a"; }
 
 footnotes=()
+problem=0
+
+# Appends this project's footnotes to $report right after its own rows
+# (rather than buffering to the end of the run), and flags the run as
+# having had a problem — one trip switch whether the footnote came from a
+# create-project/lock failure or an n/a bench row. Bullets are prefixed
+# "$name" or "$name/$tool", which is unique enough across the whole run
+# without a separate numbering scheme.
+flush_footnotes() {
+  [ ${#footnotes[@]} -eq 0 ] && return 0
+  problem=1
+  {
+    echo ""
+    for f in "${footnotes[@]}"; do
+      echo "- $f"
+    done
+  } >> "$report"
+  footnotes=()
+}
 
 # Clones or builds one corpus entry into $work/src/<safe>, generates a lock
 # if missing, benchmarks it, then deletes its work dir (disk: one project at
@@ -90,6 +111,7 @@ run_entry() {
   safe=$(tr '/' '_' <<< "$name")
   srcdir="$work/src/$safe"
   rm -rf "$srcdir"
+  footnotes=()
 
   if [ -n "$repo" ]; then
     log "cloning $name @ $commit"
@@ -102,6 +124,7 @@ run_entry() {
     if ! create_out=$(composer create-project --no-install --no-scripts --no-interaction \
         --ignore-platform-reqs "$name" "$srcdir" "$version" 2>&1); then
       footnotes+=("$name: create-project failed: $(last_line "$create_out")")
+      flush_footnotes
       return
     fi
   else
@@ -115,12 +138,14 @@ run_entry() {
     if ! lock_out=$(composer -d "$srcdir" update --no-install --no-scripts --no-plugins \
         --ignore-platform-reqs 2>&1); then
       footnotes+=("$name: composer update (lock) failed: $(last_line "$lock_out")")
+      flush_footnotes
       rm -rf "$srcdir"
       return
     fi
   fi
 
   bench_project "$name" "$srcdir"
+  flush_footnotes
   rm -rf "$srcdir"
 }
 
@@ -155,7 +180,9 @@ bench_project() {
       >> "$report"
     if [ -z "$cold" ] || [ -z "$upd" ]; then
       local reason
-      reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1)
+      # `|| true`: an unmatched grep exits 1, and pipefail would otherwise
+      # propagate that through `set -e` and kill the whole script (#106).
+      reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
       [ -n "$reason" ] || reason=$(last_line "$run_out")
       footnotes+=("$name/$tool: $(redact <<< "$reason")")
     fi
@@ -182,13 +209,8 @@ while IFS='|' read -r name repo commit version _path; do
   run_entry "$name" "$repo" "$commit" "$version"
 done < <(parse_corpus)
 
-if [ ${#footnotes[@]} -gt 0 ]; then
-  {
-    echo ""
-    for f in "${footnotes[@]}"; do
-      echo "- $f"
-    done
-  } >> "$report"
-fi
-
 log "report written to $report"
+if [ "$problem" -ne 0 ]; then
+  log "one or more projects had a problem; see footnotes in $report"
+  exit 1
+fi
