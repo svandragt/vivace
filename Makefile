@@ -1,10 +1,14 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install build test check bench bench-check profile hooks fixtures fmt record-packagist record-satis compat compat-refresh dist fuzz coverage
+.PHONY: install install-shim build test check bench bench-check profile hooks fixtures fmt record-packagist record-satis compat compat-refresh dist fuzz coverage
 
 install:
-	cargo install --path . --locked
+	cargo install --path . --locked --bin viv
+
+# Puts a `composer` binary on PATH that shadows the real Composer.
+install-shim:
+	cargo install --path . --locked --bin composer
 
 build:
 	devbox run -- cargo build --release

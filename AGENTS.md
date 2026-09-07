@@ -17,6 +17,8 @@ PHP, Composer and hyperfine come from devbox, so run anything that needs them
 through `devbox run`. The `Makefile` wraps the common ones:
 
 ```sh
+make install                       # cargo install --path . --locked --bin viv, just the `viv` binary
+make install-shim                  # adds a drop-in `composer` shim that shadows the real Composer
 make build                         # cargo build --release, binary at target/release/viv
 make test                          # cargo nextest run (PHP-dependent tests skip without php)
 make check                         # fmt --check, clippy -D warnings, nextest, cargo deny

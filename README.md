@@ -109,7 +109,8 @@ unless you pass `--no-plugins`. See [`docs/plugin-strategy.md`](docs/plugin-stra
 
 ## Using viv as a drop-in composer
 
-`cargo build`/`make install` also builds a `composer` binary. Put it on `PATH`
+`make install-shim` installs a `composer` binary next to `viv` (`make
+install` alone leaves your real Composer untouched). Put it on `PATH`
 ahead of the real Composer (or symlink it as `composer` in CI) and it maps
 `install`, `dump-autoload` and `normalize` with their supported flags to
 `viv`, execing the real Composer for everything else (`update`, `require`,
@@ -158,7 +159,7 @@ Tooling comes from [devbox](https://www.jetify.com/devbox): PHP, Composer
 and hyperfine for the fixtures and benchmarks.
 
 ```sh
-make install    # put viv on your PATH (~/.cargo/bin)
+make install    # put viv on your PATH (~/.cargo/bin); make install-shim adds the composer drop-in
 make check      # fmt, clippy, tests, cargo deny
 make test
 make bench      # composer vs riff vs viv on bench/laravel
