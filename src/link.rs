@@ -72,13 +72,16 @@ struct Linker {
 }
 
 impl Linker {
+    /// `dest` must already exist (the caller creates each directory once, as
+    /// it's first visited, instead of every entry re-asking via
+    /// `create_dir_all` — see #78).
     fn walk(&mut self, src: &Path, dest: &Path) -> Result<()> {
-        fs_err::create_dir_all(dest)?;
         fs_err::set_permissions(dest, PermissionsExt::from_mode(0o755))?;
         for entry in fs_err::read_dir(src)? {
             let entry = entry?;
             let target = dest.join(entry.file_name());
             if entry.file_type()?.is_dir() {
+                fs_err::create_dir(&target)?;
                 self.walk(&entry.path(), &target)?;
             } else {
                 self.file(&entry.path(), &target)?;
