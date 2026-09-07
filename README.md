@@ -5,7 +5,7 @@ directory that is byte for byte what Composer would write. Since 0.3 it also
 resolves: `viv update`, `viv require` and `viv remove` write a `composer.lock`
 that Composer accepts unchanged, using a port of Composer's own solver.
 
-Status: proof of concept, v0.5. Linux and macOS, both tested in CI. Before
+Status: proof of concept, v0.6. Linux and macOS, both tested in CI. Before
 each release a [compatibility sweep](compat/README.md) byte-diffs `vendor/`
 against Composer on pinned popular projects and a random Packagist sample.
 
@@ -81,7 +81,7 @@ aarch64) are attached to each [release](https://github.com/svandragt/vivace/rele
 # download a tarball from the releases page, or:
 cargo binstall vivace
 # or build from source:
-cargo install --git https://github.com/svandragt/vivace --tag v0.5.0 vivace
+cargo install --git https://github.com/svandragt/vivace --tag v0.6.0 vivace
 ```
 
 ## Usage
@@ -147,10 +147,16 @@ Also in since 0.4: `preferred-install: source`, offline mode
 installer, phpstan extension-installer, spi and composer-patches, extraction
 size caps, tar.bz2, `viv cache size`, a classmap cache for `-o`.
 
+Also in since 0.6: `vcs`, `git` and `github` repositories in `update`,
+`require` and `remove`; those three commands install after writing the
+lock, as Composer does (`--no-install` opts out); a php-http/discovery
+adapter; `viv add` and `viv rm`; a weekly compatibility sweep; Debian
+packages and a Homebrew formula on each release.
+
 Out for now: other Composer plugins (refused, see the plugin strategy),
-`--minimal-changes`, private repositories that are not Packagist-compatible,
-Composer's condensed multi-cause problem messages, and update speed: it
-resolves correctly, but at about four times Composer's time on a large lock,
+`--minimal-changes`, Composer's condensed multi-cause problem messages, and
+update speed: it resolves correctly, but at about four times Composer's
+time on a large lock,
 tracked in [#89](https://github.com/svandragt/vivace/issues/89) and
 [#90](https://github.com/svandragt/vivace/issues/90).
 

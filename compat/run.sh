@@ -147,10 +147,10 @@ run_mode() {
   local start end
   start=$(date +%s%N)
   if ! composer_out=$(composer -d "$composer_dir" install $mode_flag "${composer_install_flags[@]}" 2>&1); then
-    # Composer names its own escape hatch in the error text when the failure
-    # is an unmet platform requirement; that's a more reliable signal than
-    # pattern-matching the prose around it.
-    if grep -qi -- '--ignore-platform-req' <<< "$composer_out"; then
+    # Only a genuine platform mismatch counts as a platform skip; a download
+    # or auth failure also mentions --ignore-platform-req, so match the
+    # requirement wording itself.
+    if grep -qiE 'your (php|[a-z0-9_-]+) version|requires (php|ext-)|does not contain a compatible set' <<< "$composer_out"; then
       local platform_line
       platform_line=$(grep -im1 -E 'requires php|your php version|platform' <<< "$composer_out")
       [ -n "$platform_line" ] || platform_line=$(grep -v '^$' <<< "$composer_out" | tail -1)
