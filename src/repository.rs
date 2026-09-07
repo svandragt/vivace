@@ -28,7 +28,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use futures::stream::{self, StreamExt};
+use futures::stream::{FuturesUnordered, StreamExt};
 use regex::Regex;
 use reqwest::Url;
 use serde_json::{Map, Value};
@@ -1005,10 +1005,13 @@ impl<T: Transport> Repository<T> {
         Ok(versions)
     }
 
-    /// Breadth-first metadata load, batching `LOAD_BATCH_SIZE` concurrent
-    /// fetches per wave (`PoolBuilder::LOAD_BATCH_SIZE`). Discovers further
-    /// names from each loaded version's `require` only; platform packages
-    /// are never queued (`PlatformRepository::isPlatformPackage`).
+    /// Breadth-first metadata load, up to `LOAD_BATCH_SIZE` concurrent
+    /// fetches in flight at any time (`PoolBuilder::LOAD_BATCH_SIZE`'s
+    /// concurrency figure, not its wave-by-wave batching: #90 found waiting
+    /// for a whole wave to land before starting the next one serialises one
+    /// round trip per BFS level for no reason). Discovers further names from
+    /// each loaded version's `require` only; platform packages are never
+    /// queued (`PlatformRepository::isPlatformPackage`).
     pub async fn load_closure(
         &self,
         roots: &[ClosureRoot<'_>],
@@ -1041,31 +1044,38 @@ impl<T: Transport> Repository<T> {
             }
         }
 
+        // Waves used to be collected wholesale (`collect().await` on the
+        // whole batch) before starting the next one, so one slow response in
+        // a wave delayed every discovery it would otherwise have unblocked,
+        // stacking round-trip latency once per BFS *level* rather than once
+        // per critical-path *edge* (#90: ~9 levels serialised even though no
+        // level filled all `LOAD_BATCH_SIZE` slots). `FuturesUnordered` keeps
+        // up to `LOAD_BATCH_SIZE` fetches in flight at all times and queues a
+        // name's own requires the moment *that* fetch lands, so an
+        // independent branch's fetch starts as soon as a slot frees up
+        // instead of waiting for the slowest sibling in its wave.
         let mut result = HashMap::new();
-        let mut batches = 0usize;
-        while !queue.is_empty() {
-            batches += 1;
-            let batch: Vec<String> = std::iter::from_fn(|| queue.pop_front())
-                .take(LOAD_BATCH_SIZE)
-                .collect();
-            let loaded: Vec<(String, Result<Vec<PackageVersion>>)> = stream::iter(batch)
-                .map(|name| async move { (name.clone(), self.load_package(&name, dev).await) })
-                .buffer_unordered(LOAD_BATCH_SIZE)
-                .collect()
-                .await;
-            for (name, versions) in loaded {
-                let versions = versions?;
-                for version in &versions {
-                    for req in version.require.keys() {
-                        queue_name(req, &mut discovered, &mut queue);
-                    }
-                }
-                result.insert(name, versions);
+        let mut in_flight = FuturesUnordered::new();
+        loop {
+            while in_flight.len() < LOAD_BATCH_SIZE {
+                let Some(name) = queue.pop_front() else {
+                    break;
+                };
+                in_flight.push(async move { (name.clone(), self.load_package(&name, dev).await) });
             }
+            let Some((name, versions)) = in_flight.next().await else {
+                break;
+            };
+            let versions = versions?;
+            for version in &versions {
+                for req in version.require.keys() {
+                    queue_name(req, &mut discovered, &mut queue);
+                }
+            }
+            result.insert(name, versions);
         }
         tracing::debug!(
             packages = result.len(),
-            batches,
             requests = self.request_count() - requests_before,
             elapsed_ms = closure_started.elapsed().as_millis(),
             "loaded metadata closure"
