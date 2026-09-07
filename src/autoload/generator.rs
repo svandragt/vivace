@@ -351,8 +351,8 @@ pub fn generate(input: &Input) -> Result<Generated> {
         file
     });
 
-    // `AutoloadGenerator::getIncludePathsFile`: root then every package in
-    // call order (not the sorted/dev-filtered order `autoloads` uses).
+    // `AutoloadGenerator::getIncludePathsFile`: root then every package, in
+    // install order (never dev-filtered) — see `include_path_entries`.
     let include_path_codes = include_path_entries(input, &base, &vendor);
     let include_paths_file = (!include_path_codes.is_empty()).then(|| {
         let mut file = format!(
@@ -460,29 +460,14 @@ fn parse_autoloads(input: &Input, base: &str) -> Autoloads {
         }
     }
 
-    // `sort_packages` wants borrowed slices, so the `&str` lists need a home.
-    let requires_storage: Vec<Vec<&str>> = packages
-        .iter()
-        .map(|p| p.requires.iter().map(String::as_str).collect())
-        .collect();
-    let requires: Vec<(&str, &[&str])> = packages
-        .iter()
-        .zip(&requires_storage)
-        .map(|(package, reqs)| (package.name.as_str(), reqs.as_slice()))
-        .collect();
-    let by_name: HashMap<&str, &Package> = packages.iter().map(|p| (p.name.as_str(), *p)).collect();
-
-    let mut sorted: Vec<Entry> = sort_packages(&requires, &[])
+    let mut sorted: Vec<Entry> = sort_by_dependency_weight(&packages)
         .into_iter()
-        .map(|name| {
-            let package = by_name[name];
-            Entry {
-                name: &package.name,
-                autoload: object(&package.autoload),
-                target_dir: package.target_dir.as_deref(),
-                install_path: package.install_path.as_ref().map(|p| path_str(p)),
-                is_root: false,
-            }
+        .map(|package| Entry {
+            name: &package.name,
+            autoload: object(&package.autoload),
+            target_dir: package.target_dir.as_deref(),
+            install_path: package.install_path.as_ref().map(|p| path_str(p)),
+            is_root: false,
         })
         .collect();
 
@@ -1100,9 +1085,17 @@ fn literal_prefix(pattern: &str) -> &str {
     &pattern[..i]
 }
 
-/// `AutoloadGenerator::getIncludePathsFile`: root then every package, in the
-/// order they were given (not `parse_autoloads`'s sorted/dev-filtered order),
-/// each `include-path` entry resolved against its install path.
+/// `AutoloadGenerator::getIncludePathsFile`: root then every package, each
+/// `include-path` entry resolved against its install path.
+///
+/// Composer builds this from `$localRepo->getCanonicalPackages()`, never
+/// resorted by `sortPackageMap` — but that repo's own order, for a real
+/// install, is whatever order the install transaction added packages in,
+/// which is `install_order`'s dependency-first DFS
+/// (`Transaction::calculateOperations`), not lock/alphabetical order. Unlike
+/// `parse_autoloads`, this list is never dev-filtered, matching
+/// `getIncludePathsFile`: its packages already exclude dev-only ones (a
+/// `--no-dev` install never installs them).
 fn include_path_entries(input: &Input, base: &str, vendor: &str) -> Vec<PathCode> {
     let mut codes = Vec::new();
     let mut collect = |install_path: Option<String>, target_dir: Option<&str>, paths: &[String]| {
@@ -1130,7 +1123,8 @@ fn include_path_entries(input: &Input, base: &str, vendor: &str) -> Vec<PathCode
         input.root.target_dir.as_deref(),
         &input.root.include_path,
     );
-    for package in &input.packages {
+    let all: Vec<&Package> = input.packages.iter().collect();
+    for package in install_order(&all) {
         collect(
             package.install_path.as_ref().map(|p| path_str(p)),
             package.target_dir.as_deref(),
@@ -1138,6 +1132,97 @@ fn include_path_entries(input: &Input, base: &str, vendor: &str) -> Vec<PathCode
         );
     }
     codes
+}
+
+/// `Transaction::calculateOperations`'s install order: a postorder DFS over
+/// `requires` (dependencies before dependents), seeded from every package
+/// nothing else in the set requires (Composer's own root package never
+/// appears here — it isn't part of the locked/installed repository this
+/// mirrors), those seeds visited in ascending name order the way Composer's
+/// `array_pop`-driven, descending-sorted stack works out to. A sibling's own
+/// children are visited in reverse `requires` order, since Composer's stack
+/// is LIFO and pushes them in declared order.
+///
+/// ponytail: resolves a `requires` target to at most one provider (the first
+/// package found under that name or one of its `provide`/`replace` names);
+/// Composer visits every provider when several packages share a virtual
+/// package name. Upgrade to a `HashMap<&str, Vec<&Package>>` if that ever
+/// shows up in a byte-diff.
+fn install_order<'a>(packages: &[&'a Package]) -> Vec<&'a Package> {
+    let mut by_name: HashMap<&str, &'a Package> = HashMap::new();
+    for package in packages {
+        for name in std::iter::once(package.name.as_str())
+            .chain(package.provides.iter().map(String::as_str))
+            .chain(package.replaces.iter().map(String::as_str))
+        {
+            by_name.entry(name).or_insert(package);
+        }
+    }
+    let required_by_someone: HashSet<&str> = packages
+        .iter()
+        .flat_map(|p| p.requires.iter())
+        .filter_map(|name| by_name.get(name.as_str()))
+        .map(|p| p.name.as_str())
+        .collect();
+    let mut roots: Vec<&Package> = packages
+        .iter()
+        .copied()
+        .filter(|p| !required_by_someone.contains(p.name.as_str()))
+        .collect();
+    roots.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut visited = HashSet::new();
+    let mut order = Vec::with_capacity(packages.len());
+    for root in roots {
+        visit(root, &by_name, &mut visited, &mut order);
+    }
+    // A require cycle with no true root would otherwise drop packages;
+    // Composer's own stack never loses one, only reorders it.
+    for package in packages {
+        visit(package, &by_name, &mut visited, &mut order);
+    }
+    order
+}
+
+/// One step of `install_order`'s DFS: a package's own postorder visit,
+/// pushing its still-unvisited `requires` first, last-declared first (the
+/// stack Composer's algorithm pops from is LIFO).
+fn visit<'a>(
+    package: &'a Package,
+    by_name: &HashMap<&str, &'a Package>,
+    visited: &mut HashSet<&'a str>,
+    order: &mut Vec<&'a Package>,
+) {
+    if !visited.insert(&package.name) {
+        return;
+    }
+    for requirement in package.requires.iter().rev() {
+        if let Some(&dep) = by_name.get(requirement.as_str()) {
+            visit(dep, by_name, visited, order);
+        }
+    }
+    order.push(package);
+}
+
+/// `PackageSorter::sortPackages` with no weight overrides, over borrowed
+/// packages: dependency weight ascending (leaves first, ties broken
+/// alphabetically), the order Composer's own dependency-first sorts use.
+fn sort_by_dependency_weight<'a>(packages: &[&'a Package]) -> Vec<&'a Package> {
+    // `sort_packages` wants borrowed slices, so the `&str` lists need a home.
+    let requires_storage: Vec<Vec<&str>> = packages
+        .iter()
+        .map(|p| p.requires.iter().map(String::as_str).collect())
+        .collect();
+    let requires: Vec<(&str, &[&str])> = packages
+        .iter()
+        .zip(&requires_storage)
+        .map(|(package, reqs)| (package.name.as_str(), reqs.as_slice()))
+        .collect();
+    let by_name: HashMap<&str, &Package> = packages.iter().map(|p| (p.name.as_str(), *p)).collect();
+    sort_packages(&requires, &[])
+        .into_iter()
+        .map(|name| by_name[name])
+        .collect()
 }
 
 /// Composer's `bin2hex(random_bytes(10))`: a fresh `APCu` key prefix when
