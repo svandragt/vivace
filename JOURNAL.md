@@ -571,3 +571,52 @@ the metadata round trips and the pool optimiser's string keys as the next
 two targets. A corpus benchmark over the pinned public projects landed so
 riff can be compared on projects it can install; its first run is partial.
 0.6 stays open on #88, #90, #91 and #106.
+
+## 2026-09-07, late: codebase audit and the update-speed work
+
+**Audit.** A structural audit of the repository at 299aa28 found the
+source tight (4% duplication, one dead public function, clippy clean at
+pedantic) and one habit worth naming: parallel agent lanes copied helpers
+across module boundaries rather than widening a private function's
+visibility, and wrote a comment saying so. `lock_writer.rs` carried a
+verbatim copy of `lock.rs`'s content-hash and PHP-exact JSON encoder;
+`pool_builder::build` restated `build_partial`; three test files each
+declared the same fixture transport. The six findings are #107 to #112.
+Five landed today; #111 (folding `build` onto `build_partial`) waits on a
+bench run. The same habit appeared again during the session in the new
+`diagnose` module, which arrived with its own copy of the cache-dir
+resolver; it now calls the shared one, and the remaining duplicate between
+`install.rs` and `update.rs` is parked.
+
+**0.7 confidence, landed.** `viv show` prints Composer's released, license,
+suggests and provides lines, with `composer/spdx-licenses`' resource file
+embedded so every identifier renders as Composer does, and `outdated
+--format=json` carries the release-age fields (#94). `viv diagnose` reports
+cache, auth sources by host only, tool versions, platform packages and the
+plugin decision per lock entry (#81).
+
+**0.6 adoption, the update column.** Two attacks on the 3.99 s warm update.
+Seeding the metadata closure from the lock collapsed nine fetch waves to
+one and changed nothing: the fetch phase stayed at 1.47 s. Measuring each
+request showed why: 251 conditional requests, all honest 304s over a single
+HTTP/2 connection, median 130 ms server latency each. Composer makes 109
+requests for the same project, and those are 108 distinct files. viv's
+closure discovers 251 distinct package names where Composer's needs 108,
+because Composer's pool builder only loads versions that satisfy the
+constraints accumulated for a name and only queues those versions'
+requires, while viv walks the requires of every version. That port is the
+next step for #90 and shrinks the pool #91 optimises.
+
+The pool optimiser's string identity keys became hashed `u64`s: the
+optimiser span went from 1432 ms to 589 ms and warm update from 4.28 s to
+3.50 s on the same tree snapshot, lock byte-identical (#91).
+
+**Method note.** Four lanes on one working tree worked with named file
+ownership, but the bench gate suffers: a before/after `cmp` of the lock
+fails when another lane's edit lands between the two builds, and hyperfine
+means drift while others compile. Lanes isolated by building the "before"
+binary from a `git worktree` at HEAD and swapping only their own file for
+the "after". The corpus benchmark (#106) still needs a quiet machine.
+
+Full suite under devbox at the end of the session: 562 passed, 6 network
+tests skipped. 0.6 stays open on #88, #90, #91 and #106.
