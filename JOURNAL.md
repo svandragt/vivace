@@ -400,3 +400,41 @@ so now, and five items that only matched the command reference moved to
 the backlog. One concurrency lesson: nine agents on one working tree
 produced three build-breaking collisions in an hour. Four at a time, with
 named file ownership, produced none.
+
+## 2026-09-07: milestone 0.5 closed
+
+Reach. Nine issues, all about being usable outside this machine: private
+repositories, the everyday read-only commands, and the update speed gap.
+
+Private repositories turned into an archaeology exercise. Satis's current
+output no longer emits the v1 `providers-url` protocol at all; it writes
+v2 metadata plus a legacy `includes` fallback. So the v1 path is verified
+by hand-built fixtures with correct hashes, and the byte-diff against a
+real Satis build exercises the paths that still exist. Repository order
+follows RepositorySet: the first repository to offer a version wins, a
+non-canonical one only fills gaps.
+
+`show`, `tree`, `outdated`, `why`, `audit` and `validate` all match
+Composer's plain output byte for byte on the fixtures, with two honest
+cuts: the detail view skips the licence and release-date lines that need
+an SPDX list or today's clock, and `validate` cannot show root-level
+errors the way ConfigValidator formats them because Composer itself throws
+before reaching that code. `viv x` is the one thing here Composer does
+not have: a tool resolved into its own environment under the cache and
+executed, a cache hit costing a stat and an exec.
+
+The update gap got three fixes and two honest remainders. Porting
+PoolOptimizer cut the pool by 89% and the rules by 97%, and made the whole
+thing slower, because the optimiser made 3.3 million constraint matches at
+775 ns each. Composer's CompilingMatcher compiles a constraint once; so
+now does the facade, matching pre-parsed version keys in a few
+comparisons, proven equivalent over the corpus and the recorded Packagist
+history. The sort comparator had the same shape and got the same fix.
+8.7 s became 5.1 s. What remains is a constraint parse cache in pool
+building and the 251 metadata revalidations that take 1.5 s even when
+every answer is a 304; both are filed under 0.6, whose stated target is
+to beat riff on every column.
+
+Process lesson, again: three of today's broken HEADs came from committing
+a shared file by eye while another agent was editing it. Every landing now
+goes through a worktree at HEAD with exactly the staged files copied in.

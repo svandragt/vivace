@@ -171,6 +171,7 @@ trips still make it noisy enough to report rather than gate in CI.
 | Release | Lock | viv | composer 2.10.2 | ratio |
 |---|---|---|---|---|
 | 0.4.0 | laravel, 101 packages | 8.7 s | 1.2 s | 7.2x slower |
+| 0.5.0 | laravel, 101 packages | 4.9 s | 1.2 s | 4.1x slower |
 | 0.4.0 | monolog, 3 packages | 0.20 s | 0.62 s | 3x faster |
 | 0.4.0 + #76 (`PoolOptimizer`) | laravel, 101 packages | 14.1 s | 1.2 s | 11.8x slower |
 | 0.4.0 + #76 (+ `CompiledConstraint`) | laravel, 101 packages | 8.2 s ± 0.3 s | 1.2 s | 6.9x slower |

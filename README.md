@@ -5,7 +5,7 @@ directory that is byte for byte what Composer would write. Since 0.3 it also
 resolves: `viv update`, `viv require` and `viv remove` write a `composer.lock`
 that Composer accepts unchanged, using a port of Composer's own solver.
 
-Status: proof of concept, v0.4. Linux and macOS, both tested in CI. Before
+Status: proof of concept, v0.5. Linux and macOS, both tested in CI. Before
 each release a [compatibility sweep](compat/README.md) byte-diffs `vendor/`
 against Composer on pinned popular projects and a random Packagist sample.
 
@@ -18,12 +18,14 @@ raw data in [`bench/results/`](bench/results/README.md).
 |---|---|---|---|---|
 | composer 2.10.2 | 8.28 s | 1.69 s | 0.50 s | 1.2 s |
 | riff 0.0.7 | 1.75 s | 0.26 s | 0.23 s | n/a |
-| viv 0.4.0 | 2.1 s | 0.042 s | 0.007 s | 8.7 s |
+| viv 0.5.0 | 2.0 s | 0.042 s | 0.007 s | 4.9 s |
 
-The update column is the one viv loses today: the lock it writes is identical
-to Composer's, but the solver works on an unpruned pool of every reachable
-version ([#76](https://github.com/svandragt/vivace/issues/76)). It is tracked
-per release like the install numbers.
+The update column is the one viv still loses: the lock it writes is
+identical to Composer's, and 0.5 halved the time by pruning the pool and
+compiling constraints once, but two hotspots remain
+([#89](https://github.com/svandragt/vivace/issues/89),
+[#90](https://github.com/svandragt/vivace/issues/90)). Tracked per release
+like the install numbers; 0.6's target is to beat riff on every column.
 
 ## How it works
 
@@ -92,10 +94,13 @@ it isn't first on `PATH`.
 ## Scope
 
 viv aims to replace Composer for the commands people run every day, not the
-whole command reference. Covered, byte for byte where output is a file:
-`install`, `update`, `require`, `remove`, `dump-autoload`, `normalize`, the
-lifecycle scripts, and the cache commands; on the way: `audit`, `show`,
-`outdated`, `validate`, private Composer repositories. Everything else
+whole command reference. Covered, byte for byte where output is a file or
+Composer's plain text: `install`, `update`, `update-lock`, `require`,
+`remove`, `dump-autoload`, `normalize`, `show`, `tree`, `why`, `outdated`,
+`audit`, `validate`, `run`, `exec`, the lifecycle scripts, the cache
+commands, and Satis or Private Packagist repositories. Beyond Composer:
+`viv x vendor/tool` runs a Packagist tool without installing it into the
+project, the way uvx does. Everything else
 (`create-project`, `init`, `search`, `config`, `global`, `self-update`,
 `diagnose`, `licenses`, `depends` and friends) stays with Composer, and the
 `composer` shim hands those through unchanged.
