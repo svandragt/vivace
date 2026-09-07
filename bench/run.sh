@@ -51,6 +51,8 @@ cache_for() {
   esac
 }
 
+failed=""
+failed_rc=0
 for tool in $tools; do
   dir="$work/$tool"; rm -rf "$dir"; mkdir -p "$dir"
   cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"
@@ -65,7 +67,9 @@ for tool in $tools; do
   if [ "${rc:-0}" -ne 0 ]; then
     echo "run.sh: $tool install failed:" >&2
     tail -20 "$log" >&2
-    exit "$rc"
+    rm -f "$out/$tool.json"
+    failed="$failed $tool"
+    [ "$failed_rc" -eq 0 ] && failed_rc=$rc
   fi
 done
 
@@ -88,6 +92,9 @@ for tool in $tools; do
     riff) command -v "${RIFF:-riff}" >/dev/null 2>&1 || continue ;;
     *) continue ;;
   esac
+  case " $failed " in
+    *" $tool "*) echo "run.sh: $tool update-warm skipped, install failed" >&2; continue ;;
+  esac
   dir="$work/$tool-update"; rm -rf "$dir"; mkdir -p "$dir"
   cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"
   log="$out/$tool-update.log"; : >"$log"
@@ -96,6 +103,13 @@ for tool in $tools; do
     --command-name "$tool update-warm" "$cmd"; then
     echo "run.sh: $tool update-warm failed:" >&2
     tail -20 "$log" >&2
-    echo "warning: $tool update-warm failed, skipping (see bench/results/README.md)" >&2
+    rm -f "$out/$tool-update.json"
+    failed="$failed $tool"
+    [ "$failed_rc" -eq 0 ] && failed_rc=1
   fi
 done
+
+if [ -n "$failed" ]; then
+  echo "run.sh: failed:$failed" >&2
+  exit "$failed_rc"
+fi
