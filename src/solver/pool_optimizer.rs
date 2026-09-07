@@ -59,7 +59,9 @@
 //! versions behind — never remove one the solver needs. Revisit if a real
 //! closure's pool size shows the gap matters.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -99,6 +101,19 @@ fn matches(require: &CompiledRequire, key: &VersionKey, version: &NormalizedVers
 }
 
 type ConstraintGroups = HashMap<String, Vec<CompiledRequire>>;
+
+/// One `$groupHashParts[] = "$tag:$text"` entry from PHP's
+/// `optimizeByIdenticalDependencies`, folded into a `u64` instead of a
+/// `format!`-built `String` (#91): `tag` stands in for the `'require:'` vs
+/// `'conflict:'` prefix (a replace shares `require`'s tag, see the call
+/// site), and `Hash for str` already length-prefixes its bytes, so two
+/// hashed calls can't collide the way two unseparated string concats could.
+fn hash_part(tag: u8, text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    tag.hash(&mut hasher);
+    text.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// `PoolOptimizer::optimize`. `policy` is only used for
 /// `selectPreferredPackages`'s tie-break within an identical-dependency
@@ -228,7 +243,17 @@ fn add_disjuncts(
     pretty: &str,
     cache: &mut ConstraintCache,
 ) -> Result<()> {
-    let entry = groups.entry(name.to_string()).or_default();
+    // `get_mut` first (not `entry(name.to_string())` straight away) so the
+    // common case — a name bucket that already exists — doesn't pay a
+    // `String` allocation just to look it up (`bench/results/profile.md`
+    // §2.6: this runs once per require/conflict link across the
+    // *unoptimized* pool, tens of thousands of calls where the same
+    // package name recurs constantly). `HashMap::entry_ref` would do this
+    // in one lookup, but it isn't stable yet.
+    if !groups.contains_key(name) {
+        groups.insert(name.to_string(), Vec::new());
+    }
+    let entry = groups.get_mut(name).expect("just inserted");
     for part in pretty.split("||").map(str::trim).filter(|p| !p.is_empty()) {
         if entry.iter().any(|require| require.text == part) {
             continue;
@@ -255,8 +280,16 @@ fn optimize_by_identical_dependencies(
     policy: &DefaultPolicy,
     to_remove: &mut HashSet<usize>,
 ) {
-    // name -> group hash -> dependency hash -> package indices.
-    let mut groups: HashMap<String, HashMap<String, HashMap<String, Vec<usize>>>> = HashMap::new();
+    // name -> group hash -> dependency hash -> package indices. The group
+    // hash used to be `Vec<String>` joined with `format!`/`.concat()` per
+    // package/name/disjunct (#91: 3.29M `matches` calls' worth of that ran
+    // through `format!` too); `hash_part` folds each disjunct straight into
+    // a `u64` from its already-owned `&str` instead, so the per-(name,
+    // disjunct) cost is a hash, not an allocation. `dependency_hash` is
+    // `u64` for the same reason — it used to be cloned once per (name,
+    // disjunct) group entry, per package, before #91.
+    type IdenticalDependencyGroups = HashMap<String, HashMap<Vec<u64>, HashMap<u64, Vec<usize>>>>;
+    let mut groups: IdenticalDependencyGroups = HashMap::new();
 
     for (index, package) in pool.packages().iter().enumerate() {
         if irremovable.contains(&index) {
@@ -274,7 +307,14 @@ fn optimize_by_identical_dependencies(
         // than once per bucket the PHP source's own nested loop recomputes
         // it in (`bench/results/profile.md` §2.6: this loop drove ~2.8×
         // more `matches` calls than there were disjuncts to check).
-        let replace_parts: Vec<String> = package
+        //
+        // Tag `0` (not a distinct "replace" tag): PHP's own
+        // `optimizeByIdenticalDependencies` hashes a replace's constraint
+        // into the same `'require:'`-prefixed part a require would use
+        // ("Use the same hash part as the regular require hash because
+        // that's what the replacement does"), so a replace and a require
+        // with identical constraint text must fold to the same `u64` here.
+        let replace_parts: Vec<u64> = package
             .replaces
             .iter()
             .filter(|replace| {
@@ -283,7 +323,7 @@ fn optimize_by_identical_dependencies(
                     .as_ref()
                     .is_none_or(|c| c.matches(&package.version))
             })
-            .map(|replace| format!("require:{}", replace.pretty_constraint()))
+            .map(|replace| hash_part(0, replace.pretty_constraint()))
             .collect();
 
         for name in package.names(false) {
@@ -292,30 +332,34 @@ fn optimize_by_identical_dependencies(
             };
             // Independent of which require disjunct is being checked below
             // (only of `name`), same reasoning as `replace_parts` above.
-            let conflict_parts: Vec<String> = conflict_constraints
+            // Tag `1`: conflicts get PHP's separate `'conflict:'` prefix.
+            let conflict_parts: Vec<u64> = conflict_constraints
                 .get(&name)
                 .into_iter()
                 .flatten()
                 .filter(|conflict| matches(conflict, &key, &package.version))
-                .map(|conflict| format!("conflict:{}", conflict.text))
+                .map(|conflict| hash_part(1, &conflict.text))
                 .collect();
 
             for require in requires {
                 let mut parts = Vec::new();
                 if matches(require, &key, &package.version) {
-                    parts.push(format!("require:{}", require.text));
+                    parts.push(hash_part(0, &require.text));
                 }
-                parts.extend(replace_parts.iter().cloned());
-                parts.extend(conflict_parts.iter().cloned());
+                parts.extend(replace_parts.iter().copied());
+                parts.extend(conflict_parts.iter().copied());
                 if parts.is_empty() {
                     continue;
                 }
+                if !groups.contains_key(&name) {
+                    groups.insert(name.clone(), HashMap::new());
+                }
                 groups
-                    .entry(name.clone())
+                    .get_mut(&name)
+                    .expect("just inserted")
+                    .entry(parts)
                     .or_default()
-                    .entry(parts.concat())
-                    .or_default()
-                    .entry(dep_hash.clone())
+                    .entry(dep_hash)
                     .or_default()
                     .push(index);
             }
@@ -371,9 +415,14 @@ fn keep_package(
     }
 }
 
-/// `PoolOptimizer::calculateDependencyHash`.
-fn dependency_hash(package: &Package) -> String {
-    let mut hash = String::new();
+/// `PoolOptimizer::calculateDependencyHash`. `u64`, not the joined `String`
+/// PHP builds (and its own `PoolOptimizer` never reads back as text either
+/// — only ever compared for equality as a grouping key): folding the same
+/// content into a running hash instead of a string buffer drops the
+/// allocation this used to hand to `optimize_by_identical_dependencies`'s
+/// per-(name, disjunct) group entry, once per package there (#91).
+fn dependency_hash(package: &Package) -> u64 {
+    let mut hasher = DefaultHasher::new();
     for (key, links) in [
         ("requires", &package.requires),
         ("conflicts", &package.conflicts),
@@ -383,20 +432,18 @@ fn dependency_hash(package: &Package) -> String {
         if links.is_empty() {
             continue;
         }
-        hash.push_str(key);
-        hash.push(':');
+        key.hash(&mut hasher);
         let mut sub: Vec<(&str, String)> = links
             .iter()
             .map(|link| (link.target.as_str(), link_constraint_text(link)))
             .collect();
         sub.sort_unstable_by_key(|&(target, _)| target);
         for (target, constraint) in sub {
-            hash.push_str(target);
-            hash.push('@');
-            hash.push_str(&constraint);
+            target.hash(&mut hasher);
+            constraint.hash(&mut hasher);
         }
     }
-    hash
+    hasher.finish()
 }
 
 fn link_constraint_text(link: &Link) -> String {
