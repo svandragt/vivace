@@ -93,15 +93,18 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
             }
             continue;
         }
-        let message = format!(
-            "viv cannot run the Composer plugin {}; see docs/plugin-strategy.md. Pass \
-             --no-plugins to install without it, as Composer would.",
-            package.name
-        );
         if no_plugins {
-            warnings.push(message);
+            // Composer's own wording for the same situation.
+            warnings.push(format!(
+                "The \"{}\" plugin was not loaded as plugins are disabled.",
+                package.name
+            ));
         } else {
-            bail!(message);
+            bail!(
+                "viv cannot run the Composer plugin {}; see docs/plugin-strategy.md. Pass \
+                 --no-plugins to install without it, as Composer would.",
+                package.name
+            );
         }
     }
     Ok((plugins, warnings))

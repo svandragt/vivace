@@ -9,4 +9,4 @@ install 1 / keep 0 / remove 0
   install acme/mystery-plugin (1.0.0)
 
 ----- stderr -----
-viv cannot run the Composer plugin acme/mystery-plugin; see docs/plugin-strategy.md. Pass --no-plugins to install without it, as Composer would.
+The "acme/mystery-plugin" plugin was not loaded as plugins are disabled.
