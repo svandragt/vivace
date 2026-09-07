@@ -1,0 +1,12 @@
+{
+    "packages": {
+        "acme/meta": [
+            {
+                "name": "acme/meta",
+                "version": "1.2.0",
+                "version_normalized": "1.2.0.0",
+                "require": {"acme/core": "self.version"}
+            }
+        ]
+    }
+}

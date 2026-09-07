@@ -741,6 +741,22 @@ pub(crate) fn clone_package(package: &Package) -> Package {
     }
 }
 
+/// `ArrayLoader::parseLinks`: `self.version`, resolved to the package's own
+/// version (`AliasPackage::replaceSelfVersionDependencies`'s same rule, an
+/// exact-version constraint rather than a range parse, leaning on
+/// `parse_constraint` treating a bare version string as `== version`).
+/// Shared by [`parse_links`] and [`crate::repository`]'s closure walk, which
+/// must apply the same substitution before it ever gets to
+/// `parse_constraint_cached` — Composer does this at package-load time, so
+/// its own require-walk never sees the literal either.
+pub(crate) fn link_constraint_text<'a>(own_pretty_version: &'a str, raw: &'a str) -> &'a str {
+    if raw == "self.version" {
+        own_pretty_version
+    } else {
+        raw
+    }
+}
+
 fn parse_links(
     map: &Map<String, Value>,
     own_name: &str,
@@ -756,23 +772,15 @@ fn parse_links(
         let raw = value
             .as_str()
             .with_context(|| format!("{own_name}: link constraint for {target} is not a string"))?;
-        // `self.version`, resolved to the package's own version like
-        // `AliasPackage::replaceSelfVersionDependencies` (an exact-version
-        // constraint, not a range parse, leaning on `parse_constraint`
-        // treating a bare version string as `== version` rather than
-        // constructing that constraint directly). `pretty_constraint` gets
-        // the resolved text too, matching `replaceSelfVersionDependencies`'s
-        // own `$constraint->setPrettyString($prettyVersion)`: this Link is
+        // `pretty_constraint` gets the resolved text too, matching
+        // `replaceSelfVersionDependencies`'s own
+        // `$constraint->setPrettyString($prettyVersion)`: this Link is
         // solver-internal (the lock writer reads `Package::raw`'s untouched
         // JSON instead, which keeps the literal `"self.version"` string),
         // but `clone_links` reparses `pretty_constraint` verbatim for a
         // branch-alias/root-alias copy or the dev-split second solve, and a
         // literal `"self.version"` isn't parseable on that second pass.
-        let text = if raw == "self.version" {
-            own_pretty_version
-        } else {
-            raw
-        };
+        let text = link_constraint_text(own_pretty_version, raw);
         links.push(Link {
             target,
             constraint: Some(parse_constraint_cached(cache, text)?),

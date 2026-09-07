@@ -37,6 +37,7 @@ use sha2::{Digest, Sha256};
 
 use crate::fetch::{Conditional, Fetcher};
 use crate::semver::{self, Constraint};
+use crate::solver::pool_builder::link_constraint_text;
 use crate::solver::{ConstraintCache, parse_constraint_cached};
 use crate::store::hex;
 use crate::vcs;
@@ -1330,9 +1331,10 @@ impl ClosureWalk<'_> {
         }
         for pv in &newly_matched {
             for (req_name, value) in &pv.require {
-                let Some(text) = value.as_str() else {
+                let Some(raw) = value.as_str() else {
                     continue;
                 };
+                let text = link_constraint_text(&pv.version, raw);
                 self.discover(req_name, text, false)?;
             }
         }

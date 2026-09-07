@@ -40,6 +40,10 @@ fn scoped_constraints_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packagist/hand/scoped-constraints")
 }
 
+fn self_version_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packagist/hand/self-version")
+}
+
 /// Serves recorded/hand-built fixtures by mapping a URL's host onto a root
 /// directory and its path onto a file under that root, and counts every
 /// call so tests can assert a warm cache makes none. A test with a single
@@ -274,6 +278,47 @@ async fn constraint_narrows_the_closure_to_versions_the_root_can_actually_use() 
         "{:?}",
         transport.calls()
     );
+}
+
+// #115: `acme/meta` 1.2.0's own `require` for `acme/core` is the literal
+// string `self.version`, which Composer's `ArrayLoader` substitutes for
+// `acme/meta`'s own pretty version at package-load time
+// (`ArrayLoader::parseLinks`) — so the closure walk must never hand
+// `"self.version"` to `parse_constraint_cached` itself. If it did, this
+// would fail with "Could not parse version constraint self.version" instead
+// of narrowing to `acme/core` 1.2.0.
+#[tokio::test]
+async fn self_version_require_resolves_to_the_requiring_packages_own_version() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport =
+        FixtureTransport::with_roots([("self-version".to_string(), self_version_root())]);
+    let repo = Repository::load("https://self-version", cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let root_require = require(&[("acme/meta", "^1.0")]);
+    let root_require_dev = Map::new();
+    let roots = [ClosureRoot {
+        require: &root_require,
+        require_dev: &root_require_dev,
+    }];
+
+    let mut constraint_cache = solver::ConstraintCache::new();
+    let closure = repo
+        .load_closure(
+            &roots,
+            DevAcceptance::NonDevOnly,
+            &|_, _| true,
+            &mut constraint_cache,
+        )
+        .await
+        .unwrap();
+
+    let core_versions: Vec<&str> = closure["acme/core"]
+        .iter()
+        .map(|v| v.version.as_str())
+        .collect();
+    assert_eq!(core_versions, vec!["1.2.0"], "{core_versions:?}");
 }
 
 #[tokio::test]

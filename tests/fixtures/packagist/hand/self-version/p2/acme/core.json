@@ -1,0 +1,8 @@
+{
+    "packages": {
+        "acme/core": [
+            {"name": "acme/core", "version": "1.1.0", "version_normalized": "1.1.0.0"},
+            {"name": "acme/core", "version": "1.2.0", "version_normalized": "1.2.0.0"}
+        ]
+    }
+}
