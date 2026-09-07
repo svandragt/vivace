@@ -132,6 +132,21 @@ pub async fn solve_update<T: Transport>(
     resolve(built, root, prefer_stable, prefer_lowest)
 }
 
+/// Same as [`solve_update`], but `seed` (already-lowercased package names,
+/// typically the prior `composer.lock`'s own) is passed straight through to
+/// [`pool_builder::build_seeded`] (#90): a prefetch hint, never a pool
+/// change.
+pub async fn solve_update_seeded<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    prefer_lowest: bool,
+    seed: &[String],
+) -> Result<UpdateResult> {
+    let built = pool_builder::build_seeded(repo, root, prefer_stable, prefer_lowest, seed).await?;
+    resolve(built, root, prefer_stable, prefer_lowest)
+}
+
 /// A partial update: `pkg...`'s allow list, expanded per `mode`
 /// (`pool_builder::expand_allow_list`), then the same merged-solve/dev-split
 /// pipeline as [`solve_update`] over `pool_builder::build_partial`'s pool.
@@ -149,6 +164,40 @@ pub async fn solve_partial_update<T: Transport>(
     locked_by_name: &HashMap<String, Value>,
     allow_list: &[String],
     mode: pool_builder::UpdateAllowMode,
+) -> Result<UpdateResult> {
+    solve_partial_update_seeded(
+        repo,
+        root,
+        prefer_stable,
+        prefer_lowest,
+        locked_by_name,
+        allow_list,
+        mode,
+        &[],
+    )
+    .await
+}
+
+/// Same as [`solve_partial_update`], but `seed` is passed straight through
+/// to [`pool_builder::build_partial_seeded`] (#90); see
+/// [`solve_update_seeded`] for why a seed can never change the pool.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, only ever called with the default hasher"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors solve_partial_update plus one seed slice"
+)]
+pub async fn solve_partial_update_seeded<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    prefer_lowest: bool,
+    locked_by_name: &HashMap<String, Value>,
+    allow_list: &[String],
+    mode: pool_builder::UpdateAllowMode,
+    seed: &[String],
 ) -> Result<UpdateResult> {
     let locked_requires: HashMap<String, Vec<String>> = locked_by_name
         .iter()
@@ -178,13 +227,14 @@ pub async fn solve_partial_update<T: Transport>(
     let allow_names =
         pool_builder::expand_allow_list(&allow_list, &locked_requires, &root_require_names, mode);
 
-    let built = pool_builder::build_partial(
+    let built = pool_builder::build_partial_seeded(
         repo,
         root,
         locked_by_name,
         &allow_names,
         prefer_stable,
         prefer_lowest,
+        seed,
     )
     .await?;
     resolve(built, root, prefer_stable, prefer_lowest)

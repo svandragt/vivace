@@ -73,6 +73,21 @@ pub async fn build<T: Transport>(
     prefer_stable: bool,
     prefer_lowest: bool,
 ) -> Result<BuildResult> {
+    build_seeded(repo, root, prefer_stable, prefer_lowest, &[]).await
+}
+
+/// Same as [`build`], but `seed` (already-lowercased package names, #90's
+/// prior-lock prefetch) is passed straight through to
+/// [`Repository::load_closure_seeded`]; a name `seed` names that `root`
+/// doesn't actually require never enters `packages` below, since it only
+/// ever lands in `closure` if the walk reaches it.
+pub async fn build_seeded<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    prefer_lowest: bool,
+    seed: &[String],
+) -> Result<BuildResult> {
     let require = string_map(root, "require");
     let require_dev = string_map(root, "require-dev");
 
@@ -115,7 +130,9 @@ pub async fn build<T: Transport>(
         require: &require,
         require_dev: &require_dev,
     }];
-    let closure = repo.load_closure(&roots, dev_acceptance).await?;
+    let closure = repo
+        .load_closure_seeded(&roots, dev_acceptance, &HashSet::new(), seed)
+        .await?;
 
     let platform_overrides = root
         .pointer("/config/platform")
@@ -277,6 +294,34 @@ pub async fn build_partial<T: Transport>(
     prefer_stable: bool,
     prefer_lowest: bool,
 ) -> Result<BuildResult> {
+    build_partial_seeded(
+        repo,
+        root,
+        locked_by_name,
+        allow_names,
+        prefer_stable,
+        prefer_lowest,
+        &[],
+    )
+    .await
+}
+
+/// Same as [`build_partial`], but `seed` is passed straight through to
+/// [`Repository::load_closure_seeded`] (#90); see [`build_seeded`] for why a
+/// seed can never change the pool, only how quickly it's built.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, only ever called with the default hasher"
+)]
+pub async fn build_partial_seeded<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    locked_by_name: &HashMap<String, Value>,
+    allow_names: &HashSet<String>,
+    prefer_stable: bool,
+    prefer_lowest: bool,
+    seed: &[String],
+) -> Result<BuildResult> {
     let require = string_map(root, "require");
     let require_dev = string_map(root, "require-dev");
 
@@ -344,7 +389,7 @@ pub async fn build_partial<T: Transport>(
         },
     ];
     let closure = repo
-        .load_closure_skipping(&roots, dev_acceptance, &skip)
+        .load_closure_seeded(&roots, dev_acceptance, &skip, seed)
         .await?;
 
     let platform_overrides = root
@@ -901,7 +946,7 @@ fn push_package_version(
 /// avoid depending on the host `php` build; a name not already detected on
 /// the host is not added (ponytail: only pinning an existing platform
 /// package is supported, not inventing a new one).
-fn platform_packages(overrides: &Map<String, Value>) -> Result<Vec<Package>> {
+pub(crate) fn platform_packages(overrides: &Map<String, Value>) -> Result<Vec<Package>> {
     let php_pretty = detect_php_version().unwrap_or_else(|| "8.3.0".to_string());
 
     let mut pretty: Vec<(String, String)> = vec![

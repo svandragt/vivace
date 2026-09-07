@@ -115,6 +115,54 @@ async fn update_reproduces_the_monolog_lock() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// #90: seeding the closure walk with names from the prior lock is a
+/// prefetch, never a pool change. `acme/unreachable` doesn't exist anywhere
+/// in the fixtures and is no longer (never was) required by the monolog
+/// fixture's `composer.json`; `monolog/monolog` is both seeded and actually
+/// reachable. Either way the resulting lock must be byte-identical to the
+/// unseeded walk's.
+#[tokio::test]
+async fn seeding_with_an_unreachable_lock_name_does_not_change_the_lock() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+    let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
+    let root: Value = serde_json::from_slice(&composer_json).unwrap();
+
+    let seed = vec![
+        "acme/unreachable".to_string(),
+        "monolog/monolog".to_string(),
+    ];
+    let result = solver::solve_update_seeded(&repo, &root, false, false, &seed)
+        .await
+        .unwrap();
+    let options = vivace::lock_writer::LockOptions {
+        minimum_stability: result.minimum_stability,
+        stability_flags: &result.stability_flags,
+        prefer_stable: result.prefer_stable,
+        prefer_lowest: result.prefer_lowest,
+        platform_reqs: &result.platform_reqs,
+        platform_dev_reqs: &result.platform_dev_reqs,
+        platform_overrides: &result.platform_overrides,
+        aliases: &result.aliases,
+    };
+    let got =
+        vivace::lock_writer::write(&result.non_dev, Some(&result.dev), &options, &composer_json)
+            .unwrap();
+
+    let want = update_lock(&fixture).await;
+    assert_eq!(
+        got, want,
+        "seeded and unseeded updates must match byte-for-byte"
+    );
+}
+
 #[tokio::test]
 async fn update_reproduces_the_legacy_lock() {
     if Command::new("php").arg("--version").output().is_err() {

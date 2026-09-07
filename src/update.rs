@@ -240,7 +240,14 @@ async fn solve(
     let repo = Repository::from_composer_json(root, &cache_dir, transport).await?;
 
     if args.packages.is_empty() {
-        return solver::solve_update(&repo, root, prefer_stable, args.prefer_lowest).await;
+        // #90: a warm update's closure is almost always the previous
+        // `composer.lock` again; seeding with its package names starts
+        // fetching all of them in the first wave instead of discovering
+        // most of them one BFS level's round trip at a time. No lock yet
+        // (first-ever update) just means an empty seed, same as before.
+        let seed = read_locked_names(lock_path)?;
+        return solver::solve_update_seeded(&repo, root, prefer_stable, args.prefer_lowest, &seed)
+            .await;
     }
 
     if !lock_path.exists() {
@@ -253,6 +260,7 @@ async fn solve(
     let lock_bytes = fs_err::read(lock_path)?;
     let lock: Value = serde_json::from_slice(&lock_bytes).context("parsing composer.lock")?;
     let locked_by_name = locked_packages_by_name(&lock);
+    let seed: Vec<String> = locked_by_name.keys().cloned().collect();
     let mode = if args.with_all_dependencies {
         UpdateAllowMode::WithTransitiveDeps
     } else if args.with_dependencies {
@@ -260,7 +268,7 @@ async fn solve(
     } else {
         UpdateAllowMode::OnlyListed
     };
-    solver::solve_partial_update(
+    solver::solve_partial_update_seeded(
         &repo,
         root,
         prefer_stable,
@@ -268,8 +276,22 @@ async fn solve(
         &locked_by_name,
         &args.packages,
         mode,
+        &seed,
     )
     .await
+}
+
+/// `seed` for the full-update path (#90): every lowercased name in an
+/// existing lock's `packages`+`packages-dev`, or empty when there isn't one
+/// yet (`locked_packages_by_name`'s own merge, but read straight off the
+/// lock file since the full-update path has no other reason to load it).
+fn read_locked_names(lock_path: &Path) -> Result<Vec<String>> {
+    if !lock_path.exists() {
+        return Ok(Vec::new());
+    }
+    let lock_bytes = fs_err::read(lock_path)?;
+    let lock: Value = serde_json::from_slice(&lock_bytes).context("parsing composer.lock")?;
+    Ok(locked_packages_by_name(&lock).into_keys().collect())
 }
 
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint

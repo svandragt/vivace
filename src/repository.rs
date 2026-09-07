@@ -1005,6 +1005,20 @@ impl<T: Transport> Repository<T> {
         Ok(versions)
     }
 
+    /// `load_package(&name, dev)`, but keyed by its own `name`: a free
+    /// function so both the seed wave and the BFS fill loop in
+    /// [`Repository::load_closure_seeded`] push the *same* concrete future
+    /// type into one `FuturesUnordered` (two `async move` blocks written at
+    /// different call sites, even identical ones, are distinct types).
+    async fn fetch_named(
+        &self,
+        name: String,
+        dev: DevAcceptance,
+    ) -> (String, Result<Vec<PackageVersion>>) {
+        let versions = self.load_package(&name, dev).await;
+        (name, versions)
+    }
+
     /// Breadth-first metadata load, up to `LOAD_BATCH_SIZE` concurrent
     /// fetches in flight at any time (`PoolBuilder::LOAD_BATCH_SIZE`'s
     /// concurrency figure, not its wave-by-wave batching: #90 found waiting
@@ -1017,7 +1031,7 @@ impl<T: Transport> Repository<T> {
         roots: &[ClosureRoot<'_>],
         dev: DevAcceptance,
     ) -> Result<HashMap<String, Vec<PackageVersion>>> {
-        self.load_closure_skipping(roots, dev, &HashSet::new())
+        self.load_closure_seeded(roots, dev, &HashSet::new(), &[])
             .await
     }
 
@@ -1033,6 +1047,32 @@ impl<T: Transport> Repository<T> {
         roots: &[ClosureRoot<'_>],
         dev: DevAcceptance,
         skip: &HashSet<String>,
+    ) -> Result<HashMap<String, Vec<PackageVersion>>> {
+        self.load_closure_seeded(roots, dev, skip, &[]).await
+    }
+
+    /// Same walk as [`Repository::load_closure_skipping`], but every
+    /// (already lowercased) name in `seed` also starts fetching immediately,
+    /// alongside `roots`' own names, rather than waiting to be discovered
+    /// through a require chain (#90: a warm `viv update` re-walks a closure
+    /// that's almost always the previous `composer.lock` again, so seeding
+    /// with that lock's package names turns the BFS's ~9 sequential
+    /// round-trip levels into ~2 — everything the lock already knew about is
+    /// in flight from the first wave, and only genuinely new names still
+    /// wait on a parent's response). A seed is a *prefetch*, never a pool
+    /// change: its fetch is started and cached here, but it only lands in
+    /// the returned closure if the walk below actually reaches it from
+    /// `roots` (`discovered`, unchanged from the unseeded walk); a seed name
+    /// no longer required by `roots` (removed from `composer.json`) is
+    /// fetched for nothing and then dropped, exactly as if it had never been
+    /// seeded. `skip` wins over `seed`: a locked-out name is never fetched
+    /// either way.
+    pub async fn load_closure_seeded(
+        &self,
+        roots: &[ClosureRoot<'_>],
+        dev: DevAcceptance,
+        skip: &HashSet<String>,
+        seed: &[String],
     ) -> Result<HashMap<String, Vec<PackageVersion>>> {
         let closure_started = Instant::now();
         let requests_before = self.request_count();
@@ -1054,29 +1094,80 @@ impl<T: Transport> Repository<T> {
         // name's own requires the moment *that* fetch lands, so an
         // independent branch's fetch starts as soon as a slot frees up
         // instead of waiting for the slowest sibling in its wave.
-        let mut result = HashMap::new();
         let mut in_flight = FuturesUnordered::new();
+
+        // `prefetching` tracks a seeded name from the moment its fetch is
+        // dispatched (below, uncapped by `LOAD_BATCH_SIZE` on purpose: the
+        // whole point is every one of them in flight in the first wave) to
+        // the moment its future lands, so the fill loop further down never
+        // dispatches a second, duplicate fetch for a name that turns out to
+        // also be `roots`-reachable.
+        let mut prefetching: HashSet<String> = HashSet::new();
+        for name in seed {
+            let name = name.to_ascii_lowercase();
+            if skip.contains(&name) || is_platform_package(&name) {
+                continue;
+            }
+            if prefetching.insert(name.clone()) {
+                in_flight.push(self.fetch_named(name, dev));
+            }
+        }
+
+        // A seed's fetch can land before the walk proves it's reachable (or
+        // ever proves it at all). `stashed` holds that result until either
+        // the walk reaches the name — `queue_name` above already added it to
+        // `discovered`, so the fill loop below folds the stashed versions in
+        // without a second fetch — or the walk finishes without ever
+        // reaching it, in which case it's simply dropped with `stashed`.
+        let mut stashed: HashMap<String, Vec<PackageVersion>> = HashMap::new();
+        let mut result = HashMap::new();
+        let mut waves = usize::from(!in_flight.is_empty());
         loop {
+            let was_empty = in_flight.is_empty();
             while in_flight.len() < LOAD_BATCH_SIZE {
                 let Some(name) = queue.pop_front() else {
                     break;
                 };
-                in_flight.push(async move { (name.clone(), self.load_package(&name, dev).await) });
+                if let Some(versions) = stashed.remove(&name) {
+                    for version in &versions {
+                        for req in version.require.keys() {
+                            queue_name(req, &mut discovered, &mut queue);
+                        }
+                    }
+                    result.insert(name, versions);
+                    continue;
+                }
+                if prefetching.contains(&name) {
+                    // Already in flight from the seed wave above; its
+                    // completion lands with `name` now in `discovered`, so
+                    // the branch below folds it in without a second fetch.
+                    continue;
+                }
+                in_flight.push(self.fetch_named(name, dev));
+            }
+            if was_empty && !in_flight.is_empty() {
+                waves += 1;
             }
             let Some((name, versions)) = in_flight.next().await else {
                 break;
             };
             let versions = versions?;
-            for version in &versions {
-                for req in version.require.keys() {
-                    queue_name(req, &mut discovered, &mut queue);
+            prefetching.remove(&name);
+            if discovered.contains(&name) {
+                for version in &versions {
+                    for req in version.require.keys() {
+                        queue_name(req, &mut discovered, &mut queue);
+                    }
                 }
+                result.insert(name, versions);
+            } else {
+                stashed.insert(name, versions);
             }
-            result.insert(name, versions);
         }
         tracing::debug!(
             packages = result.len(),
             requests = self.request_count() - requests_before,
+            waves,
             elapsed_ms = closure_started.elapsed().as_millis(),
             "loaded metadata closure"
         );
