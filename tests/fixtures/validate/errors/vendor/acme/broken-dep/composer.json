@@ -1,0 +1,9 @@
+{
+    "name": "BadName",
+    "description": "A dependency with a bad name and an unparseable constraint.",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.1",
+        "psr/log": "not-a-constraint"
+    }
+}

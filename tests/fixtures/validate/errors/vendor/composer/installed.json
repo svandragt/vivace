@@ -1,0 +1,12 @@
+{
+    "packages": [
+        {
+            "name": "acme/broken-dep",
+            "version": "1.0.0",
+            "type": "library",
+            "install-path": "../acme/broken-dep"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": []
+}
