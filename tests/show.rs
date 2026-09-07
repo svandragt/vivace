@@ -155,14 +155,12 @@ fn tree_command_matches_show_tree() {
 fn show_detail_matches_composer_minus_the_skipped_lines() {
     let ctx = TestContext::new();
     project_with_installed_json(ctx.project.path());
-    let want = expected("monolog-detail.txt").replace(
-        "[PATH]",
-        &ctx.project
-            .path()
-            .join("vendor/monolog/monolog")
-            .display()
-            .to_string(),
-    );
+    // Composer prints the realpath, so canonicalise like macOS's /var symlink
+    // forces viv to.
+    let install_path = std::fs::canonicalize(ctx.project.path().join("vendor/monolog/monolog"))
+        .expect("fixture package dir exists");
+    let want =
+        expected("monolog-detail.txt").replace("[PATH]", &install_path.display().to_string());
     assert_eq!(stdout_of(&ctx, &["show", "monolog/monolog"]), want);
 }
 
