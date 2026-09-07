@@ -31,6 +31,31 @@ Composer's. Cold install is the one column riff wins, bounded by GitHub's
 zipball throttling ([`bench/results/profile.md`](bench/results/profile.md)).
 Tracked per release like the install numbers.
 
+### Public corpus
+
+The pinned projects from [`compat/corpus.toml`](compat/corpus.toml), same
+machine, `--no-plugins --no-scripts`, three runs, warm metadata cache.
+Full columns and footnotes in [`bench/results/corpus.md`](bench/results/corpus.md).
+
+| Project | Packages | Update: composer | riff | viv |
+|---|---|---|---|---|
+| laravel/laravel | 109 | 1.75 s | fails | 1.43 s |
+| symfony/demo | 153 | 1.66 s | 0.73 s | 1.49 s |
+| drupal/recommended-project | 68 | 2.85 s | fails | 1.14 s |
+| roots/bedrock | 73 | 2.45 s | fails | 1.56 s |
+| composer/composer | 36 | 0.63 s | 0.25 s | 0.39 s |
+| phpunit/phpunit | 26 | 0.70 s | fails | 0.26 s |
+| slimphp/Slim-Skeleton | 57 | 0.76 s | fails | 0.35 s |
+| statamic/statamic | 160 | 2.40 s | fails | 1.88 s |
+| craftcms/craft | 118 | 2.15 s | 0.61 s | 1.37 s |
+
+Warm install and no-op are an order of magnitude under both tools on every
+project. Cold install beats Composer everywhere and sits level with riff
+within run-to-run noise. yiisoft/yii2-app-basic is in the corpus but not in
+the table: riff fails its install (it applies a dependency's patches under
+`--no-plugins`), and the bench stops at the first failing tool per project
+row only since 2026-09-07.
+
 ## Beyond Composer
 
 **Fewer merge conflicts.** `viv update`, `viv require` and `viv remove`

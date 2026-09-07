@@ -155,3 +155,37 @@ viv 0.6.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 run
 | craftcms/craft | 118 | composer | 8.939 | 1.822 | 1.112 | 2.152 |
 | craftcms/craft | 118 | riff | 4.186 | 0.645 | 0.620 | 0.606 |
 | craftcms/craft | 118 | viv | 3.608 | 0.125 | 0.008 | 1.367 |
+
+## 2026-09-07T20:01:03Z
+
+viv 0.6.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 runs each.
+
+| Project | Packages | Tool | Cold | Warm | No-op | Update-warm |
+|---|---|---|---|---|---|---|
+| laravel/laravel | 109 | composer | 7.780 | 1.483 | 0.850 | 1.745 |
+| laravel/laravel | 109 | riff | 2.968 | 0.517 | 0.381 | n/a |
+| laravel/laravel | 109 | viv | 3.179 | 0.070 | 0.008 | 1.428 |
+
+- laravel/laravel/riff: run.sh: failed: riff
+| symfony/demo | 153 | composer | 9.628 | 1.301 | 0.541 | 1.656 |
+| symfony/demo | 153 | riff | 6.039 | 0.356 | 0.241 | 0.727 |
+| symfony/demo | 153 | viv | 2.460 | 0.050 | 0.010 | 1.487 |
+| composer/composer | 36 | composer | 4.603 | 0.806 | 0.402 | 0.631 |
+| composer/composer | 36 | riff | 1.769 | 0.302 | 0.227 | 0.245 |
+| composer/composer | 36 | viv | 1.784 | 0.012 | 0.005 | 0.391 |
+| slimphp/Slim-Skeleton | 57 | composer | 5.802 | 1.112 | 0.444 | 0.756 |
+| slimphp/Slim-Skeleton | 57 | riff | 1.719 | 0.225 | 0.239 | n/a |
+| slimphp/Slim-Skeleton | 57 | viv | 1.806 | 0.038 | 0.006 | 0.348 |
+
+- slimphp/Slim-Skeleton/riff: run.sh: failed: riff
+| statamic/statamic | 160 | composer | 10.928 | 2.101 | 1.184 | 2.396 |
+| statamic/statamic | 160 | riff | 4.701 | 0.716 | 0.562 | n/a |
+| statamic/statamic | 160 | viv | 4.198 | 0.122 | 0.010 | 1.884 |
+
+- statamic/statamic/riff: run.sh: failed: riff
+
+Subset run: statamic/statamic, symfony/demo, laravel/laravel, composer/composer
+and slimphp/Slim-Skeleton only, the projects with an open question after the
+18:57 run, at the closure-walk commits that followed it. The other five
+projects' numbers stand from 18:57. `run.sh: failed: riff` is riff's
+update-warm failing to resolve; its install columns are real.
