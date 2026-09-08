@@ -762,3 +762,16 @@ were left behind and are tracked locally, the audit's current in
 miniature. The perf gate caught one regression before it landed: a `git`
 subprocess on a non-repo cost a millisecond on the warm path until a
 `.git` existence check guarded it.
+
+## 2026-09-08, evening: 0.7.0
+
+Six native plugin adapters landed this cycle (Yii2, Craft, private-
+composer-installer, codeception/c3, Drupal scaffold, Symfony runtime),
+alongside automatic best-effort adopt of a Composer-written `vendor/` and a
+root package version guessed from git the way Composer's own
+`VersionGuesser` does. The compat sweep now runs plugins on both sides of
+every native-adapter project instead of `--no-plugins` on both, so an
+adapter finally gets diffed against the real plugin it replaces. The
+release checklist gained a step: reinstall the local `viv` binary after
+tagging, since a stale one refuses plugins the new release already
+adapts.

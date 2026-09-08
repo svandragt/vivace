@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+- Wire --minimal-changes into viv update ([#61](https://github.com/svandragt/vivace/issues/61))
+- Problem messages: port formatDeduplicatedRules and condenseVersionList ([#62](https://github.com/svandragt/vivace/issues/62))
+- viv diagnose: environment and configuration report ([#81](https://github.com/svandragt/vivace/issues/81))
+- Plugin adapters: yiisoft/yii2-composer and craftcms/plugin-installer ([#92](https://github.com/svandragt/vivace/issues/92))
+- Drupal support: drupal/core-composer-scaffold and drupal/core-project-message ([#93](https://github.com/svandragt/vivace/issues/93))
+- release-age and licence lines in viv show ([#94](https://github.com/svandragt/vivace/issues/94))
+- Adapter for ffraenz/private-composer-installer ([#98](https://github.com/svandragt/vivace/issues/98))
+- Adopt a Composer-written vendor/ by default; confirm only through the shim ([#123](https://github.com/svandragt/vivace/issues/123))
+- Root package version: guess from git like Composer's VersionGuesser ([#125](https://github.com/svandragt/vivace/issues/125))
+- Adapter for codeception/c3 ([#126](https://github.com/svandragt/vivace/issues/126))
+- Automatic adopt of a Composer-written `vendor/` is best-effort per package: a package that fails to adopt falls back to a fresh install rather than aborting the run
+- The compat sweep now runs plugins on both sides where an adapter is native, so the comparison no longer penalises adapted plugins for staying off
+
+### Fixed
+- update_reproduces_the_legacy_lock fails without php on PATH ([#109](https://github.com/svandragt/vivace/issues/109))
+
+### Tooling
+- Inline lock_writer's copied content_hash/php_json_encode into lock.rs ([#107](https://github.com/svandragt/vivace/issues/107))
+- Share FixtureTransport via tests/common instead of three copies ([#108](https://github.com/svandragt/vivace/issues/108))
+- Remove dead package_rule_ids and deduplicate php_string ([#110](https://github.com/svandragt/vivace/issues/110))
+- Collapse pool_builder::build onto build_partial ([#111](https://github.com/svandragt/vivace/issues/111))
+- Extract locked_by_name helper in tests/require.rs ([#112](https://github.com/svandragt/vivace/issues/112))
+- Compat sweep: run native-adapter projects with plugins on and count refusals ([#124](https://github.com/svandragt/vivace/issues/124))
 
 ## [0.6.0] - 2026-09-07
 ### Added
@@ -126,3 +150,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [0.4.0]: https://github.com/svandragt/vivace/releases/tag/v0.4.0
 [0.5.0]: https://github.com/svandragt/vivace/releases/tag/v0.5.0
 [0.6.0]: https://github.com/svandragt/vivace/releases/tag/v0.6.0
+[0.7.0]: https://github.com/svandragt/vivace/releases/tag/v0.7.0

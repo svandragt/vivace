@@ -109,7 +109,7 @@ aarch64) are attached to each [release](https://github.com/svandragt/vivace/rele
 # download a tarball from the releases page, or:
 cargo binstall vivace
 # or build from source:
-cargo install --git https://github.com/svandragt/vivace --tag v0.6.0 vivace
+cargo install --git https://github.com/svandragt/vivace --tag v0.7.0 vivace
 ```
 
 ## Usage
@@ -133,9 +133,11 @@ target/release/viv diagnose              # environment/config report to paste in
 
 `install` runs the root's lifecycle scripts (`pre-install-cmd`,
 `post-autoload-dump`, `post-install-cmd`) like Composer; `--no-scripts` skips
-them. Composer plugins cannot run natively: `composer/installers` and the
-WordPress core installers are applied natively, anything else is refused
-unless you pass `--no-plugins`. See [`docs/plugin-strategy.md`](docs/plugin-strategy.md).
+them. Composer plugins cannot run as PHP: `composer/installers`, the
+WordPress core installers, and a growing list of native adapters (Yii2,
+Craft, Drupal scaffold, Symfony runtime, phpcs, PHPStan, and more) are applied
+natively, anything else is refused unless you pass `--no-plugins`. See
+[`docs/plugin-strategy.md`](docs/plugin-strategy.md) for the full inventory.
 
 ## Using viv as a drop-in composer
 

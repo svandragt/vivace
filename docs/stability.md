@@ -1,6 +1,6 @@
 # Stability
 
-This is the contract viv (0.5.0) offers scripts, CI pipelines and the
+This is the contract viv (0.7.0) offers scripts, CI pipelines and the
 `composer` shim that drive it instead of Composer.
 
 ## What viv promises

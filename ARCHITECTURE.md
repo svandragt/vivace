@@ -50,7 +50,7 @@ chain into the lower half and install (`--no-install` opts out).
 | `require` | `viv require`/`viv remove`: constraint synthesis and a format-preserving `composer.json` edit, then a partial update of the touched package(s). |
 | `update` | Wires repositories, the solver and `lock_writer` together for `viv update`/`viv update --lock` (`viv update-lock`'s alias). |
 | `plan` | Diff the lock against `vendor/composer/installed.json` to decide what to keep, install, and remove. |
-| `plugins` | Native adapters for the Composer plugins vivace ports: `composer/installers` and `*-wordpress-core-installer` (install path mapping), `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`, `tbachert/spi` (post-install generators), `cweagans/composer-patches` (patch application). Everything else of type `composer-plugin` is refused unless `--no-plugins`. |
+| `plugins` | Native adapters for the Composer plugins vivace ports: `composer/installers` and `*-wordpress-core-installer` (install path mapping), `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`, `tbachert/spi` (post-install generators), `cweagans/composer-patches` (patch application), `yiisoft/yii2-composer`, `craftcms/plugin-installer`, `codeception/c3`, `ffraenz/private-composer-installer`, `drupal/core-composer-scaffold`, `symfony/runtime` (see `src/plugins/{yii2,craft,c3,private_installer,drupal_scaffold,symfony_runtime}.rs`). Everything else of type `composer-plugin` is refused unless `--no-plugins`. |
 | `source` | Path-repository and dist-less git-source lock entries: symlink/mirror a path package, clone-and-checkout a git one, bypassing the store. |
 | `fetch` | Download `dist` archives. Zip only. Bounded concurrency, HTTP/2, follows GitHub API redirects to codeload. Verifies `dist.shasum` (sha1) when non-empty. |
 | `auth` | Composer-compatible credentials: `auth.json` (Composer home, then project), then `COMPOSER_AUTH`, ascending precedence. |
@@ -67,6 +67,7 @@ chain into the lower half and install (`--no-install` opts out).
 | `normalize` | `viv normalize`: a native `ergebnis/composer-normalize` for `composer.json`'s key order and formatting. |
 | `tool` | `viv x`/`viv run`/`viv exec`: npx-style one-off tool execution, `scripts::Runner` entry points, and a bare `vendor/bin` exec. |
 | `version`, `semver` | Composer version normalisation and constraint parsing/matching, shared by the solver, `show`, and the autoloader's version dumps. |
+| `time` | Civil-date/epoch-day helpers shared by `show` (release-age math), `lock_writer` (normalising a package's `time` field) and `vcs` (VCS timestamp formatting). |
 | `main.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, `diagnose`, plus `--offline` and `--cache-dir`. |
 
 ## Why a store and hardlinks
