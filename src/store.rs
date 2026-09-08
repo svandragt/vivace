@@ -436,8 +436,17 @@ impl Store {
     /// bucket names is refused, in case `--cache-dir`/`$XDG_CACHE_HOME`
     /// points somewhere that isn't actually a vivace cache.
     pub fn looks_like_cache(dir: &Path) -> Result<bool> {
+        Ok(Self::unexpected_entries(dir)?.is_empty())
+    }
+
+    /// The top-level names under `dir` that aren't one of our buckets or the
+    /// lock file: what `looks_like_cache` refuses on, named so the user can
+    /// see whether it's a stale bucket (`viv cache prune` removes those) or
+    /// someone else's directory.
+    pub fn unexpected_entries(dir: &Path) -> Result<Vec<String>> {
+        let mut unexpected = Vec::new();
         if !dir.is_dir() {
-            return Ok(true);
+            return Ok(unexpected);
         }
         for entry in fs_err::read_dir(dir)? {
             let name = entry?.file_name();
@@ -445,10 +454,11 @@ impl Store {
                 .iter()
                 .any(|keep| name == *keep)
             {
-                return Ok(false);
+                unexpected.push(name.to_string_lossy().into_owned());
             }
         }
-        Ok(true)
+        unexpected.sort();
+        Ok(unexpected)
     }
 
     /// Remove everything under the store root, then the root directory

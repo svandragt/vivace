@@ -839,11 +839,14 @@ pub fn cache(args: &CacheArgs, cache_dir: Option<&Path>) -> Result<()> {
                 out("Nothing to clean");
                 return Ok(());
             }
-            if !Store::looks_like_cache(&cache_dir)? {
+            let unexpected = Store::unexpected_entries(&cache_dir)?;
+            if !unexpected.is_empty() {
                 bail!(
-                    "{} doesn't look like a vivace cache (unexpected entries); refusing to \
-                     remove it",
-                    cache_dir.display()
+                    "{} doesn't look like a vivace cache: unexpected {}. Refusing to remove \
+                     it. If that is a bucket from an older viv, `viv cache prune` removes it; \
+                     otherwise check --cache-dir/XDG_CACHE_HOME.",
+                    cache_dir.display(),
+                    unexpected.join(", ")
                 );
             }
             Store::open(&cache_dir)?.clean()?;

@@ -1,6 +1,5 @@
 ---
 source: tests/cli.rs
-assertion_line: 144
 expression: snapshot
 ---
 success: false
@@ -8,4 +7,4 @@ exit_code: 1
 ----- stdout -----
 
 ----- stderr -----
-[CACHE] doesn't look like a vivace cache (unexpected entries); refusing to remove it
+[CACHE] doesn't look like a vivace cache: unexpected not-ours.txt. Refusing to remove it. If that is a bucket from an older viv, `viv cache prune` removes it; otherwise check --cache-dir/XDG_CACHE_HOME.
