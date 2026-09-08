@@ -785,3 +785,33 @@ on one lock disagree, so the sweep compares that file and Craft's
 order-insensitively. At the tag: 24 rows identical, none differ, 4 skipped
 for upstream reasons, and 2 of 19 pinned projects would still refuse
 without `--no-plugins`.
+
+## 2026-09-08, night: README, naming and four spikes
+
+**Reading the tool cold.** The README was rewritten for a Composer user
+who has never heard of viv: highlights first, then how to try it and how
+to stop, with the technical detail moved to footnotes. Two sections came
+out of that review: reasons to use viv, and reasons not to, gathered from
+limitations that had been scattered across the page. The version-by-
+version feature list went; a "works with" checklist replaced it.
+
+**Fewer commands, viv spellings.** Nine Composer-parity tickets were
+triaged down to two: `viv new` (with `create-project` as the alias) and
+`viv init`, neither a like-for-like port. `add` and `rm` are now the
+documented spellings, `require` and `remove` the aliases. The rule
+recorded for later: a command earns its place when a project we run needs
+it in viv, not because Composer has it.
+
+**Spikes.** pnpm's per-file store and rehash apparatus do not transfer to
+whole-archive Composer dists; its clone-then-hardlink probe does, and is
+now #19's template. bun streams extraction under the download and still
+round-trips every manifest for a 304, so its binary cache buys parse time
+only. riff does the same job as viv on the corpus, with cosmetic diffs, and
+its two cold wins sit inside GitHub's hop variance; the one measurable
+difference is viv opening each extracted file about 1.6 times. The
+slimming audit found two candidate deletions and one false one, void
+because a doc line still said `--minimal-changes` was unwired.
+
+**Also.** A progress line during download and link, on stderr and only on
+a terminal; `cache clean` names the entry it refuses on. The corpus-wide
+speed table waits for a quiet machine.
