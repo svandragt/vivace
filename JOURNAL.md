@@ -815,3 +815,23 @@ because a doc line still said `--minimal-changes` was unwired.
 **Also.** A progress line during download and link, on stderr and only on
 a terminal; `cache clean` names the entry it refuses on. The corpus-wide
 speed table waits for a quiet machine.
+
+## 2026-09-08, late: init, new, and a hunt
+
+**Two ways in.** `viv init` writes a normalised, validated `composer.json`
+from inferred defaults, no prompts; `viv new` creates the directory first,
+empty or from a package skeleton, with the constraint after a colon as in
+`viv add`. `create-project` stays as the alias. A Laravel skeleton's lock
+and `vendor/` diff clean against Composer's.
+
+**Less code.** The JsonManipulator port is gone: `add` and `rm` always
+normalise, so its only customer, `--no-normalize`, is now the same
+deprecated no-op it already was on `install`. The unreachable libsolv
+"impossible packages" pass went too. The store opens each extracted file
+once. Fuzz targets build again and CI builds them on every push.
+
+**A hunt.** Eight popular skeletons and fifteen random packages went
+through the sweep with plugins on where possible: 32 rows identical, one
+real bug (a dist-less metapackage fails to install), one sweep bug, and
+five skeletons whose plugins viv refuses. `compat/hunted.md` records what
+was tried so the next hunt starts elsewhere.
