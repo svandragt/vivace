@@ -10,25 +10,24 @@
 //! a debugging-only env toggle read in `Installer::createPoolOptimizer`)
 //! has no CLI surface in vivace to gate, so this always runs.
 //!
-//! Two passes, in Composer's own order:
-//! - `optimize_by_identical_dependencies`: among same-name versions that
-//!   satisfy the same external requirement/conflict constraint and share an
-//!   identical dependency fingerprint (requires+conflicts+replaces+provides),
-//!   keeps only the one [`DefaultPolicy::select_preferred_packages`] would
-//!   pick; the rest can never be distinguished by any rule the solver would
-//!   generate, so removing them changes nothing about the answer.
-//! - `optimizeImpossiblePackagesAway`: drops versions no *locked* package's
-//!   exact require could ever pick. Not reachable from [`optimize`]:
-//!   `Request` (this port's cut-down `request.rs`, "full update only") never
-//!   models locked packages, and real Composer's own `PoolBuilder::buildPool`
-//!   only ever calls `$request->lockPackage()` inside its partial-update
-//!   branch (`getUpdateAllowList()` non-empty) — so a full update never
-//!   populates `getLockedPackages()` either, and this pass's own guard
-//!   (`count($request->getLockedPackages()) === 0`) already no-ops for the
-//!   case this crate exercises today. `optimize_impossible_packages_away`
-//!   is still ported in full (a locked-package index list parameter) so the
-//!   behaviour exists the day `Request` grows one; this module's own tests
-//!   exercise it directly with a non-empty list.
+//! One pass: `optimize_by_identical_dependencies`, among same-name versions
+//! that satisfy the same external requirement/conflict constraint and share
+//! an identical dependency fingerprint (requires+conflicts+replaces+provides),
+//! keeps only the one [`DefaultPolicy::select_preferred_packages`] would
+//! pick; the rest can never be distinguished by any rule the solver would
+//! generate, so removing them changes nothing about the answer.
+//!
+//! `optimizeImpossiblePackagesAway` (Composer's second pass, dropping
+//! versions no *locked* package's exact require could ever pick) is not
+//! ported: it only ever acts on `Request::getLockedPackages()`, and
+//! [`Request`](crate::solver::request::Request) (this port's cut-down
+//! `request.rs`) has no locked-package field at all — a full update never
+//! locks anything, and a partial update expresses its locked-out packages
+//! as `fixed`/irremovable pool entries instead (`pool_builder.rs`'s
+//! `build_partial_seeded` pushes them via `package_from_lock_entry` and
+//! marks their indices `fixed`, never a separate locked set), so there is
+//! no path that could ever call this pass with a non-empty locked list.
+//! Revisit if `Request` ever grows a real locked-package concept (#144).
 //!
 //! An alias and the package it aliases are always kept or removed together
 //! (`markPackageIrremovable`/`keepPackageInGroup`'s own recursion through
@@ -170,18 +169,6 @@ pub fn optimize(
         &require_constraints,
         &conflict_constraints,
         policy,
-        &mut to_remove,
-    );
-
-    let fixed_set: HashSet<usize> = request.fixed.iter().copied().collect();
-    // Locked-package list is always empty here; see the module doc for why.
-    optimize_impossible_packages_away(
-        pool.packages(),
-        &irremovable,
-        &alias_groups,
-        &fixed_set,
-        &[],
-        &require_constraints,
         &mut to_remove,
     );
 
@@ -461,71 +448,6 @@ fn link_constraint_text(link: &Link) -> String {
         .map_or_else(|| "*".to_string(), ToString::to_string)
 }
 
-/// `PoolOptimizer::optimizeImpossiblePackagesAway`. `fixed` and `locked` are
-/// pool indices (`Request::isFixedPackage`/`isLockedPackage`, folded into
-/// index sets since this port has no object identity to hash against);
-/// [`optimize`] always calls this with `locked` empty (see the module doc),
-/// so it is a no-op there and exercised directly by this module's own tests
-/// instead.
-#[allow(clippy::too_many_arguments)]
-fn optimize_impossible_packages_away(
-    packages: &[Package],
-    irremovable: &HashSet<usize>,
-    alias_groups: &HashMap<usize, Vec<usize>>,
-    fixed: &HashSet<usize>,
-    locked: &[usize],
-    require_constraints: &ConstraintGroups,
-    to_remove: &mut HashSet<usize>,
-) {
-    if locked.is_empty() {
-        return;
-    }
-
-    let mut by_name: HashMap<String, HashMap<usize, &Package>> = HashMap::new();
-    for (index, package) in packages.iter().enumerate() {
-        if irremovable.contains(&index) {
-            continue;
-        }
-        if alias_groups.contains_key(&index) || package.is_alias() {
-            continue;
-        }
-        if fixed.contains(&index) || locked.contains(&index) {
-            continue;
-        }
-        by_name
-            .entry(package.name.clone())
-            .or_default()
-            .insert(index, package);
-    }
-
-    for &locked_index in locked {
-        let locked_package = &packages[locked_index];
-        let is_unused = locked_package
-            .names(false)
-            .iter()
-            .all(|name| !require_constraints.contains_key(name));
-        if is_unused {
-            continue;
-        }
-
-        for link in &locked_package.requires {
-            let Some(candidates) = by_name.get_mut(&link.target) else {
-                continue;
-            };
-            candidates.retain(|&id, required| {
-                let matches = link
-                    .constraint
-                    .as_ref()
-                    .is_none_or(|c| c.matches(&required.version));
-                if !matches {
-                    to_remove.insert(id);
-                }
-                matches
-            });
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,39 +641,5 @@ mod tests {
         // exactly the way it did over the real phpunit/phpunit pool.
         let rules = rule_set_generator::rules_for(&optimized.pool, &request);
         assert!(!rules.is_empty());
-    }
-
-    /// `optimizeImpossiblePackagesAway`: a locked package's own require
-    /// rules out every candidate version that could never satisfy it,
-    /// exercised directly since `Request` has no locked-package field yet
-    /// (the module doc explains why `optimize` never reaches this with a
-    /// non-empty `locked`).
-    #[test]
-    fn impossible_packages_away_removes_versions_no_locked_require_can_pick() {
-        let mut root = package("vendor/root", "1.0.0");
-        root.requires = vec![link_c("vendor/dep", "1.0.0")];
-        let dep_match = package("vendor/dep", "1.0.0");
-        let dep_impossible = package("vendor/dep", "2.0.0");
-        let packages = vec![root, dep_match, dep_impossible];
-
-        let mut require_constraints: ConstraintGroups = HashMap::new();
-        let mut cache = ConstraintCache::new();
-        // Root itself must be "used" (referenced by some requirement) for
-        // its own requires to apply at all (`isUnusedPackage`'s guard).
-        add_disjuncts(&mut require_constraints, "vendor/root", "*", &mut cache).unwrap();
-        add_disjuncts(&mut require_constraints, "vendor/dep", "1.0.0", &mut cache).unwrap();
-
-        let mut to_remove = HashSet::new();
-        optimize_impossible_packages_away(
-            &packages,
-            &HashSet::new(),
-            &HashMap::new(),
-            &HashSet::new(),
-            &[0],
-            &require_constraints,
-            &mut to_remove,
-        );
-
-        assert_eq!(to_remove, HashSet::from([2]), "{to_remove:?}");
     }
 }
