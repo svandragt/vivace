@@ -250,9 +250,33 @@ run_mode() {
   local diff_out
   if diff_out=$(diff -rq --exclude=.vivace-state --exclude=.git "$composer_dir/$vendor_dir" "$viv_dir/$vendor_dir" 2>&1); then
     emit_row "$name" "$mode" "identical" "${viv_ms}ms" "${prefix}composer ${composer_ms}ms"
+    return
+  fi
+
+  # Some plugin-generated files embed the absolute install path (#129), e.g.
+  # phpstan/extension-installer's GeneratedConfig.php. Re-check each "Files
+  # X and Y differ" pair with composer_dir normalised to viv_dir before
+  # calling the row a real diff.
+  local real_diff="" normalised=0 line file_a file_b
+  while IFS= read -r line; do
+    if [[ $line == "Files "*" and "*" differ" ]]; then
+      file_a=${line#Files }
+      file_a=${file_a%% and *}
+      file_b=${line#* and }
+      file_b=${file_b% differ}
+      if diff -q <(sed "s|$composer_dir|$viv_dir|g" "$file_a") "$file_b" >/dev/null 2>&1; then
+        normalised=$((normalised + 1))
+        continue
+      fi
+    fi
+    real_diff+="$line"$'\n'
+  done <<< "$diff_out"
+
+  if [ -z "$real_diff" ]; then
+    emit_row "$name" "$mode" "identical" "${viv_ms}ms" "${prefix}composer ${composer_ms}ms; path-only differences normalised: $normalised"
   else
     failures=1
-    emit_row "$name" "$mode" "differs" "${viv_ms}ms" "${prefix}$(head -10 <<< "$diff_out")"
+    emit_row "$name" "$mode" "differs" "${viv_ms}ms" "${prefix}$(head -10 <<< "$real_diff")"
   fi
 }
 

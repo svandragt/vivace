@@ -56,6 +56,10 @@ project's lock can drop `--no-plugins` from that default; see below. A
 project/mode combination is one of:
 
 - **identical** — Composer and viv produced byte-identical `vendor/` trees.
+  Files that differ only in the absolute install path (some plugin-generated
+  files, such as phpstan/extension-installer's `GeneratedConfig.php`, embed
+  it) are normalised before this comparison, and the Details cell notes how
+  many were dropped.
 - **differs** — the trees diverge; the first ten differing paths are listed.
 - **skipped** — a known-unsupported feature, an unmet platform requirement,
   or a Composer command that failed, not a failure: a `path`/`vcs` repository
