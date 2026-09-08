@@ -1381,7 +1381,7 @@ fn link_mode_clone_reflinks_or_falls_back_depending_on_the_filesystem() {
         return;
     };
 
-    if fs_type == "btrfs" || fs_type.contains("xfs") {
+    if fs_type == "btrfs" || fs_type.contains("xfs") || fs_type == "apfs" {
         assert_eq!(
             meta.permissions().mode() & 0o200,
             0o200,
