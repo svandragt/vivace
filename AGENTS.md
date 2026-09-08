@@ -135,3 +135,11 @@ check locally against the committed baseline.
 4. Add a `JOURNAL.md` entry.
 5. Bump `Cargo.toml`'s version, tag, and push (`release.yml` publishes it as
    a pre-release).
+
+## After a release
+
+1. Reinstall the binary you run locally (`make install`); a stale `viv`
+   refuses plugins the release already adapts.
+2. Triage the milestones with the `triage-milestones` skill
+   (`.claude/skills/triage-milestones/`): prune the current one to its
+   theme and seed the next.
