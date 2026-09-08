@@ -1501,12 +1501,16 @@ mod plugin_generators {
         let ctx = TestContext::new();
         let project = ctx.project.path();
         copy_lock_sources(&fixture("phpstan"), project);
+        copy_tree(
+            &fixture("phpstan").join("packages"),
+            &project.join("packages"),
+        );
 
         ctx.viv()
             .arg("install")
             .assert()
             .success()
-            .stdout(predicates::str::contains("Installed 3 packages"));
+            .stdout(predicates::str::contains("Installed 5 packages"));
 
         let template =
             fs::read_to_string(fixture("phpstan").join("expected/GeneratedConfig.php")).unwrap();
