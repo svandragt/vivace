@@ -141,11 +141,18 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
         root.insert(key.to_string(), Value::Object(links));
     }
 
+    // `--force` may overwrite a file that already exists (its indent
+    // detected before this write replaces it); a brand new file has nothing
+    // to detect from, so falls back to `normalize::detect_indent`'s own
+    // four-space default (an empty string has no indented line either).
+    let existing = fs_err::read_to_string(&composer_json_path).unwrap_or_default();
+    let indent = normalize::detect_indent(&existing);
+
     fs_err::write(
         &composer_json_path,
         serde_json::to_vec(&Value::Object(root))?,
     )?;
-    normalize::maybe_normalize(&composer_json_path)?;
+    normalize::maybe_normalize(&composer_json_path, &indent)?;
 
     let status = validate::run(&ValidateArgs {
         file: Some(composer_json_path.clone()),

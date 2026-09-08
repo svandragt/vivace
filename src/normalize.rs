@@ -23,10 +23,9 @@ use serde_json::{Map, Value};
 
 use crate::autoload::sort::natcmp;
 
-/// `viv normalize`'s own default, and the indent `viv add`/`viv rm`/
-/// `viv update` normalize with (they have no `--indent-size` flag of their
-/// own).
-const DEFAULT_INDENT_SIZE: usize = 4;
+/// The indent `viv init` writes for a brand new `composer.json`, which has
+/// no existing file to detect an indent from.
+const DEFAULT_INDENT: &str = "    ";
 
 /// `viv normalize` flags.
 #[derive(Args, Debug, Clone)]
@@ -38,9 +37,11 @@ pub struct NormalizeArgs {
     /// and prints a diff if it is not.
     #[arg(long)]
     pub check: bool,
-    /// Spaces per indent level.
-    #[arg(long = "indent-size", default_value_t = DEFAULT_INDENT_SIZE)]
-    pub indent_size: usize,
+    /// Spaces per indent level. Defaults to the file's own indent
+    /// (`detect_indent`), same as Composer's `JsonManipulator` and
+    /// `ergebnis/composer-normalize`.
+    #[arg(long = "indent-size")]
+    pub indent_size: Option<usize>,
 }
 
 /// Composer's JSON schema (`res/composer-schema.json`) top-level `properties`
@@ -114,7 +115,11 @@ pub fn run(args: &NormalizeArgs) -> Result<()> {
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let path = project_dir.join("composer.json");
     let original = fs_err::read_to_string(&path)?;
-    let normalized = normalize(&original, args.indent_size)
+    let indent = match args.indent_size {
+        Some(size) => " ".repeat(size),
+        None => detect_indent(&original),
+    };
+    let normalized = normalize(&original, &indent)
         .with_context(|| format!("{}: normalizing", path.display()))?;
 
     if original == normalized {
@@ -134,17 +139,20 @@ pub fn run(args: &NormalizeArgs) -> Result<()> {
 
 /// `viv add`/`viv rm`/`viv update`'s post-write step (unless
 /// `--no-normalize`): rewrite `composer.json` in place if normalizing it
-/// changes any bytes, using the same default indent as a bare
-/// `viv normalize`. Not called by `viv install`/`viv dump-autoload` (#95):
-/// those only read `composer.json` and must never write to it. A file that
-/// can't be read or fails to parse is left untouched so the caller's own
-/// read/parse reports the real error instead of this one masking it.
-/// Returns whether it rewrote the file, for the caller's one stderr line.
-pub fn maybe_normalize(path: &std::path::Path) -> Result<bool> {
+/// changes any bytes, indenting with `indent` — the caller's job to detect
+/// (`detect_indent`) from the file as it stood before its own edit, since by
+/// the time this runs, an intermediate rewrite (`require::write_composer_json`)
+/// may already have reformatted it. Not called by `viv install`/
+/// `viv dump-autoload` (#95): those only read `composer.json` and must never
+/// write to it. A file that can't be read or fails to parse is left
+/// untouched so the caller's own read/parse reports the real error instead
+/// of this one masking it. Returns whether it rewrote the file, for the
+/// caller's one stderr line.
+pub fn maybe_normalize(path: &std::path::Path, indent: &str) -> Result<bool> {
     let Ok(original) = fs_err::read_to_string(path) else {
         return Ok(false);
     };
-    let Ok(normalized) = normalize(&original, DEFAULT_INDENT_SIZE) else {
+    let Ok(normalized) = normalize(&original, indent) else {
         return Ok(false);
     };
     if original == normalized {
@@ -152,6 +160,22 @@ pub fn maybe_normalize(path: &std::path::Path) -> Result<bool> {
     }
     write_atomic(path, normalized.as_bytes())?;
     Ok(true)
+}
+
+/// Composer's `JsonManipulator::detectIndenting` and
+/// `ergebnis/composer-normalize`'s `Indent::fromJson`: the leading
+/// whitespace (tabs allowed) of the first line that starts with whitespace
+/// followed by a `"`, i.e. the first indented key or string. Four spaces
+/// when no line qualifies (a compact single-line file, or one with no
+/// indentation at all).
+pub fn detect_indent(content: &str) -> String {
+    for line in content.lines() {
+        let trimmed = line.trim_start_matches([' ', '\t']);
+        if trimmed.len() != line.len() && trimmed.starts_with('"') {
+            return line[..line.len() - trimmed.len()].to_string();
+        }
+    }
+    DEFAULT_INDENT.to_string()
 }
 
 /// stdout via `writeln!`, not `println!`, to satisfy the `print_stdout` lint.
@@ -184,10 +208,9 @@ fn write_atomic(path: &std::path::Path, content: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Apply every normalizer and re-serialize with `indent_size`-space indent,
-/// unescaped slashes and unicode (`serde_json`'s defaults), trailing
-/// newline.
-fn normalize(content: &str, indent_size: usize) -> Result<String> {
+/// Apply every normalizer and re-serialize with `indent`, unescaped slashes
+/// and unicode (`serde_json`'s defaults), trailing newline.
+fn normalize(content: &str, indent: &str) -> Result<String> {
     let value: Value = serde_json::from_str(content).context("parsing composer.json")?;
     let Value::Object(mut root) = value else {
         bail!("composer.json's root is not an object");
@@ -220,7 +243,6 @@ fn normalize(content: &str, indent_size: usize) -> Result<String> {
 
     let ordered = reorder_top_level(root);
 
-    let indent = " ".repeat(indent_size);
     let mut buf = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(indent.as_bytes());
     let mut serializer = serde_json::Serializer::with_formatter(&mut buf, formatter);
@@ -403,7 +425,7 @@ mod tests {
 
     #[test]
     fn top_level_keys_reorder_to_schema_order() {
-        let out = normalize(r#"{"license":"MIT","name":"a/b"}"#, 4).unwrap();
+        let out = normalize(r#"{"license":"MIT","name":"a/b"}"#, "    ").unwrap();
         assert_eq!(
             out,
             "{\n    \"name\": \"a/b\",\n    \"license\": \"MIT\"\n}\n"
@@ -412,7 +434,7 @@ mod tests {
 
     #[test]
     fn unknown_keys_are_ksorted_after_schema_keys() {
-        let out = normalize(r#"{"zzz-ext":"z","name":"a/b","aaa-ext":"a"}"#, 4).unwrap();
+        let out = normalize(r#"{"zzz-ext":"z","name":"a/b","aaa-ext":"a"}"#, "    ").unwrap();
         assert_eq!(
             out,
             "{\n    \"name\": \"a/b\",\n    \"aaa-ext\": \"a\",\n    \"zzz-ext\": \"z\"\n}\n"
@@ -423,7 +445,7 @@ mod tests {
     fn package_links_sort_platform_first_then_alphabetical() {
         let out = normalize(
             r#"{"require":{"psr/log":"^1.0","ext-json":"*","php":">=7.4","monolog/monolog":"^2.0","lib-icu":"*"}}"#,
-            4,
+            "    ",
         )
         .unwrap();
         assert_eq!(
@@ -434,7 +456,7 @@ mod tests {
 
     #[test]
     fn bin_is_sorted() {
-        let out = normalize(r#"{"bin":["bin/zeta","bin/alpha"]}"#, 4).unwrap();
+        let out = normalize(r#"{"bin":["bin/zeta","bin/alpha"]}"#, "    ").unwrap();
         assert_eq!(
             out,
             "{\n    \"bin\": [\n        \"bin/alpha\",\n        \"bin/zeta\"\n    ]\n}\n"
@@ -445,7 +467,7 @@ mod tests {
     fn config_is_ksorted_and_allow_plugins_wildcard_sorted() {
         let out = normalize(
             r#"{"config":{"sort-packages":true,"allow-plugins":{"z/p":true,"a/p":true},"optimize-autoloader":true}}"#,
-            4,
+            "    ",
         )
         .unwrap();
         assert_eq!(
@@ -456,7 +478,7 @@ mod tests {
 
     #[test]
     fn version_constraint_spacing_is_collapsed() {
-        let out = normalize(r#"{"require":{"psr/log":">=1.0.0  ||  >=2.0.0"}}"#, 4).unwrap();
+        let out = normalize(r#"{"require":{"psr/log":">=1.0.0  ||  >=2.0.0"}}"#, "    ").unwrap();
         assert_eq!(
             out,
             "{\n    \"require\": {\n        \"psr/log\": \">=1.0.0 || >=2.0.0\"\n    }\n}\n"
@@ -465,14 +487,21 @@ mod tests {
 
     #[test]
     fn already_normalized_is_a_no_op() {
-        let normalized = normalize(r#"{"name":"a/b"}"#, 4).unwrap();
-        assert_eq!(normalize(&normalized, 4).unwrap(), normalized);
+        let normalized = normalize(r#"{"name":"a/b"}"#, "    ").unwrap();
+        assert_eq!(normalize(&normalized, "    ").unwrap(), normalized);
     }
 
     #[test]
     fn indent_size_is_configurable() {
-        let out = normalize(r#"{"name":"a/b"}"#, 2).unwrap();
+        let out = normalize(r#"{"name":"a/b"}"#, "  ").unwrap();
         assert_eq!(out, "{\n  \"name\": \"a/b\"\n}\n");
+    }
+
+    #[test]
+    fn detect_indent_reads_the_first_indented_key_line() {
+        assert_eq!(detect_indent("{\n  \"name\": \"a/b\"\n}\n"), "  ");
+        assert_eq!(detect_indent("{\n\t\"name\": \"a/b\"\n}\n"), "\t");
+        assert_eq!(detect_indent(r#"{"name":"a/b"}"#), "    ");
     }
 
     #[test]
@@ -487,12 +516,12 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(messy.as_bytes()).unwrap();
 
-        assert!(maybe_normalize(file.path()).unwrap());
+        assert!(maybe_normalize(file.path(), DEFAULT_INDENT).unwrap());
         let rewritten = fs_err::read_to_string(file.path()).unwrap();
-        assert_eq!(rewritten, normalize(messy, DEFAULT_INDENT_SIZE).unwrap());
+        assert_eq!(rewritten, normalize(messy, DEFAULT_INDENT).unwrap());
 
         assert!(
-            !maybe_normalize(file.path()).unwrap(),
+            !maybe_normalize(file.path(), DEFAULT_INDENT).unwrap(),
             "already-normalized bytes should not be rewritten"
         );
     }
@@ -502,7 +531,7 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(b"not json").unwrap();
 
-        assert!(!maybe_normalize(file.path()).unwrap());
+        assert!(!maybe_normalize(file.path(), DEFAULT_INDENT).unwrap());
         assert_eq!(fs_err::read_to_string(file.path()).unwrap(), "not json");
     }
 
@@ -515,7 +544,7 @@ mod tests {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let fixture = manifest.join("tests/fixtures/monolog");
         let original = fs_err::read_to_string(fixture.join("composer.json")).unwrap();
-        let normalized = normalize(&original, DEFAULT_INDENT_SIZE).unwrap();
+        let normalized = normalize(&original, DEFAULT_INDENT).unwrap();
 
         let lock = crate::lock::read_lock(&fixture.join("composer.lock")).unwrap();
         crate::lock::validate_against_root(&lock, normalized.as_bytes())

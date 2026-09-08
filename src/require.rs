@@ -150,8 +150,9 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
     }
     remove_main_key_if_empty(&mut root, remove_key);
 
+    let indent = normalize::detect_indent(&original);
     write_composer_json(&composer_json_path, &root)?;
-    if normalize::maybe_normalize(&composer_json_path)? {
+    if normalize::maybe_normalize(&composer_json_path, &indent)? {
         warn_out(&format!("Normalized {}", composer_json_path.display()));
     }
     if args.no_normalize {
@@ -198,8 +199,9 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
     // package is gone.
     remove_main_key_if_empty(&mut root, link_type);
 
+    let indent = normalize::detect_indent(&original);
     write_composer_json(&composer_json_path, &root)?;
-    if normalize::maybe_normalize(&composer_json_path)? {
+    if normalize::maybe_normalize(&composer_json_path, &indent)? {
         warn_out(&format!("Normalized {}", composer_json_path.display()));
     }
     if args.no_normalize {

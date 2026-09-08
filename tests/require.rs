@@ -472,6 +472,74 @@ async fn viv_add_normalizes_composer_json_before_computing_the_content_hash() {
     );
 }
 
+/// #163: `viv add`'s normalize step used to always reindent to four spaces
+/// (`normalize::DEFAULT_INDENT_SIZE`), so a two-space `composer.json` got
+/// rewritten wholesale on the first `viv add`. It must now detect and keep
+/// the file's own indent, same as Composer's `JsonManipulator`.
+#[tokio::test]
+async fn viv_add_keeps_a_two_space_composer_json_two_space() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+    write_composer_json_indented(&fixture, project, "  ");
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &project.join(dir));
+    }
+
+    ctx.viv()
+        .args(["require", "psr/container:^2.0", "--offline"])
+        .assert()
+        .success();
+
+    let on_disk = fs_err::read_to_string(project.join("composer.json")).unwrap();
+    assert_eq!(
+        vivace::normalize::detect_indent(&on_disk),
+        "  ",
+        "viv add must keep the file's existing two-space indent:\n{on_disk}"
+    );
+}
+
+/// Same as above, for a tab-indented `composer.json`.
+#[tokio::test]
+async fn viv_add_keeps_a_tab_indented_composer_json_tab_indented() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+    write_composer_json_indented(&fixture, project, "\t");
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &project.join(dir));
+    }
+
+    ctx.viv()
+        .args(["require", "psr/container:^2.0", "--offline"])
+        .assert()
+        .success();
+
+    let on_disk = fs_err::read_to_string(project.join("composer.json")).unwrap();
+    assert_eq!(
+        vivace::normalize::detect_indent(&on_disk),
+        "\t",
+        "viv add must keep the file's existing tab indent:\n{on_disk}"
+    );
+}
+
+/// Writes the monolog fixture's `composer.json` into `project`, re-indented
+/// with `indent` instead of the fixture's own four spaces — the "existing
+/// file with a different house style" `viv add`/`viv rm` must preserve.
+fn write_composer_json_indented(fixture: &Path, project: &Path, indent: &str) {
+    let original: Value =
+        serde_json::from_slice(&fs_err::read(fixture.join("composer.json")).unwrap()).unwrap();
+    let mut buf = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(indent.as_bytes());
+    let mut serializer = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    serde::Serialize::serialize(&original, &mut serializer).unwrap();
+    fs_err::write(project.join("composer.json"), buf).unwrap();
+}
+
 /// #158: `require::partial_update` must build its repository set from
 /// `composer.json`'s own `repositories` (`#67`), not a hard-coded
 /// `https://repo.packagist.org` — a `composer`-type repository at a
