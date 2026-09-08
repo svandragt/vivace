@@ -18,6 +18,6 @@ gh issue list --state open --limit 200 \
 
 echo
 echo "## Closed this cycle"
-gh issue list --state closed --limit 50 --search "closed:>$(git log -1 --format=%cs "$(git describe --tags --abbrev=0)")" \
+gh issue list --state closed --limit 50 --search "closed:>=$(git log --no-show-signature -1 --format=%cs "$(git describe --tags --abbrev=0)")" \
   --json number,title,milestone \
   --jq '.[] | "#\(.number) [\(.milestone.title // "-")] \(.title)"'
