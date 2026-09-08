@@ -1,0 +1,15 @@
+{
+    "name": "vivace/fixture-private-installer",
+    "license": "proprietary",
+    "type": "project",
+    "require": {
+        "acme/pro-plugin": "1.0.0",
+        "ffraenz/private-composer-installer": "^5.0"
+    },
+    "config": {
+        "secure-http": false,
+        "allow-plugins": {
+            "ffraenz/private-composer-installer": true
+        }
+    }
+}

@@ -21,14 +21,12 @@ WordPress project):
 | cweagans/composer-patches | Applies patches from `extra.patches`/a patches file | Native (`src/plugins/patches.rs`), git-apply path only (#53) |
 | yiisoft/yii2-composer | Writes `vendor/yiisoft/extensions.php` listing every `yii2-extension` package | Native (`src/plugins/yii2.rs`) (#92) |
 | craftcms/plugin-installer | Writes `vendor/craftcms/plugins.php` listing every `craft-plugin` package | Native (`src/plugins/craft.rs`) (#92) |
+| ffraenz/private-composer-installer | Substitutes `{%NAME}`/`{%version}` placeholders in a dist URL from the environment/`.env` right before download | Native (`src/plugins/private_installer.rs`) (#98) — the substitution itself is fully ported and tested against `fetch::Fetcher` directly, but reaching it from `viv install` needs a one-line `Fetcher::private_installer(...)` builder call in `install.rs`, not yet wired (a file another agent owns as of this writing) |
+| codeception/c3 | Copies its bundled `c3.php` into the project root on install/update, unless an existing, edited one is there | Native (`src/plugins/c3.rs`) (#126) |
 
 Plugins named in issue #12 but not seen in any lock yet: symfony/flex
 (rewrites composer.json and recipes, not portable), bamarni/composer-bin-plugin
 (nested installs, portable by running viv in each `vendor-bin/*`).
-
-Not yet ported: `ffraenz/private-composer-installer` (substitutes a licence
-key from `.env` into a paid plugin's dist URL) — three local client projects
-need it; see #98 (Adapter for ffraenz/private-composer-installer).
 
 ## Rule
 
@@ -58,13 +56,21 @@ are ignored, as Composer ignores them.
 3. cweagans/composer-patches. Done (#53). bamarni/composer-bin-plugin is
    still refused.
 4. ffraenz/private-composer-installer (#98): three local client projects
-   need it for paid-plugin dist URLs.
+   need it for paid-plugin dist URLs. The placeholder substitution is done
+   and tested at the `fetch::Fetcher` level; `install.rs` still needs to
+   build a `Fetcher` with `.private_installer(...)` when
+   `Plugins::has_private_installer` is set, or a project using this plugin
+   installs with the plugin recognised (no refusal) but every placeholder
+   left literal in the dist URL it actually requests, which 404s.
 5. php-http/discovery (#101): the generated file only. Done. Its resolver
    hook (`postUpdate`) is still out of scope, even with the resolver
    shipped, since it needs `viv update` to treat the discovered packages as
    additional requirements, not just a file to write.
 6. yiisoft/yii2-composer and craftcms/plugin-installer (#92): the generated
    file only. Done.
+7. codeception/c3 (#126): copies `c3.php` into the project root. Done.
+   Removing `c3.php` when `codeception/c3` itself is uninstalled isn't
+   ported — there's no `plan.remove`-side hook this reaches today.
 
 symfony/flex stays refused. Its value is in `composer require`, which is
 where Symfony users should keep using Composer.

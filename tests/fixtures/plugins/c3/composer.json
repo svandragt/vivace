@@ -1,0 +1,25 @@
+{
+    "name": "vivace/fixture-c3",
+    "license": "proprietary",
+    "type": "project",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/c3",
+            "options": {
+                "versions": {
+                    "codeception/c3": "2.9.0"
+                }
+            }
+        }
+    ],
+    "require": {
+        "codeception/c3": "2.9.0"
+    },
+    "config": {
+        "secure-http": true,
+        "allow-plugins": {
+            "codeception/c3": true
+        }
+    }
+}

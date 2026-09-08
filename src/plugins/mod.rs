@@ -2,11 +2,13 @@
 //! (`docs/plugin-strategy.md`'s rules 1, 2 and 3: `composer/installers` and the
 //! `wordpress-core-installer` pair map install paths;
 //! `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`,
-//! `tbachert/spi`, `php-http/discovery`, `yiisoft/yii2-composer` and
-//! `craftcms/plugin-installer` generate a file or run a command after
-//! install; `cweagans/composer-patches` applies patches after each package
-//! lands), plus rule 3's refusal for every other `composer-plugin` in the
-//! lock.
+//! `tbachert/spi`, `php-http/discovery`, `yiisoft/yii2-composer`,
+//! `craftcms/plugin-installer` and `codeception/c3` generate a file or run a
+//! command after install; `cweagans/composer-patches` applies patches after
+//! each package lands; `ffraenz/private-composer-installer` resolves a
+//! dist URL's placeholders in `fetch::Fetcher` right before the download
+//! request, the one adapter here with no apply phase of its own), plus rule
+//! 3's refusal for every other `composer-plugin` in the lock.
 //!
 //! The path-mapping pair only ever changes *where* a package lands on disk:
 //! this module computes a project-relative install directory per package;
@@ -30,11 +32,13 @@ use serde_json::Value;
 
 use crate::lock::{Lock, Package, Root};
 
+mod c3;
 mod craft;
 mod discovery;
 pub mod patches;
 mod phpcs;
 mod phpstan;
+pub mod private_installer;
 mod spi;
 mod yii2;
 
@@ -139,6 +143,8 @@ const NATIVE_ADAPTERS: &[&str] = &[
     "php-http/discovery",
     "yiisoft/yii2-composer",
     "craftcms/plugin-installer",
+    "ffraenz/private-composer-installer",
+    "codeception/c3",
 ];
 
 /// Composer plugins that only affect commands vivace doesn't implement
@@ -163,6 +169,8 @@ pub struct Plugins {
     discovery: bool,
     yii2: bool,
     craft: bool,
+    c3: bool,
+    private_installer: bool,
 }
 
 /// Resolve which native adapters apply and check every other enabled
@@ -196,6 +204,8 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
                     "php-http/discovery" => plugins.discovery = true,
                     "yiisoft/yii2-composer" => plugins.yii2 = true,
                     "craftcms/plugin-installer" => plugins.craft = true,
+                    "ffraenz/private-composer-installer" => plugins.private_installer = true,
+                    "codeception/c3" => plugins.c3 = true,
                     other => unreachable!("{other} is in NATIVE_ADAPTERS but has no adapter arm"),
                 }
             }
@@ -260,6 +270,11 @@ impl Plugins {
             let project_dir = vendor_dir.parent().unwrap_or(vendor_dir);
             craft::apply(project_dir, vendor_dir, packages)?;
         }
+        if self.c3 {
+            // Same `project_dir` approximation as `craft`'s own call above.
+            let project_dir = vendor_dir.parent().unwrap_or(vendor_dir);
+            c3::apply(project_dir, packages)?;
+        }
         Ok(())
     }
 
@@ -284,6 +299,18 @@ impl Plugins {
     /// Whether `cweagans/composer-patches` is active for this install.
     pub fn has_patches(&self) -> bool {
         self.patches
+    }
+
+    /// Whether `ffraenz/private-composer-installer` is active for this
+    /// install. Unlike every other adapter above, this one has no apply
+    /// phase of its own: its whole effect is `fetch::Fetcher` resolving a
+    /// dist URL's `{%NAME}` placeholders right before the download request,
+    /// via `Fetcher::private_installer(private_installer::Env::load(root,
+    /// project_dir))`. That builder call has to happen where the `Fetcher`
+    /// for an install is constructed (`install.rs`), which this module
+    /// doesn't own; this accessor is the seam a caller there checks first.
+    pub fn has_private_installer(&self) -> bool {
+        self.private_installer
     }
 
     /// `cweagans/composer-patches`' `POST_PACKAGE_INSTALL`/`POST_PACKAGE_UPDATE`
@@ -1118,6 +1145,8 @@ mod tests {
             discovery: false,
             yii2: false,
             craft: false,
+            c3: false,
+            private_installer: false,
         };
         let root = root(json!({}));
         let dir = plugins
@@ -1138,6 +1167,8 @@ mod tests {
             discovery: false,
             yii2: false,
             craft: false,
+            c3: false,
+            private_installer: false,
         };
         let root = root(json!({
             "extra": {
@@ -1164,6 +1195,8 @@ mod tests {
             discovery: false,
             yii2: false,
             craft: false,
+            c3: false,
+            private_installer: false,
         };
         let root = root(json!({
             "extra": {
@@ -1192,6 +1225,8 @@ mod tests {
             discovery: false,
             yii2: false,
             craft: false,
+            c3: false,
+            private_installer: false,
         };
         let root = root(json!({
             "extra": {
@@ -1219,6 +1254,8 @@ mod tests {
             discovery: false,
             yii2: false,
             craft: false,
+            c3: false,
+            private_installer: false,
         };
         let root = root(json!({}));
         assert!(
@@ -1240,6 +1277,8 @@ mod tests {
             discovery: false,
             yii2: false,
             craft: false,
+            c3: false,
+            private_installer: false,
         };
         let root = root(json!({}));
         let dir = plugins
@@ -1263,6 +1302,8 @@ mod tests {
             discovery: false,
             yii2: false,
             craft: false,
+            c3: false,
+            private_installer: false,
         };
         let root = root(json!({"extra": {"wordpress-install-dir": "wp"}}));
         let dir = plugins
@@ -1286,6 +1327,8 @@ mod tests {
             discovery: false,
             yii2: false,
             craft: false,
+            c3: false,
+            private_installer: false,
         };
         let root = root(json!({
             "extra": {"wordpress-install-dir": {"johnpbloch/wordpress-core": "web/wp"}}
@@ -1311,6 +1354,8 @@ mod tests {
             discovery: false,
             yii2: false,
             craft: false,
+            c3: false,
+            private_installer: false,
         };
         let raw = json!({
             "name": "acme/wp",

@@ -105,6 +105,12 @@ pub struct Fetcher {
     /// to fall back on is rejected. `get_conditional` mirrors that; `fetch`
     /// (dist downloads, never conditional) always rejects.
     offline: bool,
+    /// #98's `ffraenz/private-composer-installer`: when set, `fetch`
+    /// resolves a dist URL's `{%NAME}` placeholders against this
+    /// environment right before the download request. `None` (the
+    /// default) leaves a dist URL untouched, same as before this adapter
+    /// existed.
+    private_installer: Option<crate::plugins::private_installer::Env>,
 }
 
 impl Fetcher {
@@ -116,6 +122,7 @@ impl Fetcher {
             hop_timings: Mutex::new(HashMap::new()),
             secure_http: true,
             offline: false,
+            private_installer: None,
         })
     }
 
@@ -132,6 +139,16 @@ impl Fetcher {
     #[must_use]
     pub fn offline(mut self, offline: bool) -> Self {
         self.offline = offline;
+        self
+    }
+
+    /// #98: activates `ffraenz/private-composer-installer`'s dist-URL
+    /// placeholder substitution. The caller builds `env` from
+    /// `plugins::Plugins::has_private_installer` and
+    /// `plugins::private_installer::Env::load`.
+    #[must_use]
+    pub fn private_installer(mut self, env: crate::plugins::private_installer::Env) -> Self {
+        self.private_installer = Some(env);
         self
     }
 
@@ -177,20 +194,43 @@ impl Fetcher {
     pub async fn fetch(&self, pkg: &Package, temp_dir: &Path) -> Result<Downloaded> {
         pkg.validate_dist()?;
         let dist = pkg.dist.as_ref().expect("validate_dist checked");
-        let url = Url::parse(&dist.url)
+        // The URL logged/named in every error below: `dist.url` verbatim,
+        // literal `{%NAME}` placeholders included, never the substituted
+        // one — see `request_url`'s own comment for why.
+        let display_url = Url::parse(&dist.url)
             .with_context(|| format!("{}: invalid dist URL {}", pkg.name, dist.url))?;
         if self.offline {
             bail!(
                 "{}: Network disabled, request canceled: {}",
                 pkg.name,
-                redact(&url)
+                redact(&display_url)
             );
         }
+        // #98: the URL actually requested. Resolved fresh per download
+        // (never cached on `pkg`/written back to it) so a secret substituted
+        // in only ever exists in this local variable, not in `composer.lock`,
+        // `installed.json`, or (via `display_url` above) a log line.
+        let request_url = match &self.private_installer {
+            Some(env) => {
+                let substituted =
+                    crate::plugins::private_installer::resolve(&dist.url, &pkg.version, env)
+                        .with_context(|| {
+                            format!("{}: resolving dist URL placeholders", pkg.name)
+                        })?;
+                Url::parse(&substituted).with_context(|| {
+                    format!(
+                        "{}: dist URL is not a valid URL once its placeholders are resolved",
+                        pkg.name
+                    )
+                })?
+            }
+            None => display_url.clone(),
+        };
         let started = std::time::Instant::now();
         let (downloaded, actual_sha1) = self
-            .get(&pkg.name, url.clone(), temp_dir)
+            .get(&pkg.name, request_url, display_url.clone(), temp_dir)
             .await
-            .with_context(|| format!("{}: downloading {}", pkg.name, redact(&url)))?;
+            .with_context(|| format!("{}: downloading {}", pkg.name, redact(&display_url)))?;
         verify_shasum(
             &pkg.name,
             dist.shasum.as_deref().unwrap_or(""),
@@ -345,19 +385,28 @@ impl Fetcher {
 
     /// `GET start_url`, following redirects by hand so each hop gets the
     /// credential for *its* host rather than reusing (or losing) the first
-    /// hop's.
+    /// hop's. `label_url` is what every error/log line below names instead
+    /// of `start_url` itself — the two differ only for #98's
+    /// `ffraenz/private-composer-installer`, where `start_url` carries a
+    /// secret substituted in from the environment and `label_url` is the
+    /// original dist URL with its `{%NAME}` placeholder still literal, so
+    /// that secret never reaches a log line or error message. A redirect
+    /// target comes from the server, not from vivace's own substitution, so
+    /// it is its own label from that hop on.
     async fn get(
         &self,
         pkg_name: &str,
         start_url: Url,
+        label_url: Url,
         temp_dir: &Path,
     ) -> Result<(Downloaded, String)> {
         require_https(pkg_name, &start_url, self.secure_http)?;
         let mut url = start_url;
+        let mut label = label_url;
         let mut hops = 0u8;
         loop {
             if redirect_budget_exhausted(hops) {
-                bail!("{pkg_name}: too many redirects fetching {}", redact(&url));
+                bail!("{pkg_name}: too many redirects fetching {}", redact(&label));
             }
             hops += 1;
             let host = url.host_str().unwrap_or("").to_string();
@@ -383,6 +432,7 @@ impl Fetcher {
                     .to_string();
                 url = redirect_target(&url, &location)?;
                 require_https(pkg_name, &url, self.secure_http)?;
+                label = url.clone();
                 continue;
             }
             let status = response.status();
@@ -396,7 +446,7 @@ impl Fetcher {
                 // `err`'s own Display embeds the request URL verbatim
                 // (reqwest's `Error::fmt`); strip it so a URL with
                 // credentials never reaches this message unredacted.
-                anyhow::anyhow!("{} fetching {}{hint}", err.without_url(), redact(&url))
+                anyhow::anyhow!("{} fetching {}{hint}", err.without_url(), redact(&label))
             })?;
             // Timed through the body read (not just headers), so this hop's
             // number is comparable to the redirect hop above and reflects
@@ -404,7 +454,7 @@ impl Fetcher {
             // arrive quickly, the archive bytes behind them do not.
             let (downloaded, sha1_hex) = read_body(response, temp_dir)
                 .await
-                .with_context(|| format!("reading response body from {}", redact(&url)))?;
+                .with_context(|| format!("reading response body from {}", redact(&label)))?;
             let elapsed = hop_started.elapsed();
             self.record_hop(&host, elapsed);
             tracing::debug!(

@@ -462,7 +462,12 @@ fn run_impl(
             bail!(message);
         }
         let auth = Auth::load(&project_dir)?;
-        let fetcher = fetch::Fetcher::new(auth)?.secure_http(root.config.secure_http);
+        let mut fetcher = fetch::Fetcher::new(auth)?.secure_http(root.config.secure_http);
+        if plugins.has_private_installer() {
+            fetcher = fetcher.private_installer(
+                crate::plugins::private_installer::Env::load(&root, &project_dir),
+            );
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
