@@ -52,13 +52,10 @@ pub struct UpdateArgs {
     /// (`UPDATE_LISTED_WITH_TRANSITIVE_DEPS`).
     #[arg(short = 'W', long = "with-all-dependencies")]
     pub with_all_dependencies: bool,
-    /// Prefer already-locked versions over the newest one a partial
-    /// update's allow-listed packages could otherwise pick
-    /// (`Installer::setMinimalUpdate`). Parsed but not yet wired to a
-    /// solve: the pin mechanism itself is ported
-    /// (`solver::policy::DefaultPolicy::with_preferred_versions`), but
-    /// nothing here constructs a policy with it yet (see that port's own
-    /// doc comment for why).
+    /// Prefer already-locked versions over the newest one an update could
+    /// otherwise pick, for every package not on this update's own literal
+    /// package list (`Installer::setMinimalUpdate`, `preferred_versions`
+    /// below).
     #[arg(long)]
     pub minimal_changes: bool,
     /// Re-derive `composer.lock` from itself (content-hash, key order,
@@ -245,9 +242,22 @@ async fn solve(
         // fetching all of them in the first wave instead of discovering
         // most of them one BFS level's round trip at a time. No lock yet
         // (first-ever update) just means an empty seed, same as before.
-        let seed = read_locked_names(lock_path)?;
-        return solver::solve_update_seeded(&repo, root, prefer_stable, args.prefer_lowest, &seed)
-            .await;
+        let locked_by_name = read_locked_by_name(lock_path)?;
+        let seed: Vec<String> = locked_by_name.keys().cloned().collect();
+        let preferred = if args.minimal_changes {
+            preferred_versions(&locked_by_name, &[])?
+        } else {
+            HashMap::new()
+        };
+        return solver::solve_update_seeded(
+            &repo,
+            root,
+            prefer_stable,
+            args.prefer_lowest,
+            &seed,
+            preferred,
+        )
+        .await;
     }
 
     if !lock_path.exists() {
@@ -268,6 +278,11 @@ async fn solve(
     } else {
         UpdateAllowMode::OnlyListed
     };
+    let preferred = if args.minimal_changes {
+        preferred_versions(&locked_by_name, &args.packages)?
+    } else {
+        HashMap::new()
+    };
     solver::solve_partial_update_seeded(
         &repo,
         root,
@@ -277,21 +292,51 @@ async fn solve(
         &args.packages,
         mode,
         &seed,
+        preferred,
     )
     .await
 }
 
-/// `seed` for the full-update path (#90): every lowercased name in an
-/// existing lock's `packages`+`packages-dev`, or empty when there isn't one
-/// yet (`locked_packages_by_name`'s own merge, but read straight off the
-/// lock file since the full-update path has no other reason to load it).
-fn read_locked_names(lock_path: &Path) -> Result<Vec<String>> {
+/// `locked_by_name` for the full-update path (#90's seed, keyed the same
+/// way `locked_packages_by_name` keys a partial update's): empty when there
+/// isn't a lock yet, read straight off the lock file since the full-update
+/// path has no other reason to load it.
+fn read_locked_by_name(lock_path: &Path) -> Result<HashMap<String, Value>> {
     if !lock_path.exists() {
-        return Ok(Vec::new());
+        return Ok(HashMap::new());
     }
     let lock_bytes = fs_err::read(lock_path)?;
     let lock: Value = serde_json::from_slice(&lock_bytes).context("parsing composer.lock")?;
-    Ok(locked_packages_by_name(&lock).into_keys().collect())
+    Ok(locked_packages_by_name(&lock))
+}
+
+/// `--minimal-changes`'s pin set (`Installer::createPolicy`'s
+/// `$preferredVersions[$pkg->getName()] = $pkg->getVersion();` loop): every
+/// locked package's own normalized version, except ones on the literal
+/// (unexpanded) allow list — `Installer::setUpdateAllowList`'s own
+/// lowercased `$packages`, not `pool_builder::expand_allow_list`'s
+/// transitive expansion — since those are exactly the packages the user
+/// asked to move and must stay free to. `AliasPackage`s are skipped in PHP
+/// too, but never show up here: they come from the lock's separate
+/// `aliases` array, not its `packages`/`packages-dev` entries that
+/// `locked_by_name` is built from.
+fn preferred_versions(
+    locked_by_name: &HashMap<String, Value>,
+    allow_list: &[String],
+) -> Result<HashMap<String, crate::semver::NormalizedVersion>> {
+    let allow: std::collections::HashSet<String> =
+        allow_list.iter().map(|n| n.to_ascii_lowercase()).collect();
+    locked_by_name
+        .iter()
+        .filter(|(name, _)| !allow.contains(*name))
+        .map(|(name, entry)| {
+            let version = entry
+                .get("version")
+                .and_then(Value::as_str)
+                .with_context(|| format!("locked package {name} has no version"))?;
+            Ok((name.clone(), crate::semver::normalize(version)?))
+        })
+        .collect()
 }
 
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint

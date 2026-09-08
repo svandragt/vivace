@@ -84,136 +84,55 @@ pub async fn build<T: Transport>(
     prefer_stable: bool,
     prefer_lowest: bool,
 ) -> Result<BuildResult> {
-    build_seeded(repo, root, prefer_stable, prefer_lowest, &[]).await
+    build_seeded(
+        repo,
+        root,
+        prefer_stable,
+        prefer_lowest,
+        &[],
+        &HashMap::new(),
+    )
+    .await
 }
 
 /// Same as [`build`], but `seed` (already-lowercased package names, #90's
 /// prior-lock prefetch) is passed straight through to
 /// [`Repository::load_closure_seeded`]; a name `seed` names that `root`
 /// doesn't actually require never enters `packages` below, since it only
-/// ever lands in `closure` if the walk reaches it.
+/// ever lands in `closure` if the walk reaches it. `preferred` is
+/// `--minimal-changes`'s pin set, passed straight through to
+/// [`build_partial_seeded`] (see its own doc for why it must reach
+/// `pool_optimizer::optimize`, not just the solver).
+///
+/// #111: a full update is exactly [`build_partial_seeded`] with nothing
+/// locked out — `Repository::load_closure`'s own `load_closure_skipping(...,
+/// &HashSet::new())` (`src/repository.rs:1015-1022`) already proves an empty
+/// skip set changes nothing, and an empty `locked_by_name` makes
+/// `build_partial_seeded`'s second `ClosureRoot`/locked-entry push both
+/// no-ops.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, only ever called with the default hasher"
+)]
 pub async fn build_seeded<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
     prefer_stable: bool,
     prefer_lowest: bool,
     seed: &[String],
+    preferred: &HashMap<String, semver::NormalizedVersion>,
 ) -> Result<BuildResult> {
-    let require = string_map(root, "require");
-    let require_dev = string_map(root, "require-dev");
-
-    let minimum_stability = root
-        .get("minimum-stability")
-        .and_then(Value::as_str)
-        .map_or("stable", normalize_stability);
-
-    let mut stability_flags: HashMap<String, &'static str> = HashMap::new();
-    let mut root_aliases: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
-    for (name, value) in require.iter().chain(require_dev.iter()) {
-        let raw = value
-            .as_str()
-            .with_context(|| format!("require {name}: constraint is not a string"))?;
-        extract_alias(name, raw, &mut root_aliases)?;
-        extract_stability_flag(name, raw, minimum_stability, &mut stability_flags);
-    }
-
-    let acceptable: HashSet<&'static str> = STABILITIES
-        .iter()
-        .copied()
-        .filter(|s| stability_rank(s) <= stability_rank(minimum_stability))
-        .collect();
-
-    // `ComposerRepository::loadAsyncPackages`'s `~dev` skip logic
-    // (`docs/resolver-design.md`'s Metadata section), applied once for the
-    // whole closure rather than per name: `Repository::load_closure` takes
-    // one `DevAcceptance` for its whole breadth-first walk (stage 2's
-    // API), and over-fetching a `~dev` file for a name that turns out not
-    // to need it just costs a request the stability filter below discards
-    // the results of, never a wrong answer.
-    let dev_acceptance =
-        if acceptable.contains("dev") || stability_flags.values().any(|&s| s == "dev") {
-            DevAcceptance::Both
-        } else {
-            DevAcceptance::NonDevOnly
-        };
-
-    let roots = [ClosureRoot {
-        require: &require,
-        require_dev: &require_dev,
-    }];
-    let mut constraint_cache: ConstraintCache = ConstraintCache::new();
-    let closure = repo
-        .load_closure_seeded(
-            &roots,
-            dev_acceptance,
-            &root_replaced_names(root),
-            seed,
-            &|name, stability| is_acceptable(name, stability, &acceptable, &stability_flags),
-            &mut constraint_cache,
-        )
-        .await?;
-
-    let platform_overrides = root
-        .pointer("/config/platform")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let mut packages = platform_packages(&platform_overrides)?;
-    packages.push(root_package(root, &mut constraint_cache)?);
-    let fixed: Vec<usize> = (0..packages.len()).collect();
-
-    let push_started = Instant::now();
-    for versions in closure.into_values() {
-        for version in versions {
-            push_package_version(
-                &mut packages,
-                version,
-                &acceptable,
-                &stability_flags,
-                &root_aliases,
-                &mut constraint_cache,
-            )?;
-        }
-    }
-    tracing::debug!(
-        elapsed_ms = push_started.elapsed().as_millis(),
-        packages = packages.len(),
-        "converted the metadata closure into pool packages"
-    );
-
-    let pool = Pool::new(packages);
-    let request = Request {
-        requires: root_requires(&require, &require_dev)?,
-        fixed,
-    };
-    let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
-    let optimize_started = Instant::now();
-    let optimized = pool_optimizer::optimize(&request, pool, &policy, &mut constraint_cache)?;
-    tracing::debug!(
-        elapsed_ms = optimize_started.elapsed().as_millis(),
-        pool_packages = optimized.pool.len(),
-        "pruned the pool before rule generation"
-    );
-    // `optimize` only borrows `request`; `requires` is still ours to move
-    // into the final, remapped `Request` (`fixed` alone changes, `optimize`
-    // reindexes it to match the pruned pool).
-    let Request { requires, .. } = request;
-
-    Ok(BuildResult {
-        pool: optimized.pool,
-        request: Request {
-            requires,
-            fixed: optimized.fixed,
-        },
-        minimum_stability,
-        stability_flags: stability_flags
-            .into_iter()
-            .map(|(name, stability)| (name, stability_rank(stability)))
-            .collect(),
-        platform_reqs: extract_platform_requirements(&require),
-        platform_dev_reqs: extract_platform_requirements(&require_dev),
-        platform_overrides,
-    })
+    build_partial_seeded(
+        repo,
+        root,
+        &HashMap::new(),
+        &HashSet::new(),
+        prefer_stable,
+        prefer_lowest,
+        seed,
+        preferred,
+    )
+    .await
 }
 
 /// `Installer::requirePackagesForUpdate`'s non-`updateMirrors` branch: root
@@ -321,16 +240,30 @@ pub async fn build_partial<T: Transport>(
         prefer_stable,
         prefer_lowest,
         &[],
+        &HashMap::new(),
     )
     .await
 }
 
 /// Same as [`build_partial`], but `seed` is passed straight through to
 /// [`Repository::load_closure_seeded`] (#90); see [`build_seeded`] for why a
-/// seed can never change the pool, only how quickly it's built.
+/// seed can never change the pool, only how quickly it's built. `preferred`
+/// is `--minimal-changes`'s pin set (`Installer::createPolicy`'s
+/// `$preferredVersions`, `policy.rs`'s module doc): the same `DefaultPolicy`
+/// this builds for [`pool_optimizer::optimize`] below must carry it too,
+/// matching `Installer.php:534` passing one preferred-versions-aware
+/// `$policy` into both `Solver` and `createPoolOptimizer` — otherwise the
+/// optimizer's own duplicate-version collapse
+/// (`PoolOptimizer::optimize`'s `selectPreferredPackages` call,
+/// `PoolOptimizer.php:247`) can discard the pinned version as a "duplicate"
+/// before the solver ever sees it (#61).
 #[expect(
     clippy::implicit_hasher,
     reason = "internal API, only ever called with the default hasher"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors build_partial plus one seed slice and the minimal-changes pin set"
 )]
 pub async fn build_partial_seeded<T: Transport>(
     repo: &Repository<T>,
@@ -340,6 +273,7 @@ pub async fn build_partial_seeded<T: Transport>(
     prefer_stable: bool,
     prefer_lowest: bool,
     seed: &[String],
+    preferred: &HashMap<String, semver::NormalizedVersion>,
 ) -> Result<BuildResult> {
     let require = string_map(root, "require");
     let require_dev = string_map(root, "require-dev");
@@ -459,7 +393,11 @@ pub async fn build_partial_seeded<T: Transport>(
         requires: root_requires(&require, &require_dev)?,
         fixed,
     };
-    let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
+    let policy = if preferred.is_empty() {
+        DefaultPolicy::new(prefer_stable, prefer_lowest)
+    } else {
+        DefaultPolicy::with_preferred_versions(prefer_stable, prefer_lowest, preferred.clone())
+    };
     let optimize_started = Instant::now();
     let optimized = pool_optimizer::optimize(&request, pool, &policy, &mut constraint_cache)?;
     tracing::debug!(

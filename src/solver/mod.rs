@@ -46,7 +46,7 @@ use anyhow::Result;
 use serde_json::{Map, Value};
 
 use crate::repository::{Repository, Transport};
-use crate::semver::{self, Constraint};
+use crate::semver::{self, Constraint, NormalizedVersion};
 use policy::DefaultPolicy;
 use pool::Pool;
 use transaction::{AliasEntry, ResolvedPackage};
@@ -130,22 +130,30 @@ pub async fn solve_update<T: Transport>(
     prefer_lowest: bool,
 ) -> Result<UpdateResult> {
     let built = pool_builder::build(repo, root, prefer_stable, prefer_lowest).await?;
-    resolve(built, root, prefer_stable, prefer_lowest)
+    resolve(built, root, prefer_stable, prefer_lowest, HashMap::new())
 }
 
 /// Same as [`solve_update`], but `seed` (already-lowercased package names,
 /// typically the prior `composer.lock`'s own) is passed straight through to
 /// [`pool_builder::build_seeded`] (#90): a prefetch hint, never a pool
-/// change.
+/// change. `preferred` is `--minimal-changes`'s pin set (see `policy.rs`'s
+/// module doc); empty means an ordinary update.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, only ever called with the default hasher"
+)]
 pub async fn solve_update_seeded<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
     prefer_stable: bool,
     prefer_lowest: bool,
     seed: &[String],
+    preferred: HashMap<String, NormalizedVersion>,
 ) -> Result<UpdateResult> {
-    let built = pool_builder::build_seeded(repo, root, prefer_stable, prefer_lowest, seed).await?;
-    resolve(built, root, prefer_stable, prefer_lowest)
+    let built =
+        pool_builder::build_seeded(repo, root, prefer_stable, prefer_lowest, seed, &preferred)
+            .await?;
+    resolve(built, root, prefer_stable, prefer_lowest, preferred)
 }
 
 /// A partial update: `pkg...`'s allow list, expanded per `mode`
@@ -175,6 +183,7 @@ pub async fn solve_partial_update<T: Transport>(
         allow_list,
         mode,
         &[],
+        HashMap::new(),
     )
     .await
 }
@@ -182,13 +191,15 @@ pub async fn solve_partial_update<T: Transport>(
 /// Same as [`solve_partial_update`], but `seed` is passed straight through
 /// to [`pool_builder::build_partial_seeded`] (#90); see
 /// [`solve_update_seeded`] for why a seed can never change the pool.
+/// `preferred` is `--minimal-changes`'s pin set, same as
+/// [`solve_update_seeded`]'s own.
 #[expect(
     clippy::implicit_hasher,
     reason = "internal API, only ever called with the default hasher"
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors solve_partial_update plus one seed slice"
+    reason = "mirrors solve_partial_update plus one seed slice and the minimal-changes pin set"
 )]
 pub async fn solve_partial_update_seeded<T: Transport>(
     repo: &Repository<T>,
@@ -199,6 +210,7 @@ pub async fn solve_partial_update_seeded<T: Transport>(
     allow_list: &[String],
     mode: pool_builder::UpdateAllowMode,
     seed: &[String],
+    preferred: HashMap<String, NormalizedVersion>,
 ) -> Result<UpdateResult> {
     let locked_requires: HashMap<String, Vec<String>> = locked_by_name
         .iter()
@@ -236,9 +248,10 @@ pub async fn solve_partial_update_seeded<T: Transport>(
         prefer_stable,
         prefer_lowest,
         seed,
+        &preferred,
     )
     .await?;
-    resolve(built, root, prefer_stable, prefer_lowest)
+    resolve(built, root, prefer_stable, prefer_lowest, preferred)
 }
 
 /// The merged-solve-then-dev-split pipeline shared by [`solve_update`] and
@@ -249,8 +262,13 @@ fn resolve(
     root: &Value,
     prefer_stable: bool,
     prefer_lowest: bool,
+    preferred: HashMap<String, NormalizedVersion>,
 ) -> Result<UpdateResult> {
-    let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
+    let policy = if preferred.is_empty() {
+        DefaultPolicy::new(prefer_stable, prefer_lowest)
+    } else {
+        DefaultPolicy::with_preferred_versions(prefer_stable, prefer_lowest, preferred)
+    };
     let installed =
         solver::solve(&policy, &built.pool, &built.request).map_err(anyhow::Error::from)?;
     let aliases = transaction::used_aliases(&built.pool, &installed);

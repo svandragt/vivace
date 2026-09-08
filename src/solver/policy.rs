@@ -9,14 +9,23 @@
 //!
 //! `preferredVersions` (`--minimal-changes`'s pin toward each already-locked
 //! package's exact version, `Installer::createPolicy`) is ported as
-//! [`DefaultPolicy::with_preferred_versions`], but nothing in `update.rs`
-//! calls it yet: wiring it up means threading a `name -> NormalizedVersion`
-//! map through `solve_update`/`solve_partial_update`, and those two
-//! functions already have several callers across owned and shared test
-//! files (`tests/update.rs`, `tests/require.rs`, `tests/solver.rs`); adding
-//! a parameter to either is real surgery on files this lane doesn't own.
-//! `viv update --minimal-changes` parses the flag and otherwise no-ops
-//! until that wiring lands.
+//! [`DefaultPolicy::with_preferred_versions`] and wired into
+//! `update.rs::solve` via `solve_update_seeded`/`solve_partial_update_seeded`'s
+//! `preferred` parameter: `Installer::createPolicy`'s own
+//! `$preferredVersions[$pkg->getName()] = $pkg->getVersion();` loop, minus
+//! `AliasPackage`s (not lock entries in `packages`/`packages-dev`, so never
+//! built here) and minus the literal `--minimal-changes` allow list (the
+//! packages the user asked to move, which must stay free to).
+//!
+//! `pool_builder::build_partial_seeded` builds its own `DefaultPolicy` the
+//! same way, for `pool_optimizer::optimize`: real Composer passes the
+//! *same* `$policy` (preferred-versions-aware) into both `Solver` and
+//! `createPoolOptimizer` (`Installer.php:534`), because
+//! `PoolOptimizer::optimize` itself calls
+//! `$this->policy->selectPreferredPackages(...)` when collapsing same-name
+//! duplicates (`PoolOptimizer.php:247`) — an optimizer built from a
+//! preferred-versions-blind policy would discard the pinned version as a
+//! "duplicate" before the solver ever saw it.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -52,12 +61,8 @@ impl DefaultPolicy {
         }
     }
 
-    /// `--minimal-changes`'s policy: see the module doc for why nothing
-    /// calls this yet.
-    #[allow(
-        dead_code,
-        reason = "the pin mechanism is ported and tested ahead of its CLI wiring, see the module doc"
-    )]
+    /// `--minimal-changes`'s policy: see the module doc for the pin set's
+    /// exact composition.
     pub fn with_preferred_versions(
         prefer_stable: bool,
         prefer_lowest: bool,
