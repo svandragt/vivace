@@ -10,6 +10,34 @@ final class GeneratedConfig
 {
 
 	public const EXTENSIONS = array (
+  'acme/phpstan-ext-a' => 
+  array (
+    'install_path' => '{{PROJECT_DIR}}/vendor/acme/phpstan-ext-a',
+    'relative_install_path' => '../../../acme/phpstan-ext-a',
+    'extra' => 
+    array (
+      'includes' => 
+      array (
+        0 => 'ext-a.neon',
+      ),
+    ),
+    'version' => '1.0.0',
+    'phpstanVersionConstraint' => '>=1.10.3.0-dev, <3.0.0.0-dev',
+  ),
+  'acme/phpstan-ext-b' => 
+  array (
+    'install_path' => '{{PROJECT_DIR}}/vendor/acme/phpstan-ext-b',
+    'relative_install_path' => '../../../acme/phpstan-ext-b',
+    'extra' => 
+    array (
+      'includes' => 
+      array (
+        0 => 'ext-b.neon',
+      ),
+    ),
+    'version' => '1.0.0',
+    'phpstanVersionConstraint' => '>=1.12.26.0-dev, <2.0.0.0-dev',
+  ),
   'phpstan/phpstan-strict-rules' => 
   array (
     'install_path' => '{{PROJECT_DIR}}/vendor/phpstan/phpstan-strict-rules',
@@ -30,7 +58,7 @@ final class GeneratedConfig
 );
 
 	/** @var string|null */
-	public const PHPSTAN_VERSION_CONSTRAINT = '>=1.12.4.0-dev, <2.0.0.0-dev';
+	public const PHPSTAN_VERSION_CONSTRAINT = '>=1.12.26.0-dev, <2.0.0.0-dev';
 
 	private function __construct()
 	{

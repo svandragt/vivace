@@ -1,0 +1,17 @@
+{
+    "name": "acme/phpstan-ext-b",
+    "type": "phpstan-extension",
+    "require": {
+        "phpstan/phpstan": ">=1.12.26 <2.0"
+    },
+    "extra": {
+        "phpstan": {
+            "includes": [
+                "ext-b.neon"
+            ]
+        }
+    },
+    "autoload": {
+        "psr-4": { "Acme\\PhpstanExtB\\": "src/" }
+    }
+}

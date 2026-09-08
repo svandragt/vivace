@@ -4,21 +4,14 @@
 //!
 //! Ported from `phpstan/extension-installer` `1.4.3`'s `src/Plugin.php`,
 //! fetched 2026-09-06.
-//!
-//! ponytail: `extra["phpstan/extension-installer"]["ignore"]` (root-level,
-//! per-package opt-out) is honoured, but `Intervals::compactConstraint`'s
-//! full interval union across more than one constrained extension is not —
-//! `PHPSTAN_VERSION_CONSTRAINT` instead takes the overall lowest lower bound
-//! and highest upper bound, which is what Composer's own
-//! `MultiConstraint::getLowerBound`/`getUpperBound` return regardless of
-//! compaction, but diverges from a true union if two extensions' ranges
-//! don't overlap at all (a gap in the middle is not represented).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use semver_php::{Bound, VersionParser};
+use semver_php::{
+    Bound, Constraint, Interval, Intervals, MultiConstraint, Operator, VersionParser,
+};
 use serde_json::{Map, Value, json};
 
 use super::php_string;
@@ -46,7 +39,7 @@ pub(super) fn apply(root: &Root, packages: &[(&Package, PathBuf)]) -> Result<()>
 
     let mut data: BTreeMap<String, Value> = BTreeMap::new();
     let mut not_installed: BTreeMap<String, Value> = BTreeMap::new();
-    let mut constraints: Vec<(Bound, Bound)> = Vec::new();
+    let mut constraints: Vec<Box<dyn Constraint>> = Vec::new();
 
     for (package, install_dir) in packages {
         let extra = package.raw.pointer("/extra/phpstan").cloned();
@@ -75,7 +68,7 @@ pub(super) fn apply(root: &Root, packages: &[(&Package, PathBuf)]) -> Result<()>
                 continue;
             }
             constraint_str = Some(constraint_into_string(&lower, &upper));
-            constraints.push((lower, upper));
+            constraints.push(constraint);
         }
 
         data.insert(
@@ -90,7 +83,7 @@ pub(super) fn apply(root: &Root, packages: &[(&Package, PathBuf)]) -> Result<()>
         );
     }
 
-    let global_constraint = merge_constraints(&constraints);
+    let global_constraint = merge_constraints(constraints);
     let body = render(
         &to_map(data),
         &to_map(not_installed),
@@ -138,19 +131,48 @@ fn constraint_into_string(lower: &Bound, upper: &Bound) -> String {
     )
 }
 
-fn merge_constraints(constraints: &[(Bound, Bound)]) -> Option<String> {
+/// `Intervals::compactConstraint(new MultiConstraint($phpstanVersionConstraints))`:
+/// the real plugin ANDs every extension's `phpstan/phpstan` requirement
+/// together and compacts the result, rather than taking the overall lowest
+/// lower bound and highest upper bound (which is what `MultiConstraint`'s own
+/// `getLowerBound`/`getUpperBound` return, and diverges from the true
+/// intersection once two extensions' ranges overlap only partially). An AND
+/// of contiguous ranges stays contiguous, so `semver_php`'s `Intervals::get`
+/// — the crate's own port of `compactConstraint`'s interval algebra — always
+/// yields at most one interval here.
+fn merge_constraints(constraints: Vec<Box<dyn Constraint>>) -> Option<String> {
     if constraints.is_empty() {
         return None;
     }
-    let lower = constraints
-        .iter()
-        .map(|(l, _)| l)
-        .min_by(|a, b| a.compare_as_lower(b))?;
-    let upper = constraints
-        .iter()
-        .map(|(_, u)| u)
-        .max_by(|a, b| a.compare_as_upper(b))?;
-    Some(constraint_into_string(lower, upper))
+    let conjunction: Box<dyn Constraint> = if constraints.len() == 1 {
+        constraints.into_iter().next().unwrap()
+    } else {
+        Box::new(MultiConstraint::new(constraints, true))
+    };
+    Intervals::new()
+        .get(conjunction.as_ref())
+        .numeric
+        .first()
+        .map(interval_into_string)
+}
+
+fn interval_into_string(interval: &Interval) -> String {
+    let (lower, upper) = (interval.start(), interval.end());
+    format!(
+        "{}{}, {}{}",
+        if lower.operator() == Operator::Ge {
+            ">="
+        } else {
+            ">"
+        },
+        lower.version(),
+        if upper.operator() == Operator::Le {
+            "<="
+        } else {
+            "<"
+        },
+        upper.version(),
+    )
 }
 
 /// `Plugin::$generatedFileTemplate`, filled in with `var_export`-shaped dumps
@@ -277,22 +299,20 @@ mod tests {
     }
 
     #[test]
-    fn merge_constraints_takes_the_overall_extremes() {
-        let a = (
-            Bound::new("1.0.0.0-dev", true),
-            Bound::new("2.0.0.0-dev", false),
-        );
-        let b = (
-            Bound::new("1.5.0.0-dev", true),
-            Bound::new("3.0.0.0-dev", false),
-        );
-        let merged = merge_constraints(&[a, b]).unwrap();
-        assert_eq!(merged, ">=1.0.0.0-dev, <3.0.0.0-dev");
+    fn merge_constraints_intersects_rather_than_spans() {
+        // `^1.10.3 || ^2.0` and `>=1.12.26 <2.0`: the envelope would be
+        // `>=1.10.3.0-dev, <3.0.0.0-dev`, but the true intersection — what
+        // the real plugin's `Intervals::compactConstraint` returns — is the
+        // narrower `>=1.12.26.0-dev, <2.0.0.0-dev`.
+        let a = VersionParser::parse_constraints("^1.10.3 || ^2.0").unwrap();
+        let b = VersionParser::parse_constraints(">=1.12.26 <2.0").unwrap();
+        let merged = merge_constraints(vec![a, b]).unwrap();
+        assert_eq!(merged, ">=1.12.26.0-dev, <2.0.0.0-dev");
     }
 
     #[test]
     fn merge_constraints_is_none_when_empty() {
-        assert_eq!(merge_constraints(&[]), None);
+        assert_eq!(merge_constraints(Vec::new()), None);
     }
 
     #[test]

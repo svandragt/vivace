@@ -4,8 +4,64 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "3b1227c32620182059fee9337561aa55",
+    "content-hash": "68b73bdbcc2c327bf2741aa2a66dba92",
     "packages": [
+        {
+            "name": "acme/phpstan-ext-a",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/ext-a",
+                "reference": "b7836cdd8507eb765086ba0dc8efa876b8fd09f2"
+            },
+            "require": {
+                "phpstan/phpstan": "^1.10.3 || ^2.0"
+            },
+            "type": "phpstan-extension",
+            "extra": {
+                "phpstan": {
+                    "includes": [
+                        "ext-a.neon"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Acme\\PhpstanExtA\\": "src/"
+                }
+            },
+            "transport-options": {
+                "relative": true
+            }
+        },
+        {
+            "name": "acme/phpstan-ext-b",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/ext-b",
+                "reference": "cdd92581ea38c1b84393e6dd701f9d70dec08118"
+            },
+            "require": {
+                "phpstan/phpstan": ">=1.12.26 <2.0"
+            },
+            "type": "phpstan-extension",
+            "extra": {
+                "phpstan": {
+                    "includes": [
+                        "ext-b.neon"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Acme\\PhpstanExtB\\": "src/"
+                }
+            },
+            "transport-options": {
+                "relative": true
+            }
+        },
         {
             "name": "phpstan/extension-installer",
             "version": "1.4.3",
