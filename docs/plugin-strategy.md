@@ -23,6 +23,10 @@ WordPress project):
 | craftcms/plugin-installer | Writes `vendor/craftcms/plugins.php` listing every `craft-plugin` package | Native (`src/plugins/craft.rs`) (#92) |
 | ffraenz/private-composer-installer | Substitutes `{%NAME}`/`{%version}` placeholders in a dist URL from the environment/`.env` right before download | Native (`src/plugins/private_installer.rs`) (#98) — the substitution itself is fully ported and tested against `fetch::Fetcher` directly, but reaching it from `viv install` needs a one-line `Fetcher::private_installer(...)` builder call in `install.rs`, not yet wired (a file another agent owns as of this writing) |
 | codeception/c3 | Copies its bundled `c3.php` into the project root on install/update, unless an existing, edited one is there | Native (`src/plugins/c3.rs`) (#126) |
+| drupal/core-composer-scaffold | Copies scaffold files (`index.php`, `.htaccess`, `settings.php`, …) from every allowed package, manages `.gitignore`, writes `vendor/drupal/DrupalInstalled.php` and points the root classmap at it | Native (`src/plugins/drupal_scaffold.rs`) (#93) |
+| drupal/core-project-message | Prints a message to stdout after `create-project`/`install`, no filesystem effect | Known inert — Composer prints a message viv does not |
+| drupal/core-recipe-unpack | Unpacks a required `drupal-recipe` package's own dependencies into the root `composer.json` | Known inert for `install`/`update` — only subscribes to `POST_UPDATE_CMD`/`POST_CREATE_PROJECT_CMD` (via `composer require`/`create-project`), never plain `install` |
+| symfony/runtime | Writes `vendor/autoload_runtime.php` from a fixed template plus `extra.runtime` options, after autoload dump | Native (`src/plugins/symfony_runtime.rs`) (#93) |
 
 Plugins named in issue #12 but not seen in any lock yet: symfony/flex
 (rewrites composer.json and recipes, not portable), bamarni/composer-bin-plugin
@@ -71,6 +75,13 @@ are ignored, as Composer ignores them.
 7. codeception/c3 (#126): copies `c3.php` into the project root. Done.
    Removing `c3.php` when `codeception/c3` itself is uninstalled isn't
    ported — there's no `plan.remove`-side hook this reaches today.
+8. drupal/core-composer-scaffold and symfony/runtime (#93), plus the
+   known-inert classification for drupal/core-project-message and
+   drupal/core-recipe-unpack: moves `drupal/recommended-project` from
+   `plugins: refused` to `plugins: native` in the compat sweep. Not ported:
+   `ScaffoldOptions::symlink()` (copy only, no symlink mode) and
+   `Handler::scaffold`'s unchanged-file skip (see the ponytail notes in
+   `src/plugins/drupal_scaffold.rs`).
 
 symfony/flex stays refused. Its value is in `composer require`, which is
 where Symfony users should keep using Composer.

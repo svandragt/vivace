@@ -464,9 +464,10 @@ fn run_impl(
         let auth = Auth::load(&project_dir)?;
         let mut fetcher = fetch::Fetcher::new(auth)?.secure_http(root.config.secure_http);
         if plugins.has_private_installer() {
-            fetcher = fetcher.private_installer(
-                crate::plugins::private_installer::Env::load(&root, &project_dir),
-            );
+            fetcher = fetcher.private_installer(crate::plugins::private_installer::Env::load(
+                &root,
+                &project_dir,
+            ));
         }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -572,6 +573,10 @@ fn run_impl(
     }
 
     let all: Vec<&Package> = plan.keep.iter().chain(&plan.install).collect();
+    // #93: drupal/core-composer-scaffold. Same phase as the patches above —
+    // install directories are known, the autoloader isn't regenerated yet.
+    plugins.apply_scaffold(&root, &project_dir, &vendor_dir, &all)?;
+
     let flags = AutoloadFlags::from(args);
     regenerate_vendor_metadata(
         &flags,
@@ -905,6 +910,12 @@ fn write_autoload(
     // `tbachert/spi` subscribes to `PRE_AUTOLOAD_DUMP`, so it runs from both
     // `install` and `dump-autoload` alike, right where Composer would run it.
     plugins.apply_pre_autoload_dump(root, vendor_dir, plugin_packages)?;
+    // #93: `drupal/core-composer-scaffold`'s own `PRE_AUTOLOAD_DUMP` listener
+    // points the root package's classmap at `vendor/drupal/DrupalInstalled.php`
+    // (and, conditionally, a few framework classes); `packages` here (not
+    // `plugin_packages`) since the real plugin's version hash walks
+    // Composer's local repository, metapackages included.
+    let scaffold_classmap = plugins.scaffold_classmap(root, project_dir, vendor_dir, packages)?;
     let suffix = resolve_suffix(root, lock, vendor_dir)?;
     let classmap_authoritative = flags.classmap_authoritative || root.config.classmap_authoritative;
     let scan_psr =
@@ -942,10 +953,14 @@ fn write_autoload(
     )?;
 
     let keys = |map: &Map<String, Value>| map.keys().cloned().collect::<Vec<String>>();
+    let root_autoload = merge_classmap(
+        root.autoload.clone().unwrap_or(Value::Null),
+        scaffold_classmap,
+    );
     let input = Input {
         root: RootPackage {
             name: root_name,
-            autoload: root.autoload.clone().unwrap_or(Value::Null),
+            autoload: root_autoload,
             autoload_dev: root.autoload_dev.clone().unwrap_or(Value::Null),
             target_dir: None,
             requires: keys(&root.require),
@@ -990,7 +1005,33 @@ fn write_autoload(
         None => {}
     }
     scripts.dispatch("post-autoload-dump")?;
+    // #93: `symfony/runtime` subscribes to this same script event to write
+    // `vendor/autoload_runtime.php`.
+    plugins.apply_post_autoload_dump(root, project_dir, vendor_dir)?;
     Ok(())
+}
+
+/// `drupal/core-composer-scaffold`'s `Plugin::preAutoloadDump` (#93): merges
+/// [`plugins::Plugins::scaffold_classmap`]'s extra classmap paths into the
+/// root package's own `autoload.classmap` before it reaches the generator —
+/// the classmap scanner already resolves an absolute file path in that list
+/// on its own, so no other generator change is needed.
+fn merge_classmap(autoload: Value, extra: Vec<String>) -> Value {
+    if extra.is_empty() {
+        return autoload;
+    }
+    let mut map = match autoload {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    };
+    match map
+        .entry("classmap")
+        .or_insert_with(|| Value::Array(Vec::new()))
+    {
+        Value::Array(items) => items.extend(extra.into_iter().map(Value::String)),
+        other => *other = Value::Array(extra.into_iter().map(Value::String).collect()),
+    }
+    Value::Object(map)
 }
 
 /// Concurrent `Store::add_zip` calls, so a slow disk cannot pile up an

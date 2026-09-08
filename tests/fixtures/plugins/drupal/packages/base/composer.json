@@ -1,0 +1,20 @@
+{
+    "name": "acme/drupal-scaffold-base",
+    "type": "drupal-module",
+    "extra": {
+        "drupal-scaffold": {
+            "file-mapping": {
+                "[web-root]/robots.txt": "assets/robots.txt",
+                "[web-root]/index.php": "assets/index.php",
+                "[web-root]/settings-extra.php": "assets/settings-extra.php",
+                "[web-root]/router.php": "assets/router.php",
+                "[web-root]/.htaccess": "assets/htaccess",
+                "[web-root]/sites/default/default.settings.php": "assets/default.settings.php",
+                "[project-root]/.editorconfig": {
+                    "path": "assets/editorconfig",
+                    "overwrite": false
+                }
+            }
+        }
+    }
+}

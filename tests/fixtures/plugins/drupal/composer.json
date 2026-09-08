@@ -1,0 +1,55 @@
+{
+    "name": "vivace/fixture-drupal",
+    "license": "proprietary",
+    "type": "project",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/base",
+            "options": {
+                "versions": {
+                    "acme/drupal-scaffold-base": "1.0.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "packages/override",
+            "options": {
+                "versions": {
+                    "acme/drupal-scaffold-override": "1.0.0"
+                }
+            }
+        }
+    ],
+    "require": {
+        "drupal/core-composer-scaffold": "^11.0",
+        "symfony/runtime": "^7.4",
+        "acme/drupal-scaffold-base": "1.0.0",
+        "acme/drupal-scaffold-override": "1.0.0"
+    },
+    "extra": {
+        "drupal-scaffold": {
+            "allowed-packages": [
+                "acme/drupal-scaffold-base",
+                "acme/drupal-scaffold-override"
+            ],
+            "locations": {
+                "web-root": "web/"
+            },
+            "gitignore": true
+        },
+        "runtime": {
+            "env_var_name": "APP_ENV_FIXTURE",
+            "dotenv_path": ".env.fixture"
+        }
+    },
+    "config": {
+        "secure-http": true,
+        "allow-plugins": {
+            "drupal/core-composer-scaffold": true,
+            "symfony/runtime": true
+        }
+    },
+    "minimum-stability": "stable"
+}

@@ -13,6 +13,7 @@ allow = [
     "CDLA-Permissive-2.0",            # webpki-root-certs
     "Unlicense",                      # aho-corasick, memchr, walkdir
     "CC0-1.0",                        # dunce
+    "BSL-1.0",                        # xxhash-rust (drupal scaffold version hash)
 ]
 
 [advisories]

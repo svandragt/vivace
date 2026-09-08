@@ -129,7 +129,7 @@ skip_reason_for() {
 # so this list can't drift from what viv actually adapts.
 native_inert_names=$({
   awk '/^const NATIVE_ADAPTERS/,/^\];/' "$root/src/plugins/mod.rs"
-  grep '^const KNOWN_INERT' "$root/src/plugins/mod.rs"
+  awk '/^const KNOWN_INERT/,/^\];/' "$root/src/plugins/mod.rs"
 } | grep -oE '"[^"]+"' | tr -d '"')
 
 # Echoes the composer-plugin package names $1 (a project dir)'s lock

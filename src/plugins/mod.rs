@@ -35,11 +35,13 @@ use crate::lock::{Lock, Package, Root};
 mod c3;
 mod craft;
 mod discovery;
+mod drupal_scaffold;
 pub mod patches;
 mod phpcs;
 mod phpstan;
 pub mod private_installer;
 mod spi;
+mod symfony_runtime;
 mod yii2;
 
 /// A PHP single-quoted string literal: only `\` and `'` need escaping.
@@ -145,12 +147,22 @@ const NATIVE_ADAPTERS: &[&str] = &[
     "craftcms/plugin-installer",
     "ffraenz/private-composer-installer",
     "codeception/c3",
+    "drupal/core-composer-scaffold",
+    "symfony/runtime",
 ];
 
 /// Composer plugins that only affect commands vivace doesn't implement
-/// (`composer normalize`); ignored silently, same as Composer ignores a
-/// plugin `allow-plugins` sets to `false`.
-const KNOWN_INERT: &[&str] = &["ergebnis/composer-normalize"];
+/// (`composer normalize`), or that a fresh `install`/`update` never triggers
+/// at all (`drupal/core-project-message` only prints a message on
+/// `create-project`/`install`, no filesystem effect; `drupal/core-recipe-unpack`
+/// only subscribes to `POST_UPDATE_CMD`/`POST_CREATE_PROJECT_CMD`, so a plain
+/// `install` never reaches it either); ignored silently, same as Composer
+/// ignores a plugin `allow-plugins` sets to `false`.
+const KNOWN_INERT: &[&str] = &[
+    "ergebnis/composer-normalize",
+    "drupal/core-project-message",
+    "drupal/core-recipe-unpack",
+];
 
 /// Which native adapters are active for this install, resolved once from the
 /// lock and the root `composer.json` ([`resolve`]).
@@ -171,6 +183,8 @@ pub struct Plugins {
     craft: bool,
     c3: bool,
     private_installer: bool,
+    drupal_scaffold: bool,
+    symfony_runtime: bool,
 }
 
 /// Resolve which native adapters apply and check every other enabled
@@ -206,6 +220,8 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
                     "craftcms/plugin-installer" => plugins.craft = true,
                     "ffraenz/private-composer-installer" => plugins.private_installer = true,
                     "codeception/c3" => plugins.c3 = true,
+                    "drupal/core-composer-scaffold" => plugins.drupal_scaffold = true,
+                    "symfony/runtime" => plugins.symfony_runtime = true,
                     other => unreachable!("{other} is in NATIVE_ADAPTERS but has no adapter arm"),
                 }
             }
@@ -330,6 +346,64 @@ impl Plugins {
     ) -> Result<()> {
         if self.patches {
             patches::apply(root, project_dir, vendor_dir, newly_linked, kept, store)?;
+        }
+        Ok(())
+    }
+
+    /// `drupal/core-composer-scaffold`'s `Handler::scaffold`
+    /// (`POST_INSTALL_CMD`/`POST_UPDATE_CMD`): copies scaffold files from
+    /// every allowed package into the project. Same call site and phase as
+    /// [`Self::apply_patches`] (right after linking, while install
+    /// directories are known) — `packages` is the same `keep`/`install`
+    /// union `regenerate_vendor_metadata` already builds.
+    pub fn apply_scaffold(
+        &self,
+        root: &Root,
+        project_dir: &std::path::Path,
+        vendor_dir: &std::path::Path,
+        packages: &[&Package],
+    ) -> Result<()> {
+        if self.drupal_scaffold {
+            drupal_scaffold::apply(root, project_dir, vendor_dir, packages)?;
+        }
+        Ok(())
+    }
+
+    /// `drupal/core-composer-scaffold`'s `Plugin::preAutoloadDump`: writes
+    /// `vendor/drupal/DrupalInstalled.php` and returns the classmap entries
+    /// (that file, plus a handful of framework classes conditional on their
+    /// package being installed) the caller merges into the root package's
+    /// autoload before the classmap scan runs. `packages` here is the full
+    /// installed set including metapackages — unlike
+    /// [`Self::apply_pre_autoload_dump`]'s `bin_packages`, since the real
+    /// plugin's version hash is computed over Composer's own local
+    /// repository, which carries metapackages too.
+    pub fn scaffold_classmap(
+        &self,
+        root: &Root,
+        project_dir: &std::path::Path,
+        vendor_dir: &std::path::Path,
+        packages: &[&Package],
+    ) -> Result<Vec<String>> {
+        if self.drupal_scaffold {
+            drupal_scaffold::pre_autoload_dump(root, project_dir, vendor_dir, packages)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// `symfony/runtime`'s `ComposerPlugin::updateAutoloadFile`
+    /// (`POST_AUTOLOAD_DUMP`): writes `vendor/autoload_runtime.php`. Called
+    /// after `install::write_autoload` dispatches that script event, the
+    /// same phase the real plugin subscribes to.
+    pub fn apply_post_autoload_dump(
+        &self,
+        root: &Root,
+        project_dir: &std::path::Path,
+        vendor_dir: &std::path::Path,
+    ) -> Result<()> {
+        if self.symfony_runtime {
+            symfony_runtime::apply(root, project_dir, vendor_dir)?;
         }
         Ok(())
     }
@@ -1147,6 +1221,8 @@ mod tests {
             craft: false,
             c3: false,
             private_installer: false,
+            drupal_scaffold: false,
+            symfony_runtime: false,
         };
         let root = root(json!({}));
         let dir = plugins
@@ -1169,6 +1245,8 @@ mod tests {
             craft: false,
             c3: false,
             private_installer: false,
+            drupal_scaffold: false,
+            symfony_runtime: false,
         };
         let root = root(json!({
             "extra": {
@@ -1197,6 +1275,8 @@ mod tests {
             craft: false,
             c3: false,
             private_installer: false,
+            drupal_scaffold: false,
+            symfony_runtime: false,
         };
         let root = root(json!({
             "extra": {
@@ -1227,6 +1307,8 @@ mod tests {
             craft: false,
             c3: false,
             private_installer: false,
+            drupal_scaffold: false,
+            symfony_runtime: false,
         };
         let root = root(json!({
             "extra": {
@@ -1256,6 +1338,8 @@ mod tests {
             craft: false,
             c3: false,
             private_installer: false,
+            drupal_scaffold: false,
+            symfony_runtime: false,
         };
         let root = root(json!({}));
         assert!(
@@ -1279,6 +1363,8 @@ mod tests {
             craft: false,
             c3: false,
             private_installer: false,
+            drupal_scaffold: false,
+            symfony_runtime: false,
         };
         let root = root(json!({}));
         let dir = plugins
@@ -1304,6 +1390,8 @@ mod tests {
             craft: false,
             c3: false,
             private_installer: false,
+            drupal_scaffold: false,
+            symfony_runtime: false,
         };
         let root = root(json!({"extra": {"wordpress-install-dir": "wp"}}));
         let dir = plugins
@@ -1329,6 +1417,8 @@ mod tests {
             craft: false,
             c3: false,
             private_installer: false,
+            drupal_scaffold: false,
+            symfony_runtime: false,
         };
         let root = root(json!({
             "extra": {"wordpress-install-dir": {"johnpbloch/wordpress-core": "web/wp"}}
@@ -1356,6 +1446,8 @@ mod tests {
             craft: false,
             c3: false,
             private_installer: false,
+            drupal_scaffold: false,
+            symfony_runtime: false,
         };
         let raw = json!({
             "name": "acme/wp",
