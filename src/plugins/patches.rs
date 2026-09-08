@@ -31,6 +31,41 @@ use crate::link::{LinkMode, link_tree};
 use crate::lock::{Package, Root};
 use crate::store::{Store, hex};
 
+use super::{Adapter, Ctx};
+
+pub(super) struct Patches;
+
+impl Adapter for Patches {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &["cweagans/composer-patches"]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        "2.0.0"
+    }
+
+    fn state_fingerprint(&self, root: &Root, project_dir: &Path) -> Result<Option<String>> {
+        fingerprint(root, project_dir).map(Some)
+    }
+
+    fn post_link(
+        &self,
+        ctx: &Ctx<'_>,
+        newly_linked: &[Package],
+        kept: &[&Package],
+        store: &Store,
+    ) -> Result<()> {
+        apply(
+            ctx.root,
+            ctx.project_dir,
+            ctx.vendor_dir,
+            newly_linked,
+            kept,
+            store,
+        )
+    }
+}
+
 /// A patch, in the plugin's own `Patch::jsonSerialize` field order — matters
 /// for the byte-identical `patches.lock.json` the e2e test diffs against.
 #[derive(Debug, Clone, Serialize)]
@@ -214,7 +249,7 @@ fn resolve(root: &Root, project_dir: &Path) -> Result<(Config, Group<Patch>)> {
 /// path (`src/install.rs`): unlike `write_lock`'s `_hash`, this never reads a
 /// patch's own bytes (no local file I/O or network fetch per patch beyond
 /// the patches file itself), so it's cheap enough to compute on every run.
-pub fn fingerprint(root: &Root, project_dir: &Path) -> Result<String> {
+pub(super) fn fingerprint(root: &Root, project_dir: &Path) -> Result<String> {
     let (_, collection) = resolve(root, project_dir)?;
     let mut patches_by_package = Map::new();
     for (package, patches) in &collection {
@@ -395,7 +430,7 @@ fn apply_git(install_path: &Path, patch: &Ready) -> Result<()> {
 /// resolved patches changed since `patches.lock.json` was last written (the
 /// lock changes with `composer.json`/the patches file, not with
 /// `composer.lock`, so the ordinary plan diff can't see it).
-pub fn apply(
+pub(super) fn apply(
     root: &Root,
     project_dir: &Path,
     vendor_dir: &Path,

@@ -23,6 +23,7 @@ use std::sync::LazyLock;
 
 use super::phpstan::var_export;
 use super::yii2::{normalize_path, resolve_autoload_path, tag_path};
+use super::{Adapter, Ctx};
 use crate::lock::Package;
 
 const PACKAGE_TYPE: &str = "craft-plugin";
@@ -30,11 +31,23 @@ const PACKAGE_TYPE: &str = "craft-plugin";
 static HANDLE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"^_?[a-zA-Z][\w\-]*$").expect("valid regex"));
 
-pub(super) fn apply(
-    project_dir: &Path,
-    vendor_dir: &Path,
-    packages: &[(&Package, PathBuf)],
-) -> Result<()> {
+pub(super) struct Craft;
+
+impl Adapter for Craft {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &["craftcms/plugin-installer"]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        "1.6.0"
+    }
+
+    fn pre_autoload_dump(&self, ctx: &Ctx<'_>, packages: &[(&Package, PathBuf)]) -> Result<()> {
+        apply(ctx.project_dir, ctx.vendor_dir, packages)
+    }
+}
+
+fn apply(project_dir: &Path, vendor_dir: &Path, packages: &[(&Package, PathBuf)]) -> Result<()> {
     let mut plugins = Map::new();
     for (package, install_dir) in super::in_install_order(packages) {
         if package.r#type != PACKAGE_TYPE {

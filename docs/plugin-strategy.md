@@ -12,8 +12,8 @@ WordPress project):
 
 | Plugin | What it changes | Portable? |
 |---|---|---|
-| composer/installers | Install path per package type from `extra.installer-paths` | Yes, pure path mapping |
-| johnpbloch/wordpress-core-installer | Install path of `wordpress-core` packages from `extra.wordpress-install-dir` | Yes, pure path mapping |
+| composer/installers | Install path per package type from `extra.installer-paths` | Native (`src/plugins/installers.rs`), pure path mapping |
+| johnpbloch/wordpress-core-installer | Install path of `wordpress-core` packages from `extra.wordpress-install-dir` | Native (`src/plugins/wordpress_core.rs`), pure path mapping |
 | dealerdirect/phpcodesniffer-composer-installer | Runs `phpcs --config-set installed_paths` after install | Native (`src/plugins/phpcs.rs`) |
 | phpstan/extension-installer | Writes `GeneratedConfig.php` listing every `extra.phpstan` package | Native (`src/plugins/phpstan.rs`) |
 | php-http/discovery | Adds packages to the resolver and generates a discovery file | Native (`src/plugins/discovery.rs`), `preAutoloadDump`/`extra.discovery` only; the resolver half (`postUpdate`) isn't ported |
@@ -80,6 +80,25 @@ are ignored, as Composer ignores them.
 
 symfony/flex stays refused. Its value is in `composer require`, which is
 where Symfony users should keep using Composer.
+
+## Adding a native adapter
+
+Every adapter is a unit struct in its own `src/plugins/<name>.rs` implementing
+the internal `Adapter` trait (`src/plugins/mod.rs`): `plugin_names()` and
+`upstream_version()` are required, and a default no-op covers every phase
+method (`install_dir`, `fetch_env`, `state_fingerprint`, `post_link`,
+`extra_classmap`, `pre_autoload_dump`, `post_autoload_dump`, `post_install`) —
+implement only the ones the real plugin hooks. `Ctx` carries the `root`,
+`project_dir` and `vendor_dir` a phase method needs (`post_link` also gets the
+`Store`, for `cweagans/composer-patches`' relink-through-copy); no adapter
+re-derives a path or reaches for a global.
+
+Wiring one in is one line: add the module (`mod <name>;`), a variant on
+`AdapterId`, its match arm in `make_adapter`, and its position in
+`NATIVE_ADAPTERS` — the registration order every `Plugins` phase method loops
+adapters in, and the order `tests::adapter_order_does_not_affect_the_wordpress_fixture`
+(`src/plugins/mod.rs`) asserts output never depends on. `install.rs` never
+names an adapter module directly; it only calls `Plugins`' own methods.
 
 ## Testing
 

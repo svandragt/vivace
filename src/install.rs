@@ -475,11 +475,8 @@ fn run_impl(
         }
         let auth = Auth::load(&project_dir)?;
         let mut fetcher = fetch::Fetcher::new(auth)?.secure_http(root.config.secure_http);
-        if plugins.has_private_installer() {
-            fetcher = fetcher.private_installer(crate::plugins::private_installer::Env::load(
-                &root,
-                &project_dir,
-            ));
+        if let Some(env) = plugins.fetch_env(&root, &project_dir) {
+            fetcher = fetcher.private_installer(env);
         }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -580,24 +577,19 @@ fn run_impl(
         "linked packages into vendor"
     );
 
-    // #53: cweagans/composer-patches. Runs before the autoloader is
-    // (re)generated, same as Composer's own POST_PACKAGE_INSTALL/UPDATE —
-    // a patch can add or remove classes the classmap needs to see.
-    if plugins.has_patches() {
-        plugins.apply_patches(
-            &root,
-            &project_dir,
-            &vendor_dir,
-            &plan.install,
-            &plan.keep,
-            &store,
-        )?;
-    }
+    // #53/#93: cweagans/composer-patches and drupal/core-composer-scaffold.
+    // Runs before the autoloader is (re)generated, same as Composer's own
+    // POST_PACKAGE_INSTALL/UPDATE — a patch can add or remove classes the
+    // classmap needs to see, and a scaffolded file can come from a package
+    // that isn't `vendor/<name>`.
+    let plugin_ctx = plugins::Ctx {
+        root: &root,
+        project_dir: &project_dir,
+        vendor_dir: &vendor_dir,
+    };
+    plugins.post_link(&plugin_ctx, &plan.install, &plan.keep, &store)?;
 
     let all: Vec<&Package> = plan.keep.iter().copied().chain(&plan.install).collect();
-    // #93: drupal/core-composer-scaffold. Same phase as the patches above —
-    // install directories are known, the autoloader isn't regenerated yet.
-    plugins.apply_scaffold(&root, &project_dir, &vendor_dir, &all)?;
 
     let flags = AutoloadFlags::from(args);
     regenerate_vendor_metadata(
@@ -715,9 +707,14 @@ fn regenerate_vendor_metadata(
     // `dealerdirect/phpcodesniffer-composer-installer` and
     // `phpstan/extension-installer` both subscribe to `post-install-cmd`/
     // `post-update-cmd` only, never a bare `dump-autoload`
-    // (`plugins::Plugins::apply_post_install`'s doc comment).
+    // (`plugins::Plugins::post_install`'s doc comment).
     if is_install {
-        plugins.apply_post_install(root, &bin_packages)?;
+        let plugin_ctx = plugins::Ctx {
+            root,
+            project_dir,
+            vendor_dir,
+        };
+        plugins.post_install(&plugin_ctx, &bin_packages)?;
     }
 
     let installed_started = Instant::now();
@@ -931,16 +928,21 @@ fn write_autoload(
     plugins: &plugins::Plugins,
     plugin_packages: &[(&Package, PathBuf)],
 ) -> Result<()> {
+    let plugin_ctx = plugins::Ctx {
+        root,
+        project_dir,
+        vendor_dir,
+    };
     scripts.dispatch("pre-autoload-dump")?;
     // `tbachert/spi` subscribes to `PRE_AUTOLOAD_DUMP`, so it runs from both
     // `install` and `dump-autoload` alike, right where Composer would run it.
-    plugins.apply_pre_autoload_dump(root, vendor_dir, plugin_packages)?;
+    plugins.pre_autoload_dump(&plugin_ctx, plugin_packages)?;
     // #93: `drupal/core-composer-scaffold`'s own `PRE_AUTOLOAD_DUMP` listener
     // points the root package's classmap at `vendor/drupal/DrupalInstalled.php`
     // (and, conditionally, a few framework classes); `packages` here (not
     // `plugin_packages`) since the real plugin's version hash walks
     // Composer's local repository, metapackages included.
-    let scaffold_classmap = plugins.scaffold_classmap(root, project_dir, vendor_dir, packages)?;
+    let scaffold_classmap = plugins.extra_classmap(&plugin_ctx, packages)?;
     let suffix = resolve_suffix(root, lock, vendor_dir)?;
     let classmap_authoritative = flags.classmap_authoritative || root.config.classmap_authoritative;
     let scan_psr =
@@ -1032,12 +1034,12 @@ fn write_autoload(
     scripts.dispatch("post-autoload-dump")?;
     // #93: `symfony/runtime` subscribes to this same script event to write
     // `vendor/autoload_runtime.php`.
-    plugins.apply_post_autoload_dump(root, project_dir, vendor_dir)?;
+    plugins.post_autoload_dump(&plugin_ctx)?;
     Ok(())
 }
 
 /// `drupal/core-composer-scaffold`'s `Plugin::preAutoloadDump` (#93): merges
-/// [`plugins::Plugins::scaffold_classmap`]'s extra classmap paths into the
+/// `plugins::Plugins::extra_classmap`'s extra classmap paths into the
 /// root package's own `autoload.classmap` before it reaches the generator —
 /// the classmap scanner already resolves an absolute file path in that list
 /// on its own, so no other generator change is needed.
@@ -1419,10 +1421,7 @@ fn patches_fingerprint(
     root: &Root,
     project_dir: &Path,
 ) -> Result<Option<String>> {
-    plugins
-        .has_patches()
-        .then(|| plugins::patches::fingerprint(root, project_dir))
-        .transpose()
+    plugins.state_fingerprint(root, project_dir)
 }
 
 /// Write `content` to `path` only when it differs, via a temp file in the

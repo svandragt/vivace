@@ -16,9 +16,27 @@ use serde_json::{Map, Value, json};
 
 use super::php_string;
 use super::phpcs::relative_path;
+use super::{Adapter, Ctx};
 use crate::lock::{Package, Root};
 
 const PACKAGE_NAME: &str = "phpstan/extension-installer";
+
+pub(super) struct Phpstan;
+
+impl Adapter for Phpstan {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &[PACKAGE_NAME]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        "1.4.3"
+    }
+
+    fn post_install(&self, ctx: &Ctx<'_>, bin_packages: &[(&Package, PathBuf)]) -> Result<()> {
+        apply(ctx.root, bin_packages)
+    }
+}
+
 const PACKAGE_TYPE: &str = "phpstan-extension";
 const PHPSTAN_REQUIRE: &str = "phpstan/phpstan";
 /// `strpos($name, 'phpstan') !== false` but not one of these: excluded from

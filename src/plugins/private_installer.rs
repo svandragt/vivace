@@ -47,6 +47,24 @@ use serde_json::Value;
 
 use crate::lock::Root;
 
+use super::Adapter;
+
+pub(super) struct PrivateInstaller;
+
+impl Adapter for PrivateInstaller {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &["ffraenz/private-composer-installer"]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        "5.0.1"
+    }
+
+    fn fetch_env(&self, root: &Root, project_dir: &Path) -> Option<Env> {
+        Some(Env::load(root, project_dir))
+    }
+}
+
 /// `/{%([A-Za-z0-9-_]+)}/` (`Plugin::identifyPlaceholders`'s own regex).
 static PLACEHOLDER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{%([A-Za-z0-9_-]+)\}").expect("valid regex"));

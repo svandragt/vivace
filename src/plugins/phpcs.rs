@@ -20,6 +20,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use super::{Adapter, Ctx};
 use crate::lock::{Package, Root};
 
 const PACKAGE_NAME: &str = "squizlabs/php_codesniffer";
@@ -27,7 +28,23 @@ const PACKAGE_TYPE: &str = "phpcodesniffer-standard";
 const SEARCH_DEPTH_KEY: &str = "phpcodesniffer-search-depth";
 const DEFAULT_MAX_DEPTH: u32 = 3;
 
-pub(super) fn apply(root: &Root, packages: &[(&Package, PathBuf)]) -> Result<()> {
+pub(super) struct Phpcs;
+
+impl Adapter for Phpcs {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &["dealerdirect/phpcodesniffer-composer-installer"]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        "v1.2.1"
+    }
+
+    fn post_install(&self, ctx: &Ctx<'_>, bin_packages: &[(&Package, PathBuf)]) -> Result<()> {
+        apply(ctx.root, bin_packages)
+    }
+}
+
+fn apply(root: &Root, packages: &[(&Package, PathBuf)]) -> Result<()> {
     let Some((_, phpcs_dir)) = packages.iter().find(|(p, _)| p.name == PACKAGE_NAME) else {
         // `MESSAGE_NOT_INSTALLED`/`MESSAGE_PLUGIN_UNINSTALLED`: phpcs itself
         // isn't part of this install, nothing to configure.

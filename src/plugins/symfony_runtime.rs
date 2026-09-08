@@ -20,8 +20,24 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 
-use super::{php_string, phpstan::var_export};
+use super::{Adapter, Ctx, php_string, phpstan::var_export};
 use crate::lock::Root;
+
+pub(super) struct SymfonyRuntime;
+
+impl Adapter for SymfonyRuntime {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &["symfony/runtime"]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        "v7.4.18"
+    }
+
+    fn post_autoload_dump(&self, ctx: &Ctx<'_>) -> Result<()> {
+        apply(ctx.root, ctx.project_dir, ctx.vendor_dir)
+    }
+}
 
 const TEMPLATE: &str = "<?php
 

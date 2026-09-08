@@ -18,14 +18,33 @@
 //! change, not a `src/plugins` one — out of scope here; the file is written,
 //! but nothing yet points the generated autoloader at it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use serde_json::Value;
 
-use crate::lock::Root;
+use crate::lock::{Package, Root};
 
 use super::php_string;
+use super::{Adapter, Ctx};
+
+const PACKAGE_NAME: &str = "php-http/discovery";
+
+pub(super) struct Discovery;
+
+impl Adapter for Discovery {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &[PACKAGE_NAME]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        "1.20.0"
+    }
+
+    fn pre_autoload_dump(&self, ctx: &Ctx<'_>, _packages: &[(&Package, PathBuf)]) -> Result<()> {
+        apply(ctx.root, ctx.vendor_dir)
+    }
+}
 
 /// `Plugin::INTERFACE_MAP`: for every supported virtual `*-implementation`
 /// package, the interfaces `ClassDiscovery` looks up an implementation for.

@@ -34,11 +34,28 @@ use anyhow::{Context, Result};
 use serde_json::{Map, Value, json};
 
 use super::phpstan::var_export;
+use super::{Adapter, Ctx};
 use crate::lock::Package;
 
 const PACKAGE_TYPE: &str = "yii2-extension";
 
-pub(super) fn apply(vendor_dir: &Path, packages: &[(&Package, PathBuf)]) -> Result<()> {
+pub(super) struct Yii2;
+
+impl Adapter for Yii2 {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &["yiisoft/yii2-composer"]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        "2.0.11"
+    }
+
+    fn pre_autoload_dump(&self, ctx: &Ctx<'_>, packages: &[(&Package, PathBuf)]) -> Result<()> {
+        apply(ctx.vendor_dir, packages)
+    }
+}
+
+fn apply(vendor_dir: &Path, packages: &[(&Package, PathBuf)]) -> Result<()> {
     let mut extensions = Map::new();
     for (package, install_dir) in super::in_install_order(packages) {
         if package.r#type != PACKAGE_TYPE {

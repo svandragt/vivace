@@ -10,7 +10,7 @@
 //! 2026-09-08, issue #93): `Handler`, `AllowedPackages`, `ManageOptions`,
 //! `ManageGitIgnore`, `Operations/*`, `GenerateAutoloadReferenceFile` and
 //! `GenerateAutoloadRuntimeReferenceFile`. Runs from the same phase as
-//! [`super::patches::apply`] (right after linking, while install directories
+//! `super::patches::apply` (right after linking, while install directories
 //! are known), since a scaffolded file can be produced from a package that
 //! isn't `vendor/<name>` (`composer/installers` remaps `drupal/core` itself).
 //!
@@ -44,6 +44,41 @@ use serde_json::{Map, Value};
 use crate::autoload::generator::find_shortest_path;
 use crate::install::package_dir;
 use crate::lock::{Package, Root};
+use crate::store::Store;
+
+use super::{Adapter, Ctx};
+
+pub(super) struct DrupalScaffold;
+
+impl Adapter for DrupalScaffold {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &["drupal/core-composer-scaffold"]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        // The module doc's own pinned version is a dev branch (`11.x-dev`,
+        // `84d66ad`), not a comparable release — this is the version pinned
+        // in `tests/fixtures/plugins/drupal/composer.lock` instead.
+        "11.4.6"
+    }
+
+    fn post_link(
+        &self,
+        ctx: &Ctx<'_>,
+        newly_linked: &[Package],
+        kept: &[&Package],
+        _store: &Store,
+    ) -> Result<()> {
+        // Same union, same order (`kept` then `newly_linked`) as
+        // `install::run`'s own `all` before #127.
+        let packages: Vec<&Package> = kept.iter().copied().chain(newly_linked.iter()).collect();
+        apply(ctx.root, ctx.project_dir, ctx.vendor_dir, &packages)
+    }
+
+    fn extra_classmap(&self, ctx: &Ctx<'_>, packages: &[&Package]) -> Result<Vec<String>> {
+        pre_autoload_dump(ctx.root, ctx.project_dir, ctx.vendor_dir, packages)
+    }
+}
 
 /// `ScaffoldOptions::create`: the `extra.drupal-scaffold` section of one
 /// package's (or the root's) `composer.json`.
@@ -476,7 +511,7 @@ $_ENV['APP_RUNTIME'] ??= $_SERVER['APP_RUNTIME'] ?? DrupalRuntime::class;
 /// project, write the `[web-root]/autoload.php`/`autoload_runtime.php`
 /// shims, then manage `.gitignore`. Runs from `install::run`, right after
 /// linking (`docs/plugin-strategy.md`'s adapter-phase rule; same call site
-/// as [`super::patches::apply`]).
+/// as `super::patches::apply`).
 pub(super) fn apply(
     root: &Root,
     project_dir: &Path,
@@ -637,7 +672,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// `Plugin::preAutoloadDump`: writes `vendor/drupal/DrupalInstalled.php` and
 /// returns the classmap entries to add to the root package's autoload
 /// (this file, plus a handful of framework classes conditional on their
-/// package being installed) — [`super::Plugins::apply_pre_autoload_dump`]'s
+/// package being installed) — `super::Plugins::pre_autoload_dump`'s
 /// caller merges these into `Input.root.autoload.classmap` before the
 /// classmap scan, the same seam that already resolves any other absolute
 /// classmap path.

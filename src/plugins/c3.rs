@@ -37,10 +37,28 @@ use anyhow::{Context, Result};
 
 use crate::lock::Package;
 
+use super::{Adapter, Ctx};
+
 const PACKAGE_NAME: &str = "codeception/c3";
 const FILE_NAME: &str = "c3.php";
 
-pub(super) fn apply(project_dir: &Path, packages: &[(&Package, PathBuf)]) -> Result<()> {
+pub(super) struct C3;
+
+impl Adapter for C3 {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &[PACKAGE_NAME]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        "2.9.0"
+    }
+
+    fn pre_autoload_dump(&self, ctx: &Ctx<'_>, packages: &[(&Package, PathBuf)]) -> Result<()> {
+        apply(ctx.project_dir, packages)
+    }
+}
+
+fn apply(project_dir: &Path, packages: &[(&Package, PathBuf)]) -> Result<()> {
     let Some((_, install_dir)) = packages.iter().find(|(p, _)| p.name == PACKAGE_NAME) else {
         // Not in this install's package set: nothing to copy, matching
         // Composer never running a removed plugin's own listener.

@@ -16,12 +16,30 @@ jobs:
           enable-cache: true
       - run: devbox run -- cargo fmt --check
       - run: devbox run -- cargo clippy --all-targets -- -D warnings
-      - run: devbox run -- cargo nextest run
+      # Adapter tests run in their own `plugins` job (below); excluded here so
+      # a native-adapter regression fails fast without waiting on the rest of
+      # the suite.
+      - run: devbox run -- cargo nextest run -E 'not (test(plugin) | binary(plugins_*))'
         env:
           VIVACE_TEST_NETWORK: "1"
       - run: devbox run -- cargo deny check
       - run: devbox run -- cargo machete
       - run: devbox run -- env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+
+  # #127: every native adapter's own unit and e2e tests, split from `check`'s
+  # nextest run so an adapter regression is visible on its own, not buried in
+  # the full suite's output.
+  plugins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+        with:
+          enable-cache: true
+      - run: devbox run -- cargo nextest run -E 'test(plugin) | binary(plugins_*)'
+        env:
+          VIVACE_TEST_NETWORK: "1"
 
   # #147: a fuzz target's signature drifts silently because `check` never
   # builds fuzz/ — this catches it on the push that causes it instead of

@@ -25,18 +25,33 @@ use anyhow::Result;
 use regex::Regex;
 use serde_json::Value;
 
+use super::{Adapter, Ctx};
 use crate::lock::{Package, Root};
+
+const PACKAGE_NAME: &str = "tbachert/spi";
+
+pub(super) struct Spi;
+
+impl Adapter for Spi {
+    fn plugin_names(&self) -> &'static [&'static str] {
+        &[PACKAGE_NAME]
+    }
+
+    fn upstream_version(&self) -> &'static str {
+        "v1.0.5"
+    }
+
+    fn pre_autoload_dump(&self, ctx: &Ctx<'_>, packages: &[(&Package, PathBuf)]) -> Result<()> {
+        apply(ctx.root, ctx.vendor_dir, packages)
+    }
+}
 
 static FQCN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\\?[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*(?:\\[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*)*$")
         .expect("valid regex")
 });
 
-pub(super) fn apply(
-    root: &Root,
-    vendor_dir: &Path,
-    packages: &[(&Package, PathBuf)],
-) -> Result<()> {
+fn apply(root: &Root, vendor_dir: &Path, packages: &[(&Package, PathBuf)]) -> Result<()> {
     // `$mappings[$service] ??= []` preserves first-seen order: the root
     // package's own `extra.spi` first, then locked packages in lock order.
     let mut mappings: Vec<(String, Vec<(String, String)>)> = Vec::new();
