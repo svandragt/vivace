@@ -32,6 +32,32 @@ viv keeps Composer's copy of that package, prints a warning, and adopts
 the rest. To force a fresh relink of a `vendor/` that viv itself wrote,
 run `viv install --adopt`.
 
+## Stopping
+
+You can stop using viv at any point and go back to Composer with no
+clean-up. A `vendor/` that viv wrote is a valid Composer install:
+`installed.json` and the autoload files are the same bytes Composer would
+have written, so `composer install` on it is a no-op and `composer update`
+replaces packages as usual. The only extra file is a small state file in
+`vendor/composer/`, which Composer ignores.
+
+If you want `vendor/` back as plain copies instead of links into viv's
+store, reinstall it with Composer:
+
+```sh
+rm -rf vendor && composer install
+```
+
+To remove viv itself:
+
+```sh
+viv cache clean            # deletes viv's store under ~/.cache/vivace
+rm ~/.cargo/bin/viv ~/.cargo/bin/composer   # the binary and the shim
+```
+
+Use `apt remove vivace` or `brew uninstall vivace` if you installed a
+package instead. Nothing else is written outside the project and the cache.
+
 ## Is it safe to try
 
 viv's contract is that its output matches Composer's byte for byte. Before
