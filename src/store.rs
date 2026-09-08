@@ -174,16 +174,21 @@ impl Store {
     /// peak-RSS problem streaming the download was meant to avoid.
     pub fn add_archive_from_file(&self, pkg: &Package, path: &Path) -> Result<PathBuf> {
         let dist_type = self.dist_type(pkg)?;
-        let archive_len = fs_err::metadata(path)?.len();
+        // One open shared by the hash and the extraction (#146): re-opening
+        // `path` a second time to extract from it, after already reading it
+        // whole to hash, was the other `openat` per archive this store added
+        // over riff's single unzip-straight-into-`vendor` pass.
+        let mut file = fs_err::File::open(path)?;
+        let archive_len = file.metadata()?.len();
         let hash_started = std::time::Instant::now();
-        let id = hex(sha256_of_file(path)?);
+        let id = hex(sha256_of_reader(&mut file)?);
+        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0))?;
         tracing::debug!(
             package = %pkg.name,
             elapsed_ms = hash_started.elapsed().as_millis(),
             "hashed dist"
         );
         self.store_extracted(pkg, &id, |dest| {
-            let file = fs_err::File::open(path)?;
             extract_archive(&pkg.name, dist_type, file, archive_len, dest)
         })
     }
@@ -196,7 +201,7 @@ impl Store {
         &self,
         pkg: &Package,
         id: &str,
-        extract: impl FnOnce(&Path) -> Result<()>,
+        extract: impl FnOnce(&Path) -> Result<String>,
     ) -> Result<PathBuf> {
         let Some(pointer) = self.pointer(pkg)? else {
             bail!("{}: no dist entry, or a path dist, never stored", pkg.name);
@@ -209,13 +214,18 @@ impl Store {
             fs_err::create_dir_all(&archive_dir)?;
             let temp = tempfile::tempdir_in(&archive_dir)?;
             let extract_started = std::time::Instant::now();
-            extract(temp.path()).with_context(|| format!("extracting {} ({id})", pkg.name))?;
+            // The manifest (#146) comes back from the extraction pass itself
+            // rather than a second walk of the just-written tree: every file
+            // it counts was already `stat`-free (its size came from the
+            // `CountingWriter` that wrote it), so this avoids re-opening
+            // every directory under a fresh archive just to add it up again.
+            let manifest =
+                extract(temp.path()).with_context(|| format!("extracting {} ({id})", pkg.name))?;
             tracing::debug!(
                 package = %pkg.name,
                 elapsed_ms = extract_started.elapsed().as_millis(),
                 "extracted dist"
             );
-            let manifest = archive_manifest(temp.path())?;
             let temp = temp.keep();
 
             // A dir already at `dest` here has no marker: it's incomplete
@@ -655,15 +665,6 @@ fn write_marker(marker: &Path, manifest: &str) -> Result<()> {
     Ok(())
 }
 
-/// A one-line `files=<count> bytes=<total>` summary of everything under
-/// `dir`, written into the `.ok` marker: a truncated extraction (crash
-/// mid-copy) leaves a dir with no marker at all, rather than a marker that
-/// might itself be checked against the wrong count.
-fn archive_manifest(dir: &Path) -> Result<String> {
-    let (files, bytes) = count_tree(dir)?;
-    Ok(format!("files={files} bytes={bytes}\n"))
-}
-
 fn count_tree(dir: &Path) -> Result<(u64, u64)> {
     let mut files = 0u64;
     let mut bytes = 0u64;
@@ -819,6 +820,7 @@ struct ExtractLimits<'a> {
     max_bytes: u64,
     entries: u64,
     written: u64,
+    files: u64,
 }
 
 impl<'a> ExtractLimits<'a> {
@@ -828,7 +830,16 @@ impl<'a> ExtractLimits<'a> {
             max_bytes: max_inflated_bytes(archive_len),
             entries: 0,
             written: 0,
+            files: 0,
         }
+    }
+
+    /// The `.ok` marker's `files=<count> bytes=<total>` line, tallied as
+    /// entries are written (#146) instead of a second `read_dir` walk of the
+    /// tree just extracted — that walk was the extra `openat` per file the
+    /// riff comparison found (`bench/results/README.md`).
+    fn manifest(&self) -> String {
+        format!("files={} bytes={}\n", self.files, self.written)
     }
 
     fn count_entry(&mut self) -> Result<()> {
@@ -877,14 +888,16 @@ impl<W: std::io::Write> std::io::Write for CountingWriter<'_, '_, W> {
     }
 }
 
-/// Hash a file's contents without loading it whole into memory: read in
-/// fixed-size chunks, same as the streaming download that produced it.
-fn sha256_of_file(path: &Path) -> Result<impl AsRef<[u8]>> {
-    let mut file = fs_err::File::open(path)?;
+/// Hash a reader's contents without loading it whole into memory: read in
+/// fixed-size chunks, same as the streaming download that produced it. Takes
+/// an already-open reader (rather than a path) so a caller that also needs
+/// to read the same file again, such as [`Store::add_archive_from_file`],
+/// can share one `openat` for both passes.
+fn sha256_of_reader(mut reader: impl std::io::Read) -> Result<impl AsRef<[u8]>> {
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8 * 1024];
     loop {
-        let n = std::io::Read::read(&mut file, &mut buf)?;
+        let n = std::io::Read::read(&mut reader, &mut buf)?;
         if n == 0 {
             break;
         }
@@ -902,7 +915,7 @@ fn extract_archive<R: std::io::Read + std::io::Seek>(
     reader: R,
     archive_len: u64,
     dest: &Path,
-) -> Result<()> {
+) -> Result<String> {
     match dist_type {
         "zip" => extract_zip(package, reader, archive_len, dest),
         "tar" => extract_tar(package, reader, archive_len, dest),
@@ -926,7 +939,7 @@ fn extract_tar<R: std::io::Read + std::io::Seek>(
     mut reader: R,
     archive_len: u64,
     dest: &Path,
-) -> Result<()> {
+) -> Result<String> {
     use std::io::SeekFrom;
     let mut limits = ExtractLimits::new(package, archive_len);
     // Peek the first few bytes to sniff gzip/bzip2 magic, then rewind: works
@@ -943,12 +956,13 @@ fn extract_tar<R: std::io::Read + std::io::Seek>(
     }
     reader.seek(SeekFrom::Start(0))?;
     if filled >= 2 && magic[..2] == [0x1f, 0x8b] {
-        extract_tar_entries(flate2::read::GzDecoder::new(reader), dest, &mut limits)
+        extract_tar_entries(flate2::read::GzDecoder::new(reader), dest, &mut limits)?;
     } else if filled >= 3 && &magic[..3] == b"BZh" {
-        extract_tar_entries(bzip2_rs::DecoderReader::new(reader), dest, &mut limits)
+        extract_tar_entries(bzip2_rs::DecoderReader::new(reader), dest, &mut limits)?;
     } else {
-        extract_tar_entries(reader, dest, &mut limits)
+        extract_tar_entries(reader, dest, &mut limits)?;
     }
+    Ok(limits.manifest())
 }
 
 fn extract_tar_entries<R: std::io::Read>(
@@ -997,6 +1011,7 @@ fn extract_tar_entries<R: std::io::Read>(
             fs_err::remove_file(&path)?;
         }
         let executable = entry.header().mode().unwrap_or(0) & 0o111 != 0;
+        limits.files += 1;
         let mut file = limits.counted(fs_err::File::create(&path)?);
         std::io::copy(&mut entry, &mut file)
             .with_context(|| format!("writing tar entry {name}"))?;
@@ -1019,7 +1034,7 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
     reader: R,
     archive_len: u64,
     dest: &Path,
-) -> Result<()> {
+) -> Result<String> {
     let mut limits = ExtractLimits::new(package, archive_len);
     let mut archive = zip::ZipArchive::new(reader)?;
     let mut pending_symlinks = Vec::new();
@@ -1052,6 +1067,7 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
         if path.is_file() {
             fs_err::remove_file(&path)?;
         }
+        limits.files += 1;
         let mut file = limits.counted(fs_err::File::create(&path)?);
         std::io::copy(&mut entry, &mut file)
             .with_context(|| format!("writing zip entry {name}"))?;
@@ -1064,7 +1080,8 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
             }))?;
     }
     create_pending_symlinks(dest, pending_symlinks)?;
-    strip_single_top_dir(dest)
+    strip_single_top_dir(dest)?;
+    Ok(limits.manifest())
 }
 
 /// If `dest` holds exactly one entry (ignoring `.DS_Store`) and it is a
@@ -1639,6 +1656,24 @@ mod tests {
             fs_err::read_to_string(dir.join("composer.json")).unwrap(),
             "{}"
         );
+    }
+
+    /// #146: the `.ok` marker's `files=<count> bytes=<total>` line is now
+    /// tallied while the entries are written, not from a second walk of the
+    /// tree after `strip_single_top_dir` hoists it — this pins the tally to
+    /// the same counts a walk would have found, across the hoist.
+    #[test]
+    fn marker_manifest_matches_the_extracted_tree() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let zip = zip_of(&[
+            ("pkg-abc/", b"", None),
+            ("pkg-abc/composer.json", b"{}", None),
+            ("pkg-abc/src/A.php", b"<?php", None),
+        ]);
+        let dir = store.add_zip(&package("acme/pkg", "abc"), &zip).unwrap();
+        let manifest = fs_err::read_to_string(archive_marker(&dir)).unwrap();
+        assert_eq!(manifest, "files=2 bytes=7\n");
     }
 
     /// Composer's `PharData` extraction preserves a tar symlink entry
