@@ -177,8 +177,10 @@ fn render(
 
 /// PHP's `var_export`, for the JSON shapes this file ever needs: `null`,
 /// bool, number, string, and both list (`Value::Array`) and associative
-/// (`Value::Object`) arrays, indented two spaces per nesting level.
-fn var_export(value: &Value, indent: usize) -> String {
+/// (`Value::Object`) arrays, indented two spaces per nesting level. Shared
+/// with [`super::yii2`]/[`super::craft`], the other two `var_export`-shaped
+/// generators.
+pub(super) fn var_export(value: &Value, indent: usize) -> String {
     match value {
         Value::Null => "NULL".to_string(),
         Value::Bool(b) => b.to_string(),

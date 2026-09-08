@@ -1,0 +1,26 @@
+{
+    "name": "vivace/fixture-yii2",
+    "license": "proprietary",
+    "type": "project",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/widget",
+            "options": {
+                "versions": {
+                    "acme/yii2-widget": "1.0.0"
+                }
+            }
+        }
+    ],
+    "require": {
+        "yiisoft/yii2-composer": "^2.0",
+        "acme/yii2-widget": "1.0.0"
+    },
+    "config": {
+        "secure-http": true,
+        "allow-plugins": {
+            "yiisoft/yii2-composer": true
+        }
+    }
+}

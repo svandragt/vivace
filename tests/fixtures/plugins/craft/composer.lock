@@ -1,0 +1,108 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "ee4f710b0990d25ff027cf2faa1b2ae0",
+    "packages": [
+        {
+            "name": "acme/craft-widget",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/widget",
+                "reference": "ba7845ff1c78a72164c8fac6bb7075d833b76d19"
+            },
+            "type": "craft-plugin",
+            "extra": {
+                "class": "acme\\craftwidget\\Plugin",
+                "basePath": "./src",
+                "handle": "craft-widget",
+                "name": "Widget"
+            },
+            "autoload": {
+                "psr-4": {
+                    "acme\\craftwidget\\": "src/"
+                }
+            },
+            "authors": [
+                {
+                    "name": "Acme Corp",
+                    "homepage": "https://example.com"
+                }
+            ],
+            "description": "An example Craft CMS plugin.",
+            "homepage": "https://example.com/craft-widget",
+            "support": {
+                "email": "support@example.com",
+                "docs": "https://example.com/craft-widget/docs"
+            },
+            "transport-options": {
+                "relative": true
+            }
+        },
+        {
+            "name": "craftcms/plugin-installer",
+            "version": "1.6.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/craftcms/plugin-installer.git",
+                "reference": "bd1650e8da6d5ca7a8527068d3e51c34bc7b6b4f"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/craftcms/plugin-installer/zipball/bd1650e8da6d5ca7a8527068d3e51c34bc7b6b4f",
+                "reference": "bd1650e8da6d5ca7a8527068d3e51c34bc7b6b4f",
+                "shasum": ""
+            },
+            "require": {
+                "composer-plugin-api": "^1.0 || ^2.0",
+                "php": ">=5.4"
+            },
+            "require-dev": {
+                "composer/composer": "^1.0 || ^2.0"
+            },
+            "type": "composer-plugin",
+            "extra": {
+                "class": "craft\\composer\\Plugin"
+            },
+            "autoload": {
+                "psr-4": {
+                    "craft\\composer\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "description": "Craft CMS Plugin Installer",
+            "homepage": "https://craftcms.com/",
+            "keywords": [
+                "cms",
+                "composer",
+                "craftcms",
+                "installer",
+                "plugin"
+            ],
+            "support": {
+                "docs": "https://craftcms.com/docs",
+                "email": "support@craftcms.com",
+                "forum": "https://craftcms.stackexchange.com/",
+                "issues": "https://github.com/craftcms/cms/issues?state=open",
+                "rss": "https://craftcms.com/changelog.rss",
+                "source": "https://github.com/craftcms/cms"
+            },
+            "time": "2023-02-22T13:17:00+00:00"
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}

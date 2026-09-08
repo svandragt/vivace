@@ -1,0 +1,22 @@
+{
+    "name": "acme/craft-widget",
+    "type": "craft-plugin",
+    "description": "An example Craft CMS plugin.",
+    "homepage": "https://example.com/craft-widget",
+    "authors": [
+        { "name": "Acme Corp", "homepage": "https://example.com" }
+    ],
+    "support": {
+        "email": "support@example.com",
+        "docs": "https://example.com/craft-widget/docs"
+    },
+    "autoload": {
+        "psr-4": { "acme\\craftwidget\\": "src/" }
+    },
+    "extra": {
+        "class": "acme\\craftwidget\\Plugin",
+        "basePath": "./src",
+        "handle": "craft-widget",
+        "name": "Widget"
+    }
+}

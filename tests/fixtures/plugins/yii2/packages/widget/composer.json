@@ -1,0 +1,10 @@
+{
+    "name": "acme/yii2-widget",
+    "type": "yii2-extension",
+    "autoload": {
+        "psr-4": { "Acme\\Widget\\": "src/" }
+    },
+    "extra": {
+        "bootstrap": "Acme\\Widget\\Bootstrap"
+    }
+}

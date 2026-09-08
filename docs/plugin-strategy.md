@@ -19,6 +19,8 @@ WordPress project):
 | php-http/discovery | Adds packages to the resolver and generates a discovery file | Native (`src/plugins/discovery.rs`), `preAutoloadDump`/`extra.discovery` only; the resolver half (`postUpdate`) isn't ported |
 | tbachert/spi | Generates a service-provider map file after autoload dump | Native (`src/plugins/spi.rs`), `extra.spi` only |
 | cweagans/composer-patches | Applies patches from `extra.patches`/a patches file | Native (`src/plugins/patches.rs`), git-apply path only (#53) |
+| yiisoft/yii2-composer | Writes `vendor/yiisoft/extensions.php` listing every `yii2-extension` package | Native (`src/plugins/yii2.rs`) (#92) |
+| craftcms/plugin-installer | Writes `vendor/craftcms/plugins.php` listing every `craft-plugin` package | Native (`src/plugins/craft.rs`) (#92) |
 
 Plugins named in issue #12 but not seen in any lock yet: symfony/flex
 (rewrites composer.json and recipes, not portable), bamarni/composer-bin-plugin
@@ -61,6 +63,8 @@ are ignored, as Composer ignores them.
    hook (`postUpdate`) is still out of scope, even with the resolver
    shipped, since it needs `viv update` to treat the discovered packages as
    additional requirements, not just a file to write.
+6. yiisoft/yii2-composer and craftcms/plugin-installer (#92): the generated
+   file only. Done.
 
 symfony/flex stays refused. Its value is in `composer require`, which is
 where Symfony users should keep using Composer.

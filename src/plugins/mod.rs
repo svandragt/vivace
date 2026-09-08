@@ -2,37 +2,129 @@
 //! (`docs/plugin-strategy.md`'s rules 1, 2 and 3: `composer/installers` and the
 //! `wordpress-core-installer` pair map install paths;
 //! `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`,
-//! `tbachert/spi` and `php-http/discovery` generate a file or run a command
-//! after install; `cweagans/composer-patches` applies patches after each
-//! package lands), plus rule 3's refusal for every other `composer-plugin` in
-//! the lock.
+//! `tbachert/spi`, `php-http/discovery`, `yiisoft/yii2-composer` and
+//! `craftcms/plugin-installer` generate a file or run a command after
+//! install; `cweagans/composer-patches` applies patches after each package
+//! lands), plus rule 3's refusal for every other `composer-plugin` in the
+//! lock.
 //!
 //! The path-mapping pair only ever changes *where* a package lands on disk:
 //! this module computes a project-relative install directory per package;
 //! every downstream consumer (`link_tree`'s target, `installed.json`/`.php`,
 //! the autoload paths, `vendor/bin` proxies, the plan's keep/remove diff)
 //! already renders whatever absolute or relative path it is given, vendor or
-//! not, so none of them need to know a plugin was involved at all. The four
-//! generator adapters (`phpcs`, `phpstan`, `spi`, `discovery`) instead run once,
-//! after every package has landed in its final spot, from `src/install.rs`'s
-//! own `post-install-cmd`/`pre-autoload-dump` hook points. [`patches`] runs
-//! earlier still, right after linking and before the autoloader is
-//! (re)generated, since a patch can add or remove classes.
+//! not, so none of them need to know a plugin was involved at all. The six
+//! generator adapters (`phpcs`, `phpstan`, `spi`, `discovery`, `yii2`,
+//! `craft`) instead run once, after every package has landed in its final
+//! spot, from `src/install.rs`'s own `post-install-cmd`/`pre-autoload-dump`
+//! hook points — `yii2`/`craft`'s own doc comments explain why that's a
+//! stand-in for their real per-package hook. [`patches`] runs earlier still,
+//! right after linking and before the autoloader is (re)generated, since a
+//! patch can add or remove classes.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use serde_json::Value;
 
 use crate::lock::{Lock, Package, Root};
 
+mod craft;
 mod discovery;
 pub mod patches;
 mod phpcs;
 mod phpstan;
 mod spi;
+mod yii2;
 
 /// A PHP single-quoted string literal: only `\` and `'` need escaping.
 pub(super) fn php_string(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+/// `yii2`/`craft` key their generated file's entries by Composer's own
+/// install order, not `packages`' own (a fresh `craftcms/craft` install byte
+/// -diffed 54 lines off `vendor/yiisoft/extensions.php` without this).
+/// Reorders `packages` via [`install_order`], keeping each entry's own
+/// install dir.
+pub(super) fn in_install_order<'a>(
+    packages: &'a [(&'a Package, PathBuf)],
+) -> Vec<(&'a Package, &'a Path)> {
+    let only: Vec<&Package> = packages.iter().map(|(p, _)| *p).collect();
+    let mut by_name: HashMap<&str, &Path> = HashMap::new();
+    for (package, dir) in packages {
+        by_name
+            .entry(package.name.as_str())
+            .or_insert(dir.as_path());
+    }
+    install_order(&only)
+        .into_iter()
+        .filter_map(|p| by_name.get(p.name.as_str()).map(|&dir| (p, dir)))
+        .collect()
+}
+
+/// `Transaction::calculateOperations`'s install order, ported from
+/// `autoload::generator::install_order` for `crate::lock::Package`'s
+/// `require`/`provide`/`replace` maps — that module's own `Package` type
+/// isn't reachable from here, so this is a second copy of the same DFS over
+/// a different shape, not a shared helper widened; see the original's own
+/// doc comment for the full algorithm notes (root selection order, cycle
+/// handling, the at-most-one-provider ponytail this keeps too).
+fn install_order<'a>(packages: &[&'a Package]) -> Vec<&'a Package> {
+    let mut by_name: HashMap<&str, &'a Package> = HashMap::new();
+    for package in packages {
+        for name in std::iter::once(package.name.as_str())
+            .chain(package.provide.keys().map(String::as_str))
+            .chain(package.replace.keys().map(String::as_str))
+        {
+            by_name.entry(name).or_insert(package);
+        }
+    }
+    let required_by_someone: HashSet<&str> = packages
+        .iter()
+        .flat_map(|p| p.require.keys())
+        .filter_map(|name| by_name.get(name.as_str()))
+        .map(|p| p.name.as_str())
+        .collect();
+    let mut roots: Vec<&Package> = packages
+        .iter()
+        .copied()
+        .filter(|p| !required_by_someone.contains(p.name.as_str()))
+        .collect();
+    roots.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut visited = HashSet::new();
+    let mut order = Vec::with_capacity(packages.len());
+    for root in roots {
+        install_order_visit(root, &by_name, &mut visited, &mut order);
+    }
+    // A require cycle with no true root would otherwise drop packages;
+    // Composer's own stack never loses one, only reorders it.
+    for package in packages {
+        install_order_visit(package, &by_name, &mut visited, &mut order);
+    }
+    order
+}
+
+/// One step of `install_order`'s DFS: a package's own postorder visit,
+/// pushing its still-unvisited `require` first, last-declared first (the
+/// stack Composer's algorithm pops from is LIFO).
+fn install_order_visit<'a>(
+    package: &'a Package,
+    by_name: &HashMap<&str, &'a Package>,
+    visited: &mut HashSet<&'a str>,
+    order: &mut Vec<&'a Package>,
+) {
+    if !visited.insert(&package.name) {
+        return;
+    }
+    for requirement in package.require.keys().rev() {
+        if let Some(&dep) = by_name.get(requirement.as_str()) {
+            install_order_visit(dep, by_name, visited, order);
+        }
+    }
+    order.push(package);
 }
 
 /// Composer plugins vivace applies the effect of natively.
@@ -45,6 +137,8 @@ const NATIVE_ADAPTERS: &[&str] = &[
     "tbachert/spi",
     "cweagans/composer-patches",
     "php-http/discovery",
+    "yiisoft/yii2-composer",
+    "craftcms/plugin-installer",
 ];
 
 /// Composer plugins that only affect commands vivace doesn't implement
@@ -67,6 +161,8 @@ pub struct Plugins {
     spi: bool,
     patches: bool,
     discovery: bool,
+    yii2: bool,
+    craft: bool,
 }
 
 /// Resolve which native adapters apply and check every other enabled
@@ -98,6 +194,8 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
                     "cweagans/composer-patches" => plugins.patches = true,
                     "tbachert/spi" => plugins.spi = true,
                     "php-http/discovery" => plugins.discovery = true,
+                    "yiisoft/yii2-composer" => plugins.yii2 = true,
+                    "craftcms/plugin-installer" => plugins.craft = true,
                     other => unreachable!("{other} is in NATIVE_ADAPTERS but has no adapter arm"),
                 }
             }
@@ -147,6 +245,20 @@ impl Plugins {
         }
         if self.discovery {
             discovery::apply(root, vendor_dir)?;
+        }
+        if self.yii2 {
+            yii2::apply(vendor_dir, packages)?;
+        }
+        if self.craft {
+            // ponytail: no `project_dir` reaches this call
+            // (`src/install.rs`'s own call site only threads `root`/
+            // `vendor_dir` through); the project root is approximated as
+            // `vendor_dir`'s parent, right for every default `vendor/`
+            // layout. Wrong only for a `config.vendor-dir` that isn't a
+            // direct child of the project root — thread the real
+            // `project_dir` through here if that ever surfaces.
+            let project_dir = vendor_dir.parent().unwrap_or(vendor_dir);
+            craft::apply(project_dir, vendor_dir, packages)?;
         }
         Ok(())
     }
@@ -1004,6 +1116,8 @@ mod tests {
             spi: false,
             patches: false,
             discovery: false,
+            yii2: false,
+            craft: false,
         };
         let root = root(json!({}));
         let dir = plugins
@@ -1022,6 +1136,8 @@ mod tests {
             spi: false,
             patches: false,
             discovery: false,
+            yii2: false,
+            craft: false,
         };
         let root = root(json!({
             "extra": {
@@ -1046,6 +1162,8 @@ mod tests {
             spi: false,
             patches: false,
             discovery: false,
+            yii2: false,
+            craft: false,
         };
         let root = root(json!({
             "extra": {
@@ -1072,6 +1190,8 @@ mod tests {
             spi: false,
             patches: false,
             discovery: false,
+            yii2: false,
+            craft: false,
         };
         let root = root(json!({
             "extra": {
@@ -1097,6 +1217,8 @@ mod tests {
             spi: false,
             patches: false,
             discovery: false,
+            yii2: false,
+            craft: false,
         };
         let root = root(json!({}));
         assert!(
@@ -1116,6 +1238,8 @@ mod tests {
             spi: false,
             patches: false,
             discovery: false,
+            yii2: false,
+            craft: false,
         };
         let root = root(json!({}));
         let dir = plugins
@@ -1137,6 +1261,8 @@ mod tests {
             spi: false,
             patches: false,
             discovery: false,
+            yii2: false,
+            craft: false,
         };
         let root = root(json!({"extra": {"wordpress-install-dir": "wp"}}));
         let dir = plugins
@@ -1158,6 +1284,8 @@ mod tests {
             spi: false,
             patches: false,
             discovery: false,
+            yii2: false,
+            craft: false,
         };
         let root = root(json!({
             "extra": {"wordpress-install-dir": {"johnpbloch/wordpress-core": "web/wp"}}
@@ -1181,6 +1309,8 @@ mod tests {
             spi: false,
             patches: false,
             discovery: false,
+            yii2: false,
+            craft: false,
         };
         let raw = json!({
             "name": "acme/wp",
