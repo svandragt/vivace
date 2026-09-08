@@ -320,7 +320,12 @@ fn run_impl(
 
     let selected: Vec<&Package> = lock.packages(dev).collect();
     for package in &selected {
-        package.validate_dist()?;
+        // A metapackage (#149) carries neither dist nor source — Composer's
+        // MetapackageInstaller never downloads anything for it, so it has
+        // nothing for `validate_dist` to check.
+        if package.r#type != "metapackage" {
+            package.validate_dist()?;
+        }
     }
 
     let vendor_dir = project_dir.join(&root.config.vendor_dir);
@@ -545,19 +550,26 @@ fn run_impl(
         !args.no_progress && std::io::stderr().is_terminal(),
     )?;
     for entry in &plan.remove {
-        if entry.install_path.exists() {
-            fs_err::remove_dir_all(&entry.install_path)?;
+        // A removed metapackage (#149) has no `install_path`: nothing was
+        // ever downloaded for it, so there is no directory to delete or
+        // prune ancestors of — dropping it from `installed.json`, done
+        // elsewhere, is the whole removal.
+        let Some(install_path) = &entry.install_path else {
+            continue;
+        };
+        if install_path.exists() {
+            fs_err::remove_dir_all(install_path)?;
             // Composer prunes now-empty parents after removing a package
             // (`vendor/<vendor>/` disappears when its last package goes; a
             // target-dir package's scaffold parents go the same way) —
             // bounded at `vendor_dir` for an ordinary package, or
             // `project_dir` for one a native installer mapped elsewhere.
-            let boundary = if entry.install_path.starts_with(&vendor_dir) {
+            let boundary = if install_path.starts_with(&vendor_dir) {
                 vendor_dir.as_path()
             } else {
                 project_dir.as_path()
             };
-            prune_empty_ancestors(&entry.install_path, boundary);
+            prune_empty_ancestors(install_path, boundary);
         }
     }
     tracing::debug!(

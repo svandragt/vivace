@@ -1,0 +1,37 @@
+{
+    "packages": [
+        {
+            "name": "acme/conflicts",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "conflict": {
+                "acme/legacy": "*"
+            },
+            "type": "metapackage",
+            "install-path": null
+        },
+        {
+            "name": "acme/hello",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/hello",
+                "reference": "f493f481f03b81fc6b6bbc080f4085709cc887d1"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Hello\\": "src/"
+                }
+            },
+            "transport-options": {
+                "relative": true
+            },
+            "install-path": "../acme/hello"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": []
+}

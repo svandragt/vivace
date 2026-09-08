@@ -17,8 +17,9 @@ pub struct InstalledEntry {
     pub name: String,
     pub version: String,
     pub reference: Option<String>,
-    /// Absolute path of the package dir.
-    pub install_path: PathBuf,
+    /// Absolute path of the package dir. `None` for a metapackage (#149): it
+    /// owns no directory, having never been downloaded.
+    pub install_path: Option<PathBuf>,
     /// `abandoned` (a replacement name, or `true` with none suggested).
     /// Compared alongside version/reference so an abandonment change alone
     /// still triggers a reinstall, not a silent keep.
@@ -74,7 +75,8 @@ pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path, project_dir: &Path) -> Re
                 // previous install): a metapackage owns no directory and is
                 // always kept on a match, everything else must still be on
                 // disk to be kept.
-                if package.r#type != "metapackage" && !entry.install_path.is_dir() {
+                let on_disk = entry.install_path.as_deref().is_some_and(Path::is_dir);
+                if package.r#type != "metapackage" && !on_disk {
                     plan.install.push(package.clone());
                 } else {
                     plan.keep.push(package.clone());
@@ -90,8 +92,9 @@ pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path, project_dir: &Path) -> Re
     Ok(plan)
 }
 
-/// Installed entries by name, with their dev flag. Entries without an
-/// `install-path` (metapackages) own no directory and are skipped.
+/// Installed entries by name, with their dev flag. An entry without an
+/// `install-path` (a metapackage, #149) keeps a placeholder path: it owns no
+/// directory of its own, but still needs to be matchable on a later run.
 fn read_installed(
     path: &Path,
     project_dir: &Path,
@@ -108,21 +111,29 @@ fn read_installed(
         .expect("installed.json lives in vendor/composer");
     let mut installed = HashMap::new();
     for entry in file.packages {
-        let Some(install_path) = entry.install_path else {
-            continue;
-        };
         // Composer lowercases package names throughout; installed.json
         // written by an older Composer version might not have.
         let name = entry.name.to_lowercase();
         let dev = file.dev_package_names.contains(&name);
-        let install_path = normalise(&composer_dir.join(install_path));
-        if !install_path.starts_with(project_dir) {
-            anyhow::bail!(
-                "{name}: install-path escapes {} ({})",
-                project_dir.display(),
-                install_path.display()
-            );
-        }
+        // A metapackage's `install-path` is `null` (#149): it owns no
+        // directory, but it still needs a map entry so a later `plan()` run
+        // can match it by version/reference and keep it instead of treating
+        // it as newly requested (and, worse, queued for removal against a
+        // directory it never had) on every run.
+        let install_path = entry
+            .install_path
+            .map(|install_path| {
+                let install_path = normalise(&composer_dir.join(install_path));
+                if !install_path.starts_with(project_dir) {
+                    anyhow::bail!(
+                        "{name}: install-path escapes {} ({})",
+                        project_dir.display(),
+                        install_path.display()
+                    );
+                }
+                Ok(install_path)
+            })
+            .transpose()?;
         let reference = entry
             .dist
             .and_then(|d| d.reference)
@@ -341,7 +352,7 @@ mod tests {
                 name: "gone/gone".into(),
                 version: "1.0.0".into(),
                 reference: Some("r9".into()),
-                install_path: vendor.path().join("gone/gone"),
+                install_path: Some(vendor.path().join("gone/gone")),
                 abandoned: None,
             }]
         );
@@ -375,14 +386,62 @@ mod tests {
         assert!(plan.remove.is_empty(), "replaced in place, not removed");
     }
 
+    /// #149: a metapackage dropped from the lock is still queued for
+    /// removal (its `installed.json` entry has to go), but with no
+    /// `install_path` — it never had a directory to delete.
     #[test]
-    fn null_install_path_is_ignored() {
+    fn null_install_path_is_still_removed_when_dropped_from_the_lock() {
         let vendor = tempfile::tempdir().unwrap();
         installed(vendor.path(), &[("meta/meta", "r1", false, None)]);
         let lock = lock(&[]);
         let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
+        assert_eq!(
+            plan.remove,
+            [InstalledEntry {
+                name: "meta/meta".into(),
+                version: "1.0.0".into(),
+                reference: Some("r1".into()),
+                install_path: None,
+                abandoned: None,
+            }]
+        );
+    }
+
+    /// #149: a metapackage still in the lock, unchanged, is kept rather than
+    /// reinstalled every run — `read_installed` has to record it even though
+    /// its `install-path` is `null`.
+    #[test]
+    fn null_install_path_is_kept_when_still_in_the_lock() {
+        let vendor = tempfile::tempdir().unwrap();
+        // A real metapackage `installed.json` entry (#149) has neither
+        // `dist` nor `source`, unlike `installed()`'s helper rows.
+        fs_err::create_dir_all(vendor.path().join("composer")).unwrap();
+        fs_err::write(
+            vendor.path().join("composer/installed.json"),
+            serde_json::to_string_pretty(&json!({
+                "packages": [{
+                    "name": "meta/meta",
+                    "version": "1.0.0",
+                    "type": "metapackage",
+                    "install-path": null,
+                }],
+                "dev": true,
+                "dev-package-names": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let raw = json!({"name": "meta/meta", "version": "1.0.0", "type": "metapackage"});
+        let mut package: Package = serde_json::from_value(raw.clone()).unwrap();
+        package.raw = raw;
+        let lock = Lock {
+            content_hash: None,
+            packages: vec![package],
+            aliases: vec![],
+        };
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
+        assert_eq!(names(&plan.keep), ["meta/meta"]);
         assert!(plan.is_noop());
-        assert!(plan.remove.is_empty());
     }
 
     /// A package with no dist reference (e.g. a path repo) bumped to a new

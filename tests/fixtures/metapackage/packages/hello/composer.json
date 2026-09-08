@@ -1,0 +1,9 @@
+{
+    "name": "acme/hello",
+    "type": "library",
+    "autoload": {
+        "psr-4": {
+            "Acme\\Hello\\": "src/"
+        }
+    }
+}

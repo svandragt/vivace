@@ -1,0 +1,32 @@
+{
+    "name": "vivace/fixture-metapackage",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/hello",
+            "options": {
+                "versions": {
+                    "acme/hello": "1.0.0"
+                }
+            }
+        },
+        {
+            "type": "package",
+            "package": {
+                "name": "acme/conflicts",
+                "version": "1.0.0",
+                "type": "metapackage",
+                "conflict": {
+                    "acme/legacy": "*"
+                }
+            }
+        }
+    ],
+    "require": {
+        "acme/hello": "1.0.0",
+        "acme/conflicts": "1.0.0"
+    },
+    "config": {
+        "secure-http": true
+    }
+}

@@ -128,8 +128,8 @@ impl Package {
         match &self.dist {
             None if self.is_git_source() => Ok(()),
             None => bail!(
-                "{}: no dist entry and no git source (svn/hg/fossil sources are not supported \
-                 in vivace v0.1)",
+                "{}: no dist entry and no git source (svn/hg/fossil sources are not supported; \
+                 viv installs zip/tar dists, path repositories and git sources)",
                 self.name
             ),
             Some(dist) if dist.r#type == "path" => Ok(()),
@@ -1348,7 +1348,7 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "acme/svnlib: no dist entry and no git source (svn/hg/fossil sources are not \
-             supported in vivace v0.1)"
+             supported; viv installs zip/tar dists, path repositories and git sources)"
         );
     }
 
