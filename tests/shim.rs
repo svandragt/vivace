@@ -59,10 +59,10 @@ fn install_with_supported_flags_calls_viv() {
     fake_bin(dir.path(), "viv");
 
     shim_in(dir.path())
-        .args(["install", "--no-dev"])
+        .args(["install", "--no-dev", "--no-progress"])
         .assert()
         .success()
-        .stdout("viv\ninstall\n--no-dev\n");
+        .stdout("viv\ninstall\n--no-dev\n--no-progress\n");
 }
 
 #[test]

@@ -113,6 +113,7 @@ viv install            # in a project with composer.json and composer.lock
 viv install --no-dev
 viv install --dry-run  # show the plan, change nothing
 viv install --link-mode copy
+viv install --no-progress  # skip the fetch/link progress line on a terminal
 viv update                # resolves, writes composer.lock and installs
 viv update psr/log -w     # partial update with dependencies, then installs
 viv update --no-install   # resolve and write the lock only

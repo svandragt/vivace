@@ -158,6 +158,7 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             // unset rather than trip its deprecation warning on every run.
             no_normalize: false,
             no_plugins: false,
+            no_progress: false,
         };
         install::run(&install_args, Some(&cache_dir), offline)
             .with_context(|| format!("installing {spec}"))?;

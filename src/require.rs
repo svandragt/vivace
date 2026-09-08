@@ -337,6 +337,7 @@ fn partial_update(
             no_scripts,
             no_normalize: false,
             no_plugins,
+            no_progress: false,
         };
         install::run_after_update(&install_args, Some(&cache_dir), offline)?;
     }

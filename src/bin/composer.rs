@@ -22,6 +22,7 @@ fn classify(arg: &str) -> Flag {
         "--no-dev"
         | "--dry-run"
         | "--no-scripts"
+        | "--no-progress"
         | "-o"
         | "--optimize-autoloader"
         | "-a"

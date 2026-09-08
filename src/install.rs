@@ -99,6 +99,10 @@ pub struct InstallArgs {
     /// otherwise refuse only warns (`docs/plugin-strategy.md`).
     #[arg(long)]
     pub no_plugins: bool,
+    /// Never draw the fetch/link progress line on stderr, even when it's a
+    /// terminal (Composer has the same flag).
+    #[arg(long)]
+    pub no_progress: bool,
 }
 
 /// `viv dump-autoload` flags: same autoload-shaping knobs as `install`, minus
@@ -473,11 +477,13 @@ fn run_impl(
             .enable_all()
             .build()?;
         let fetch_started = Instant::now();
+        let progress_enabled = !args.no_progress && std::io::stderr().is_terminal();
         let downloaded = runtime.block_on(fetch_missing(
             &fetcher,
             Arc::clone(&store),
             &missing,
             &best_effort_adopt,
+            progress_enabled,
         ))?;
         tracing::debug!(
             packages = missing.len(),
@@ -535,6 +541,7 @@ fn run_impl(
         &project_dir,
         &archive_dirs,
         args.link_mode,
+        !args.no_progress && std::io::stderr().is_terminal(),
     )?;
     for entry in &plan.remove {
         if entry.install_path.exists() {
@@ -1048,12 +1055,78 @@ const EXTRACT_CONCURRENCY: usize = 8;
 /// it gets the same eight-way ceiling, further capped by the machine's own
 /// core count via `std::thread::scope` (no new dependency: `link_tree` is
 /// already safe to call concurrently, each call touching a disjoint `dest`).
+/// Whether a [`Progress`] line is currently drawn on stderr, so `warn_out`
+/// can clear it before printing a warning in between, instead of letting the
+/// next `\r` rewrite visually clobber it.
+static PROGRESS_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Single-line, rewritten-in-place stderr progress for `viv install`'s fetch
+/// and link phases ("Downloading 37/105 packages"): never stdout, so it
+/// can't touch the summary line `docs/composer-contract.md` fixes the exact
+/// bytes of. Shown only when stderr is a terminal and `--no-progress` wasn't
+/// passed; disabled (or an empty phase), every method is a no-op, so the
+/// common no-op/dry-run install path never writes to stderr for this.
+struct Progress {
+    phase: &'static str,
+    total: usize,
+    enabled: bool,
+    done: AtomicUsize,
+    /// Time and percent of the last redraw, `None` before the first one, so
+    /// `tick` can throttle to roughly one draw per ~50ms *and* per 1% of
+    /// `total` (whichever is rarer), rather than one per package on a fast,
+    /// many-package phase.
+    last: Mutex<Option<(Instant, usize)>>,
+}
+
+impl Progress {
+    fn new(phase: &'static str, total: usize, enabled: bool) -> Self {
+        Progress {
+            phase,
+            total,
+            enabled: enabled && total > 0,
+            done: AtomicUsize::new(0),
+            last: Mutex::new(None),
+        }
+    }
+
+    fn tick(&self) {
+        if !self.enabled {
+            return;
+        }
+        let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
+        let percent = done * 100 / self.total;
+        let mut last = self.last.lock().expect("progress mutex is never poisoned");
+        let due = done == self.total
+            || last.is_none_or(|(at, drawn_percent)| {
+                percent != drawn_percent && at.elapsed() >= Duration::from_millis(50)
+            });
+        if !due {
+            return;
+        }
+        *last = Some((Instant::now(), percent));
+        PROGRESS_VISIBLE.store(true, Ordering::Relaxed);
+        let mut stderr = std::io::stderr().lock();
+        let _ = write!(stderr, "\r{} {done}/{} packages", self.phase, self.total);
+        let _ = stderr.flush();
+    }
+
+    /// Erase whatever `Progress` line is currently on stderr, if any.
+    fn clear() {
+        if PROGRESS_VISIBLE.swap(false, Ordering::Relaxed) {
+            let mut stderr = std::io::stderr().lock();
+            let _ = write!(stderr, "\r\x1b[2K");
+            let _ = stderr.flush();
+        }
+    }
+}
+
 fn link_archives(
     packages: &[&Package],
     vendor_dir: &Path,
     project_dir: &Path,
     archive_dirs: &HashMap<String, PathBuf>,
     link_mode: LinkMode,
+    progress_enabled: bool,
 ) -> Result<()> {
     if packages.is_empty() {
         return Ok(());
@@ -1064,6 +1137,7 @@ fn link_archives(
         .min(packages.len());
     let next = AtomicUsize::new(0);
     let error: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    let progress = Progress::new("Linking", packages.len(), progress_enabled);
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
@@ -1090,10 +1164,12 @@ fn link_archives(
                         }
                         break;
                     }
+                    progress.tick();
                 }
             });
         }
     });
+    Progress::clear();
     match error.into_inner().expect("error mutex is never poisoned") {
         Some(err) => Err(err),
         None => Ok(()),
@@ -1117,11 +1193,13 @@ async fn fetch_missing(
     store: Arc<Store>,
     packages: &[Package],
     best_effort_adopt: &HashSet<String>,
+    progress_enabled: bool,
 ) -> Result<HashMap<String, PathBuf>> {
     // #21: large downloads spill to a temp file in the store's own temp area
     // rather than growing an ever-larger `Vec<u8>`; small ones (the common
     // case) still travel as bytes.
     let temp_dir = store.temp_dir()?;
+    let progress = Progress::new("Downloading", packages.len(), progress_enabled);
     let mut downloads = fetcher.fetch_all(packages, CONCURRENCY, &temp_dir);
     let extract_slots = Arc::new(tokio::sync::Semaphore::new(EXTRACT_CONCURRENCY));
     // The name travels alongside the outcome (not just on success) so a
@@ -1148,6 +1226,7 @@ async fn fetch_missing(
                                 warn_out(&format!(
                                     "Kept vendor/{name} as a Composer copy: {err:#}"
                                 ));
+                                progress.tick();
                                 continue;
                             }
                             Err(err) => return Err(err.context(format!("{name}: fetching dist"))),
@@ -1185,9 +1264,11 @@ async fn fetch_missing(
                     }
                     Err(err) => return Err(err.context(format!("{name}: extracting dist"))),
                 }
+                progress.tick();
             }
         }
     }
+    Progress::clear();
     Ok(result)
 }
 
@@ -1353,7 +1434,10 @@ fn out(message: &str) {
 }
 
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint.
+/// Clears any in-progress [`Progress`] line first, so the warning doesn't get
+/// overwritten by that line's next `\r` rewrite.
 fn warn_out(message: &str) {
+    Progress::clear();
     let _ = writeln!(std::io::stderr().lock(), "{message}");
 }
 

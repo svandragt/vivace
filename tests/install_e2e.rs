@@ -169,6 +169,28 @@ var_dump(Fixture\Legacy\Mode::On->value, fixture_helper());"#,
     );
 }
 
+/// `assert_cmd`'s default stderr is a pipe, never a terminal, so the
+/// fetch/link progress line (`\r`-rewritten, TTY-only) must stay off: CI logs
+/// and any other piped stderr rely on never seeing a `\r` or a bare
+/// "Downloading" there.
+#[test]
+fn install_progress_line_is_silent_off_a_terminal() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping install_e2e: set VIVACE_TEST_NETWORK=1 to fetch real dists over the network"
+        );
+        return;
+    }
+
+    let ctx = TestContext::new();
+    copy_monolog_sources(ctx.project.path());
+
+    let assert = ctx.viv().arg("install").assert().success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(!stderr.contains('\r'), "stderr: {stderr}");
+    assert!(!stderr.contains("Downloading"), "stderr: {stderr}");
+}
+
 /// A `vendor/` Composer wrote (or an older viv, pre-adopt) has
 /// `installed.json` but no `.vivace-state`: a plain install must adopt it
 /// automatically, relinking every kept package from the store, with no
