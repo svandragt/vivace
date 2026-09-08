@@ -36,7 +36,7 @@ composer.json + composer.lock
 ```
 
 `viv install` runs the lower half only, from an existing lock. `viv update`,
-`viv require` and `viv remove` run the solver first, write a new lock, then
+`viv add` and `viv rm` run the solver first, write a new lock, then
 chain into the lower half and install (`--no-install` opts out).
 
 ## Modules
@@ -47,7 +47,7 @@ chain into the lower half and install (`--no-install` opts out).
 | `repository` | Packagist v2 and v1 (Satis/Private Packagist) metadata clients, multi-repository construction from `composer.json`'s `repositories`, an HTTP cache mirroring Composer's disk format. |
 | `solver` | Port of Composer's CDCL dependency solver (`pool`, `pool_builder`, `pool_optimizer`, `rule_set_generator`, `rules`, `watch_graph`, `decisions`, `policy`, `solver`, `transaction`, `request`, `platform`). Full updates only; `viv install` never reaches it. |
 | `lock_writer` | Writes `composer.lock` from a solved transaction: top-level key order, `content-hash`, per-package `ArrayDumper` shape. |
-| `require` | `viv require`/`viv remove`: constraint synthesis and a format-preserving `composer.json` edit, then a partial update of the touched package(s). |
+| `require` | `viv add`/`viv rm`: constraint synthesis and a format-preserving `composer.json` edit, then a partial update of the touched package(s). |
 | `update` | Wires repositories, the solver and `lock_writer` together for `viv update`/`viv update --lock` (`viv update-lock`'s alias). |
 | `plan` | Diff the lock against `vendor/composer/installed.json` to decide what to keep, install, and remove. |
 | `plugins` | Native adapters for the Composer plugins vivace ports: `composer/installers` and `*-wordpress-core-installer` (install path mapping), `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`, `tbachert/spi` (post-install generators), `cweagans/composer-patches` (patch application), `yiisoft/yii2-composer`, `craftcms/plugin-installer`, `codeception/c3`, `ffraenz/private-composer-installer`, `drupal/core-composer-scaffold`, `symfony/runtime` (see `src/plugins/{yii2,craft,c3,private_installer,drupal_scaffold,symfony_runtime}.rs`). Everything else of type `composer-plugin` is refused unless `--no-plugins`. |

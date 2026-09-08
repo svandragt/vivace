@@ -1274,7 +1274,7 @@ struct OutdatedRow {
 /// major/minor/patch-only synthetic constraint, then the same
 /// preferred-stability-aware "highest acceptable version, or else just the
 /// highest" pick `require.rs`'s own `version_selector::pick_best` already
-/// implements for `viv require`.
+/// implements for `viv add`.
 async fn find_latest<T: crate::repository::Transport>(
     repo: &Repository<T>,
     name: &str,

@@ -1,6 +1,6 @@
 # Resolver design
 
-How `viv update` and `viv require` produce a `composer.lock` that Composer
+How `viv update` and `viv add` produce a `composer.lock` that Composer
 accepts without rewriting it. Upstream references point at `composer/composer`
 2.10.x, `src/Composer/`.
 
@@ -218,7 +218,7 @@ Each stage is byte-diffable against Composer on `tests/fixtures/monolog` and
    top-level key order, `fixupJsonDataType`, the dev split via a second solve.
    Accepts when `viv update` on both fixtures produces a byte-identical
    `composer.lock` and all four verification steps pass.
-5. **`require`, partial updates, error messages.** `viv require vendor/pkg`
+5. **`require`, partial updates, error messages.** `viv add vendor/pkg`
    with constraint synthesis and a format-preserving `composer.json` write;
    `viv update vendor/pkg` with the three allow-list modes and
    `--with-all-dependencies`; a `Problem.php` port good enough to name the

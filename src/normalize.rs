@@ -23,7 +23,7 @@ use serde_json::{Map, Value};
 
 use crate::autoload::sort::natcmp;
 
-/// `viv normalize`'s own default, and the indent `viv require`/`viv remove`/
+/// `viv normalize`'s own default, and the indent `viv add`/`viv rm`/
 /// `viv update` normalize with (they have no `--indent-size` flag of their
 /// own).
 const DEFAULT_INDENT_SIZE: usize = 4;
@@ -132,7 +132,7 @@ pub fn run(args: &NormalizeArgs) -> Result<()> {
     Ok(())
 }
 
-/// `viv require`/`viv remove`/`viv update`'s post-write step (unless
+/// `viv add`/`viv rm`/`viv update`'s post-write step (unless
 /// `--no-normalize`): rewrite `composer.json` in place if normalizing it
 /// changes any bytes, using the same default indent as a bare
 /// `viv normalize`. Not called by `viv install`/`viv dump-autoload` (#95):

@@ -88,10 +88,10 @@ viv install --link-mode copy
 viv update                # resolves, writes composer.lock and installs
 viv update psr/log -w     # partial update with dependencies, then installs
 viv update --no-install   # resolve and write the lock only
-viv require psr/container # edits composer.json, updates the lock and installs
-viv remove psr/container  # same, minus the package (--no-install opts out too)
+viv add psr/container      # edits composer.json, updates the lock and installs (alias: require)
+viv rm psr/container       # same, minus the package (--no-install opts out too, alias: remove)
 viv dump-autoload -o
-viv normalize --check     # update/require/remove also normalise when they write
+viv normalize --check     # update/add/rm also normalise when they write
 viv cache prune
 viv diagnose              # environment/config report to paste into a bug report
 ```

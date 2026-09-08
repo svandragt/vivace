@@ -1,4 +1,4 @@
-//! `viv require`/`viv remove`: constraint synthesis (a `VersionSelector`
+//! `viv add`/`viv rm`: constraint synthesis (a `VersionSelector`
 //! port) and a format-preserving `composer.json` edit (a `JsonManipulator`
 //! port), then normalizing that edit (`--no-normalize` opts out, #95), a
 //! partial update of the touched package(s) (`docs/resolver-design.md`
@@ -32,7 +32,7 @@ use crate::solver::{self, pool_builder::UpdateAllowMode};
 
 const PACKAGIST_URL: &str = "https://repo.packagist.org";
 
-/// `viv require` flags.
+/// `viv add` flags.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "mirrors Composer's require flags"
@@ -77,12 +77,12 @@ pub struct RequireArgs {
     #[arg(long)]
     pub no_plugins: bool,
     /// Skip the install step after writing `composer.lock`
-    /// (`composer require --no-install`): today's `viv require` behaviour.
+    /// (`composer require --no-install`): today's `viv add` behaviour.
     #[arg(long)]
     pub no_install: bool,
 }
 
-/// `viv remove` flags.
+/// `viv rm` flags.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "mirrors Composer's remove flags"
@@ -115,7 +115,7 @@ pub struct RemoveArgs {
     #[arg(long)]
     pub no_plugins: bool,
     /// Skip the install step after writing `composer.lock`
-    /// (`composer remove --no-install`): today's `viv remove` behaviour.
+    /// (`composer remove --no-install`): today's `viv rm` behaviour.
     #[arg(long)]
     pub no_install: bool,
 }
@@ -437,7 +437,7 @@ fn split_spec(spec: &str) -> (&str, Option<&str>) {
 /// needs: no platform-requirement filtering (`--ignore-platform-req(s)`
 /// isn't wired for `require` at this stage) and no branch-alias dev-version
 /// handling (`findRecommendedRequireVersion`'s `isDev()` branch) — a bare
-/// `viv require vendor/pkg` on a stable release is the common case this
+/// `viv add vendor/pkg` on a stable release is the common case this
 /// stage's fixtures exercise.
 mod version_selector {
     use anyhow::Result;
@@ -1046,7 +1046,7 @@ mod tests {
     }
 
     /// `tests/fixtures/remove-psr-container/composer.json.{before,after}`:
-    /// `viv remove psr/container --dev`'s edit, recorded the same way.
+    /// `viv rm psr/container --dev`'s edit, recorded the same way.
     #[test]
     fn remove_sub_node_matches_composers_recorded_remove() {
         let dir = concat!(

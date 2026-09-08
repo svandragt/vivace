@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Changed
+- `viv add`/`viv rm` are now the documented commands; `require`/`remove` remain aliases
 
 ## [0.7.0] - 2026-09-08
 ### Added
