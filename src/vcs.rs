@@ -542,7 +542,7 @@ fn strip_git_dir_suffix(path: &str) -> String {
 
 /// `Preg::replace('{[^a-z0-9.]}i', '-', ...)`: `GitDriver`'s cache
 /// directory name for a remote URL.
-fn slugify(url: &str) -> String {
+pub(crate) fn slugify(url: &str) -> String {
     url.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '.' {

@@ -488,10 +488,19 @@ impl ComposerSource {
     ) -> Result<ComposerSource> {
         let configured =
             Url::parse(url).with_context(|| format!("invalid repository URL {url:?}"))?;
-        let host = configured
-            .host_str()
-            .with_context(|| format!("repository URL {configured} has no host"))?
-            .to_string();
+        // A `file://` mirror (a local Satis build or a recorded Packagist
+        // mirror, #161) has no host to key the cache directory by; its path
+        // is already a unique filesystem location, so slugify that instead,
+        // the same way `vcs::GitDriver` keys a bare/`git@` remote that has
+        // no host either.
+        let host = if configured.scheme() == "file" {
+            vcs::slugify(configured.path())
+        } else {
+            configured
+                .host_str()
+                .with_context(|| format!("repository URL {configured} has no host"))?
+                .to_string()
+        };
         let cache_dir = cache_root.join("repo").join(&host);
 
         // `ComposerRepository::getPackagesJsonUrl`: a URL that already

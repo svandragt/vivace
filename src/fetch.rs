@@ -269,6 +269,24 @@ impl Fetcher {
         url: &Url,
         if_modified_since: Option<&str>,
     ) -> Result<Conditional> {
+        if url.scheme() == "file" {
+            // A local Satis build or a recorded Packagist mirror (#161):
+            // read straight off the filesystem, with no auth, no cache and
+            // no secure-http check (those all guard the network this isn't
+            // touching), and no conditional request, since there's no
+            // server round trip to save by skipping the body.
+            let path = url
+                .to_file_path()
+                .map_err(|()| anyhow::anyhow!("{label}: invalid file:// URL {}", redact(url)))?;
+            return match fs_err::read(&path) {
+                Ok(body) => Ok(Conditional::Fresh {
+                    body,
+                    last_modified: None,
+                }),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Conditional::NotFound),
+                Err(err) => Err(err).with_context(|| format!("reading {}", path.display())),
+            };
+        }
         require_https(label, url, self.secure_http)?;
         if self.offline {
             // Composer's `HttpDownloader::startJob` while `disabled`: a

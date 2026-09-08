@@ -40,6 +40,25 @@ fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/require-psr-container")
 }
 
+/// The checkout path these fixtures' `file://` repository URL was recorded
+/// against (see the module doc): `composer.json.after`'s raw bytes are also
+/// hashed byte for byte by the hermetic `*_reproduces_composers_lock` tests
+/// below, against a `content-hash` Composer already computed from this
+/// exact literal string, so those keep reading the fixture unmodified — only
+/// [`copy_fixture_composer_json`], for the binaries that actually resolve
+/// the URL as a filesystem path, rewrites it.
+const RECORDED_MANIFEST_DIR: &str = "/home/sander/dev/rust/vivace";
+
+/// Copies a fixture `composer.json.{before,after}` to `dest`, rewriting
+/// [`RECORDED_MANIFEST_DIR`] in its `file://` repository URL (#161) to this
+/// checkout's own path, so the fixture resolves on whatever machine CI runs
+/// on rather than only the one it was recorded on.
+fn copy_fixture_composer_json(src: &Path, dest: &Path) {
+    let contents = fs_err::read_to_string(src).unwrap();
+    let rewritten = contents.replace(RECORDED_MANIFEST_DIR, env!("CARGO_MANIFEST_DIR"));
+    fs_err::write(dest, rewritten).unwrap();
+}
+
 /// `composer.lock`'s `content-hash` is `content_hash` of `composer.json`
 /// (`src/lock.rs`), which includes the `require`/`require-dev` objects'
 /// *own* key order. #145: `add`/`rm` now always normalize `composer.json`
@@ -191,11 +210,10 @@ fn viv_require_matches_composer_and_validates() {
     let fixture = fixture_dir();
     let ctx = TestContext::new();
     let project = ctx.project.path();
-    fs_err::copy(
-        fixture.join("composer.json.before"),
-        project.join("composer.json"),
-    )
-    .unwrap();
+    copy_fixture_composer_json(
+        &fixture.join("composer.json.before"),
+        &project.join("composer.json"),
+    );
     fs_err::copy(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/composer.lock"),
         project.join("composer.lock"),
@@ -220,7 +238,7 @@ fn viv_require_matches_composer_and_validates() {
 
     let want_normalized_ctx = TestContext::new();
     let want_normalized_path = want_normalized_ctx.project.path().join("composer.json");
-    fs_err::copy(fixture.join("composer.json.after"), &want_normalized_path).unwrap();
+    copy_fixture_composer_json(&fixture.join("composer.json.after"), &want_normalized_path);
     want_normalized_ctx
         .viv()
         .arg("normalize")
@@ -269,11 +287,10 @@ fn viv_remove_matches_composer_and_validates() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/remove-psr-container");
     let ctx = TestContext::new();
     let project = ctx.project.path();
-    fs_err::copy(
-        fixture.join("composer.json.before"),
-        project.join("composer.json"),
-    )
-    .unwrap();
+    copy_fixture_composer_json(
+        &fixture.join("composer.json.before"),
+        &project.join("composer.json"),
+    );
     fs_err::copy(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/composer.lock"),
         project.join("composer.lock"),
@@ -294,7 +311,7 @@ fn viv_remove_matches_composer_and_validates() {
 
     let want_normalized_ctx = TestContext::new();
     let want_normalized_path = want_normalized_ctx.project.path().join("composer.json");
-    fs_err::copy(fixture.join("composer.json.after"), &want_normalized_path).unwrap();
+    copy_fixture_composer_json(&fixture.join("composer.json.after"), &want_normalized_path);
     want_normalized_ctx
         .viv()
         .arg("normalize")
