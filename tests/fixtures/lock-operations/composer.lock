@@ -1,0 +1,37 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "4df016e3b8c3456ec18397f3818c7d8d",
+    "packages": [
+        {
+            "name": "acme/new",
+            "version": "1.4.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/new",
+                "reference": "360ce6af64dd03c16c5756940a14c5dc6420f71e"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\New\\": "src/"
+                }
+            },
+            "transport-options": {
+                "relative": true
+            }
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}

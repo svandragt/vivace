@@ -390,6 +390,104 @@ async fn minimal_changes_keeps_the_locked_version() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// Mirrors `update::print_lock_operations`'s formatting without needing
+/// stdout, so a test can assert on the string directly.
+fn format_lock_operations(operations: &vivace::lock::LockOperations, will_write: bool) -> String {
+    let mut text = String::new();
+    if operations.is_empty() {
+        text.push_str("Nothing to modify in lock file\n");
+    } else {
+        text.push_str(&operations.summary_line());
+        text.push('\n');
+        for line in &operations.lines {
+            text.push_str("  - ");
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    if will_write {
+        text.push_str("Writing lock file\n");
+    }
+    text
+}
+
+/// A lock's `packages`/`packages-dev` entries as [`vivace::solver::transaction::ResolvedPackage`],
+/// the shape `diff_lock_operations` wants for the "new" side: mirrors
+/// `update::resolved_packages` (private there), used here to build a
+/// solved result straight from a fixture's already-written `composer.lock`
+/// rather than re-running a solve.
+fn resolved_packages_from_lock(
+    lock: &Value,
+    key: &str,
+) -> Vec<vivace::solver::transaction::ResolvedPackage> {
+    lock.get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|entry| vivace::solver::transaction::ResolvedPackage {
+            name: entry["name"].as_str().unwrap().to_string(),
+            pretty_version: entry["version"].as_str().unwrap().to_string(),
+            raw: entry.clone(),
+        })
+        .collect()
+}
+
+/// #156: `Installer::doUpdate`'s `Lock file operations: ...` block plus its
+/// per-operation lines, captured verbatim from real Composer 2.10.2
+/// (`devbox run -- composer update --no-install --no-ansi`, `2>&1`, on this
+/// fixture's `lock-before.json`) into `expected-lock-operations`. One
+/// package, `psr/log`, upgrades from 3.0.0 to 3.0.2.
+#[tokio::test]
+async fn lock_operations_reports_an_upgrade() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/minimal-changes");
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
+    let root: Value = serde_json::from_slice(&composer_json).unwrap();
+    let previous_by_name = common::locked_by_name(&fixture.join("lock-before.json"));
+
+    let result = solver::solve_update(&repo, &root, false, false)
+        .await
+        .unwrap();
+
+    let operations =
+        vivace::lock::diff_lock_operations(&previous_by_name, &result.non_dev, &result.dev)
+            .unwrap();
+    let got = format_lock_operations(&operations, true);
+    assert_matches_expected(&got, &fixture.join("expected-lock-operations"));
+}
+
+/// #156, the install/removal half: `acme/new` (a path-type package the
+/// fixture's `composer.json` requires) gets locked for the first time,
+/// `acme/old` (only present in `lock-before.json`, no longer required)
+/// gets removed. Composer's own output, captured the same way as
+/// [`lock_operations_reports_an_upgrade`], puts the removal before the
+/// install (`Transaction::calculateOperations`'s
+/// `array_merge($uninstalls, $installsUpdates)`); this fixture's
+/// `composer.lock` is the "after" state that same real Composer run wrote,
+/// read here directly rather than re-run through vivace's own solver
+/// (path repositories aren't a supported repository type, `#67`) — the
+/// diff being tested doesn't care how the new package set was produced.
+#[test]
+fn lock_operations_reports_an_install_and_a_removal() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lock-operations");
+    let previous_by_name = common::locked_by_name(&fixture.join("lock-before.json"));
+    let new_lock: Value =
+        serde_json::from_slice(&fs_err::read(fixture.join("composer.lock")).unwrap()).unwrap();
+    let non_dev = resolved_packages_from_lock(&new_lock, "packages");
+    let dev = resolved_packages_from_lock(&new_lock, "packages-dev");
+
+    let operations = vivace::lock::diff_lock_operations(&previous_by_name, &non_dev, &dev).unwrap();
+    let got = format_lock_operations(&operations, true);
+    assert_matches_expected(&got, &fixture.join("expected-lock-operations"));
+}
+
 /// End-to-end: the real `viv update` binary against real Packagist,
 /// byte-diffed the same way, then validated with Composer itself.
 /// Gated on `VIVACE_TEST_NETWORK=1` so a bare `cargo nextest run` stays
@@ -667,14 +765,15 @@ async fn update_chains_into_install() {
     );
 }
 
-/// #155: `composer.lock`'s `content-hash` must describe the
-/// `composer.json` bytes actually left on disk, not the unnormalised bytes
-/// `viv update` read before normalising. A deliberately unnormalised
-/// `require` (reverse key order, so the normaliser's platform-first sort
-/// actually moves something) must still leave a fresh lock behind, so the
-/// chained install prints no stale-lock warning.
+/// `viv update` never rewrites `composer.json`: only commands that edit it
+/// (`add`/`rm`/`init`) normalize it (`docs/stability.md`). A deliberately
+/// unnormalized `require` (reverse key order, so the normalizer's
+/// platform-first sort would move something if `update` still ran it) must
+/// survive `viv update` byte-for-byte, and the fresh lock's content-hash
+/// must describe exactly those bytes, so the chained install prints no
+/// stale-lock warning.
 #[tokio::test]
-async fn update_normalizes_composer_json_before_computing_the_content_hash() {
+async fn update_does_not_normalize_composer_json() {
     let ctx = offline_partial_update_context().await;
     let project = ctx.project.path();
     let composer_json_path = project.join("composer.json");
@@ -694,11 +793,8 @@ async fn update_normalizes_composer_json_before_computing_the_content_hash() {
         "autoload": original["autoload"],
         "config": original["config"],
     });
-    fs_err::write(
-        &composer_json_path,
-        serde_json::to_vec(&unnormalized).unwrap(),
-    )
-    .unwrap();
+    let unnormalized_bytes = serde_json::to_vec(&unnormalized).unwrap();
+    fs_err::write(&composer_json_path, &unnormalized_bytes).unwrap();
 
     let output = ctx
         .viv()
@@ -716,11 +812,16 @@ async fn update_normalizes_composer_json_before_computing_the_content_hash() {
         "the chained install must not see a stale lock: {combined}"
     );
 
-    let lock = vivace::lock::read_lock(&project.join("composer.lock")).unwrap();
     let on_disk_composer_json = fs_err::read(&composer_json_path).unwrap();
+    assert_eq!(
+        on_disk_composer_json, unnormalized_bytes,
+        "viv update must never rewrite composer.json"
+    );
+
+    let lock = vivace::lock::read_lock(&project.join("composer.lock")).unwrap();
     assert!(
         vivace::lock::is_fresh(&lock, &on_disk_composer_json).unwrap(),
-        "content-hash should describe the normalized composer.json actually on disk"
+        "content-hash should describe the unnormalized composer.json actually on disk"
     );
 }
 

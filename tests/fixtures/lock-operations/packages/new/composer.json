@@ -1,0 +1,10 @@
+{
+    "name": "acme/new",
+    "type": "library",
+    "require": {},
+    "autoload": {
+        "psr-4": {
+            "Acme\\New\\": "src/"
+        }
+    }
+}

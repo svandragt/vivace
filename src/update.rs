@@ -4,10 +4,13 @@
 //! implicit `packagist.org`, solves against them
 //! (`solver::solve_update`/`solver::solve_partial_update`, the merged first
 //! solve plus the require-only second solve for the dev split), and writes
-//! a `composer.lock` (`lock_writer::write`), then normalizes `composer.json`
-//! (`--no-normalize` opts out, #95: `viv install` never does this). `--lock`
-//! skips solving entirely: it re-derives the lock from itself, matching
-//! `composer update --lock`'s own Locker round-trip.
+//! a `composer.lock` (`lock_writer::write`). `update` only ever reads
+//! `composer.json`, never rewrites it: normalizing is reserved for the
+//! commands that edit it (`add`/`rm`/`init`, `docs/stability.md`), so
+//! `--no-normalize` here is a deprecated no-op, same shape as `install`/
+//! `dump-autoload`'s own (#95). `--lock` skips solving entirely: it
+//! re-derives the lock from itself, matching `composer update --lock`'s
+//! own Locker round-trip.
 //!
 //! Not reachable from `src/install.rs`/`src/main.rs`'s `install` path
 //! (`AGENTS.md`'s Performance rule only gates `install`).
@@ -77,9 +80,11 @@ pub struct UpdateArgs {
     /// Solve and print, but don't write `composer.lock`.
     #[arg(long)]
     pub dry_run: bool,
-    /// Don't normalize `composer.json` (key order, whitespace) after
-    /// writing `composer.lock`.
-    #[arg(long)]
+    /// No-op since 0.8: `update` never writes `composer.json`, so there is
+    /// nothing left to skip (only `add`/`rm`/`init` normalize it). Kept,
+    /// hidden, for one release so an old invocation doesn't fail; prints a
+    /// deprecation warning instead.
+    #[arg(long, hide = true)]
     pub no_normalize: bool,
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
@@ -102,11 +107,8 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
-    // Normalise before reading: the lock's content-hash covers
-    // composer.json's bytes in file order (#155). `--dry-run` writes
-    // nothing, so it skips this.
-    if !args.dry_run && !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
-        warn_out(&format!("Normalized {}", composer_json_path.display()));
+    if args.no_normalize {
+        warn_no_normalize_is_a_noop("update");
     }
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root: Value = serde_json::from_slice(&composer_json).context("parsing composer.json")?;
@@ -158,6 +160,13 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
         elapsed_ms = lock_write_started.elapsed().as_millis(),
         "wrote composer.lock (content-hash + serialisation)"
     );
+
+    // #156: diff against the lock as it still sits on disk, before this
+    // overwrites it, and print Composer's `Lock file operations: ...`
+    // block. Composer's own dry run prints this same block (still
+    // `doUpdate`, before the `writeLock`-gated part) but never "Writing
+    // lock file", since nothing is actually persisted.
+    print_lock_operations(&lock_path, &result.non_dev, &result.dev, !args.dry_run)?;
 
     if args.dry_run {
         // `writeln!` to stdout directly, not `println!`, to satisfy the
@@ -340,10 +349,62 @@ fn preferred_versions(
         .collect()
 }
 
+/// stdout via `writeln!`, not `println!`, to satisfy the `print_stdout` lint
+/// (`install.rs`'s own `out` helper does the same).
+fn out(message: &str) {
+    let _ = writeln!(std::io::stdout().lock(), "{message}");
+}
+
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint
 /// (`install.rs`'s own `warn_out` does the same).
 fn warn_out(message: &str) {
     let _ = writeln!(std::io::stderr().lock(), "{message}");
+}
+
+/// #156: diffs `lock_path`'s on-disk packages (read fresh here, so this
+/// must run before the caller overwrites the file) against `non_dev`/`dev`
+/// and prints Composer's `Lock file operations: ...` block
+/// (`Installer::doUpdate`) plus its per-operation lines
+/// (`crate::lock::diff_lock_operations`), on stdout like `install.rs`'s own
+/// summary line — not stderr, even though Composer's own `writeError` puts
+/// it there (`docs/stability.md`'s "Normalized ..." stays on stderr).
+/// `will_write` gates the trailing "Writing lock file" line: Composer
+/// prints the block either way but that line only when it actually
+/// persists (`viv update --dry-run` never does). Shared by
+/// `require::partial_update` (`viv add`/`viv rm`), which always writes, so
+/// it always passes `true`.
+pub(crate) fn print_lock_operations(
+    lock_path: &Path,
+    non_dev: &[ResolvedPackage],
+    dev: &[ResolvedPackage],
+    will_write: bool,
+) -> Result<()> {
+    let previous_by_name = read_locked_by_name(lock_path)?;
+    let operations = crate::lock::diff_lock_operations(&previous_by_name, non_dev, dev)?;
+    if operations.is_empty() {
+        out("Nothing to modify in lock file");
+    } else {
+        out(&operations.summary_line());
+        for line in &operations.lines {
+            out(&format!("  - {line}"));
+        }
+    }
+    if will_write {
+        out("Writing lock file");
+    }
+    Ok(())
+}
+
+/// `--no-normalize`'s deprecation notice on `update` (0.8): `update` never
+/// writes `composer.json`, so the flag has nothing left to disable, same
+/// shape as `install.rs`'s own `warn_no_normalize_is_a_noop` for
+/// `install`/`dump-autoload` (#95).
+fn warn_no_normalize_is_a_noop(command: &str) {
+    warn_out(&normalize::no_normalize_is_a_noop_message(
+        command,
+        "0.8",
+        &format!("{command} no longer touches composer.json"),
+    ));
 }
 
 /// The current lock's `packages`+`packages-dev`, keyed by lowercased name:

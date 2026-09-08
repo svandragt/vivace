@@ -1,0 +1,4 @@
+Lock file operations: 1 install, 0 updates, 1 removal
+  - Removing acme/old (2.1.0)
+  - Locking acme/new (1.4.0)
+Writing lock file

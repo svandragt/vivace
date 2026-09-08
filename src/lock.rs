@@ -4,13 +4,15 @@
 //! alongside typed fields, because `installed.json` re-emits lock entries in
 //! their original key order (`serde_json`'s `preserve_order` feature).
 
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::solver::transaction::AliasEntry;
+use crate::solver::transaction::{AliasEntry, ResolvedPackage};
 
 /// A parsed `composer.lock`.
 #[derive(Debug, Clone)]
@@ -972,6 +974,154 @@ pub const MISSING_REQUIREMENTS_HINT: [&str; 3] = [
     "and prefer using the \"require\" command over editing the composer.json file directly \
      https://getcomposer.org/doc/03-cli.md#require-r",
 ];
+
+/// Composer's `Lock file operations: N install(s), N update(s), N
+/// removal(s)` block (`Installer::doUpdate`) plus its per-operation lines
+/// (`Transaction::calculateOperations`/`LockTransaction::getOperations`),
+/// diffed between a lock's previous `packages`+`packages-dev` (keyed by
+/// lowercased name, `update::locked_packages_by_name`'s shape) and a
+/// freshly solved result: `viv update`/`viv add`/`viv rm` all print this
+/// before writing the new lock (#156).
+///
+/// Not a port of `Transaction`'s alias mark operations: aliases never
+/// appear in a lock's `packages`/`packages-dev` (they live in the
+/// separate `aliases` array), so `getOperations` never emits
+/// `MarkAlias(Un)InstalledOperation` for anything this diff sees.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LockOperations {
+    pub install_count: usize,
+    pub update_count: usize,
+    pub removal_count: usize,
+    /// Already-ordered `  - Verb name (...)`-shaped lines minus the
+    /// leading `  - `, matching `Installer::doUpdate`'s own print order:
+    /// every removal (alphabetical), then every install/update merged and
+    /// sorted together by name (`array_merge($uninstalls,
+    /// $installsUpdates)` over two separately-`usort`ed arrays).
+    pub lines: Vec<String>,
+}
+
+impl LockOperations {
+    pub fn is_empty(&self) -> bool {
+        self.install_count == 0 && self.update_count == 0 && self.removal_count == 0
+    }
+
+    /// `"Lock file operations: %d install%s, %d update%s, %d removal%s"`,
+    /// `Installer::doUpdate`'s own `sprintf`, each count pluralised on its
+    /// own (`1 === count($x) ? '' : 's'`), independent of the other two.
+    pub fn summary_line(&self) -> String {
+        format!(
+            "Lock file operations: {} install{}, {} update{}, {} removal{}",
+            self.install_count,
+            if self.install_count == 1 { "" } else { "s" },
+            self.update_count,
+            if self.update_count == 1 { "" } else { "s" },
+            self.removal_count,
+            if self.removal_count == 1 { "" } else { "s" },
+        )
+    }
+}
+
+/// Diffs `previous_by_name` against `non_dev`/`dev`'s freshly solved
+/// packages. A package present in both with an unchanged version and
+/// dist/source reference produces no line at all (`unset($removeMap[...])`
+/// with no `UpdateOperation`, in `Transaction::calculateOperations`).
+#[expect(
+    clippy::implicit_hasher,
+    reason = "every caller's map comes straight off parsed composer.lock JSON with the default \
+              hasher; genericizing over BuildHasher buys nothing here"
+)]
+pub fn diff_lock_operations(
+    previous_by_name: &HashMap<String, Value>,
+    non_dev: &[ResolvedPackage],
+    dev: &[ResolvedPackage],
+) -> Result<LockOperations> {
+    let mut remaining_old: HashMap<&str, &Value> = previous_by_name
+        .iter()
+        .map(|(name, value)| (name.as_str(), value))
+        .collect();
+
+    let mut removals: Vec<(String, String)> = Vec::new();
+    let mut installs_updates: Vec<(String, String)> = Vec::new();
+    let mut install_count = 0;
+    let mut update_count = 0;
+
+    for package in non_dev.iter().chain(dev.iter()) {
+        let key = package.name.to_ascii_lowercase();
+        if let Some(old) = remaining_old.remove(key.as_str()) {
+            if let Some(line) = update_operation_line(old, package)? {
+                update_count += 1;
+                installs_updates.push((key, line));
+            }
+        } else {
+            install_count += 1;
+            installs_updates.push((
+                key,
+                format!("Locking {} ({})", package.name, package.pretty_version),
+            ));
+        }
+    }
+
+    for (key, old) in remaining_old {
+        let old_name = old.get("name").and_then(Value::as_str).unwrap_or(key);
+        let old_version = old.get("version").and_then(Value::as_str).unwrap_or("");
+        removals.push((
+            key.to_string(),
+            format!("Removing {old_name} ({old_version})"),
+        ));
+    }
+
+    removals.sort_by(|a, b| a.0.cmp(&b.0));
+    installs_updates.sort_by(|a, b| a.0.cmp(&b.0));
+    let removal_count = removals.len();
+
+    let mut lines = Vec::with_capacity(removals.len() + installs_updates.len());
+    lines.extend(removals.into_iter().map(|(_, line)| line));
+    lines.extend(installs_updates.into_iter().map(|(_, line)| line));
+
+    Ok(LockOperations {
+        install_count,
+        update_count,
+        removal_count,
+        lines,
+    })
+}
+
+/// One `UpdateOperation`'s line (`UpdateOperation::format`), or `None` when
+/// `old`/`new` are identical enough that Composer never schedules the
+/// operation at all (`Transaction::calculateOperations`'s own version/
+/// dist-reference/source-reference equality check).
+fn update_operation_line(old: &Value, new: &ResolvedPackage) -> Result<Option<String>> {
+    let old_name = old.get("name").and_then(Value::as_str).unwrap_or(&new.name);
+    let old_version = old
+        .get("version")
+        .and_then(Value::as_str)
+        .with_context(|| format!("locked package {old_name} has no version"))?;
+    let new_version = new.pretty_version.as_str();
+
+    let unchanged = old_version == new_version
+        && old.pointer("/dist/reference") == new.raw.pointer("/dist/reference")
+        && old.pointer("/source/reference") == new.raw.pointer("/source/reference");
+    if unchanged {
+        return Ok(None);
+    }
+
+    // `VersionParser::isUpgrade`: equal (including two dev branches
+    // `crate::semver::compare` can't order, which it folds to `Equal`)
+    // counts as an upgrade too.
+    let is_upgrade = old_version == new_version || {
+        let old_normalized = crate::semver::normalize(old_version)?;
+        let new_normalized = crate::semver::normalize(new_version)?;
+        crate::semver::compare(&old_normalized, &new_normalized) != Ordering::Greater
+    };
+    let verb = if is_upgrade {
+        "Upgrading"
+    } else {
+        "Downgrading"
+    };
+    Ok(Some(format!(
+        "{verb} {old_name} ({old_version} => {new_version})"
+    )))
+}
 
 #[cfg(test)]
 mod tests {

@@ -325,6 +325,10 @@ pub(crate) fn partial_update(
     };
     let lock =
         crate::lock_writer::write(&result.non_dev, Some(&result.dev), &options, &composer_json)?;
+    // #156: same block `viv update` prints, since `add`/`rm` go through
+    // this same lock-writing path; always followed by "Writing lock file",
+    // since this function (unlike `update::run`) has no `--dry-run`.
+    crate::update::print_lock_operations(&lock_path, &result.non_dev, &result.dev, true)?;
     fs_err::write(&lock_path, lock)?;
 
     if !no_install {

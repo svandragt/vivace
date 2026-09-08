@@ -1,0 +1,17 @@
+{
+    "name": "vivace/fixture-lock-operations",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/new",
+            "options": {
+                "versions": {
+                    "acme/new": "1.4.0"
+                }
+            }
+        }
+    ],
+    "require": {
+        "acme/new": "1.4.0"
+    }
+}

@@ -160,7 +160,7 @@ viv update --no-install   # resolve and write the lock only
 viv add psr/container      # edits composer.json, updates the lock and installs (alias: require)
 viv rm psr/container       # same, minus the package (--no-install opts out too, alias: remove)
 viv dump-autoload -o
-viv normalize --check     # update/add/rm also normalise when they write
+viv normalize --check     # add/rm/init also normalise when they write
 viv cache prune
 viv diagnose              # environment/config report to paste into a bug report
 ```
@@ -168,10 +168,9 @@ viv diagnose              # environment/config report to paste into a bug report
 `install` runs your project's setup scripts, the same way Composer does,
 unless you pass `--no-scripts`.[^10]
 
-`update`, `require` and `remove` also tidy up `composer.json` when they
-write it, so two branches that each add a dependency merge cleanly
-instead of fighting over ordering. `install` never touches
-`composer.json`.[^11]
+`add`, `rm` and `init` also tidy up `composer.json` when they write it, so
+two branches that each add a dependency merge cleanly instead of fighting
+over ordering. `install` and `update` never touch `composer.json`.[^11]
 
 ## Using viv as composer
 
@@ -219,11 +218,11 @@ viv x --list                         # environments in the cache
 
 ### Automatic normalisation
 
-Every command that writes `composer.json` (`update`, `require`, `remove`)
-also normalises it: stable key order and whitespace, the same result as
-running `composer normalize`. You never commit a diff that is only
-reordering.[^11] Pass `--no-normalize` to opt out, or run
-`viv normalize --check` to report without writing.
+Every command that writes `composer.json` (`add`, `rm`, `init`) also
+normalises it: stable key order and whitespace, the same result as running
+`composer normalize`. You never commit a diff that is only reordering.[^11]
+Run `viv normalize --check` for an explicit run that only reports without
+writing.
 
 ### One cache for every project
 
@@ -249,7 +248,8 @@ without touching the network.[^14]
 - **`vendor/` files are read-only by default.** viv hardlinks them from a
   shared store, so an edit inside `vendor/` fails instead of changing every
   project on the machine. If you patch vendor files by hand, install with
-  `--link-mode copy`.
+  `--link-mode copy`, or `--link-mode clone` for writable files sharing the
+  store's disk space where the filesystem supports it.
 - **Cold installs are not the fastest available.** riff wins that column;
   viv's cold time is bounded by GitHub's download throttling. Warm and no-op
   installs are where viv is far ahead.

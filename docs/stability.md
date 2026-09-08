@@ -81,18 +81,25 @@ minor release as a no-op: it's accepted, has no effect, and prints a single
 warning to stderr the first time it fires. The next minor release removes
 it.
 
+viv rewrites `composer.json` only when a command edits it (`add`, `rm`,
+`init`); `install` and `update` only ever read it.
+
 The first instance is `--no-normalize` on `install` and `dump-autoload`
 (#95): since 0.6, neither command touches `composer.json`, so the flag has
 nothing left to disable. It's kept as a silent-except-for-the-warning no-op
 so that a script or CI job that still passes it doesn't fail, and prints
 `--no-normalize is a no-op on install since 0.6; install no longer touches
-composer.json` (or the `dump-autoload` equivalent) once.
+composer.json` (or the `dump-autoload` equivalent) once. `update` joins
+this list from 0.8: it stops normalizing `composer.json` itself (only
+`add`/`rm`/`init` still edit it), so `--no-normalize` there prints
+`--no-normalize is a no-op on update since 0.8; update no longer touches
+composer.json`.
 
-As of this release, `add`/`rm` (and their `require`/`remove` aliases) join
-that list (#145): both always normalize `composer.json` after editing it
-now, so `--no-normalize` prints `--no-normalize is a no-op on add since 0.8;
-add always normalizes composer.json now` (or the `rm` equivalent) once and
-otherwise does nothing.
+As of 0.8, `add`/`rm` (and their `require`/`remove` aliases) join that list
+under a different reason (#145): both always normalize `composer.json`
+after editing it now, so `--no-normalize` prints `--no-normalize is a no-op
+on add since 0.8; add always normalizes composer.json now` (or the `rm`
+equivalent) once and otherwise does nothing.
 
 ## How to report a contract break
 
