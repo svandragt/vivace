@@ -102,11 +102,8 @@ pub(crate) trait Adapter {
     fn plugin_names(&self) -> &'static [&'static str];
     /// Upstream version the port was made from — the module doc comment's
     /// own pinned version, or, absent one, the version pinned in this
-    /// adapter's own fixture `composer.lock`.
-    #[expect(
-        dead_code,
-        reason = "read by #127 part 3's drift workflow (`viv diagnose --adapters`), not built here"
-    )]
+    /// adapter's own fixture `composer.lock`. Read by `viv diagnose
+    /// --adapters` (#127 part 3's drift workflow).
     fn upstream_version(&self) -> &'static str;
 
     /// Install-path mapping (`composer/installers`, the `WordPress` core
@@ -204,6 +201,13 @@ const NATIVE_ADAPTERS: &[AdapterId] = &[
     AdapterId::DrupalScaffold,
     AdapterId::SymfonyRuntime,
 ];
+
+/// Every registered adapter, in `NATIVE_ADAPTERS` order, regardless of what
+/// any one project's lock enables — `viv diagnose --adapters` (#127 part 3's
+/// drift workflow) reports on the whole registry, not a resolved `Plugins`.
+pub(crate) fn all_adapters() -> impl Iterator<Item = Box<dyn Adapter>> {
+    NATIVE_ADAPTERS.iter().map(|id| make_adapter(*id))
+}
 
 fn make_adapter(id: AdapterId) -> Box<dyn Adapter> {
     match id {

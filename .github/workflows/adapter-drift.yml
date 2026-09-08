@@ -1,0 +1,121 @@
+name: Adapter drift
+
+# #127 part 3: every native adapter (`src/plugins/*.rs`) ports one upstream
+# Composer plugin at a pinned version (`Adapter::upstream_version`). This
+# checks that pin against Packagist weekly and files (or clears) one issue
+# naming every adapter that has fallen behind, and the fixture that would
+# need re-verifying if it were ported forward
+# (`docs/plugin-strategy.md#upstream-drift`).
+
+on:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+env:
+  ISSUE_TITLE: "Adapter drift: native adapters behind upstream"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+        with:
+          enable-cache: true
+      - run: devbox run -- cargo build --release
+      - name: Compare every adapter's ported version with Packagist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Maps a plugin package name to its fixture directory under
+          # tests/fixtures/plugins/ (docs/plugin-strategy.md's own adapter
+          # list): symfony/runtime shares the drupal fixture
+          # (src/plugins/symfony_runtime.rs), and composer/installers plus
+          # the wordpress-core-installer pair have no fixture of their own
+          # there (theirs lives at tests/fixtures/wordpress instead).
+          fixture_dir() {
+            case "$1" in
+              dealerdirect/phpcodesniffer-composer-installer) echo "phpcs" ;;
+              phpstan/extension-installer) echo "phpstan" ;;
+              tbachert/spi) echo "spi" ;;
+              cweagans/composer-patches) echo "composer-patches" ;;
+              php-http/discovery) echo "discovery" ;;
+              yiisoft/yii2-composer) echo "yii2" ;;
+              craftcms/plugin-installer) echo "craft" ;;
+              ffraenz/private-composer-installer) echo "private-installer" ;;
+              codeception/c3) echo "c3" ;;
+              drupal/core-composer-scaffold) echo "drupal" ;;
+              symfony/runtime) echo "drupal" ;;
+              *) echo "" ;;
+            esac
+          }
+
+          # Newest non-dev, non-prerelease version from a p2 metadata
+          # response. Some packages mix "v"-prefixed and bare tags across
+          # their history (php-http/discovery is one), which sorts wrongly
+          # under a plain `sort -V` (a leading letter sorts after a leading
+          # digit) — sorted on the "v"-stripped copy instead, original
+          # spelling kept for the printed result.
+          latest_stable_version() {
+            jq -r --arg name "$1" '.packages[$name][]?.version' \
+              | grep -vE '^dev-' \
+              | grep -viE -- '-(alpha|beta|rc|patch)[0-9]*$' \
+              | sed -E 's/^(v?)(.*)/\2\t\1\2/' \
+              | sort -t "$(printf '\t')" -k1,1V \
+              | tail -1 | cut -f2
+          }
+
+          # True when $2 (latest) is newer than $1 (recorded), ignoring an
+          # optional leading "v" either side may or may not have.
+          is_behind() {
+            local recorded="${1#v}" latest="${2#v}"
+            [ -n "$latest" ] \
+              && [ "$(printf '%s\n%s\n' "$recorded" "$latest" | sort -V | tail -1)" != "$recorded" ]
+          }
+
+          table="| Plugin | Ported version | Latest | Fixture |\n|---|---|---|---|\n"
+          behind=0
+          while IFS=$'\t' read -r name version; do
+            [ -n "$name" ] || continue
+            json=$(curl -sf "https://repo.packagist.org/p2/${name}.json") \
+              || { echo "::warning::${name}: Packagist metadata fetch failed, skipping" >&2; continue; }
+            latest=$(printf '%s' "$json" | latest_stable_version "$name")
+            if is_behind "$version" "$latest"; then
+              behind=1
+              dir=$(fixture_dir "$name")
+              fixture="tests/fixtures/plugins/${dir}"
+              [ -n "$dir" ] && [ -d "$fixture" ] || fixture="none"
+              table="${table}| ${name} | ${version} | ${latest} | ${fixture} |\n"
+            fi
+          done < <(devbox run -- ./target/release/viv diagnose --adapters)
+
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          issue_number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "\"$ISSUE_TITLE\" in:title" --json number,title \
+            --jq "[.[] | select(.title == \"$ISSUE_TITLE\")][0].number // empty")
+
+          if [ "$behind" = "1" ]; then
+            {
+              echo "One or more native adapters (\`src/plugins/*.rs\`) have fallen behind the Composer plugin they port. A lagging adapter isn't wrong on its own — its fixture still proves the output it emits (see \`docs/plugin-strategy.md#upstream-drift\`) — but it's worth re-checking against the fixture named below."
+              echo
+              printf '%b' "$table"
+              echo
+              echo "Run: $run_url"
+            } > drift-report.md
+            if [ -n "$issue_number" ]; then
+              gh issue edit "$issue_number" --repo "$GITHUB_REPOSITORY" --body-file drift-report.md
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body-file drift-report.md
+            fi
+          elif [ -n "$issue_number" ]; then
+            gh issue close "$issue_number" --repo "$GITHUB_REPOSITORY" \
+              --comment "No native adapter is behind upstream as of this run: $run_url"
+          fi

@@ -67,3 +67,47 @@ fn project_with_a_plugin_reports_its_decision_and_never_leaks_a_token() {
     assert!(!stdout.contains("sekrit-token"), "{stdout}");
     assert!(stdout.contains("github.com"), "{stdout}");
 }
+
+/// The hidden `--adapters` flag (#127 part 3's drift workflow,
+/// `.github/workflows/adapter-drift.yml`): one `<name>\t<version>` line per
+/// plugin name in `NATIVE_ADAPTERS` registration order, and nothing else.
+#[test]
+fn diagnose_adapters_prints_every_native_adapter_and_nothing_else() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.viv();
+    cmd.args(["diagnose", "--adapters"]);
+    let output = cmd.output().expect("failed to run viv diagnose --adapters");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let names: Vec<&str> = stdout
+        .lines()
+        .map(|line| {
+            let (name, version) = line
+                .split_once('\t')
+                .unwrap_or_else(|| panic!("not a name\\tversion line: {line}"));
+            assert!(!version.is_empty(), "{line}");
+            name
+        })
+        .collect();
+
+    assert_eq!(
+        names,
+        [
+            "composer/installers",
+            "johnpbloch/wordpress-core-installer",
+            "roots/wordpress-core-installer",
+            "dealerdirect/phpcodesniffer-composer-installer",
+            "phpstan/extension-installer",
+            "tbachert/spi",
+            "cweagans/composer-patches",
+            "php-http/discovery",
+            "yiisoft/yii2-composer",
+            "craftcms/plugin-installer",
+            "ffraenz/private-composer-installer",
+            "codeception/c3",
+            "drupal/core-composer-scaffold",
+            "symfony/runtime",
+        ]
+    );
+}

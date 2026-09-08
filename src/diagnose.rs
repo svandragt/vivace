@@ -23,9 +23,20 @@ pub struct DiagnoseArgs {
     /// Project directory holding `composer.json`/`composer.lock`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
+    /// Print every registered adapter's plugin name(s) and the upstream
+    /// version it was ported from, one line per name, in registration order,
+    /// and nothing else. Feeds #127 part 3's drift workflow
+    /// (`.github/workflows/adapter-drift.yml`), not for interactive use.
+    #[arg(long, hide = true)]
+    pub adapters: bool,
 }
 
 pub fn run(args: &DiagnoseArgs, cache_dir: Option<&Path>) -> Result<()> {
+    if args.adapters {
+        diagnose_adapters();
+        return Ok(());
+    }
+
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
 
@@ -220,6 +231,17 @@ fn diagnose_plugins(lock: &Lock, root: &Root) {
             "disabled (config.allow-plugins)".to_string()
         };
         out(&format!("plugins: {}: {decision}", package.name));
+    }
+}
+
+/// `viv diagnose --adapters`: `<plugin name>\t<upstream version>`, one line
+/// per name (the `WordPress` core installer pair has two), in
+/// `NATIVE_ADAPTERS` registration order, nothing else on stdout.
+fn diagnose_adapters() {
+    for adapter in plugins::all_adapters() {
+        for name in adapter.plugin_names() {
+            out(&format!("{name}\t{}", adapter.upstream_version()));
+        }
     }
 }
 
