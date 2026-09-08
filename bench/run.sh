@@ -16,6 +16,9 @@ runs=${BENCH_RUNS:-5}
 # to compare plugin-heavy projects on the install-from-lock path alone.
 flags=${BENCH_FLAGS:-}
 out=${BENCH_OUT:-bench/results}; mkdir -p "$out"
+# Absolute: the benchmarked command cd-s into its work dir before redirecting
+# its output to "$out/<tool>-<scenario>.log".
+out=$(cd "$out" && pwd)
 
 # Every tool gets its cache under $work, never the user's real ~/.cache — see #17.
 xdg_cache_home="$work/xdg-cache"

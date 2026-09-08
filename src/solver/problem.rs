@@ -19,8 +19,8 @@
 //!
 //! `Problem.php`'s reason sort (`getRulePriority`/`getSortableString`) and
 //! `formatDeduplicatedRules`'s version-range collapsing (composer/composer#42,
-//! this crate's #62) are ported below: [`rule_priority`]/[`sortable_string`]
-//! feed the sort in [`Problem::pretty_string`], and [`format_deduplicated_rules`]
+//! this crate's #62) are ported below: `rule_priority`/`sortable_string`
+//! feed the sort in [`Problem::pretty_string`], and `format_deduplicated_rules`
 //! replaces the old flat `lines.dedup()`. Ported against `Reason` directly
 //! rather than PHP's regex-over-rendered-message trick (`Preg::isMatchStrictGroups`
 //! recovering the source package/version PHP had already thrown away by
