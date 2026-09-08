@@ -153,9 +153,12 @@ the store in place, no flag needed. The relink is safe and reversible either
 way, since the lock decides the content. Through the shim, a terminal gets a
 confirmation prompt first, because typing `composer install` didn't opt into
 viv touching the tree in place; a plain `viv install`, or a script running
-under the shim, proceeds unprompted. `--adopt` still force-relinks a
-viv-written `vendor/` on request, with its own terminal prompt regardless of
-the shim.
+under the shim, proceeds unprompted. Automatic adoption is best-effort per
+package: a dist it can't fetch (a private package behind an auth key, say)
+keeps Composer's own copy in place with a warning instead of failing the
+whole install. `--adopt` still force-relinks a viv-written `vendor/` on
+request, with its own terminal prompt regardless of the shim, and still fails
+hard on a dist it can't fetch.
 
 ## Scope
 

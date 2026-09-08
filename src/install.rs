@@ -5,7 +5,7 @@
 //! and installed.* steps defer to; this module only decides *when* to run
 //! them and *where* things live on disk.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -338,6 +338,12 @@ fn run_impl(
     // flag needed (#123).
     let adopting = args.adopt || composer_written;
     let mut adopted_count = 0usize;
+    // Packages adopted automatically (never `--adopt`, which keeps today's
+    // hard failure) fetch best-effort: a private dist's archive already sits
+    // in `vendor/` as Composer's own copy, so a fetch failure for one of
+    // these just keeps that copy in place with a warning instead of failing
+    // the whole install (#123 follow-up).
+    let mut best_effort_adopt: HashSet<String> = HashSet::new();
     if adopting {
         // `--adopt` always gives a human at a terminal a chance to back out
         // of relinking every kept package in place. The automatic adopt only
@@ -351,11 +357,16 @@ fn run_impl(
         if should_prompt && !confirm_adopt()? {
             bail!("Aborted");
         }
-        adopted_count = plan
+        let adopted_names: HashSet<String> = plan
             .keep
             .iter()
             .filter(|p| p.r#type != "metapackage")
-            .count();
+            .map(|p| p.name.clone())
+            .collect();
+        adopted_count = adopted_names.len();
+        if !args.adopt {
+            best_effort_adopt = adopted_names;
+        }
         plan.install.append(&mut plan.keep);
     }
 
@@ -455,7 +466,12 @@ fn run_impl(
             .enable_all()
             .build()?;
         let fetch_started = Instant::now();
-        let downloaded = runtime.block_on(fetch_missing(&fetcher, Arc::clone(&store), &missing))?;
+        let downloaded = runtime.block_on(fetch_missing(
+            &fetcher,
+            Arc::clone(&store),
+            &missing,
+            &best_effort_adopt,
+        ))?;
         tracing::debug!(
             packages = missing.len(),
             elapsed_ms = fetch_started.elapsed().as_millis(),
@@ -464,6 +480,16 @@ fn run_impl(
         fetcher.log_hop_summary();
         archive_dirs.extend(downloaded);
     }
+    // A best-effort adopt that couldn't fetch stays a Composer copy, not a
+    // relinked package: `fetch_missing` already warned for it, so it's
+    // dropped from the count of packages actually adopted, and (below) from
+    // the list `link_archives` touches, leaving `vendor/` untouched for it.
+    adopted_count -= best_effort_adopt
+        .iter()
+        .filter(|name| {
+            missing.iter().any(|p| &p.name == *name) && !archive_dirs.contains_key(*name)
+        })
+        .count();
 
     sweep_link_litter(&vendor_dir)?;
     let link_started = Instant::now();
@@ -488,9 +514,13 @@ fn run_impl(
             } else {
                 source::checkout_git(&cache_dir, package, &dest)?;
             }
-        } else {
+        } else if archive_dirs.contains_key(&package.name) {
             archive_installs.push(package);
         }
+        // Else: a best-effort adopt whose fetch failed (`archive_dirs` has no
+        // entry for it) — leave it out of `archive_installs` entirely so
+        // `link_archives` never touches it, keeping Composer's own copy on
+        // disk exactly as it was.
     }
     link_archives(
         &archive_installs,
@@ -1028,6 +1058,7 @@ async fn fetch_missing(
     fetcher: &fetch::Fetcher,
     store: Arc<Store>,
     packages: &[Package],
+    best_effort_adopt: &HashSet<String>,
 ) -> Result<HashMap<String, PathBuf>> {
     // #21: large downloads spill to a temp file in the store's own temp area
     // rather than growing an ever-larger `Vec<u8>`; small ones (the common
@@ -1035,7 +1066,10 @@ async fn fetch_missing(
     let temp_dir = store.temp_dir()?;
     let mut downloads = fetcher.fetch_all(packages, CONCURRENCY, &temp_dir);
     let extract_slots = Arc::new(tokio::sync::Semaphore::new(EXTRACT_CONCURRENCY));
-    let mut extractions: tokio::task::JoinSet<Result<(String, PathBuf)>> =
+    // The name travels alongside the outcome (not just on success) so a
+    // failure for a best-effort adopt can be told apart from one that must
+    // abort the install, without losing which package it was.
+    let mut extractions: tokio::task::JoinSet<Result<(String, Result<PathBuf>)>> =
         tokio::task::JoinSet::new();
     let mut result = HashMap::new();
     let mut downloads_done = false;
@@ -1045,8 +1079,21 @@ async fn fetch_missing(
             item = downloads.next(), if !downloads_done => {
                 match item {
                     Some((package, downloaded)) => {
-                        let downloaded = downloaded.with_context(|| format!("{}: fetching dist", package.name))?;
                         let name = package.name.clone();
+                        let downloaded = match downloaded {
+                            Ok(downloaded) => downloaded,
+                            // A best-effort adopt's private dist may 404 or need
+                            // auth vivace doesn't have; Composer's own copy is
+                            // already on disk, so this keeps it instead of
+                            // failing the whole install (#123 follow-up).
+                            Err(err) if best_effort_adopt.contains(&name) => {
+                                warn_out(&format!(
+                                    "Kept vendor/{name} as a Composer copy: {err:#}"
+                                ));
+                                continue;
+                            }
+                            Err(err) => return Err(err.context(format!("{name}: fetching dist"))),
+                        };
                         let package = package.clone();
                         let store = Arc::clone(&store);
                         let extract_slots = Arc::clone(&extract_slots);
@@ -1055,25 +1102,31 @@ async fn fetch_missing(
                                 .acquire_owned()
                                 .await
                                 .expect("extract_slots semaphore is never closed");
-                            tokio::task::spawn_blocking(move || {
-                                let dir = match &downloaded {
-                                    fetch::Downloaded::Bytes(bytes) => store.add_zip(&package, bytes)?,
-                                    fetch::Downloaded::File(path) => {
-                                        store.add_archive_from_file(&package, path)?
-                                    }
-                                };
-                                Ok((name, dir))
+                            let outcome = tokio::task::spawn_blocking(move || match &downloaded {
+                                fetch::Downloaded::Bytes(bytes) => store.add_zip(&package, bytes),
+                                fetch::Downloaded::File(path) => {
+                                    store.add_archive_from_file(&package, path)
+                                }
                             })
                             .await
-                            .context("store worker panicked")?
+                            .context("store worker panicked")?;
+                            Ok((name, outcome))
                         });
                     }
                     None => downloads_done = true,
                 }
             }
             Some(joined) = extractions.join_next(), if !extractions.is_empty() => {
-                let (name, dir) = joined.context("store worker panicked")??;
-                result.insert(name, dir);
+                let (name, outcome) = joined.context("store worker panicked")??;
+                match outcome {
+                    Ok(dir) => {
+                        result.insert(name, dir);
+                    }
+                    Err(err) if best_effort_adopt.contains(&name) => {
+                        warn_out(&format!("Kept vendor/{name} as a Composer copy: {err:#}"));
+                    }
+                    Err(err) => return Err(err.context(format!("{name}: extracting dist"))),
+                }
             }
         }
     }

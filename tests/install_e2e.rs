@@ -231,6 +231,159 @@ fn adopts_a_composer_written_vendor_tree() {
     assert!(relinked.nlink() > 1, "adopt should hardlink, not copy");
 }
 
+/// Builds a Composer-written vendor tree (state marker gone, every
+/// package's hardlink broken into a plain copy, same as
+/// `adopts_a_composer_written_vendor_tree`) whose `psr/log` dist can never
+/// be fetched again: its URL is broken (a stand-in for a private dist behind
+/// an auth key this process has no credentials for) and its archive evicted
+/// from the store, while `monolog/monolog`'s and `psr/container`'s stay
+/// cached so relinking them needs no further network access. `psr/log`'s
+/// `reference` is left untouched, so `plan::plan` still calls it a kept
+/// package, not a version bump.
+fn composer_written_tree_with_unfetchable_dist(ctx: &TestContext) {
+    let project = ctx.project.path();
+    copy_monolog_sources(project);
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 3 packages"));
+
+    fs::remove_file(project.join("vendor/composer/.vivace-state")).unwrap();
+    for target in [
+        "vendor/monolog/monolog/composer.json",
+        "vendor/psr/log/composer.json",
+        "vendor/psr/container/composer.json",
+    ] {
+        let path = project.join(target);
+        let content = fs::read(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, &content).unwrap();
+    }
+
+    let lock_path = project.join("composer.lock");
+    let mut lock: serde_json::Value =
+        serde_json::from_slice(&fs::read(&lock_path).unwrap()).unwrap();
+    for package in lock["packages"].as_array_mut().unwrap() {
+        if package["name"] == "psr/log" {
+            package["dist"]["url"] = serde_json::Value::String(
+                "https://api.github.com/repos/php-fig/log/zipball/\
+                 0000000000000000000000000000000000000000"
+                    .to_string(),
+            );
+        }
+    }
+    fs::write(&lock_path, serde_json::to_vec(&lock).unwrap()).unwrap();
+
+    // `Store::pointer` keys on `dist.reference` (unchanged above), not the
+    // URL, so this is the one dist pointer the broken URL above can reach.
+    fs::remove_file(
+        ctx.cache
+            .path()
+            .join("dists-v0/psr/log/f16e1d5863e37f8d8c2a01719f5b34baa2b714d3"),
+    )
+    .unwrap();
+}
+
+/// #123 follow-up: automatic adoption is best-effort per package. A private
+/// dist behind an auth key vivace doesn't have (simulated here by a broken
+/// URL) must not sink the whole install — Composer's own copy of that one
+/// package stays on disk with a warning, and the rest of the tree still
+/// adopts normally.
+#[test]
+fn best_effort_adopts_when_one_dist_is_unfetchable() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping install_e2e: set VIVACE_TEST_NETWORK=1 to fetch real dists over the network"
+        );
+        return;
+    }
+
+    let ctx = TestContext::new();
+    composer_written_tree_with_unfetchable_dist(&ctx);
+    let project = ctx.project.path();
+    let kept = project.join("vendor/psr/log/composer.json");
+    let kept_before = fs::read(&kept).unwrap();
+
+    let adopted = ctx.viv().arg("install").output().unwrap();
+    assert!(
+        adopted.status.success(),
+        "a best-effort adopt must not fail the whole install: {}",
+        String::from_utf8_lossy(&adopted.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&adopted.stderr).contains("Kept vendor/psr/log as a Composer copy"),
+        "stderr: {}",
+        String::from_utf8_lossy(&adopted.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&adopted.stdout)
+            .contains("adopted 2 packages from a Composer install"),
+        "stdout: {}",
+        String::from_utf8_lossy(&adopted.stdout)
+    );
+
+    for target in [
+        "vendor/monolog/monolog/composer.json",
+        "vendor/psr/container/composer.json",
+    ] {
+        let nlink = fs::metadata(project.join(target)).unwrap().nlink();
+        assert!(
+            nlink > 1,
+            "{target} should have been relinked from the store"
+        );
+    }
+    let kept_meta = fs::metadata(&kept).unwrap();
+    assert_eq!(
+        kept_meta.nlink(),
+        1,
+        "psr/log should still be a plain Composer copy, not relinked"
+    );
+    assert_eq!(
+        fs::read(&kept).unwrap(),
+        kept_before,
+        "a kept-as-copy package's bytes must be untouched"
+    );
+
+    let installed_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(project.join("vendor/composer/installed.json")).unwrap())
+            .unwrap();
+    let names: Vec<&str> = installed_json["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"psr/log"),
+        "a kept-as-copy package must still be listed in installed.json"
+    );
+}
+
+/// `--adopt` is opt-in, so a human asked for the relink and gets told when
+/// it can't happen: unlike automatic adoption, it keeps today's hard
+/// failure on an unfetchable dist.
+#[test]
+fn adopt_flag_still_hard_fails_on_an_unfetchable_dist() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping install_e2e: set VIVACE_TEST_NETWORK=1 to fetch real dists over the network"
+        );
+        return;
+    }
+
+    let ctx = TestContext::new();
+    composer_written_tree_with_unfetchable_dist(&ctx);
+
+    let output = ctx.viv().args(["install", "--adopt"]).output().unwrap();
+    assert!(
+        !output.status.success(),
+        "--adopt should still hard-fail on an unfetchable dist: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
 /// Autoload shapes the monolog fixture doesn't reach: old-style PSR-0
 /// (`pear/console_getopt`), PSR-0 with `target-dir` (`symfony/yaml` 2.6),
 /// `files`-only packages (`swiftmailer/swiftmailer`), `files` ordered across
