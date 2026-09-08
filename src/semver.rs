@@ -88,7 +88,7 @@ pub fn parse_constraint(spec: &str) -> Result<Constraint> {
 /// must already be normalised: Composer only ever compares normalised
 /// versions (`Package::getVersion`, lock entries).
 ///
-/// ponytail: two *different* arbitrary dev branches (`dev-foo` vs
+/// two *different* arbitrary dev branches (`dev-foo` vs
 /// `dev-bar`, neither a numeric alias nor `dev-master`/`dev-trunk`) have no
 /// order in Composer at all: `greaterThan`, `lessThan` and `equalTo` are
 /// all `false` for that pair. `Ordering` has no fourth "incomparable"

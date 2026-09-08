@@ -9,7 +9,7 @@
 //! already exists before doing anything, matching the phase it needs to run
 //! in here.
 //!
-//! ponytail: a custom `extra.runtime.autoload_template` (a project's own
+//! a custom `extra.runtime.autoload_template` (a project's own
 //! template file, replacing the built-in one) is ported since it's a single
 //! substitution away from the default path; a custom template that uses
 //! tokens beyond `%runtime_class%`/`%runtime_options%` (there are none in the

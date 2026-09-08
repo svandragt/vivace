@@ -8,7 +8,7 @@
 //! `Installer::install`/`update`, and for the install-order DFS's own
 //! ceiling against two independent plugins.
 //!
-//! ponytail: `Plugin::activate`'s `isRoot` branch (the root package
+//! `Plugin::activate`'s `isRoot` branch (the root package
 //! installing itself as a `craft-plugin`) isn't ported — viv never installs
 //! itself as a Craft plugin. A real `craft-plugin` package's legacy,
 //! non-lowercase `extra.handle` (the plugin's own `camel2id` renormalise,

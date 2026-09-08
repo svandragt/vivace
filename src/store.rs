@@ -268,7 +268,7 @@ impl Store {
         let target = PathBuf::from("../".repeat(depth))
             .join(ARCHIVE_BUCKET)
             .join(id);
-        // ponytail: a random suffix per call rather than a per-process one so
+        // a random suffix per call rather than a per-process one so
         // concurrent add_zip calls on the same process never share a path
         // (tempfile's Builder retries on a name collision).
         tempfile::Builder::new()
@@ -1847,7 +1847,7 @@ mod tests {
     fn zip_bomb_trips_the_inflated_size_cap() {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path()).unwrap();
-        // ponytail: env var only touched by this one test (nextest gives it
+        // env var only touched by this one test (nextest gives it
         // its own process), so no guard against concurrent mutation needed.
         // SAFETY: single-threaded within this test process at this point.
         unsafe {

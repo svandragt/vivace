@@ -5,7 +5,7 @@
 //! Ported from `yiisoft/yii2-composer` `2.0.11`'s `src/Installer.php`,
 //! fetched 2026-09-08.
 //!
-//! ponytail: the real plugin hooks `Installer::install`/`update`/`uninstall`
+//! the real plugin hooks `Installer::install`/`update`/`uninstall`
 //! (called once per package as Composer lands it, via
 //! `Plugin::activate`'s `addInstaller`), not any script event; viv has no
 //! such per-package seam here, so this instead recomputes the whole file

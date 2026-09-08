@@ -9,7 +9,7 @@
 //! `ServiceLoader::collectProviders`), needs a live PHP runtime to run
 //! arbitrary package code and is out of scope.
 //!
-//! ponytail: a provider/service is included whenever its name matches a
+//! a provider/service is included whenever its name matches a
 //! class-like pattern; the real plugin also checks `class_exists`/
 //! `ReflectionClass` availability (dropping a provider whose class isn't
 //! actually autoloadable, or whose `ServiceProviderRequirement` attributes

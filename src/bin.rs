@@ -148,7 +148,7 @@ fn install_one(
         ));
         return Ok(None);
     }
-    // ponytail: Composer also `chmod`s the target to add the execute bit;
+    // Composer also `chmod`s the target to add the execute bit;
     // vivace's store files are read-only hardlinks shared with every other
     // project on the machine, so the target keeps whatever mode the zip
     // gave it and only the proxy gets one here.

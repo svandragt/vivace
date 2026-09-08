@@ -8,7 +8,7 @@
 //! Ported from `codeception/c3` `2.9.0`'s `Installer.php`, fetched
 //! 2026-09-08 (#126).
 //!
-//! ponytail: hooked into `PRE_AUTOLOAD_DUMP` alongside `yii2`/`craft` rather
+//! hooked into `PRE_AUTOLOAD_DUMP` alongside `yii2`/`craft` rather
 //! than the real plugin's own `POST_INSTALL_CMD`/`POST_UPDATE_CMD`
 //! subscription — see `yii2.rs`'s doc comment for why. The one place that
 //! still shows through: a bare `viv dump-autoload` re-runs this check,
@@ -18,7 +18,7 @@
 //! real plugin already leave the file untouched — so the divergence never
 //! writes a byte, only skips a debug line Composer would have printed.
 //!
-//! ponytail: real Composer 2 only calls `Installer::deleteFile` from the
+//! real Composer 2 only calls `Installer::deleteFile` from the
 //! `uninstall()` plugin lifecycle hook, fired when `codeception/c3` itself
 //! is being removed from the lock. This module only ever runs while that
 //! package is still present (`Plugins::c3` gates the call site), so there
@@ -27,7 +27,7 @@
 //! `--no-plugins` "not this module's job" case. Wire an actual
 //! `plan.remove` hook through if a project ever needs the file cleaned up.
 //!
-//! ponytail: byte equality stands in for the real plugin's `md5_file`
+//! byte equality stands in for the real plugin's `md5_file`
 //! comparison — same yes/no answer for "has it changed", without pulling in
 //! an md5 crate for a value nothing downstream stores or compares against.
 
