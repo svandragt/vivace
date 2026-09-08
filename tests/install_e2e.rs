@@ -1319,7 +1319,7 @@ mod plugin_generators {
 /// would have applied.
 mod composer_patches {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -1425,6 +1425,50 @@ mod composer_patches {
             fs::read(project.join("vendor/psr/log/src/LogLevel.php")).unwrap(),
             fs::read(fixture().join("expected/patched/psr-log/src/LogLevel.php")).unwrap(),
             "the root extra.patches patch is untouched by the patches-file change"
+        );
+    }
+
+    /// `apply`'s `link_tree(&store_dir, &install_path, LinkMode::Copy)` must
+    /// break the hardlink before `git apply` touches the file, never write
+    /// through into the store's shared, read-only tree.
+    #[test]
+    fn patching_never_writes_through_store_hardlinks() {
+        if skip_without_network() || skip_without_git() {
+            return;
+        }
+        let ctx = TestContext::new();
+        let project = ctx.project.path();
+        copy_sources(project);
+
+        ctx.viv().arg("install").assert().success();
+
+        // `dists-v0/psr/log/<reference>` is a relative symlink to the
+        // archive dir this test's isolated cache resolved for psr/log.
+        let dists_dir = ctx.cache.path().join("dists-v0/psr/log");
+        let reference = fs::read_dir(&dists_dir).unwrap().next().unwrap().unwrap();
+        let store_dir = fs::canonicalize(reference.path()).unwrap();
+        let store_log_level = store_dir.join("src/LogLevel.php");
+
+        let store_bytes = fs::read(&store_log_level).unwrap();
+        let patched =
+            fs::read(fixture().join("expected/patched/psr-log/src/LogLevel.php")).unwrap();
+        assert_ne!(store_bytes, patched, "the store copy must stay unpatched");
+        assert!(
+            !String::from_utf8_lossy(&store_bytes)
+                .contains("patched by cweagans/composer-patches fixture"),
+            "the store copy must not carry the patch"
+        );
+
+        let store_meta = fs::metadata(&store_log_level).unwrap();
+        assert_eq!(
+            store_meta.nlink(),
+            1,
+            "the vendor copy must no longer share the store's inode"
+        );
+        assert_eq!(
+            store_meta.permissions().mode() & 0o222,
+            0,
+            "the store copy must stay read-only"
         );
     }
 }
