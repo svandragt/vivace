@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use vivace::audit::{self, AuditArgs};
 use vivace::diagnose::{self, DiagnoseArgs};
+use vivace::init::{self, InitArgs};
 use vivace::install::{self, CacheArgs, DumpAutoloadArgs, InstallArgs};
 use vivace::normalize::{self, NormalizeArgs};
 use vivace::require::{self, RemoveArgs, RequireArgs};
@@ -76,6 +77,11 @@ mod tests {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Write a composer.json for a new project and stop (#143): no
+    /// interactive question flow, defaults inferred from git and the
+    /// directory. `--require`/`--require-dev` chain into the same
+    /// resolve/lock/install `viv add` runs (`--no-install` opts out).
+    Init(InitArgs),
     /// Install packages from composer.lock.
     Install(InstallArgs),
     /// Resolve composer.json, write a composer.lock (full or partial
@@ -136,6 +142,10 @@ fn main() -> ExitCode {
     init_logging(cli.verbose);
     let offline = cli.offline || network_disabled_by_env();
     match cli.command {
+        Command::Init(args) => match init::run(&args, cli.cache_dir.as_deref(), offline) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => resolver_error(&err),
+        },
         Command::Install(args) => match install::run(&args, cli.cache_dir.as_deref(), offline) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {

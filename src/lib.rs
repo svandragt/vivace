@@ -4,6 +4,7 @@ pub mod autoload;
 pub mod bin;
 pub mod diagnose;
 pub mod fetch;
+pub mod init;
 pub mod install;
 pub mod link;
 pub mod lock;

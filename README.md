@@ -32,6 +32,23 @@ viv keeps Composer's copy of that package, prints a warning, and adopts
 the rest. To force a fresh relink of a `vendor/` that viv itself wrote,
 run `viv install --adopt`.
 
+### Starting from nothing
+
+No `composer.json` yet? `viv init` writes one and stops, with no prompts:
+the package name is guessed from `git config user.name` and the directory,
+`type` is `project`, `license` is `MIT`, and `autoload.psr-4` points at
+`src/` when that directory exists. Pass `--name`, `--license` or `--type` to
+override a default, or `--require`/`--require-dev` to add dependencies in
+the same command:
+
+```sh
+mkdir demo && cd demo && viv init --require psr/log
+```
+
+That resolves `psr/log`, writes `composer.lock`, and installs `vendor/`,
+the same as `viv add` would on an existing project (`--no-install` opts
+out). Run it again with `--force` to start over.
+
 ## Stopping
 
 You can stop using viv at any point and go back to Composer with no
@@ -109,6 +126,7 @@ riff.[^9]
 ## Everyday commands
 
 ```sh
+viv init                  # write a composer.json for a new project and stop
 viv install            # in a project with composer.json and composer.lock
 viv install --no-dev
 viv install --dry-run  # show the plan, change nothing

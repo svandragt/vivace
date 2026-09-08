@@ -1,0 +1,8 @@
+{
+    "name": "test-user/demo",
+    "license": "MIT",
+    "type": "project",
+    "config": {
+        "sort-packages": true
+    }
+}

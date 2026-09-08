@@ -238,7 +238,7 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
     clippy::fn_params_excessive_bools,
     reason = "require/remove's shared tail, no bundling win"
 )]
-fn partial_update(
+pub(crate) fn partial_update(
     project_dir: &Path,
     cache_dir: Option<&Path>,
     offline: bool,
@@ -376,7 +376,7 @@ fn locked_packages_by_name(lock: &Value) -> std::collections::HashMap<String, Va
 /// The `None`-constraint branch of `RequireCommand::determineRequirements`:
 /// fetch `name`'s versions and turn the best candidate into a `^`-style
 /// constraint (`version_selector::find_recommended_constraint`).
-fn synthesize_constraint(
+pub(crate) fn synthesize_constraint(
     name: &str,
     root: &Value,
     project_dir: &Path,
@@ -427,7 +427,7 @@ fn preferred_stability(root: &Value) -> &'static str {
 /// `vendor/package` or `vendor/package:constraint` (`composer require`'s
 /// own CLI argument shape; the `=` separator Composer also accepts is not
 /// supported here, only the more common `:`).
-fn split_spec(spec: &str) -> (&str, Option<&str>) {
+pub(crate) fn split_spec(spec: &str) -> (&str, Option<&str>) {
     match spec.split_once(':') {
         Some((name, constraint)) => (name, Some(constraint)),
         None => (spec, None),
