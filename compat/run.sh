@@ -6,7 +6,37 @@
 # php/composer resolve.
 set -euo pipefail
 
+# Two temp files differing only by their directory prefix must compare equal
+# after the prefix-fold sed below (#150). Run with COMPAT_SELFTEST=1.
+selftest() {
+  local dir_a dir_b
+  dir_a=$(mktemp -d) dir_b=$(mktemp -d)
+  mkdir -p "$dir_a/vendor/pkg" "$dir_b/vendor/pkg"
+  echo "install_path => '$dir_a/vendor/pkg',$'\n'other => 1" > "$dir_a/vendor/pkg/f.php"
+  echo "install_path => '$dir_b/vendor/pkg',$'\n'other => 1" > "$dir_b/vendor/pkg/f.php"
+  if diff -q <(fold_prefix "$dir_a" "$dir_b" "$dir_a/vendor/pkg/f.php") "$dir_b/vendor/pkg/f.php" >/dev/null 2>&1; then
+    echo "compat: selftest ok" >&2
+    rm -rf "$dir_a" "$dir_b"
+    exit 0
+  else
+    echo "compat: selftest FAILED" >&2
+    rm -rf "$dir_a" "$dir_b"
+    exit 1
+  fi
+}
+
+# Rewrites $3 (a file under $1, the composer_dir) with $1 folded to $2 (the
+# viv_dir), on both the raw prefixes and their realpath (#150: a
+# generated file may embed the canonicalised path while $composer_dir/
+# $viv_dir are the un-canonicalised scratch paths).
+fold_prefix() {
+  local from=$1 to=$2 file=$3 real_from real_to
+  real_from=$(realpath -m "$from") real_to=$(realpath -m "$to")
+  sed -e "s|$from|$to|g" -e "s|$real_from|$real_to|g" "$file"
+}
+
 root=$(cd "$(dirname "$0")/.." && pwd)
+[ "${COMPAT_SELFTEST:-0}" = "1" ] && selftest
 label=${1:-$(git -C "$root" describe --tags --always)}
 if [ -n "${COMPAT_SCRATCH:-}" ]; then
   scratch=$COMPAT_SCRATCH
@@ -264,7 +294,7 @@ run_mode() {
       file_a=${file_a%% and *}
       file_b=${line#* and }
       file_b=${file_b% differ}
-      if diff -q <(sed "s|$composer_dir|$viv_dir|g" "$file_a") "$file_b" >/dev/null 2>&1; then
+      if diff -q <(fold_prefix "$composer_dir" "$viv_dir" "$file_a") "$file_b" >/dev/null 2>&1; then
         normalised=$((normalised + 1))
         continue
       fi
@@ -364,8 +394,13 @@ run_pinned() {
       fi
     elif [ -n "$repo" ]; then
       log "cloning $name @ $commit"
-      git clone --quiet "$repo" "$srcdir"
-      git -C "$srcdir" checkout --quiet "$commit"
+      local clone_out
+      if ! clone_out=$(git clone --quiet "$repo" "$srcdir" 2>&1 \
+          && git -C "$srcdir" checkout --quiet "$commit" 2>&1); then
+        emit_row "$name" "dev" "skipped" "-" "clone failed: $(grep -v '^$' <<< "$clone_out" | head -1)"
+        emit_row "$name" "no-dev" "skipped" "-" "clone failed: $(grep -v '^$' <<< "$clone_out" | head -1)"
+        continue
+      fi
       # .git is kept here (unlike the path/rsync branches above) so Composer's
       # root-version guess from the checkout state matches what a real user
       # sees; see #125.

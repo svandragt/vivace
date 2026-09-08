@@ -68,8 +68,9 @@ project/mode combination is one of:
   or a Composer command that failed, not a failure: a `path`/`vcs` repository
   under `COMPAT_SKIP_VCS=1` (#13), a required plugin under
   `COMPAT_SKIP_PLUGINS=1` (#12), `preferred-install: source` (#43), an unmet
-  platform requirement (`platform: ...`), or a missing `composer.lock` that
-  `composer update --no-install` also failed to generate. A project without
+  platform requirement (`platform: ...`), a pinned corpus entry whose `git
+  clone`/checkout failed (`clone failed: ...`), or a missing `composer.lock`
+  that `composer update --no-install` also failed to generate. A project without
   a committed lock that *does* generate one is still run; its Details
   column notes `lock generated`.
 - **viv error** — `viv install` itself exited non-zero; the stderr tail is
