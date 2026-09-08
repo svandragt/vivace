@@ -11,6 +11,7 @@ use serde_json::{Map, Value};
 use crate::autoload::generator::find_shortest_path;
 use crate::autoload::sort::natcmp;
 use crate::lock::{Lock, Package, Root};
+use crate::vcs::RootVersion;
 use crate::version;
 
 /// `PlatformRepository::PLATFORM_PACKAGE_REGEX`: an exact match against the
@@ -229,13 +230,27 @@ fn reference(package: &Package) -> Value {
 }
 
 /// `installed.php`, `FilesystemRepository::generateInstalledVersions` shape.
-pub fn installed_php(root: &Root, lock: &Lock, packages: &[&Package], dev: bool) -> Result<String> {
+/// `git_version` is `VersionGuesser::guessGitVersion`'s answer for
+/// `project_dir`, precomputed by the caller since it shells out to `git`
+/// (#125) — only consulted when `composer.json` has no explicit `version`,
+/// same as Composer only guessing one when the root package doesn't declare
+/// its own.
+pub fn installed_php(
+    root: &Root,
+    lock: &Lock,
+    packages: &[&Package],
+    dev: bool,
+    git_version: Option<&RootVersion>,
+) -> Result<String> {
     let root_name = root.name.clone().unwrap_or_else(|| "__root__".into());
+    let git_version = root.version.is_none().then_some(git_version).flatten();
     let root_pretty = root
         .version
         .clone()
+        .or_else(|| git_version.map(|v| v.pretty_version.clone()))
         .unwrap_or_else(|| NO_VERSION_SET.into());
     let root_version = version::normalize(&root_pretty).context("root version")?;
+    let root_reference = git_version.map_or(Value::Null, |v| Value::String(v.reference.clone()));
     let root_path = root_install_path(root);
 
     let mut versions: Map<String, Value> = Map::new();
@@ -273,7 +288,7 @@ pub fn installed_php(root: &Root, lock: &Lock, packages: &[&Package], dev: bool)
     let mut root_entry = Map::new();
     root_entry.insert("pretty_version".into(), root_pretty.clone().into());
     root_entry.insert("version".into(), root_version.clone().into());
-    root_entry.insert("reference".into(), Value::Null);
+    root_entry.insert("reference".into(), root_reference.clone());
     root_entry.insert("type".into(), root.r#type.clone().into());
     root_entry.insert("install_path".into(), root_path.clone().into());
     root_entry.insert("aliases".into(), Value::Array(vec![]));
@@ -344,7 +359,7 @@ pub fn installed_php(root: &Root, lock: &Lock, packages: &[&Package], dev: bool)
     root_block.insert("name".into(), root_name.into());
     root_block.insert("pretty_version".into(), root_pretty.into());
     root_block.insert("version".into(), root_version.into());
-    root_block.insert("reference".into(), Value::Null);
+    root_block.insert("reference".into(), root_reference);
     root_block.insert("type".into(), root.r#type.clone().into());
     root_block.insert("install_path".into(), root_path.into());
     root_block.insert("aliases".into(), Value::Array(vec![]));
@@ -570,7 +585,7 @@ mod tests {
         let (root, lock, packages) = monolog(true);
         let refs: Vec<&Package> = packages.iter().collect();
         assert_eq!(
-            installed_php(&root, &lock, &refs, true).unwrap(),
+            installed_php(&root, &lock, &refs, true, None).unwrap(),
             expected("dev", "installed.php")
         );
     }
@@ -580,7 +595,7 @@ mod tests {
         let (root, lock, packages) = monolog(false);
         let refs: Vec<&Package> = packages.iter().collect();
         assert_eq!(
-            installed_php(&root, &lock, &refs, false).unwrap(),
+            installed_php(&root, &lock, &refs, false, None).unwrap(),
             expected("no-dev", "installed.php")
         );
     }
@@ -655,7 +670,7 @@ mod tests {
         meta.r#type = "metapackage".into();
 
         let packages = [&provider, &provider2, &replacer, &c, &meta];
-        let out = installed_php(&root, &empty_lock(), &packages, true).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, true, None).unwrap();
 
         let block = |text: &str, name: &str| -> String {
             let start = text.find(&format!("        '{name}' => array(\n")).unwrap();
@@ -717,7 +732,7 @@ mod tests {
         let installers = package("composer/installers", "1.0", Some("abc"));
         let normal = package("psr/log", "1.0", Some("def"));
         let packages = [&installers, &normal];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         assert!(out.contains("'install_path' => __DIR__ . '/./installers',"));
         assert!(out.contains("'install_path' => __DIR__ . '/../psr/log',"));
     }
@@ -735,7 +750,7 @@ mod tests {
             "extra": {"branch-alias": {"dev-main": "3.x-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         assert!(out.contains("        'acme/lib' => array(\n"));
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
@@ -758,7 +773,7 @@ mod tests {
             "extra": {"branch-alias": {"dev-2.x": "2.x-dev", "dev-master": "3.x-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         let start = out.find("'nesbot/carbon' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(
@@ -782,7 +797,7 @@ mod tests {
             "extra": {"branch-alias": {"dev-master": "1.8-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(
@@ -806,7 +821,7 @@ mod tests {
             "extra": {"branch-alias": {"2.0-dev": "3.0.x-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(block.contains("'aliases' => array(),\n"), "{block}");
@@ -825,7 +840,7 @@ mod tests {
             "extra": {"branch-alias": {"2.x-dev": "2.0.x-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(
@@ -848,7 +863,7 @@ mod tests {
             "extra": {"branch-alias": {"dev-master": "1.8"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(block.contains("'aliases' => array(),\n"), "{block}");
@@ -866,7 +881,7 @@ mod tests {
             "default-branch": true,
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(
@@ -889,7 +904,7 @@ mod tests {
             "default-branch": true,
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(block.contains("'aliases' => array(),\n"), "{block}");
@@ -906,7 +921,7 @@ mod tests {
             "extra": {"branch-alias": {"dev-main": "3.x-dev"}},
         });
         let packages = [&pkg];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         let start = out.find("'acme/lib' => array(\n").unwrap();
         let block = &out[start..start + 400];
         assert!(block.contains("'aliases' => array(),\n"), "{block}");
@@ -924,7 +939,7 @@ mod tests {
         let mut b = package("b/provider", "1.0", Some("def"));
         b.provide = links(&[("php-http/client-implementation", "*")]);
         let packages = [&a, &b];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         let start = out
             .find("'php-http/client-implementation' => array(\n")
             .unwrap();
@@ -951,7 +966,7 @@ mod tests {
             ("composer-runtime-api", "*"),
         ]);
         let packages = [&pkg];
-        let out = installed_php(&root, &empty_lock(), &packages, false).unwrap();
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
         for name in [
             "php",
             "php-64bit",

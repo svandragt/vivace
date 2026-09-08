@@ -707,6 +707,148 @@ fn format_unix_utc(ts: i64) -> String {
 }
 
 // ---------------------------------------------------------------------
+// Root package version guessing (`VersionGuesser::guessGitVersion`, #125).
+// ---------------------------------------------------------------------
+
+/// A root package's version guessed from its git checkout, fed into the
+/// root block of `installed.php` when `composer.json` has no explicit
+/// `version` (`RootPackageLoader`/`VersionGuesser::guessVersion`: an
+/// explicit `version` always wins, this is never consulted for one).
+pub struct RootVersion {
+    pub pretty_version: String,
+    pub reference: String,
+}
+
+/// `VersionGuesser::guessGitVersion` plus `postprocess`'s pretty-version
+/// rewrite, restricted to the current branch or tag (a root package has
+/// exactly one checkout, unlike the multi-ref `VcsRepository` walk above).
+/// `None` when `git` isn't on `PATH`, `project_dir` isn't a git checkout, or
+/// the checkout has no commits yet (`git branch -v` prints nothing) — same
+/// as Composer falling through to its next (unsupported here) VCS guesser
+/// and finding nothing.
+///
+/// ponytail: skips `guessFeatureVersion`'s "nearest real branch" heuristic
+/// (an `isFeatureBranch` name, e.g. not `master`/`main`/numeric/etc., walks
+/// every other branch with `git rev-list` to guess which one it forked
+/// from). A feature branch here keeps its own `dev-<name>` instead of
+/// Composer's guessed parent version; port `guessFeatureVersion` if that
+/// mismatch shows up on a real project. Also ponytail: a project whose git
+/// checkout is a parent directory up (no `.git` of its own, common in a
+/// monorepo subpackage) is treated as not a checkout at all, unlike
+/// Composer's own `git branch`, which walks up looking for one — the
+/// `.git` check below is what makes this cheap enough for the install
+/// path's perf budget (AGENTS.md) on every project that plainly isn't a
+/// git checkout, the common case for `viv install` in CI/deploy.
+pub fn guess_root_version(project_dir: &Path) -> Option<RootVersion> {
+    if !project_dir.join(".git").exists() {
+        return None;
+    }
+    let output = Command::new("git")
+        .args(["branch", "-a", "--no-color", "--no-abbrev", "-v"])
+        .current_dir(project_dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    let mut version = None;
+    let mut pretty_version = None;
+    let mut commit = None;
+    let mut detached = false;
+    for line in text.lines() {
+        let Some(caps) = CURRENT_BRANCH.captures(line) else {
+            continue;
+        };
+        let name = &caps[1];
+        commit = Some(caps[2].to_string());
+        if name == "(no branch)"
+            || name.starts_with("(detached ")
+            || name.starts_with("(HEAD detached at")
+        {
+            detached = true;
+            version = Some(format!("dev-{}", &caps[2]));
+            pretty_version.clone_from(&version);
+        } else {
+            version = Some(crate::version::normalize_branch(name));
+            pretty_version = Some(format!("dev-{name}"));
+        }
+        // Exactly one line can start with `* ` (the current branch).
+        break;
+    }
+
+    if (version.is_none() || detached)
+        && let Some((tag_version, tag_pretty)) = version_from_git_tags(project_dir)
+    {
+        version = Some(tag_version);
+        pretty_version = Some(tag_pretty);
+    }
+
+    let commit = commit.or_else(|| rev_parse_head(project_dir))?;
+    let version = version?;
+    let pretty_version = pretty_version?;
+
+    // `postprocess`: a numeric branch's `dev-<name>` pretty version is
+    // replaced by its normalized version's own `.x` collapse, e.g. branch
+    // `5.x` normalizes to `5.9999999.9999999.9999999-dev` and prints back
+    // as `5.x-dev`, not the `dev-5.x` the branch name alone would give.
+    let pretty_version = if version.ends_with("-dev") && version.contains(".9999999") {
+        collapse_branch_wildcard(&version)
+    } else {
+        pretty_version
+    };
+
+    Some(RootVersion {
+        pretty_version,
+        reference: commit,
+    })
+}
+
+/// `^(?:\* ) *(\(no branch\)|\(detached from \S+\)|\(HEAD detached at
+/// \S+\)|\S+) *([a-f0-9]+) .*$` — the current-branch line from
+/// `git branch -a --no-color --no-abbrev -v`, restricted to lines starting
+/// with `* ` (there's at most one).
+static CURRENT_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^\* *(\(no branch\)|\(detached from \S+\)|\(HEAD detached at \S+\)|\S+) *([a-f0-9]+) .*$",
+    )
+    .unwrap()
+});
+
+/// `VersionGuesser::versionFromGitTags`: `git describe --exact-match --tags`,
+/// only successful when `HEAD` is exactly a tag.
+fn version_from_git_tags(project_dir: &Path) -> Option<(String, String)> {
+    let output = Command::new("git")
+        .args(["describe", "--exact-match", "--tags"])
+        .current_dir(project_dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let pretty = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let version = crate::version::normalize(&pretty).ok()?;
+    Some((version, pretty))
+}
+
+/// `GitUtil::buildRevListCommand`'s `-n1 HEAD` fallback, simplified to
+/// `rev-parse`: only reached when `git branch -v` printed no current-branch
+/// line at all (a repository with no commits yet never gets this far, since
+/// `rev-parse HEAD` fails there too).
+fn rev_parse_head(project_dir: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(project_dir)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+// ---------------------------------------------------------------------
 // Driver B: GitHub, via the REST API (`Vcs\GitHubDriver`).
 // ---------------------------------------------------------------------
 

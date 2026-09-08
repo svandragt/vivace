@@ -112,6 +112,11 @@ repo = "https://github.com/vendor/package.git"
 commit = "<pinned commit>"
 ```
 
+Cloned checkouts keep their `.git` directory, so Composer's root-version guess
+from the checkout state matches what a real user would see (#125).
+`path`-based entries still have `.git` stripped, since a local checkout's git
+state isn't reproducible.
+
 For a project that's assembled via `composer create-project` rather than
 cloned (no installable git tree), use `version` instead of `repo`/`commit`.
 `make compat-refresh` rewrites every `repo`-based pin to its current

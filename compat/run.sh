@@ -330,7 +330,9 @@ run_pinned() {
       log "cloning $name @ $commit"
       git clone --quiet "$repo" "$srcdir"
       git -C "$srcdir" checkout --quiet "$commit"
-      rm -rf "$srcdir/.git"
+      # .git is kept here (unlike the path/rsync branches above) so Composer's
+      # root-version guess from the checkout state matches what a real user
+      # sees; see #125.
     else
       log "create-project $name $version"
       local create_out
@@ -417,7 +419,7 @@ run_random() {
   echo "Composer update flags, used only to generate a missing lock: \`${composer_update_flags[*]}\`."
   echo "A project whose enabled plugins are all native adapters or known-inert (#124) drops \`--no-plugins\` on both sides instead, noted \`plugins: native\` in Details; any other enabled plugin keeps \`--no-plugins\` and is noted \`plugins: refused <names>\`."
   echo "A project whose platform requirements aren't met is reported as \`skipped: platform\`, not a failure."
-  echo "Git-source checkouts have their \`.git\` stripped before installing, so the vendor diff excludes \`.git\` metadata on both sides."
+  echo "Cloned checkouts keep their \`.git\` before installing, so Composer's root-version guess from the checkout state (branch/tag/commit) matches a real user's install (#125); \`path\`-based entries still have \`.git\` stripped, since a local checkout's git state isn't reproducible. The vendor diff excludes \`.git\` metadata on both sides regardless."
   echo ""
 } >> "$report"
 

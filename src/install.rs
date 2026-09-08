@@ -36,6 +36,7 @@ use crate::plugins;
 use crate::scripts;
 use crate::source;
 use crate::store::{Store, hex};
+use crate::vcs;
 
 /// Fetch requests in flight at once (`fetch::fetch_all`'s concurrency).
 /// Downloads are latency-bound (a GitHub zipball round-trip, not vivace's
@@ -692,9 +693,17 @@ fn regenerate_vendor_metadata(
         &vendor_dir.join("composer/installed.json"),
         installed_json(packages, dev)?.as_bytes(),
     )?;
+    // Only shells out to `git` when `composer.json` has no explicit
+    // `version` (#125) — an explicit one always wins, same as Composer's
+    // own `VersionGuesser::guessVersion`.
+    let git_version = root
+        .version
+        .is_none()
+        .then(|| vcs::guess_root_version(project_dir))
+        .flatten();
     write_atomic(
         &vendor_dir.join("composer/installed.php"),
-        installed_php(root, lock, packages, dev)?.as_bytes(),
+        installed_php(root, lock, packages, dev, git_version.as_ref())?.as_bytes(),
     )?;
     write_atomic(state_path, &serde_json::to_vec(state)?)?;
     tracing::debug!(

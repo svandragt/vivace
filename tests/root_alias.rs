@@ -33,5 +33,8 @@ fn installed_php_carries_a_root_alias_alongside_a_branch_alias() {
     let refs: Vec<&Package> = packages.iter().collect();
 
     let expected = fs_err::read_to_string(fixture("expected/installed.php")).unwrap();
-    assert_eq!(installed_php(&root, &lock, &refs, true).unwrap(), expected);
+    assert_eq!(
+        installed_php(&root, &lock, &refs, true, None).unwrap(),
+        expected
+    );
 }
