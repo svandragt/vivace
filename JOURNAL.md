@@ -835,3 +835,27 @@ through the sweep with plugins on where possible: 32 rows identical, one
 real bug (a dist-less metapackage fails to install), one sweep bug, and
 five skeletons whose plugins viv refuses. `compat/hunted.md` records what
 was tried so the next hunt starts elsewhere.
+
+## 2026-09-09, small hours: the rest of 0.8
+
+**One seam for adapters.** Every native adapter implements one trait with
+a method per install phase, and `install.rs` calls the registry without
+naming any adapter. Adding one is a new module and a registry line. The
+adapter tests run as their own CI job, so a port that drifts from
+upstream goes red on the adapters, not on the install path. The drift
+check itself is in flight.
+
+**Reflinks.** `--link-mode clone` copies-on-write from the store on
+btrfs, XFS and APFS, so a project that patches `vendor/` gets writable
+files at hardlink cost. Anywhere else it falls back to hardlinks with
+one warning. ext4 here, so the fallback is what local tests exercise.
+
+**add and rm read the project's repositories.** They used to resolve
+against Packagist alone and ignore `--offline`; both the partial update
+and the bare-name constraint lookup now share update's repository
+construction. That surfaced the next gap: a `file://` composer
+repository is rejected outright, which is what the fixtures use and
+what turned CI red. Fix in flight.
+
+**Committing in a shared tree.** Two agents at once means `git commit
+-a` grabs the other one's half-done edits. Commit by path.
