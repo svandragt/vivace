@@ -23,6 +23,27 @@ jobs:
       - run: devbox run -- cargo machete
       - run: devbox run -- env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
+  # #147: a fuzz target's signature drifts silently because `check` never
+  # builds fuzz/ — this catches it on the push that causes it instead of
+  # the next nightly fuzz.yml run. Build only, no run: no sanitizer time
+  # budget here, that's what fuzz.yml is for.
+  fuzz-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz -> target
+      # cargo-fuzz needs nightly (sanitizer flags stable Rust rejects);
+      # devbox has no dated-nightly package, so this comes from rustup
+      # directly rather than devbox.json.
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+        with:
+          enable-cache: true
+      - run: devbox run -- cargo +nightly fuzz build
+        working-directory: fuzz
+
   # macOS is a supported platform; this job blocks like the Linux one.
   check-macos:
     runs-on: macos-latest

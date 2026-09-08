@@ -21,6 +21,7 @@ fuzz_target!(|data: &[u8]| {
     let lock = Lock {
         content_hash: Some("fuzz-placeholder".to_string()),
         packages: Vec::new(),
+        aliases: Vec::new(),
     };
     let _ = is_fresh(&lock, root_json.as_bytes());
 });

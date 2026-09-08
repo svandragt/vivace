@@ -46,9 +46,13 @@ fuzz_target!(|data: &[u8]| {
         sort_packages: false,
         prefer_lowest: false,
         prefer_stable: false,
+        no_normalize: false,
         project_dir: project_dir.path().to_path_buf(),
+        no_scripts: false,
+        no_plugins: false,
+        no_install: false,
     };
-    if run_require(&args, None).is_err() {
+    if run_require(&args, None, false).is_err() {
         return;
     }
 
