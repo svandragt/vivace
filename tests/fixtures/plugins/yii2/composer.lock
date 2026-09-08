@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "20241635794dd2202baaf836c9af37ac",
+    "content-hash": "e9585e00165a434edc1ca290c97734a6",
     "packages": [
         {
             "name": "acme/yii2-widget",
@@ -104,7 +104,26 @@
             "time": "2025-02-13T20:59:36+00:00"
         }
     ],
-    "packages-dev": [],
+    "packages-dev": [
+        {
+            "name": "acme/yii2-alpha",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/alpha",
+                "reference": "ecd9ee10855bf269862d44af8695f8045d321e68"
+            },
+            "type": "yii2-extension",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Alpha\\": "src/"
+                }
+            },
+            "transport-options": {
+                "relative": true
+            }
+        }
+    ],
     "aliases": [],
     "minimum-stability": "stable",
     "stability-flags": {},

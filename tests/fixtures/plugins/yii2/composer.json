@@ -11,11 +11,23 @@
                     "acme/yii2-widget": "1.0.0"
                 }
             }
+        },
+        {
+            "type": "path",
+            "url": "packages/alpha",
+            "options": {
+                "versions": {
+                    "acme/yii2-alpha": "1.0.0"
+                }
+            }
         }
     ],
     "require": {
         "yiisoft/yii2-composer": "^2.0",
         "acme/yii2-widget": "1.0.0"
+    },
+    "require-dev": {
+        "acme/yii2-alpha": "1.0.0"
     },
     "config": {
         "secure-http": true,

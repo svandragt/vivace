@@ -3,15 +3,6 @@
 $vendorDir = dirname(__DIR__);
 
 return array (
-  'acme/yii2-alpha' => 
-  array (
-    'name' => 'acme/yii2-alpha',
-    'version' => '1.0.0.0',
-    'alias' => 
-    array (
-      '@Acme/Alpha' => $vendorDir . '/acme/yii2-alpha/src',
-    ),
-  ),
   'acme/yii2-widget' => 
   array (
     'name' => 'acme/yii2-widget',

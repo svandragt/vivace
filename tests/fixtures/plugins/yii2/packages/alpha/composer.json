@@ -1,0 +1,7 @@
+{
+    "name": "acme/yii2-alpha",
+    "type": "yii2-extension",
+    "autoload": {
+        "psr-4": { "Acme\\Alpha\\": "src/" }
+    }
+}

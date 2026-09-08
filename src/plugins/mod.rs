@@ -24,7 +24,7 @@
 //! right after linking and before the autoloader is (re)generated, since a
 //! patch can add or remove classes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
@@ -52,8 +52,8 @@ pub(super) fn php_string(s: &str) -> String {
 /// `yii2`/`craft` key their generated file's entries by Composer's own
 /// install order, not `packages`' own (a fresh `craftcms/craft` install byte
 /// -diffed 54 lines off `vendor/yiisoft/extensions.php` without this).
-/// Reorders `packages` via [`install_order`], keeping each entry's own
-/// install dir.
+/// Reorders `packages` via [`crate::autoload::generator::install_order`],
+/// keeping each entry's own install dir.
 pub(super) fn in_install_order<'a>(
     packages: &'a [(&'a Package, PathBuf)],
 ) -> Vec<(&'a Package, &'a Path)> {
@@ -64,73 +64,31 @@ pub(super) fn in_install_order<'a>(
             .entry(package.name.as_str())
             .or_insert(dir.as_path());
     }
-    install_order(&only)
+    crate::autoload::generator::install_order(&only)
         .into_iter()
         .filter_map(|p| by_name.get(p.name.as_str()).map(|&dir| (p, dir)))
         .collect()
 }
 
-/// `Transaction::calculateOperations`'s install order, ported from
-/// `autoload::generator::install_order` for `crate::lock::Package`'s
-/// `require`/`provide`/`replace` maps — that module's own `Package` type
-/// isn't reachable from here, so this is a second copy of the same DFS over
-/// a different shape, not a shared helper widened; see the original's own
-/// doc comment for the full algorithm notes (root selection order, cycle
-/// handling, the at-most-one-provider ponytail this keeps too).
-fn install_order<'a>(packages: &[&'a Package]) -> Vec<&'a Package> {
-    let mut by_name: HashMap<&str, &'a Package> = HashMap::new();
-    for package in packages {
-        for name in std::iter::once(package.name.as_str())
-            .chain(package.provide.keys().map(String::as_str))
-            .chain(package.replace.keys().map(String::as_str))
-        {
-            by_name.entry(name).or_insert(package);
-        }
+/// `crate::lock::Package`'s side of [`crate::autoload::generator::Requires`]
+/// (#130): its `require`/`provide`/`replace` are JSON maps, not `Vec<String>`
+/// like `autoload::generator::Package`'s own, but the DFS only ever needs
+/// their keys in insertion order (`serde_json`'s `preserve_order` feature).
+impl crate::autoload::generator::Requires for Package {
+    fn install_order_name(&self) -> &str {
+        &self.name
     }
-    let required_by_someone: HashSet<&str> = packages
-        .iter()
-        .flat_map(|p| p.require.keys())
-        .filter_map(|name| by_name.get(name.as_str()))
-        .map(|p| p.name.as_str())
-        .collect();
-    let mut roots: Vec<&Package> = packages
-        .iter()
-        .copied()
-        .filter(|p| !required_by_someone.contains(p.name.as_str()))
-        .collect();
-    roots.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let mut visited = HashSet::new();
-    let mut order = Vec::with_capacity(packages.len());
-    for root in roots {
-        install_order_visit(root, &by_name, &mut visited, &mut order);
+    fn install_order_requires(&self) -> impl Iterator<Item = &str> {
+        self.require.keys().map(String::as_str)
     }
-    // A require cycle with no true root would otherwise drop packages;
-    // Composer's own stack never loses one, only reorders it.
-    for package in packages {
-        install_order_visit(package, &by_name, &mut visited, &mut order);
-    }
-    order
-}
 
-/// One step of `install_order`'s DFS: a package's own postorder visit,
-/// pushing its still-unvisited `require` first, last-declared first (the
-/// stack Composer's algorithm pops from is LIFO).
-fn install_order_visit<'a>(
-    package: &'a Package,
-    by_name: &HashMap<&str, &'a Package>,
-    visited: &mut HashSet<&'a str>,
-    order: &mut Vec<&'a Package>,
-) {
-    if !visited.insert(&package.name) {
-        return;
+    fn install_order_provides(&self) -> impl Iterator<Item = &str> {
+        self.provide
+            .keys()
+            .chain(self.replace.keys())
+            .map(String::as_str)
     }
-    for requirement in package.require.keys().rev() {
-        if let Some(&dep) = by_name.get(requirement.as_str()) {
-            install_order_visit(dep, by_name, visited, order);
-        }
-    }
-    order.push(package);
 }
 
 /// Composer plugins vivace applies the effect of natively.

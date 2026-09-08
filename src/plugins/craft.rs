@@ -5,8 +5,8 @@
 //! Ported from `craftcms/plugin-installer` `1.6.0`'s `src/Installer.php`,
 //! fetched 2026-09-08 — see `yii2.rs`'s doc comment for why this hooks
 //! `PRE_AUTOLOAD_DUMP` rather than the real plugin's per-package
-//! `Installer::install`/`update`, and for why entries follow `packages`'
-//! own order rather than a full install-order DFS.
+//! `Installer::install`/`update`, and for the install-order DFS's own
+//! ceiling against two independent plugins.
 //!
 //! ponytail: `Plugin::activate`'s `isRoot` branch (the root package
 //! installing itself as a `craft-plugin`) isn't ported — viv never installs

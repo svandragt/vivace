@@ -52,7 +52,12 @@ fn skip_without_network() -> bool {
 }
 
 /// `yiisoft/yii2-composer` writes `vendor/yiisoft/extensions.php`, a
-/// `var_export` dump of every `yii2-extension` package.
+/// `var_export` dump of every `yii2-extension` package. `acme/yii2-widget`
+/// (`require`) and `acme/yii2-alpha` (`require-dev`) share no `require` edge
+/// with each other, so the install-order DFS treats both as roots and
+/// Composer's own order between them comes down to name, not root section
+/// (#130) — regenerated with real Composer via `devbox run -- composer -d
+/// tests/fixtures/plugins/yii2 update`.
 #[test]
 fn yii2_extensions_matches_composer() {
     if skip_without_network() {
@@ -67,9 +72,32 @@ fn yii2_extensions_matches_composer() {
         .arg("install")
         .assert()
         .success()
-        .stdout(predicates::str::contains("Installed 2 packages"));
+        .stdout(predicates::str::contains("Installed 3 packages"));
 
     let want = fs::read_to_string(fixture("yii2").join("expected/extensions.php")).unwrap();
+    let got = fs::read_to_string(project.join("vendor/yiisoft/extensions.php")).unwrap();
+    assert_eq!(got, want);
+}
+
+/// Same fixture, `--no-dev`: `acme/yii2-alpha` (`require-dev`) drops out,
+/// leaving just `acme/yii2-widget`.
+#[test]
+fn yii2_extensions_matches_composer_no_dev() {
+    if skip_without_network() {
+        return;
+    }
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_lock_sources(&fixture("yii2"), project);
+    copy_tree(&fixture("yii2").join("packages"), &project.join("packages"));
+
+    ctx.viv()
+        .args(["install", "--no-dev"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 2 packages"));
+
+    let want = fs::read_to_string(fixture("yii2").join("expected/no-dev/extensions.php")).unwrap();
     let got = fs::read_to_string(project.join("vendor/yiisoft/extensions.php")).unwrap();
     assert_eq!(got, want);
 }

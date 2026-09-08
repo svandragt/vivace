@@ -16,12 +16,17 @@
 //! rewrite on a bare `dump-autoload`, which the real plugin never touches
 //! since no package is being (re)installed then.
 //!
-//! ponytail: entries are built in `packages`' own order, the same contract
-//! `spi`'s `apply` already relies on — right for independent extensions
-//! (every fixture here), wrong only if two `yii2-extension` packages ever
-//! require each other and the given order doesn't already reflect that; port
-//! `autoload::generator::install_order`'s DFS over `crate::lock::Package` if
-//! that ever shows up in a byte-diff.
+//! `apply` orders entries via `super::in_install_order`
+//! (`autoload::generator::install_order`'s DFS, shared with the autoloader
+//! since #130 — see that function's own doc comment for the algorithm).
+//! That DFS reproduces Composer whenever two `yii2-extension` packages share
+//! a real `require` edge; when they don't (`yiisoft/yii2-app-basic`'s own
+//! `require`/`require-dev` split, #130), the real plugin's write order comes
+//! from `LibraryInstaller::install`'s per-package async callback instead —
+//! archive-extraction completion order, not the require graph — so it isn't
+//! reproducible even by two runs of real Composer against the same lock;
+//! confirmed by rerunning `compat/run.sh` against the pinned commit twice
+//! and getting two different orders. No static sort can match that.
 
 use std::path::{Path, PathBuf};
 

@@ -1134,6 +1134,36 @@ fn include_path_entries(input: &Input, base: &str, vendor: &str) -> Vec<PathCode
     codes
 }
 
+/// The `name`/`require`/`provide`/`replace` edges [`install_order`]'s DFS
+/// walks: implemented here for this module's own [`Package`] and in
+/// `plugins/mod.rs` for `crate::lock::Package`, so the DFS itself — ported
+/// from `Transaction::calculateOperations` — exists exactly once for both
+/// shapes (#130).
+pub(crate) trait Requires {
+    fn install_order_name(&self) -> &str;
+    fn install_order_requires(&self) -> impl Iterator<Item = &str>;
+    /// Every other name this package satisfies a requirement under
+    /// (`provide`/`replace`).
+    fn install_order_provides(&self) -> impl Iterator<Item = &str>;
+}
+
+impl Requires for Package {
+    fn install_order_name(&self) -> &str {
+        &self.name
+    }
+
+    fn install_order_requires(&self) -> impl Iterator<Item = &str> {
+        self.requires.iter().map(String::as_str)
+    }
+
+    fn install_order_provides(&self) -> impl Iterator<Item = &str> {
+        self.provides
+            .iter()
+            .chain(&self.replaces)
+            .map(String::as_str)
+    }
+}
+
 /// `Transaction::calculateOperations`'s install order: a postorder DFS over
 /// `requires` (dependencies before dependents), seeded from every package
 /// nothing else in the set requires (Composer's own root package never
@@ -1146,30 +1176,29 @@ fn include_path_entries(input: &Input, base: &str, vendor: &str) -> Vec<PathCode
 /// ponytail: resolves a `requires` target to at most one provider (the first
 /// package found under that name or one of its `provide`/`replace` names);
 /// Composer visits every provider when several packages share a virtual
-/// package name. Upgrade to a `HashMap<&str, Vec<&Package>>` if that ever
-/// shows up in a byte-diff.
-fn install_order<'a>(packages: &[&'a Package]) -> Vec<&'a Package> {
-    let mut by_name: HashMap<&str, &'a Package> = HashMap::new();
+/// package name. Upgrade to a `HashMap<&str, Vec<&P>>` if that ever shows up
+/// in a byte-diff.
+pub(crate) fn install_order<'a, P: Requires>(packages: &[&'a P]) -> Vec<&'a P> {
+    let mut by_name: HashMap<&str, &'a P> = HashMap::new();
     for package in packages {
-        for name in std::iter::once(package.name.as_str())
-            .chain(package.provides.iter().map(String::as_str))
-            .chain(package.replaces.iter().map(String::as_str))
+        for name in
+            std::iter::once(package.install_order_name()).chain(package.install_order_provides())
         {
             by_name.entry(name).or_insert(package);
         }
     }
     let required_by_someone: HashSet<&str> = packages
         .iter()
-        .flat_map(|p| p.requires.iter())
-        .filter_map(|name| by_name.get(name.as_str()))
-        .map(|p| p.name.as_str())
+        .flat_map(|p| p.install_order_requires())
+        .filter_map(|name| by_name.get(name))
+        .map(|p| p.install_order_name())
         .collect();
-    let mut roots: Vec<&Package> = packages
+    let mut roots: Vec<&P> = packages
         .iter()
         .copied()
-        .filter(|p| !required_by_someone.contains(p.name.as_str()))
+        .filter(|p| !required_by_someone.contains(p.install_order_name()))
         .collect();
-    roots.sort_by(|a, b| a.name.cmp(&b.name));
+    roots.sort_by(|a, b| a.install_order_name().cmp(b.install_order_name()));
 
     let mut visited = HashSet::new();
     let mut order = Vec::with_capacity(packages.len());
@@ -1179,25 +1208,26 @@ fn install_order<'a>(packages: &[&'a Package]) -> Vec<&'a Package> {
     // A require cycle with no true root would otherwise drop packages;
     // Composer's own stack never loses one, only reorders it.
     for package in packages {
-        visit(package, &by_name, &mut visited, &mut order);
+        visit(*package, &by_name, &mut visited, &mut order);
     }
     order
 }
 
-/// One step of `install_order`'s DFS: a package's own postorder visit,
+/// One step of [`install_order`]'s DFS: a package's own postorder visit,
 /// pushing its still-unvisited `requires` first, last-declared first (the
 /// stack Composer's algorithm pops from is LIFO).
-fn visit<'a>(
-    package: &'a Package,
-    by_name: &HashMap<&str, &'a Package>,
+fn visit<'a, P: Requires>(
+    package: &'a P,
+    by_name: &HashMap<&str, &'a P>,
     visited: &mut HashSet<&'a str>,
-    order: &mut Vec<&'a Package>,
+    order: &mut Vec<&'a P>,
 ) {
-    if !visited.insert(&package.name) {
+    if !visited.insert(package.install_order_name()) {
         return;
     }
-    for requirement in package.requires.iter().rev() {
-        if let Some(&dep) = by_name.get(requirement.as_str()) {
+    let requires: Vec<&str> = package.install_order_requires().collect();
+    for requirement in requires.into_iter().rev() {
+        if let Some(&dep) = by_name.get(requirement) {
             visit(dep, by_name, visited, order);
         }
     }
