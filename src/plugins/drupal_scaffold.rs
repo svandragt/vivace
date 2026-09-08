@@ -597,6 +597,11 @@ pub(super) fn apply(
     // `GenerateAutoloadReferenceFile`/`GenerateAutoloadRuntimeReferenceFile`:
     // a fixed autoload/autoload_runtime shim in the web root, regenerated
     // unless it's already there and committed to git.
+    //
+    // Both sides canonical: `web_root` already is (`resolve_location`), and
+    // on macOS a `/var/...` vendor dir against a `/private/var/...` web root
+    // gives `find_shortest_path` no common ancestor and an absolute result.
+    let vendor_dir = fs_err::canonicalize(vendor_dir)?;
     for (name, header, target) in [
         (
             "autoload.php",
