@@ -1,0 +1,18 @@
+{
+    "packages": {
+        "acme/core": [
+            {
+                "name": "acme/core",
+                "version": "1.0.0",
+                "version_normalized": "1.0.0.0",
+                "conflict": {"acme/plugin": "<2.0"}
+            },
+            {
+                "name": "acme/core",
+                "version": "2.0.0",
+                "version_normalized": "2.0.0.0",
+                "conflict": {"acme/plugin": "<2.0"}
+            }
+        ]
+    }
+}
