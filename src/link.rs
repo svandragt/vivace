@@ -12,8 +12,16 @@ use anyhow::{Context, Result};
 /// without this the same warning prints once per package.
 static WARNED: AtomicBool = AtomicBool::new(false);
 
+/// Same shape as `WARNED`, for the separate clone -> hardlink transition
+/// (#19): a run that never asked for `--link-mode clone` must not have its
+/// first-ever hardlink fallback swallowed by this one having already fired.
+static WARNED_CLONE: AtomicBool = AtomicBool::new(false);
+
 #[cfg(test)]
 static WARN_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[cfg(test)]
+static WARN_COUNT_CLONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// How store files reach `vendor/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
@@ -24,6 +32,106 @@ pub enum LinkMode {
     /// Independent copies, for projects that patch `vendor/` or whose vendor
     /// dir sits on another filesystem.
     Copy,
+    /// A reflink (Linux `FICLONE` on btrfs/XFS, macOS `clonefile` on APFS):
+    /// a copy-on-write clone sharing the store's extents, so it costs about
+    /// as much to make as a hardlink but, unlike a hardlink, is never made
+    /// read-only — patching `vendor/` works without `--link-mode copy`'s
+    /// extra copy. Falls back to hardlink, then copy, the first time a file
+    /// doesn't support it (probed once per run, same as the hardlink ->
+    /// copy fallback below).
+    Clone,
+}
+
+/// Best-effort reflink of a whole file: `Ok` only if the destination now
+/// shares the source's extents, `Err` (any reason — unsupported filesystem,
+/// cross-device, anything else) leaves no partial file behind and tells the
+/// caller to fall back.
+#[cfg(target_os = "linux")]
+#[allow(
+    unsafe_code,
+    reason = "FICLONE has no safe wrapper without adding a libc/rustix/nix \
+              dependency for one syscall; both fds below are owned Files this \
+              function opened, and the call takes no pointer arguments"
+)]
+fn reflink(src: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+
+    // `linux/fs.h`: `FICLONE` is `_IOW(0x94, 9, int)`, cloning the whole
+    // destination file from the source fd passed as the ioctl argument.
+    const FICLONE: std::os::raw::c_ulong = 0x4004_9409;
+
+    unsafe extern "C" {
+        // The real declaration is variadic (`...`); ioctl's calling
+        // convention doesn't change for a fixed 3-argument call, and a tiny
+        // extern "C" declaration here avoids pulling in a libc dependency
+        // for one syscall (no libc/rustix/nix crate is in Cargo.toml today).
+        fn ioctl(
+            fd: std::os::raw::c_int,
+            request: std::os::raw::c_ulong,
+            arg: std::os::raw::c_int,
+        ) -> std::os::raw::c_int;
+    }
+
+    let src_file = fs_err::File::open(src)?;
+    let dest_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)?;
+    // SAFETY: both fds are owned Files opened just above (dest_file for
+    // writing, src_file for reading), and the call passes no pointers.
+    let ret = unsafe { ioctl(dest_file.as_raw_fd(), FICLONE, src_file.as_raw_fd()) };
+    if ret == -1 {
+        let err = std::io::Error::last_os_error();
+        drop(dest_file);
+        // Don't leave the empty file FICLONE needed an fd for lying around
+        // for the hardlink/copy fallback to trip over.
+        let _ = std::fs::remove_file(dest);
+        return Err(err);
+    }
+    Ok(())
+}
+
+/// macOS's `clonefile(2)` creates `dest` itself (it must not exist yet), and
+/// leaves nothing behind on failure — no cleanup needed, unlike Linux's
+/// ioctl on an fd it had to open first.
+#[cfg(target_os = "macos")]
+#[allow(
+    unsafe_code,
+    reason = "clonefile(2) has no safe wrapper without adding a libc/rustix/nix \
+              dependency for one syscall; both CStrings below outlive the call \
+              and are nul-terminated by CString::new"
+)]
+fn reflink(src: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    unsafe extern "C" {
+        fn clonefile(
+            src: *const std::os::raw::c_char,
+            dst: *const std::os::raw::c_char,
+            flags: u32,
+        ) -> std::os::raw::c_int;
+    }
+
+    let src = CString::new(src.as_os_str().as_bytes())
+        .map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))?;
+    let dest = CString::new(dest.as_os_str().as_bytes())
+        .map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))?;
+    // SAFETY: `src`/`dest` are valid, nul-terminated C strings owned by this
+    // function and kept alive across the call.
+    let ret = unsafe { clonefile(src.as_ptr(), dest.as_ptr(), 0) };
+    if ret == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// No reflink primitive on any other target (Windows already isn't
+/// supported — see `README.md`'s Stopping section): always fall back.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn reflink(_src: &Path, _dest: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::from(ErrorKind::Unsupported))
 }
 
 /// Build `dest` from `src` atomically: link or copy into a temp sibling, then
@@ -91,6 +199,29 @@ impl Linker {
     }
 
     fn file(&mut self, src: &Path, dest: &Path) -> Result<()> {
+        if self.mode == LinkMode::Clone {
+            match reflink(src, dest) {
+                Ok(()) => {
+                    self.linked_any = true;
+                    // A reflink's whole point is a writable copy, so unlike
+                    // a hardlink it must not stay read-only.
+                    return make_writable(dest);
+                }
+                Err(err) if !self.linked_any => {
+                    if !WARNED_CLONE.swap(true, Ordering::Relaxed) {
+                        #[cfg(test)]
+                        WARN_COUNT_CLONE.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            "cloning into vendor failed ({err}); hardlinking instead for this \
+                             and later packages. Pass --link-mode hardlink to silence this \
+                             warning."
+                        );
+                    }
+                    self.mode = LinkMode::Hardlink;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
         if self.mode == LinkMode::Hardlink {
             match fs_err::hard_link(src, dest) {
                 Ok(()) => {
@@ -117,14 +248,22 @@ impl Linker {
         }
         fs_err::copy(src, dest)?;
         if self.mode == LinkMode::Copy {
-            // A hardlinked file stays read-only so an edit can't corrupt the
-            // store; a copy shares no inode, so add the owner write bit back
-            // (0444 -> 0644, 0555 -> 0755) so patching vendor works.
-            let mode = fs_err::metadata(dest)?.permissions().mode() & 0o777;
-            fs_err::set_permissions(dest, PermissionsExt::from_mode(mode | 0o200))?;
+            make_writable(dest)?;
         }
         Ok(())
     }
+}
+
+/// A hardlinked file shares an inode with the (read-only) store, so its
+/// mode stays whatever the store used and must not be touched here. A copy
+/// or clone owns its bytes outright, so add the owner write bit back
+/// (0444 -> 0644, 0555 -> 0755): for a copy that undoes the store's
+/// read-only bit, for a clone it's the entire reason to prefer it over a
+/// hardlink.
+fn make_writable(dest: &Path) -> Result<()> {
+    let mode = fs_err::metadata(dest)?.permissions().mode() & 0o777;
+    fs_err::set_permissions(dest, PermissionsExt::from_mode(mode | 0o200))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -179,6 +318,85 @@ mod tests {
         assert_ne!(ino(&a), ino(&src.path().join("src/A.php")));
         assert_eq!(fs_err::read_to_string(&a).unwrap(), "<?php");
         assert_eq!(mode(&dest.join("composer.json")), 0o644);
+    }
+
+    /// Whether `vendor.path()`'s filesystem can reflink at all — probed with
+    /// the same `reflink()` production uses, not a separate guess, since a
+    /// filesystem/kernel combination that answers differently to this than
+    /// to a real call would make the test lie about what it covers.
+    fn reflink_supported(source_file: &Path, vendor: &Path) -> bool {
+        let probe_dest = vendor.join(".reflink-probe");
+        let supported = reflink(source_file, &probe_dest).is_ok();
+        let _ = fs_err::remove_file(&probe_dest);
+        supported
+    }
+
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn clone_shares_extents_and_stays_writable_where_supported() {
+        let src = source();
+        let vendor = tempfile::tempdir().unwrap();
+        if !reflink_supported(&src.path().join("composer.json"), vendor.path()) {
+            eprintln!(
+                "skipping clone_shares_extents_and_stays_writable_where_supported: \
+                 {} has no reflink support",
+                vendor.path().display()
+            );
+            return;
+        }
+
+        let dest = vendor.path().join("acme/pkg");
+        let used = link_tree(src.path(), &dest, LinkMode::Clone).unwrap();
+        assert_eq!(used, LinkMode::Clone);
+        let a = dest.join("src/A.php");
+        assert_ne!(
+            ino(&a),
+            ino(&src.path().join("src/A.php")),
+            "a clone is its own inode, not the store's"
+        );
+        assert_eq!(fs_err::read_to_string(&a).unwrap(), "<?php");
+        assert_eq!(
+            mode(&dest.join("composer.json")),
+            0o644,
+            "a clone must not stay read-only like a hardlink"
+        );
+    }
+
+    /// uv/pnpm's probe-once-and-latch: the first file that can't reflink
+    /// downgrades the whole tree to hardlink instead, with one warning, the
+    /// same shape as the hardlink -> copy fallback above.
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn clone_falls_back_to_hardlink_when_unsupported() {
+        let src = source();
+        let vendor = tempfile::tempdir().unwrap();
+        if reflink_supported(&src.path().join("composer.json"), vendor.path()) {
+            eprintln!(
+                "skipping clone_falls_back_to_hardlink_when_unsupported: {} supports reflink",
+                vendor.path().display()
+            );
+            return;
+        }
+
+        WARN_COUNT_CLONE.store(0, Ordering::Relaxed);
+        WARNED_CLONE.store(false, Ordering::Relaxed);
+
+        let dest = vendor.path().join("acme/pkg");
+        let used = link_tree(src.path(), &dest, LinkMode::Clone).unwrap();
+        assert_eq!(
+            used,
+            LinkMode::Hardlink,
+            "must fall back rather than silently keep failing per file"
+        );
+        assert_eq!(
+            ino(&dest.join("src/A.php")),
+            ino(&src.path().join("src/A.php"))
+        );
+        assert_eq!(
+            WARN_COUNT_CLONE.load(Ordering::Relaxed),
+            1,
+            "one warning for the whole tree, not one per file"
+        );
     }
 
     #[test]

@@ -1296,6 +1296,114 @@ fn offline_install_errors_naming_a_package_not_in_the_store() {
     assert!(stderr.contains("acme/pkg"), "{stderr}");
 }
 
+/// #19: `--link-mode clone` reflinks store files into `vendor/`, falling
+/// back to hardlink (with a warning) the first time a file can't. Reflink
+/// only works on btrfs/XFS (Linux) or APFS (macOS), so `stat -f -c %T`
+/// decides which branch this filesystem actually exercises rather than
+/// asserting one outcome and skipping everywhere else.
+#[test]
+fn link_mode_clone_reflinks_or_falls_back_depending_on_the_filesystem() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs::write(
+        project.join("composer.json"),
+        r#"{"name": "acme/app", "require": {"acme/pkg": "^1.0"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("composer.lock"),
+        r#"{
+            "packages": [
+                {
+                    "name": "acme/pkg",
+                    "version": "1.0.0",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.invalid/pkg.zip",
+                        "reference": "deadbeef",
+                        "shasum": ""
+                    }
+                }
+            ],
+            "packages-dev": []
+        }"#,
+    )
+    .unwrap();
+
+    // Pre-populate the store directly, the same offline pattern
+    // `offline_install_succeeds_when_every_dist_is_already_in_the_store`
+    // uses — this test never makes a network request either.
+    let store = Store::open(ctx.cache.path()).unwrap();
+    store
+        .add_zip(
+            &store_package("acme/pkg"),
+            &zip_of_one_file("pkg.txt", b"hi"),
+        )
+        .unwrap();
+    drop(store);
+
+    let output = ctx
+        .viv()
+        .args(["install", "--offline", "--link-mode", "clone"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let dest = project.join("vendor/acme/pkg/pkg.txt");
+    let meta = fs::symlink_metadata(&dest).unwrap();
+    assert!(
+        meta.file_type().is_file(),
+        "a clone (or its hardlink/copy fallback) must still be a regular file"
+    );
+    assert_eq!(
+        fs::read(&dest).unwrap(),
+        b"hi",
+        "content must match the store regardless of which mode actually ran"
+    );
+
+    let fs_type = Command::new("stat")
+        .args(["-f", "-c", "%T", project.to_str().unwrap()])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+    let Some(fs_type) = fs_type else {
+        eprintln!(
+            "skipping link_mode_clone_reflinks_or_falls_back_depending_on_the_filesystem: \
+             couldn't determine {}'s filesystem type",
+            project.display()
+        );
+        return;
+    };
+
+    if fs_type == "btrfs" || fs_type.contains("xfs") {
+        assert_eq!(
+            meta.permissions().mode() & 0o200,
+            0o200,
+            "on {fs_type}, --link-mode clone must leave the file writable, not read-only"
+        );
+        assert!(
+            !stderr.contains("cloning into vendor failed"),
+            "{fs_type} supports reflink, so the fallback warning must not fire: {stderr}"
+        );
+    } else {
+        assert_eq!(
+            meta.permissions().mode() & 0o200,
+            0,
+            "{fs_type} has no reflink support, so the fallback to hardlink must stay read-only"
+        );
+        assert!(
+            stderr.contains("cloning into vendor failed"),
+            "{fs_type} has no reflink support, so the fallback warning must fire: {stderr}"
+        );
+    }
+}
+
 /// #52: native adapters for `dealerdirect/phpcodesniffer-composer-installer`,
 /// `phpstan/extension-installer` and `tbachert/spi`; #101 adds
 /// `php-http/discovery`. Each is byte-diffed against the artifact the real
