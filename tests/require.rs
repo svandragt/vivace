@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::{FixtureTransport, TestContext, fixtures_root};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use vivace::repository::Repository;
 use vivace::solver::{self, pool_builder::UpdateAllowMode};
 
@@ -321,5 +321,92 @@ fn viv_remove_matches_composer_and_validates() {
         "composer validate --strict failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&validate.stdout),
         String::from_utf8_lossy(&validate.stderr)
+    );
+}
+
+/// Same recursive copy as `tests/update.rs`'s helper of the same name:
+/// the monolog fixture's `src`/`lib` autoload sources.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// #155: `viv add`'s written `composer.lock` must have a `content-hash`
+/// describing the `composer.json` bytes actually left on disk, not the
+/// unnormalised bytes read before `write_composer_json`/`maybe_normalize`
+/// ran. A deliberately unnormalised `require` (reverse key order, so the
+/// normaliser's platform-first sort actually moves something) must still
+/// leave a fresh lock behind, so the chained install prints no stale-lock
+/// warning. Real network (`require.rs`'s `partial_update` always resolves
+/// against live Packagist, unlike `update.rs`'s `solve`, so this can't run
+/// offline against the recorded fixtures the way `tests/update.rs`'s own
+/// #155 regression does).
+#[test]
+fn viv_add_normalizes_composer_json_before_computing_the_content_hash() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping viv_add_normalizes_composer_json_before_computing_the_content_hash: set \
+             VIVACE_TEST_NETWORK=1 to resolve against real Packagist"
+        );
+        return;
+    }
+
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    let original: Value =
+        serde_json::from_slice(&fs_err::read(fixture.join("composer.json")).unwrap()).unwrap();
+    let mut require_reversed = Map::new();
+    for (name, constraint) in original["require"].as_object().unwrap().iter().rev() {
+        require_reversed.insert(name.clone(), constraint.clone());
+    }
+    let unnormalized = serde_json::json!({
+        "require": require_reversed,
+        "name": original["name"],
+        "license": original["license"],
+        "type": original["type"],
+        "require-dev": original["require-dev"],
+        "autoload": original["autoload"],
+        "config": original["config"],
+    });
+    fs_err::write(
+        project.join("composer.json"),
+        serde_json::to_vec(&unnormalized).unwrap(),
+    )
+    .unwrap();
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &project.join(dir));
+    }
+
+    let output = ctx
+        .viv()
+        .args(["require", "psr/container"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "viv require failed:\n{combined}");
+    assert!(
+        !combined.contains("is not up to date"),
+        "the chained install must not see a stale lock: {combined}"
+    );
+
+    let lock = vivace::lock::read_lock(&project.join("composer.lock")).unwrap();
+    let on_disk_composer_json = fs_err::read(project.join("composer.json")).unwrap();
+    assert!(
+        vivace::lock::is_fresh(&lock, &on_disk_composer_json).unwrap(),
+        "content-hash should describe the normalized composer.json actually on disk"
     );
 }

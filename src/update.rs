@@ -102,6 +102,12 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
+    // Normalise before reading: the lock's content-hash covers
+    // composer.json's bytes in file order (#155). `--dry-run` writes
+    // nothing, so it skips this.
+    if !args.dry_run && !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
+        warn_out(&format!("Normalized {}", composer_json_path.display()));
+    }
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root: Value = serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let lock_path = project_dir.join("composer.lock");
@@ -116,9 +122,6 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
             return Ok(());
         }
         fs_err::write(&lock_path, lock)?;
-        if !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
-            warn_out(&format!("Normalized {}", composer_json_path.display()));
-        }
         return Ok(());
     }
 
@@ -164,9 +167,6 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
     }
 
     fs_err::write(&lock_path, lock)?;
-    if !args.no_normalize && normalize::maybe_normalize(&composer_json_path)? {
-        warn_out(&format!("Normalized {}", composer_json_path.display()));
-    }
 
     if !args.no_install {
         let install_args = InstallArgs {

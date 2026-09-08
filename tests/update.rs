@@ -667,6 +667,63 @@ async fn update_chains_into_install() {
     );
 }
 
+/// #155: `composer.lock`'s `content-hash` must describe the
+/// `composer.json` bytes actually left on disk, not the unnormalised bytes
+/// `viv update` read before normalising. A deliberately unnormalised
+/// `require` (reverse key order, so the normaliser's platform-first sort
+/// actually moves something) must still leave a fresh lock behind, so the
+/// chained install prints no stale-lock warning.
+#[tokio::test]
+async fn update_normalizes_composer_json_before_computing_the_content_hash() {
+    let ctx = offline_partial_update_context().await;
+    let project = ctx.project.path();
+    let composer_json_path = project.join("composer.json");
+
+    let original: Value =
+        serde_json::from_slice(&fs_err::read(&composer_json_path).unwrap()).unwrap();
+    let mut require_reversed = serde_json::Map::new();
+    for (name, constraint) in original["require"].as_object().unwrap().iter().rev() {
+        require_reversed.insert(name.clone(), constraint.clone());
+    }
+    let unnormalized = serde_json::json!({
+        "require": require_reversed,
+        "name": original["name"],
+        "license": original["license"],
+        "type": original["type"],
+        "require-dev": original["require-dev"],
+        "autoload": original["autoload"],
+        "config": original["config"],
+    });
+    fs_err::write(
+        &composer_json_path,
+        serde_json::to_vec(&unnormalized).unwrap(),
+    )
+    .unwrap();
+
+    let output = ctx
+        .viv()
+        .args(["update", "psr/log", "--offline"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "viv update failed:\n{combined}");
+    assert!(
+        !combined.contains("is not up to date"),
+        "the chained install must not see a stale lock: {combined}"
+    );
+
+    let lock = vivace::lock::read_lock(&project.join("composer.lock")).unwrap();
+    let on_disk_composer_json = fs_err::read(&composer_json_path).unwrap();
+    assert!(
+        vivace::lock::is_fresh(&lock, &on_disk_composer_json).unwrap(),
+        "content-hash should describe the normalized composer.json actually on disk"
+    );
+}
+
 /// #104: `--no-install` is today's `viv update` behaviour, kept as an
 /// explicit opt-out now that installing is the default.
 #[tokio::test]
