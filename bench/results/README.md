@@ -229,3 +229,153 @@ shape both fixes above already addressed elsewhere, not yet touched here;
 the metadata closure fetch itself, ~1.5 s, is now the single largest piece
 and is network-bound, not algorithmic). Record this table for every release
 next to the install numbers.
+
+## riff vs Composer output (#142)
+
+2026-09-08. riff 0.0.7, composer 2.10.2, viv 0.7.0. One-off script,
+`bench/riff-diff.sh` (not a permanent sweep column): for each project in
+`compat/corpus.toml`, clone shallow (or `create-project` for
+drupal/recommended-project), generate a lock if none is committed
+(`composer update --no-install --no-scripts --no-plugins
+--ignore-platform-reqs`), strip `.git`, then install three ways —
+`composer install --no-scripts --no-plugins --no-interaction
+--ignore-platform-reqs`, `riff install` with the same flags, `viv install
+--no-scripts --no-plugins` — and `diff -rq --exclude=.git` riff's `vendor/`
+against Composer's.
+
+| Project | riff vs Composer `vendor/` |
+|---|---|
+| laravel/laravel | `installed.json`, `installed.php`, `InstalledVersions.php` differ |
+| symfony/demo | `installed.php`, `InstalledVersions.php` differ |
+| drupal/recommended-project | `autoload_real.php` differs; `include_paths.php` missing from riff's tree; `installed.json`, `installed.php`, `InstalledVersions.php` differ |
+| roots/bedrock | `installed.json`, `installed.php`, `InstalledVersions.php` differ |
+| composer/composer | `installed.php`, `InstalledVersions.php` differ |
+| phpunit/phpunit | `autoload_classmap.php`, `autoload_files.php`, `autoload_real.php`, `autoload_static.php`, `installed.json`, `installed.php`, `InstalledVersions.php` differ |
+| slimphp/Slim-Skeleton | `installed.php`, `InstalledVersions.php` differ |
+| yiisoft/yii2-app-basic | riff install exits 1: `-p1: failed to apply patch to src/Iterator.php: error applying hunk #1` (pre-existing skip, `bench/skips.txt`) |
+| statamic/statamic | `vendor/bin/sail` differs; `installed.json`, `installed.php`, `InstalledVersions.php` differ |
+| craftcms/craft | `installed.php`, `InstalledVersions.php` differ |
+
+`viv install` succeeded on every project above and is not in the table: a
+separate byte-diff against Composer (already run for every release, see the
+top of this file) is unaffected by this investigation.
+
+What the differences actually are, traced with a manual re-run per file
+(`command diff -u`, not just `-q`):
+
+- **`installed.php`/`InstalledVersions.php`, every project.** Two distinct,
+  reproducible causes, not per-project drift:
+  - `installed.php`: when the root package has no VCS reference (true here
+    because the corpus script strips `.git` before installing, the same as
+    a tarball or CI checkout deploy), Composer's dumper writes the root
+    package's `'reference' => null` (lower-case); riff's writes `'reference'
+    => NULL` (PHP's `var_export` casing). Cosmetic — PHP's parser is
+    case-insensitive for the `null`/`true`/`false` keywords — but it means
+    riff's `installed.php` is not byte-identical to Composer's even when
+    every package is.
+  - `InstalledVersions.php`: riff's vendored template
+    (`riff-core/src/autoload/InstalledVersions.php.template`) is missing a
+    guard current Composer ships: `substr(__DIR__, -8, 1) !== 'C' &&
+    is_file(__DIR__ . '/installed.php')` (Composer checks both; riff's
+    template only checks the first half). Harmless when `installed.php` is
+    always written alongside it, as it is here, but it is a stale copy of
+    Composer's own runtime file, not a redesign.
+- **`installed.json`, six projects.** The only content difference found
+  (`phpunit/phpunit`'s copy, diffed field by field): one package,
+  `phpunit/php-code-coverage`, is recorded `"installation-source": "dist"`
+  by Composer but `"source"` by riff, even though neither `--prefer-source`
+  nor a per-package `prefer-install` override is in play. Cause:
+  `riff-core/src/downloader/manager.rs:216`,
+  `DownloadPreference::Auto if package.is_dev() => [DownloadSource::Source,
+  DownloadSource::Dist]` — riff defaults *dev-stability* packages (locked
+  version resolves to `Stability::Dev`, `riff-core/src/package/package.rs:802`)
+  to source over dist even outside `--prefer-source`. This matches
+  Composer's own semantics for dev packages (Composer also prefers source
+  for dev stability by default) rather than being a riff-only quirk; it
+  wasn't reproduced with `--ignore-platform-reqs` alone and needed the real
+  corpus lock to show up, so it's specific to a resolved-dev-version package
+  landing in a real lock, not a broad riff/Composer disagreement.
+- **`drupal/recommended-project`'s missing `include_paths.php`.** Composer
+  only writes this file when a package's `autoload.include-path` (a
+  deprecated Composer 1.x-era key still used by a couple of Drupal core
+  dependencies) is set; riff's autoload generator has no equivalent, so the
+  file is silently absent rather than empty. A real, narrow gap in autoload
+  generation (not scripts, not `platform_check.php`, not the classmap).
+- **`phpunit/phpunit`'s extra autoload file differences.** Composer and riff
+  both classmap-scan `phpunit/php-code-coverage`'s `src/` (matching the
+  `installed.json` finding above, this package installs from source under
+  riff and from dist under Composer), which puts different file layouts —
+  and hence different scanned class lists — under `autoload_classmap.php`,
+  `autoload_static.php` and `autoload_files.php` for that one package. Not
+  an independent bug: same root cause as the `installation-source` finding.
+- **`statamic/statamic`'s `vendor/bin/sail` proxy.** riff's Unix proxy
+  (`riff-core/src/installer/binary.rs`'s `create_unix_proxy`,
+  ~line 147) is a short `#!/usr/bin/env sh` wrapper that `cd`s via
+  `$0`/`dirname` and execs the target directly. Composer's proxy (and
+  viv's, matching it) is Composer's full-compatibility template: resolves
+  `$BASH_SOURCE` with a `realpath` fallback, handles being `source`d, and
+  runs the target through `php` explicitly when it has a `#!...php`
+  shebang. Both work for a plain `sh script args` invocation; riff's is a
+  smaller, less defensive proxy than Composer's, not a functional gap this
+  investigation could break.
+
+Not skipped: sha1/sha256 dist checksum verification
+(`riff-core/src/downloader/checksum.rs`, called from `downloader/manager.rs`
+whenever the lock has a `dist.shasum`), `platform_check.php` generation
+(`installer.rs`'s `configure_platform_check`/`platform_check_requirements`,
+~line 3201), `vendor/bin` proxies (`installer/binary.rs`, full PHP-shebang
+detection included), and `installed.json`/`installed.php` (generated on
+every install unless `--no-autoloader`, `installer.rs`'s
+`generate_installed_metadata`, ~line 2364). None of the issue's five
+hypothesised skips (sha1, `platform_check.php`, `installed.php`, the
+classmap scan, `vendor/bin` proxies) turned out to be actually skipped;
+every difference found above is either a formatting/staleness bug or a
+smaller-but-present implementation of the same step.
+
+## Cold install profile: drupal/recommended-project and Slim-Skeleton (#142)
+
+2026-09-08, same machine as above. Three alternating cold runs each
+(`hyperfine --warmup 0 --runs 3`, empty cache, no `vendor/`, prepared before
+every run), plus one `strace -f -e trace=connect,openat -c` run each and one
+`RUST_LOG=vivace=debug` run for viv's per-host hop summary.
+
+| Project | Tool | Cold (hyperfine) | `openat` calls | `connect` calls | Files in `vendor/` |
+|---|---|---|---|---|---|
+| slimphp/Slim-Skeleton (57 packages) | riff 0.0.7 | 1.628 s ± 0.122 s | 5,782 | 243 | 4,231 |
+| slimphp/Slim-Skeleton (57 packages) | viv 0.7.0 | 2.049 s ± 0.076 s | 6,936 | 224 | 4,233 |
+| drupal/recommended-project (67 packages) | riff 0.0.7 | 3.878 s ± 0.331 s | 25,297 | 291 | 24,329 |
+| drupal/recommended-project (67 packages) | viv 0.7.0 | 4.202 s ± 0.191 s | 38,684 | 211 | 24,332 |
+
+`viv`'s per-host hop summary (`RUST_LOG=vivace=debug`, request counts equal
+the package count on a cold install with no cache — one `api.github.com`
+redirect hop and one `codeload.github.com` body-complete hop per package):
+
+- Slim-Skeleton: `api.github.com` 57 requests, 358–614 ms (median 398 ms);
+  `codeload.github.com` 57 requests, 348–959 ms (median 498 ms).
+- drupal/recommended-project: `api.github.com` 67 requests, 239–727 ms
+  (median 626 ms); `codeload.github.com` 67 requests, 280–2,307 ms (median
+  526 ms).
+
+Both cold wins (riff 1.26x on Slim-Skeleton, 1.08x on drupal, in the same
+range as the issue's 3.9 s/4.3 s and 1.7 s/2.1 s) are **mostly noise, not
+skipped work or a materially different pipeline**. `connect` counts are the
+same order of magnitude both ways (riff and viv both open one connection per
+package to `api.github.com` and a smaller, redirect-driven number to
+`codeload.github.com`, matching the existing `strace` finding above this
+investigation reused rather than repeated), and the per-host hop medians
+above show hundreds of milliseconds of run-to-run GitHub-side latency
+variance on their own — comparable in size to the entire cold-time gap
+between the two tools. The one repeatable structural difference is
+`openat` volume: viv issues roughly 1.6 open calls per file written on both
+projects, riff roughly 1.0–1.6 (1.04 on drupal, 1.34 on Slim-Skeleton); viv's
+content-addressed store (`src/store.rs`) opens each extracted file again to
+compute its sha256 store key and again to `link()` it into `vendor/`, where
+riff unzips straight into `vendor/` without a separate keyed store. That
+extra bookkeeping is real but its cost here is under a third of a second of
+`openat` time on the larger project (0.36 s vs 0.33 s in the `strace -c`
+summary), well inside the network-latency noise already documented for this
+corpus. Nothing in the syscall counts or hop timings supports a pipeline
+riff has and viv doesn't; the two cold-column projects in the issue are
+better explained by the GitHub-latency variance `bench/results/README.md`
+already flags for cold numbers than by any skipped or faster step.
+
