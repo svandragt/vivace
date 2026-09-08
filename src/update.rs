@@ -427,10 +427,7 @@ fn lock_json(result: &solver::UpdateResult, composer_json: &[u8]) -> Result<Stri
     crate::lock_writer::write(&result.non_dev, Some(&result.dev), &options, composer_json)
 }
 
-/// `$XDG_CACHE_HOME/vivace`, falling back to `~/.cache/vivace`. Duplicated
-/// from `install.rs` (private there, small, and `install.rs` isn't this
-/// lane's file to widen). `pub(crate)`: `require.rs` reuses this one rather
-/// than a third copy.
+/// `$XDG_CACHE_HOME/vivace`, falling back to `~/.cache/vivace`.
 pub(crate) fn default_cache_dir() -> Result<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
         && !xdg.is_empty()

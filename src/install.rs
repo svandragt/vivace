@@ -387,7 +387,7 @@ fn run_impl(
 
     let cache_dir = match cache_dir {
         Some(dir) => dir.to_path_buf(),
-        None => default_cache_dir()?,
+        None => crate::update::default_cache_dir()?,
     };
     let store = Arc::new(Store::open(&cache_dir)?);
 
@@ -755,7 +755,7 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
 pub fn cache(args: &CacheArgs, cache_dir: Option<&Path>) -> Result<()> {
     let cache_dir = match cache_dir {
         Some(dir) => dir.to_path_buf(),
-        None => default_cache_dir()?,
+        None => crate::update::default_cache_dir()?,
     };
     match &args.command {
         CacheCommand::Prune { older_than } => {
@@ -1183,17 +1183,6 @@ fn random_hex32() -> Result<String> {
     let mut bytes = [0u8; 16];
     std::io::Read::read_exact(&mut fs_err::File::open("/dev/urandom")?, &mut bytes)?;
     Ok(hex(bytes))
-}
-
-/// `$XDG_CACHE_HOME/vivace`, falling back to `~/.cache/vivace`.
-fn default_cache_dir() -> Result<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
-        && !xdg.is_empty()
-    {
-        return Ok(PathBuf::from(xdg).join("vivace"));
-    }
-    let home = std::env::var("HOME").context("HOME is not set; pass --cache-dir")?;
-    Ok(PathBuf::from(home).join(".cache").join("vivace"))
 }
 
 fn read_state(path: &Path) -> Option<State> {

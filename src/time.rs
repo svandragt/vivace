@@ -1,7 +1,8 @@
-//! Civil-date/epoch-day helpers shared by `show` (release-age math) and
+//! Civil-date/epoch-day helpers shared by `show` (release-age math),
 //! `lock_writer` (normalising a package's `time` field to Composer's
-//! `DATE_RFC3339`). Split out so neither module copies Howard Hinnant's
-//! `days_from_civil`/`civil_from_days` algorithm.
+//! `DATE_RFC3339`), and `vcs` (formatting VCS timestamps the same way).
+//! Split out so no module copies Howard Hinnant's `days_from_civil`/
+//! `civil_from_days` algorithm.
 
 /// A calendar date, no time-of-day: `show`'s age buckets never need finer
 /// than day precision, and `lock_writer` folds the time-of-day back in

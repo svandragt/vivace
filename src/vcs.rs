@@ -690,33 +690,20 @@ fn detect_default_branch(dir: &Path) -> String {
 }
 
 /// Epoch seconds (UTC) to Composer's `DATE_RFC3339` (`"Y-m-d\TH:i:sP"`),
-/// e.g. `1704067200` -> `"2024-01-01T00:00:00+00:00"`. No date crate is a
-/// dependency of this workspace; this is Howard Hinnant's `civil_from_days`,
-/// the standard small epoch/civil-calendar conversion (its variable names,
-/// `y`/`m`/`d`/`h`/`m`/`s` etc., are the ones that algorithm is usually
-/// written with).
-#[allow(clippy::many_single_char_names)]
+/// e.g. `1704067200` -> `"2024-01-01T00:00:00+00:00"`. Civil-date math is
+/// `crate::time::civil_from_days`.
 fn format_unix_utc(ts: i64) -> String {
     let days = ts.div_euclid(86400);
     let secs_of_day = ts.rem_euclid(86400);
-    let (h, m, s) = (
+    let (h, mi, s) = (
         secs_of_day / 3600,
         (secs_of_day / 60) % 60,
         secs_of_day % 60,
     );
 
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { y + 1 } else { y };
+    let crate::time::Ymd { y, m, d } = crate::time::civil_from_days(days);
 
-    format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}+00:00")
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}+00:00")
 }
 
 // ---------------------------------------------------------------------
