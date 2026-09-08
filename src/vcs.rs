@@ -757,25 +757,36 @@ pub fn guess_root_version(project_dir: &Path) -> Option<RootVersion> {
     let mut pretty_version = None;
     let mut commit = None;
     let mut detached = false;
+    let mut feature_branch = false;
+    let mut branches = Vec::new();
     for line in text.lines() {
-        let Some(caps) = CURRENT_BRANCH.captures(line) else {
-            continue;
-        };
-        let name = &caps[1];
-        commit = Some(caps[2].to_string());
-        if name == "(no branch)"
-            || name.starts_with("(detached ")
-            || name.starts_with("(HEAD detached at")
-        {
-            detached = true;
-            version = Some(format!("dev-{}", &caps[2]));
-            pretty_version.clone_from(&version);
-        } else {
-            version = Some(crate::version::normalize_branch(name));
-            pretty_version = Some(format!("dev-{name}"));
+        if let Some(caps) = CURRENT_BRANCH.captures(line) {
+            let name = &caps[1];
+            commit = Some(caps[2].to_string());
+            if name == "(no branch)"
+                || name.starts_with("(detached ")
+                || name.starts_with("(HEAD detached at")
+            {
+                detached = true;
+                feature_branch = true;
+                version = Some(format!("dev-{}", &caps[2]));
+                pretty_version.clone_from(&version);
+            } else {
+                version = Some(crate::version::normalize_branch(name));
+                pretty_version = Some(format!("dev-{name}"));
+                feature_branch = is_feature_branch(name);
+            }
         }
-        // Exactly one line can start with `* ` (the current branch).
-        break;
+        if !REMOTE_HEAD_LINE.is_match(line)
+            && let Some(caps) = ANY_BRANCH.captures(line)
+        {
+            branches.push(caps[1].to_string());
+        }
+    }
+    if feature_branch && let Some(v) = &version {
+        let (v, pretty) = guess_feature_version(project_dir, v, &branches);
+        version = Some(v);
+        pretty_version = Some(pretty);
     }
 
     if (version.is_none() || detached)
@@ -815,6 +826,124 @@ static CURRENT_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
+
+/// Every branch line of `git branch -a -v` (current or not), as Composer
+/// collects them for `guessFeatureVersion`; `remotes/<origin|upstream>/`
+/// prefixes are kept so the candidate can be passed to `git rev-list`.
+static ANY_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:\* )? *((?:remotes/(?:origin|upstream)/)?[^\s/]+) *([a-f0-9]+) .*$").unwrap()
+});
+
+/// `^ *.+/HEAD ` — the `remotes/origin/HEAD -> origin/x` pointer line, which
+/// Composer skips when collecting branches.
+static REMOTE_HEAD_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^ *.+/HEAD ").unwrap());
+
+/// `VersionGuesser::isFeatureBranch` with Composer's built-in list only.
+/// ponytail: the root's `non-feature-branches` config isn't consulted; add
+/// it to `Root` and thread it here if a project relies on it.
+fn is_feature_branch(name: &str) -> bool {
+    static NON_FEATURE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(master|main|latest|next|current|support|tip|trunk|default|develop|\d+\..+)$")
+            .unwrap()
+    });
+    !NON_FEATURE.is_match(name)
+}
+
+/// `VersionGuesser::guessFeatureVersion`: a detached `HEAD` or a feature
+/// branch takes the version of the nearest non-feature branch, measured by
+/// how many commits `git rev-list <candidate>..<branch>` prints (fewest
+/// wins; ties go to the later candidate in Composer's sort order; zero
+/// stops the search). Candidates are sorted local before remote, then by
+/// natural case-insensitive order descending. Serial where Composer runs
+/// up to 30 `git` processes at once: this only runs for git checkouts on a
+/// non-no-op install.
+fn guess_feature_version(
+    project_dir: &Path,
+    version: &str,
+    branches: &[String],
+) -> (String, String) {
+    let branch = version.strip_prefix("dev-").unwrap_or(version);
+    if !is_feature_branch(branch) {
+        return (version.to_string(), version.to_string());
+    }
+    let mut candidates: Vec<&String> = branches.iter().collect();
+    candidates.sort_by(|a, b| {
+        let (ar, br) = (a.starts_with("remotes/"), b.starts_with("remotes/"));
+        if ar != br {
+            return ar.cmp(&br);
+        }
+        natural_cmp_ci(b, a)
+    });
+    let mut best: Option<(usize, String)> = None;
+    for candidate in candidates {
+        let candidate_version = REMOTE_PREFIX.replace(candidate, "");
+        if candidate.as_str() == branch || is_feature_branch(&candidate_version) {
+            continue;
+        }
+        let Ok(output) = Command::new("git")
+            .args(["rev-list", &format!("{candidate}..{branch}")])
+            .current_dir(project_dir)
+            .output()
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let len = output.stdout.len();
+        if best.as_ref().is_none_or(|(l, _)| len <= *l) {
+            best = Some((len, candidate_version.into_owned()));
+            if len == 0 {
+                break;
+            }
+        }
+    }
+    match best {
+        Some((_, name)) => (
+            crate::version::normalize_branch(&name),
+            format!("dev-{name}"),
+        ),
+        None => (version.to_string(), version.to_string()),
+    }
+}
+
+static REMOTE_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^remotes/\S+/").unwrap());
+
+/// PHP `strnatcasecmp`: digit runs compare numerically, the rest
+/// case-insensitively.
+fn natural_cmp_ci(a: &str, b: &str) -> std::cmp::Ordering {
+    let (a, b) = (a.to_lowercase(), b.to_lowercase());
+    let (mut ai, mut bi) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (ai.peek().copied(), bi.peek().copied()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let mut na = 0u128;
+                while let Some(d) = ai.peek().and_then(|c| c.to_digit(10)) {
+                    na = na * 10 + u128::from(d);
+                    ai.next();
+                }
+                let mut nb = 0u128;
+                while let Some(d) = bi.peek().and_then(|c| c.to_digit(10)) {
+                    nb = nb * 10 + u128::from(d);
+                    bi.next();
+                }
+                if na != nb {
+                    return na.cmp(&nb);
+                }
+            }
+            (Some(x), Some(y)) => {
+                if x != y {
+                    return x.cmp(&y);
+                }
+                ai.next();
+                bi.next();
+            }
+        }
+    }
+}
 
 /// `VersionGuesser::versionFromGitTags`: `git describe --exact-match --tags`,
 /// only successful when `HEAD` is exactly a tag.

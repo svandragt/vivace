@@ -148,3 +148,29 @@ fn explicit_version_wins_over_the_git_guess() {
     assert!(installed.contains("'version' => '2.5.0.0',"));
     assert!(installed.contains("'reference' => null,"));
 }
+
+/// The compat sweep's shape: a pinned commit checked out detached, with a
+/// version branch pointing at the same commit and `main` one commit behind.
+/// Composer's `guessFeatureVersion` picks `5.x` (`git rev-list 5.x..HEAD`
+/// is empty, `main..HEAD` is not), not `dev-<sha>`.
+#[test]
+fn detached_head_takes_the_version_branch_at_the_same_commit() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    init_repo(project);
+    git(project, &["checkout", "-qb", "5.x"]);
+    fs::write(project.join("on-5x.txt"), "5.x\n").unwrap();
+    git(project, &["add", "-A"]);
+    git(project, &["commit", "-q", "-m", "on 5.x"]);
+    let commit = head_commit(project);
+    git(project, &["checkout", "-q", "--detach", &commit]);
+
+    ctx.viv().arg("install").assert().success();
+
+    let installed = root_block(project);
+    assert!(
+        installed.contains("'pretty_version' => '5.x-dev',"),
+        "{installed}"
+    );
+    assert!(installed.contains(&format!("'reference' => '{commit}',")));
+}
