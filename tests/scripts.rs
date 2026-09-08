@@ -214,10 +214,73 @@ fn a_static_php_callback_warns_and_continues() {
         stderr.contains("App\\Installer::postInstall") && stderr.contains("pre-autoload-dump"),
         "stderr should warn naming the script and event: {stderr}"
     );
+    assert!(
+        !stderr.contains("WARN") && !stderr.contains('Z'),
+        "the skip notice should be a plain warn_out line, not tracing::warn!'s \
+         timestamp and level: {stderr}"
+    );
     assert_eq!(
         read(project, "events.log").trim(),
         "continued",
         "the listener after the skipped one should still run"
+    );
+}
+
+/// GitHub issue #154: `Composer\Config::disableProcessTimeout` only lifts
+/// Composer's process timeout, which vivace never applies, so it's known
+/// inert and skipped with no output at all.
+#[test]
+fn an_inert_static_callback_is_silent() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    setup(project, "inert-callback");
+
+    let output = ctx.viv().args(["run", "serve"]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "an inert callback should not fail the run: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "served",
+        "stdout should only carry the script's own output"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "an inert callback should print nothing, not even a debug warning: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// GitHub issue #154: an unknown static callback still warns, but as a
+/// plain stderr line rather than through `tracing::warn!`.
+#[test]
+fn an_unknown_static_callback_warns_in_plain_text() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    setup(project, "run-warn");
+
+    let output = ctx.viv().args(["run", "task"]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "a Class::method listener should warn, not fail: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "ok",
+        "the listener after the skipped one should still run"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Skipping Acme\\Foo::bar"),
+        "stderr should name the skipped listener: {stderr}"
+    );
+    assert!(
+        !stderr.contains("WARN") && !stderr.contains('Z'),
+        "the skip notice should be a plain warn_out line, not tracing::warn!'s \
+         timestamp and level: {stderr}"
     );
 }
 

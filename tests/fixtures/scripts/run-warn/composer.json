@@ -1,0 +1,9 @@
+{
+    "name": "vivace/scripts-run-warn-fixture",
+    "scripts": {
+        "task": [
+            "Acme\\Foo::bar",
+            "echo ok"
+        ]
+    }
+}

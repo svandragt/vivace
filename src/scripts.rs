@@ -12,11 +12,26 @@
 //! either — narrower still, and not asked for.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
+
+/// Static PHP callbacks known to be no-ops for vivace, so they're skipped
+/// silently rather than warned about. `Composer\Config::disableProcessTimeout`
+/// only lifts Composer's 300-second script timeout; vivace applies no
+/// timeout to scripts (nothing in this module ever sets one), so the call
+/// has nothing to do here.
+const INERT_CALLBACKS: &[&str] = &["Composer\\Config::disableProcessTimeout"];
+
+/// A plain stderr line for a skip notice, matching every other user-facing
+/// warning in vivace rather than `tracing::warn!`'s timestamp and module
+/// path.
+fn warn_out(message: &str) {
+    let _ = writeln!(std::io::stderr().lock(), "{message}");
+}
 
 /// `@composer <subcommand>` names vivace actually implements; anything else
 /// is a clear error naming the command, rather than silently doing nothing.
@@ -173,10 +188,15 @@ impl Runner {
         }
         // Composer's `isPhpScript`: no space, and a `::` static call.
         if !listener.contains(' ') && listener.contains("::") {
-            tracing::warn!(
-                "{event}: skipping `{listener}`, a static PHP callback vivace has no Composer \
-                 runtime to bootstrap and call"
-            );
+            if INERT_CALLBACKS.contains(&listener) {
+                tracing::debug!("{event}: skipping inert static PHP callback `{listener}`");
+                return Ok(());
+            }
+            tracing::debug!("{event}: skipping `{listener}`, a static PHP callback");
+            warn_out(&format!(
+                "Skipping {listener} in {event}: viv cannot call PHP static callbacks; run it \
+                 with Composer if it matters."
+            ));
             return Ok(());
         }
         self.run_shell(event, listener, listener)

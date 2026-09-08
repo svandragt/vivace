@@ -1,0 +1,9 @@
+{
+    "name": "vivace/scripts-inert-callback-fixture",
+    "scripts": {
+        "serve": [
+            "Composer\\Config::disableProcessTimeout",
+            "echo served"
+        ]
+    }
+}
