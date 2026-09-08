@@ -147,6 +147,16 @@ ahead of the real Composer (or symlink it as `composer` in CI) and it maps
 plugins, unrecognised flags). Point `VIV_COMPOSER_PATH` at the real binary if
 it isn't first on `PATH`.
 
+`install` adopts a `vendor/` that Composer (or a pre-adopt viv) wrote: it has
+`installed.json` but no `.vivace-state`, so viv relinks every package from
+the store in place, no flag needed. The relink is safe and reversible either
+way, since the lock decides the content. Through the shim, a terminal gets a
+confirmation prompt first, because typing `composer install` didn't opt into
+viv touching the tree in place; a plain `viv install`, or a script running
+under the shim, proceeds unprompted. `--adopt` still force-relinks a
+viv-written `vendor/` on request, with its own terminal prompt regardless of
+the shim.
+
 ## Scope
 
 viv aims to replace Composer for the commands people run every day, not the

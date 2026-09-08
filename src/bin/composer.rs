@@ -133,8 +133,15 @@ fn exec_real_composer(args: &[String]) -> ExitCode {
 
 /// `exec`s `viv` with `args`. Only returns (with a failure code) if `viv`
 /// can't be run.
+///
+/// Sets `VIV_VIA_SHIM=1` so `viv install` knows a user typed `composer
+/// install` directly, rather than a script under the shim: a Composer-written
+/// `vendor/` gets a confirmation prompt before viv adopts it in place (#123).
 fn exec_viv(args: &[String]) -> ExitCode {
-    let err = Command::new(viv_path()).args(args).exec();
+    let err = Command::new(viv_path())
+        .args(args)
+        .env("VIV_VIA_SHIM", "1")
+        .exec();
     err_out(&format!("composer (viv shim): failed to exec viv: {err}"));
     ExitCode::from(1)
 }

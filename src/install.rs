@@ -333,14 +333,29 @@ fn run_impl(
     // from Composer (or a pre-adopt viv) as plain copies, not store links.
     let composer_written =
         vendor_dir.join("composer/installed.json").is_file() && !state_path.is_file();
-    if args.adopt {
-        // A human at a terminal gets a chance to back out of relinking every
-        // kept package in place; a script or test harness (stdin not a TTY)
-        // has no way to answer, so it proceeds unprompted, same as before
-        // this existed.
-        if std::io::stdin().is_terminal() && !confirm_adopt()? {
+    // `--adopt` force-relinks a viv-written vendor/ on request; a
+    // Composer-written vendor/ is adopted the same way automatically, no
+    // flag needed (#123).
+    let adopting = args.adopt || composer_written;
+    let mut adopted_count = 0usize;
+    if adopting {
+        // `--adopt` always gives a human at a terminal a chance to back out
+        // of relinking every kept package in place. The automatic adopt only
+        // prompts when the install came through the `composer` shim
+        // (`VIV_VIA_SHIM`): a user typing `composer install` didn't opt into
+        // viv touching their tree in place, but a plain `viv install` or a
+        // script under the shim proceeds unprompted, same as before this
+        // existed.
+        let should_prompt = std::io::stdin().is_terminal()
+            && (args.adopt || std::env::var_os("VIV_VIA_SHIM").is_some());
+        if should_prompt && !confirm_adopt()? {
             bail!("Aborted");
         }
+        adopted_count = plan
+            .keep
+            .iter()
+            .filter(|p| p.r#type != "metapackage")
+            .count();
         plan.install.append(&mut plan.keep);
     }
 
@@ -557,17 +572,17 @@ fn run_impl(
             .iter()
             .filter(|p| p.r#type != "metapackage")
             .count();
+        let adopted_suffix = if adopted_count > 0 {
+            format!(", adopted {adopted_count} packages from a Composer install")
+        } else {
+            String::new()
+        };
         out(&format!(
-            "Installed {installed_count} packages ({from_cache} from cache), removed {}, in {:.2}s",
+            "Installed {installed_count} packages ({from_cache} from cache), removed {}, in \
+             {:.2}s{adopted_suffix}",
             plan.remove.len(),
             start.elapsed().as_secs_f64()
         ));
-    }
-    if composer_written && !args.adopt {
-        warn_out(
-            "vendor/ was not installed by viv; packages are plain copies. Run \
-             `viv install --adopt` to relink them from the store.",
-        );
     }
     let scripts_started = Instant::now();
     if dispatch_install_cmd_events {

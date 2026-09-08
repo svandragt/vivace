@@ -170,9 +170,9 @@ var_dump(Fixture\Legacy\Mode::On->value, fixture_helper());"#,
 }
 
 /// A `vendor/` Composer wrote (or an older viv, pre-adopt) has
-/// `installed.json` but no `.vivace-state`: a plain install must notice and
-/// warn instead of silently claiming it, and `--adopt` must relink every
-/// package from the store on request.
+/// `installed.json` but no `.vivace-state`: a plain install must adopt it
+/// automatically, relinking every kept package from the store, with no
+/// `--adopt` flag needed (#123).
 #[test]
 fn adopts_a_composer_written_vendor_tree() {
     if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
@@ -204,27 +204,7 @@ fn adopts_a_composer_written_vendor_tree() {
     fs::write(&target, &content).unwrap();
     assert_ne!(fs::metadata(&target).unwrap().ino(), store_ino);
 
-    let plain = ctx.viv().arg("install").output().unwrap();
-    assert!(
-        plain.status.success(),
-        "{}",
-        String::from_utf8_lossy(&plain.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&plain.stderr).contains(
-            "vendor/ was not installed by viv; packages are plain copies. Run \
-             `viv install --adopt` to relink them from the store."
-        ),
-        "stderr: {}",
-        String::from_utf8_lossy(&plain.stderr)
-    );
-    assert_ne!(
-        fs::metadata(&target).unwrap().ino(),
-        store_ino,
-        "a plain install must not touch files it only keeps"
-    );
-
-    let adopted = ctx.viv().args(["install", "--adopt"]).output().unwrap();
+    let adopted = ctx.viv().arg("install").output().unwrap();
     assert!(
         adopted.status.success(),
         "{}",
@@ -232,8 +212,14 @@ fn adopts_a_composer_written_vendor_tree() {
     );
     assert!(String::from_utf8_lossy(&adopted.stdout).contains("Installed 3 packages"));
     assert!(
+        String::from_utf8_lossy(&adopted.stdout)
+            .contains("adopted 3 packages from a Composer install"),
+        "stdout: {}",
+        String::from_utf8_lossy(&adopted.stdout)
+    );
+    assert!(
         !String::from_utf8_lossy(&adopted.stderr).contains("was not installed by viv"),
-        "adopting should not repeat the notice: {}",
+        "adopting should not print the old notice: {}",
         String::from_utf8_lossy(&adopted.stderr)
     );
     let relinked = fs::metadata(&target).unwrap();
