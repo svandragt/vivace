@@ -27,6 +27,7 @@
 
 mod common;
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -339,29 +340,72 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
-/// #155: `viv add`'s written `composer.lock` must have a `content-hash`
+/// A single-file zip, in memory, for pre-populating the store without ever
+/// touching the network. Duplicated from `tests/update.rs`'s copy of the
+/// same name (private there, and small enough not to widen for one more
+/// caller).
+fn zip_of_one_file(name: &str, content: &[u8]) -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer
+        .start_file(name, zip::write::SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(content).unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
+/// #158: pre-warms `ctx.cache`'s on-disk repository cache from the recorded
+/// Packagist fixtures (`solver::solve_update`'s call here is only for that
+/// side effect, same pattern as `tests/update.rs`'s
+/// `offline_partial_update_context`) and pre-populates the store with a
+/// synthetic archive for every package the monolog fixture's own
+/// `composer.lock` already proves this solve converges to, so the real
+/// `viv` binary can run entirely offline afterwards.
+async fn warm_monolog_cache_and_store(ctx: &TestContext, fixture: &Path) {
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", ctx.cache.path(), &transport)
+        .await
+        .unwrap();
+    let root: Value =
+        serde_json::from_slice(&fs_err::read(fixture.join("composer.json")).unwrap()).unwrap();
+    solver::solve_update(&repo, &root, false, false)
+        .await
+        .unwrap();
+
+    let store = vivace::store::Store::open(ctx.cache.path()).unwrap();
+    let lock = vivace::lock::read_lock(&fixture.join("composer.lock")).unwrap();
+    for package in lock.packages(true) {
+        store
+            .add_zip(
+                package,
+                &zip_of_one_file("marker.txt", package.name.as_bytes()),
+            )
+            .unwrap();
+    }
+}
+
+/// #155/#158: `viv add`'s written `composer.lock` must have a `content-hash`
 /// describing the `composer.json` bytes actually left on disk, not the
 /// unnormalised bytes read before `write_composer_json`/`maybe_normalize`
 /// ran. A deliberately unnormalised `require` (reverse key order, so the
 /// normaliser's platform-first sort actually moves something) must still
 /// leave a fresh lock behind, so the chained install prints no stale-lock
-/// warning. Real network (`require.rs`'s `partial_update` always resolves
-/// against live Packagist, unlike `update.rs`'s `solve`, so this can't run
-/// offline against the recorded fixtures the way `tests/update.rs`'s own
-/// #155 regression does).
-#[test]
-fn viv_add_normalizes_composer_json_before_computing_the_content_hash() {
-    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!(
-            "skipping viv_add_normalizes_composer_json_before_computing_the_content_hash: set \
-             VIVACE_TEST_NETWORK=1 to resolve against real Packagist"
-        );
-        return;
-    }
-
+/// warning. Runs entirely offline now that `require::partial_update` builds
+/// its repository set the same way `update::solve` does and honours
+/// `--offline` (`#158`): a warm cache (`warm_monolog_cache_and_store`)
+/// stands in for live Packagist, the same recorded-fixture pattern
+/// `tests/update.rs`'s own #155 regression already uses. An explicit
+/// `:^2.0` constraint sidesteps `synthesize_constraint`, which still
+/// resolves against a hard-coded Packagist URL and ignores `--offline`
+/// (out of `#158`'s scope; tracked separately).
+#[tokio::test]
+async fn viv_add_normalizes_composer_json_before_computing_the_content_hash() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
     let ctx = TestContext::new();
     let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
 
     let original: Value =
         serde_json::from_slice(&fs_err::read(fixture.join("composer.json")).unwrap()).unwrap();
@@ -389,7 +433,7 @@ fn viv_add_normalizes_composer_json_before_computing_the_content_hash() {
 
     let output = ctx
         .viv()
-        .args(["require", "psr/container"])
+        .args(["require", "psr/container:^2.0", "--offline"])
         .output()
         .unwrap();
     let combined = format!(
@@ -408,5 +452,87 @@ fn viv_add_normalizes_composer_json_before_computing_the_content_hash() {
     assert!(
         vivace::lock::is_fresh(&lock, &on_disk_composer_json).unwrap(),
         "content-hash should describe the normalized composer.json actually on disk"
+    );
+}
+
+/// #158: `require::partial_update` must build its repository set from
+/// `composer.json`'s own `repositories` (`#67`), not a hard-coded
+/// `https://repo.packagist.org` — a `composer`-type repository at a
+/// different host than Packagist, with the default disabled, resolves `viv
+/// add` fine offline, and would error (the default is disabled, and the
+/// warm cache below never touches `repo.packagist.org`) if the fix
+/// regressed to the old hard-coded lookup.
+///
+/// `tests/fixtures/require-satis/repo` is a minimal `composer`-type
+/// repository of its own (a relative `metadata-url`, like a real Satis or
+/// Private Packagist instance, unlike `repo.packagist.org`'s own recorded
+/// `packages.json`, whose `metadata-url` is absolute and would resolve back
+/// to Packagist regardless of which host declared it): `p2/psr/log.json`
+/// and `p2/psr/container.json` are verbatim copies of the same recorded
+/// Packagist provider files `tests/fixtures/packagist/repo.packagist.org`
+/// already commits.
+#[tokio::test]
+async fn viv_add_resolves_from_a_composer_type_repository() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    let repo_url = "https://satis.example.test";
+    let transport = FixtureTransport {
+        root: Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/require-satis/repo"),
+    };
+    let repo = Repository::load(repo_url, ctx.cache.path(), &transport)
+        .await
+        .unwrap();
+    let root = serde_json::json!({
+        "name": "vivace/fixture-satis",
+        "license": "proprietary",
+        "type": "project",
+        "require": {"psr/log": "^3.0", "psr/container": "^2.0"},
+        "repositories": [
+            {"type": "composer", "url": repo_url},
+            {"packagist.org": false},
+        ],
+    });
+    // Only for its side effect of warming `ctx.cache`'s on-disk cache for
+    // both packages (`offline_partial_update_context`'s own pattern in
+    // `tests/update.rs`): the actual lock this test cares about is the one
+    // the real `viv add` binary below writes, not this one.
+    solver::solve_update(&repo, &root, false, false)
+        .await
+        .unwrap();
+
+    let project_root = serde_json::json!({
+        "name": "vivace/fixture-satis",
+        "license": "proprietary",
+        "type": "project",
+        "require": {"psr/log": "^3.0"},
+        "repositories": [
+            {"type": "composer", "url": repo_url},
+            {"packagist.org": false},
+        ],
+    });
+    fs_err::write(
+        project.join("composer.json"),
+        serde_json::to_vec_pretty(&project_root).unwrap(),
+    )
+    .unwrap();
+
+    ctx.viv()
+        .args(["require", "psr/container:^2.0", "--offline", "--no-install"])
+        .assert()
+        .success();
+
+    let lock: Value =
+        serde_json::from_slice(&fs_err::read(project.join("composer.lock")).unwrap()).unwrap();
+    let names: Vec<&str> = lock["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"psr/container") && names.contains(&"psr/log"),
+        "expected psr/log and psr/container in the lock resolved from the composer-type \
+         repository, got {names:?}"
     );
 }

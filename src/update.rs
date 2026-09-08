@@ -217,6 +217,34 @@ pub(crate) fn bin_dir(root: &Value) -> String {
         .map_or_else(|| format!("{vendor_dir}/bin"), str::to_string)
 }
 
+/// `Fetcher` wired the same way every solve step needs it: `config.secure-http`
+/// read off the root `composer.json`, `Auth::load`'d from `project_dir`, and
+/// `--offline` passed straight through. Shared with `require::partial_update`
+/// (`#158`: that solve used to ignore `--offline` entirely).
+pub(crate) fn build_fetcher(project_dir: &Path, root: &Value, offline: bool) -> Result<Fetcher> {
+    let secure_http = root
+        .pointer("/config/secure-http")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let auth = Auth::load(project_dir)?;
+    Ok(Fetcher::new(auth)?
+        .secure_http(secure_http)
+        .offline(offline))
+}
+
+/// `Repository::from_composer_json` against `root`'s own `repositories`
+/// (`#67`) plus the implicit `packagist.org`, over `fetcher`. Shared with
+/// `require::partial_update`, which used to resolve against a hard-coded
+/// `https://repo.packagist.org` instead, ignoring `composer.json`'s own
+/// `repositories` (`#158`).
+pub(crate) async fn build_repository<'f>(
+    root: &Value,
+    cache_dir: &Path,
+    fetcher: &'f Fetcher,
+) -> Result<Repository<HttpTransport<'f>>> {
+    Repository::from_composer_json(root, cache_dir, HttpTransport { fetcher }).await
+}
+
 async fn solve(
     args: &UpdateArgs,
     project_dir: &Path,
@@ -225,10 +253,6 @@ async fn solve(
     cache_dir: Option<&Path>,
     offline: bool,
 ) -> Result<solver::UpdateResult> {
-    let secure_http = root
-        .pointer("/config/secure-http")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
     let prefer_stable = args.prefer_stable
         || root
             .get("prefer-stable")
@@ -239,12 +263,8 @@ async fn solve(
         Some(dir) => dir.to_path_buf(),
         None => default_cache_dir()?,
     };
-    let auth = Auth::load(project_dir)?;
-    let fetcher = Fetcher::new(auth)?
-        .secure_http(secure_http)
-        .offline(offline);
-    let transport = HttpTransport { fetcher: &fetcher };
-    let repo = Repository::from_composer_json(root, &cache_dir, transport).await?;
+    let fetcher = build_fetcher(project_dir, root, offline)?;
+    let repo = build_repository(root, &cache_dir, &fetcher).await?;
 
     if args.packages.is_empty() {
         // #90: a warm update's closure is almost always the previous

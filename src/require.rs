@@ -265,10 +265,6 @@ pub(crate) fn partial_update(
     let mut scripts = scripts::Runner::new(&root, project_dir, &bin_dir, true, no_scripts);
     scripts.dispatch("pre-update-cmd")?;
 
-    let secure_http = root
-        .pointer("/config/secure-http")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
     let prefer_stable = prefer_stable
         || root
             .get("prefer-stable")
@@ -279,13 +275,16 @@ pub(crate) fn partial_update(
         Some(dir) => dir.to_path_buf(),
         None => crate::update::default_cache_dir()?,
     };
-    let auth = Auth::load(project_dir)?;
-    let fetcher = Fetcher::new(auth)?.secure_http(secure_http);
-    let transport = HttpTransport { fetcher: &fetcher };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let repo = runtime.block_on(Repository::load(PACKAGIST_URL, &cache_dir, transport))?;
+    // #158: build the repository set the same way `update::solve` does
+    // (`composer.json`'s own `repositories`, `#67`, plus the implicit
+    // `packagist.org`) instead of always resolving against a hard-coded
+    // `https://repo.packagist.org`, and pass `offline` through so a cache
+    // miss errors cleanly instead of silently reaching the network.
+    let fetcher = crate::update::build_fetcher(project_dir, &root, offline)?;
+    let repo = runtime.block_on(crate::update::build_repository(&root, &cache_dir, &fetcher))?;
 
     // A brand new `composer.json` (no lock yet) cannot do a partial update
     // (`PoolBuilder::buildPool` requires a locked repository); fall back to
