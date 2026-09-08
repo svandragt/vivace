@@ -132,6 +132,7 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
                     &Value::Object(root.clone()),
                     &project_dir,
                     cache_dir,
+                    offline,
                 )?,
             };
             links.insert(package_name.clone(), Value::String(constraint));

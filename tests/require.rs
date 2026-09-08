@@ -536,3 +536,72 @@ async fn viv_add_resolves_from_a_composer_type_repository() {
          repository, got {names:?}"
     );
 }
+
+/// `#160`: `synthesize_constraint` (the bare-name, no-constraint branch of
+/// `viv add`) used to build its own Packagist-only fetcher and ignore
+/// `--offline`, so a package that only exists in `composer.json`'s own
+/// `repositories` failed to synthesise a constraint even though the partial
+/// update that follows would resolve it fine (`#158` fixed the update step,
+/// not this one). Same setup as
+/// `viv_add_resolves_from_a_composer_type_repository`, but the package on
+/// the command line has no `:constraint` suffix.
+#[tokio::test]
+async fn viv_add_offline_synthesizes_a_constraint_from_a_composer_type_repository() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    let repo_url = "https://satis.example.test";
+    let transport = FixtureTransport {
+        root: Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/require-satis/repo"),
+    };
+    let repo = Repository::load(repo_url, ctx.cache.path(), &transport)
+        .await
+        .unwrap();
+    let root = serde_json::json!({
+        "name": "vivace/fixture-satis",
+        "license": "proprietary",
+        "type": "project",
+        "require": {"psr/log": "^3.0", "psr/container": "^2.0"},
+        "repositories": [
+            {"type": "composer", "url": repo_url},
+            {"packagist.org": false},
+        ],
+    });
+    // Only for its side effect of warming `ctx.cache`'s on-disk cache for
+    // both packages: the actual lock/composer.json this test cares about is
+    // what the real `viv add` binary below writes, not this one.
+    solver::solve_update(&repo, &root, false, false)
+        .await
+        .unwrap();
+
+    let project_root = serde_json::json!({
+        "name": "vivace/fixture-satis",
+        "license": "proprietary",
+        "type": "project",
+        "require": {"psr/log": "^3.0"},
+        "repositories": [
+            {"type": "composer", "url": repo_url},
+            {"packagist.org": false},
+        ],
+    });
+    fs_err::write(
+        project.join("composer.json"),
+        serde_json::to_vec_pretty(&project_root).unwrap(),
+    )
+    .unwrap();
+
+    ctx.viv()
+        .args(["require", "psr/container", "--offline", "--no-install"])
+        .assert()
+        .success();
+
+    let composer_json: Value =
+        serde_json::from_slice(&fs_err::read(project.join("composer.json")).unwrap()).unwrap();
+    let constraint = composer_json["require"]["psr/container"]
+        .as_str()
+        .expect("psr/container should be present in require");
+    assert!(
+        constraint.starts_with('^'),
+        "expected a synthesized ^-style constraint for psr/container, got {constraint:?}"
+    );
+}

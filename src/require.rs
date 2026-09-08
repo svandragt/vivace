@@ -19,16 +19,11 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use serde_json::{Map, Value};
 
-use crate::auth::Auth;
-use crate::fetch::Fetcher;
 use crate::install::{self, InstallArgs};
 use crate::link::LinkMode;
 use crate::normalize;
-use crate::repository::{HttpTransport, Repository};
 use crate::scripts;
 use crate::solver::{self, pool_builder::UpdateAllowMode};
-
-const PACKAGIST_URL: &str = "https://repo.packagist.org";
 
 /// `viv add` flags.
 #[expect(
@@ -142,7 +137,7 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
         let constraint = if let Some(c) = constraint {
             c.clone()
         } else {
-            synthesize_constraint(name, &root, &project_dir, cache_dir)?
+            synthesize_constraint(name, &root, &project_dir, cache_dir, offline)?
         };
         add_link(&mut root, link_type, name, &constraint)?;
         // `RequireCommand::updateFileCleanly` always removes the same
@@ -399,22 +394,20 @@ pub(crate) fn synthesize_constraint(
     root: &Value,
     project_dir: &Path,
     cache_dir: Option<&Path>,
+    offline: bool,
 ) -> Result<String> {
-    let secure_http = root
-        .pointer("/config/secure-http")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
     let cache_dir = match cache_dir {
         Some(dir) => dir.to_path_buf(),
         None => crate::update::default_cache_dir()?,
     };
-    let auth = Auth::load(project_dir)?;
-    let fetcher = Fetcher::new(auth)?.secure_http(secure_http);
-    let transport = HttpTransport { fetcher: &fetcher };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let repo = runtime.block_on(Repository::load(PACKAGIST_URL, &cache_dir, transport))?;
+    // #160: resolve through composer.json's own `repositories` and honour
+    // `--offline`, the same fetcher/repository construction `partial_update`
+    // uses since #158, instead of always hitting `https://repo.packagist.org`.
+    let fetcher = crate::update::build_fetcher(project_dir, root, offline)?;
+    let repo = runtime.block_on(crate::update::build_repository(root, &cache_dir, &fetcher))?;
     let preferred_stability = preferred_stability(root);
     runtime
         .block_on(version_selector::find_recommended_constraint(
