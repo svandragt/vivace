@@ -51,6 +51,8 @@ report="$results_dir/$label.md"
 : > "$report"
 
 failures=0
+total_projects=0
+refused_projects=0
 
 log() { echo "compat: $*" >&2; }
 
@@ -120,15 +122,83 @@ skip_reason_for() {
   fi
 }
 
+# --- plugin native/inert detection (#124) -----------------------------------
+
+# Package names `viv` ports a native adapter for, or that are inert (don't
+# affect install): read straight from src/plugins/mod.rs's own const arrays
+# so this list can't drift from what viv actually adapts.
+native_inert_names=$({
+  awk '/^const NATIVE_ADAPTERS/,/^\];/' "$root/src/plugins/mod.rs"
+  grep '^const KNOWN_INERT' "$root/src/plugins/mod.rs"
+} | grep -oE '"[^"]+"' | tr -d '"')
+
+# Echoes the composer-plugin package names $1 (a project dir)'s lock
+# declares that its composer.json's config.allow-plugins enables: `true`
+# enables every plugin, a glob map (Composer's own `vendor/*` syntax) enables
+# a name whose matching key is `true`, and absent/`false` enables none.
+enabled_plugins_for() {
+  local dir=$1
+  [ -f "$dir/composer.lock" ] && [ -f "$dir/composer.json" ] || return
+  jq -s -r '
+    .[0] as $lock | .[1] as $cjson
+    | ($cjson.config."allow-plugins" // false) as $allow
+    | [$lock.packages[]?, $lock."packages-dev"[]?]
+    | map(select(.type == "composer-plugin") | .name)
+    | map(select(
+        . as $n
+        | if ($allow | type) == "boolean" then $allow
+          elif ($allow | type) == "object" then
+            ($allow | to_entries | any(.value == true and
+              (.key as $k | $n | test("^" + ($k | gsub("\\*"; ".*")) + "$"))))
+          else false
+          end
+      ))
+    | .[]
+  ' "$dir/composer.lock" "$dir/composer.json" 2>/dev/null
+}
+
+# Sets $plugin_note ("" if $1 enables no plugins) and $plugin_native (1 if
+# every enabled plugin is a native adapter or known-inert, meaning both
+# sides can run without --no-plugins; 0 otherwise).
+plugin_status_for() {
+  local dir=$1 name refused=() any=0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    any=1
+    grep -qxF "$name" <<< "$native_inert_names" || refused+=("$name")
+  done < <(enabled_plugins_for "$dir")
+  if [ ${#refused[@]} -gt 0 ]; then
+    plugin_note="plugins: refused $(IFS=', '; echo "${refused[*]}")"
+    plugin_native=0
+  elif [ "$any" = "1" ]; then
+    plugin_note="plugins: native"
+    plugin_native=1
+  else
+    plugin_note=""
+    plugin_native=0
+  fi
+}
+
 # --- one project, one mode --------------------------------------------------
 
 run_mode() {
-  local name=$1 srcdir=$2 mode=$3 note=${4:-}
+  local name=$1 srcdir=$2 mode=$3 note=${4:-} plugins_on=${5:-0}
   local safe workdir mode_flag composer_dir viv_dir prefix="" vendor_dir
   safe=$(echo "$name" | tr '/' '_')
   mode_flag=""
   [ "$mode" = "no-dev" ] && mode_flag="--no-dev"
   [ -n "$note" ] && prefix="$note; "
+  # Every enabled plugin is native/inert (#124): run both sides with
+  # plugins on for this project only, instead of the default --no-plugins.
+  local install_flags=("${composer_install_flags[@]}") viv_plugin_flag=(--no-plugins)
+  if [ "$plugins_on" = "1" ]; then
+    install_flags=()
+    local f
+    for f in "${composer_install_flags[@]}"; do
+      [ "$f" = "--no-plugins" ] || install_flags+=("$f")
+    done
+    viv_plugin_flag=()
+  fi
   vendor_dir="vendor"
   if [ -f "$srcdir/composer.json" ]; then
     vendor_dir=$(jq -r '.config."vendor-dir" // "vendor"' "$srcdir/composer.json")
@@ -146,7 +216,7 @@ run_mode() {
   local composer_out composer_ms
   local start end
   start=$(date +%s%N)
-  if ! composer_out=$(composer -d "$composer_dir" install $mode_flag "${composer_install_flags[@]}" 2>&1); then
+  if ! composer_out=$(composer -d "$composer_dir" install $mode_flag "${install_flags[@]}" 2>&1); then
     # Only a genuine platform mismatch counts as a platform skip; a download
     # or auth failure also mentions --ignore-platform-req, so match the
     # requirement wording itself.
@@ -167,7 +237,7 @@ run_mode() {
 
   local viv_out viv_ms
   start=$(date +%s%N)
-  if ! viv_out=$("$viv" install $mode_flag --no-scripts --no-plugins --cache-dir "$cache_dir" -d "$viv_dir" 2>&1); then
+  if ! viv_out=$("$viv" install $mode_flag --no-scripts "${viv_plugin_flag[@]}" --cache-dir "$cache_dir" -d "$viv_dir" 2>&1); then
     end=$(date +%s%N)
     viv_ms=$(((end - start) / 1000000))
     failures=1
@@ -190,12 +260,7 @@ run_mode() {
 process_project() {
   local name=$1 srcdir=$2
   local reason note=""
-  reason=$(skip_reason_for "$srcdir")
-  if [ -n "$reason" ]; then
-    emit_row "$name" "dev" "skipped" "-" "$reason"
-    emit_row "$name" "no-dev" "skipped" "-" "$reason"
-    return
-  fi
+  total_projects=$((total_projects + 1))
   if [ ! -f "$srcdir/composer.lock" ]; then
     local update_out
     if ! update_out=$(composer -d "$srcdir" update --no-install "${composer_update_flags[@]}" 2>&1); then
@@ -206,8 +271,23 @@ process_project() {
     fi
     note="lock generated"
   fi
-  run_mode "$name" "$srcdir" "dev" "$note"
-  run_mode "$name" "$srcdir" "no-dev" "$note"
+
+  # Plugin refusal is a property of the lock regardless of COMPAT_SKIP_PLUGINS,
+  # so the summary line counts it even for a project skip_reason_for skips below.
+  local plugin_note plugin_native
+  plugin_status_for "$srcdir"
+  [ -n "$plugin_note" ] && [ "$plugin_native" = "0" ] && refused_projects=$((refused_projects + 1))
+
+  reason=$(skip_reason_for "$srcdir")
+  if [ -n "$reason" ]; then
+    emit_row "$name" "dev" "skipped" "-" "$reason"
+    emit_row "$name" "no-dev" "skipped" "-" "$reason"
+    return
+  fi
+
+  [ -n "$plugin_note" ] && note=${note:+$note; }$plugin_note
+  run_mode "$name" "$srcdir" "dev" "$note" "$plugin_native"
+  run_mode "$name" "$srcdir" "no-dev" "$note" "$plugin_native"
 }
 
 # --- pinned corpus -----------------------------------------------------------
@@ -335,6 +415,7 @@ run_random() {
   echo ""
   echo "Composer install flags: \`${composer_install_flags[*]}\`; viv gets the same plus \`--no-plugins\`."
   echo "Composer update flags, used only to generate a missing lock: \`${composer_update_flags[*]}\`."
+  echo "A project whose enabled plugins are all native adapters or known-inert (#124) drops \`--no-plugins\` on both sides instead, noted \`plugins: native\` in Details; any other enabled plugin keeps \`--no-plugins\` and is noted \`plugins: refused <names>\`."
   echo "A project whose platform requirements aren't met is reported as \`skipped: platform\`, not a failure."
   echo "Git-source checkouts have their \`.git\` stripped before installing, so the vendor diff excludes \`.git\` metadata on both sides."
   echo ""
@@ -342,6 +423,11 @@ run_random() {
 
 run_pinned
 run_random
+
+{
+  echo ""
+  echo "$refused_projects of $total_projects projects would refuse without --no-plugins."
+} >> "$report"
 
 log "report written to $report"
 cat "$report"

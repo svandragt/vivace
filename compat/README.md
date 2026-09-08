@@ -44,7 +44,7 @@ Useful environment variables:
 | `VIV` | `target/release/viv` | Binary under test |
 | `COMPAT_RESULTS_DIR` | `compat/results` | Where the report, logs and sample cache are written |
 | `COMPAT_AUTH_FILE` | (unset) | Path to an `auth.json` to copy into the scratch `COMPOSER_HOME`, for corpus entries behind a private registry |
-| `COMPAT_SKIP_PLUGINS` | (unset) | Set to `1` to skip a project whose lock requires a Composer plugin instead of running it with `--no-plugins` on both sides |
+| `COMPAT_SKIP_PLUGINS` | (unset) | Set to `1` to skip a project whose lock requires a Composer plugin instead of running it (see below) |
 | `COMPAT_SKIP_VCS` | (unset) | Set to `1` to skip a project whose `composer.json` declares a `path` or `vcs` repository (#13) instead of running it anyway |
 
 The report's header prints the Composer flags used
@@ -52,6 +52,7 @@ The report's header prints the Composer flags used
 `--ignore-platform-reqs` for the `update --no-install` calls that generate a
 missing lock — not for `install`, since that flag changes what Composer
 writes and would break the byte-diff) and the random sample's seed. A
+project's lock can drop `--no-plugins` from that default; see below. A
 project/mode combination is one of:
 
 - **identical** — Composer and viv produced byte-identical `vendor/` trees.
@@ -59,9 +60,8 @@ project/mode combination is one of:
 - **skipped** — a known-unsupported feature, an unmet platform requirement,
   or a Composer command that failed, not a failure: a `path`/`vcs` repository
   under `COMPAT_SKIP_VCS=1` (#13), a required plugin under
-  `COMPAT_SKIP_PLUGINS=1` (#12; both sides otherwise run with
-  `--no-plugins`), `preferred-install: source` (#43), an unmet platform
-  requirement (`platform: ...`), or a missing `composer.lock` that
+  `COMPAT_SKIP_PLUGINS=1` (#12), `preferred-install: source` (#43), an unmet
+  platform requirement (`platform: ...`), or a missing `composer.lock` that
   `composer update --no-install` also failed to generate. A project without
   a committed lock that *does* generate one is still run; its Details
   column notes `lock generated`.
@@ -70,6 +70,18 @@ project/mode combination is one of:
 
 The sweep exits non-zero if any project **differs** or errors; **skipped**
 does not fail the run.
+
+Every enabled plugin a project's lock declares (per its `composer.json`'s
+`config.allow-plugins`) is checked against `viv`'s native adapters and known-
+inert plugins (`src/plugins/mod.rs`). If every one is native or inert, both
+Composer and viv run *without* `--no-plugins` for that project only, so the
+adapter's real output gets byte-diffed instead of skipped; its Details column
+notes `plugins: native`. Any other enabled plugin keeps the default
+`--no-plugins` on both sides, and Details notes `plugins: refused <names>`
+(#124) — unless `COMPAT_SKIP_PLUGINS=1`, which skips the project outright
+instead, as before. The report ends with a summary line, `N of M projects
+would refuse without --no-plugins`, counting every project with at least one
+refused plugin, independently of `COMPAT_SKIP_PLUGINS`.
 
 A `composer failed`/`composer update failed` Details cell shows only the
 last three non-empty lines; the full combined output is saved per
