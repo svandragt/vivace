@@ -134,7 +134,14 @@ check locally against the committed baseline.
    `compat/results/<tag>.md`.
 4. Add a `JOURNAL.md` entry.
 5. Bump `Cargo.toml`'s version, tag, and push (`release.yml` publishes it as
-   a pre-release).
+   a pre-release with the changelog's issue list as a placeholder body).
+6. Write the release notes to the standard of a PR description and set them
+   with `gh release edit <tag> --notes-file`: lead with what changes for a
+   user of `viv`, then evidence (the compat sweep's identical/differs counts
+   and refuse line from `compat/results/<tag>.md`, the bench gate result),
+   how to upgrade (`make install`, `make install-shim`, packages), known
+   gaps still open, and the issues as `#N (title)`. Plain language, British
+   English, no attribution footer.
 
 ## After a release
 
