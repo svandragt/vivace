@@ -13,9 +13,9 @@ verdict for dev and no-dev; a refused plugin means the row ran with
 | cakephp/app | d9feb07 | identical | identical | refused cakephp/plugin-installer |
 | contao/managed-edition | bc544bf | identical | identical | refused contao-components/installer,contao/manager-plugin |
 | silverstripe/installer | 2156492 | identical | identical | refused silverstripe/recipe-plugin,silverstripe/vendor-plugin |
-| shopware/template | d671d32 | viv error | viv error | lock generated; plugins: refused symfony/flex; The "symfony/flex" plugin was not loaded as plugins are disabled. shopware/conflicts: no dist entry and no git so |
+| shopware/template | d671d32 | viv error | viv error | lock generated; plugins: refused symfony/flex; The "symfony/flex" plugin was not loaded as plugins are disabled. shopware/conflicts: no dist entry and no git so; fixed by #149 |
 | octobercms/october | 623a2b9 | identical | identical |  |
-| wp-cli/wp-cli-bundle | 789ab57 | differs | identical | path-only GeneratedConfig.php diff the sweep failed to normalise |
+| wp-cli/wp-cli-bundle | 789ab57 | differs | identical | phpstan constraint compaction; fixed by #153 |
 | bolt/project | 6f4aa21 | identical | identical | refused composer/package-versions-deprecated,drupol/composer-packages,symfony/flex |
 | firstphp/ip2region | sample | identical | identical |  |
 | whoa-php/flute | sample | skipped | skipped | composer failed |
