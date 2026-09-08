@@ -41,8 +41,10 @@ have written, so `composer install` on it is a no-op and `composer update`
 replaces packages as usual. The only extra file is a small state file in
 `vendor/composer/`, which Composer ignores.
 
-If you want `vendor/` back as plain copies instead of links into viv's
-store, reinstall it with Composer:
+The links from `vendor/` into viv's store are hardlinks, not symlinks: each
+file in `vendor/` is a real file that shares its data with the store copy,
+so deleting the store (`viv cache clean`) leaves `vendor/` complete and
+working. If you would rather reinstall it with Composer anyway:
 
 ```sh
 rm -rf vendor && composer install
