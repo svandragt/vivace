@@ -20,7 +20,7 @@
 //! `optimizeImpossiblePackagesAway` (Composer's second pass, dropping
 //! versions no *locked* package's exact require could ever pick) is not
 //! ported: it only ever acts on `Request::getLockedPackages()`, and
-//! [`Request`](crate::solver::request::Request) (this port's cut-down
+//! `Request` (this port's cut-down
 //! `request.rs`) has no locked-package field at all — a full update never
 //! locks anything, and a partial update expresses its locked-out packages
 //! as `fixed`/irremovable pool entries instead (`pool_builder.rs`'s
