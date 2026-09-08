@@ -49,6 +49,26 @@ That resolves `psr/log`, writes `composer.lock`, and installs `vendor/`,
 the same as `viv add` would on an existing project (`--no-install` opts
 out). Run it again with `--force` to start over.
 
+`viv init` is for the directory you're already in; `viv new` is for one
+that doesn't exist yet. A bare name creates it and runs `init`'s own
+defaults inside:
+
+```sh
+viv new demo
+```
+
+`vendor/package[:constraint]` downloads that package's dist as a project
+skeleton (constraint defaults to the newest stable version), drops its own
+VCS metadata, and installs it, running the `post-root-package-install`/
+`post-create-project-cmd` scripts a skeleton like Laravel's relies on
+(`--no-scripts` opts out):
+
+```sh
+viv new laravel/laravel:^11 my-app
+```
+
+`create-project` is Composer's own name for this, kept as an alias.
+
 ## Stopping
 
 You can stop using viv at any point and go back to Composer with no
@@ -127,6 +147,8 @@ riff.[^9]
 
 ```sh
 viv init                  # write a composer.json for a new project and stop
+viv new demo               # same, in a directory that doesn't exist yet
+viv new laravel/laravel:^11 my-app   # download a package skeleton and install it
 viv install            # in a project with composer.json and composer.lock
 viv install --no-dev
 viv install --dry-run  # show the plan, change nothing

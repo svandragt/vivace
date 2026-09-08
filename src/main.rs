@@ -11,6 +11,7 @@ use vivace::audit::{self, AuditArgs};
 use vivace::diagnose::{self, DiagnoseArgs};
 use vivace::init::{self, InitArgs};
 use vivace::install::{self, CacheArgs, DumpAutoloadArgs, InstallArgs};
+use vivace::new::{self, NewArgs};
 use vivace::normalize::{self, NormalizeArgs};
 use vivace::require::{self, RemoveArgs, RequireArgs};
 use vivace::show::{self, OutdatedArgs, ShowArgs};
@@ -82,6 +83,14 @@ enum Command {
     /// directory. `--require`/`--require-dev` chain into the same
     /// resolve/lock/install `viv add` runs (`--no-install` opts out).
     Init(InitArgs),
+    /// Start a project in a directory that doesn't exist yet (#139): a bare
+    /// directory name runs `init`'s own defaults inside it; a
+    /// `vendor/package[:constraint]` spec downloads that package's dist as a
+    /// skeleton and installs it there. `create-project` is Composer's own
+    /// name, kept as an alias along with its `vendor/package dir constraint`
+    /// three-positional shape (prefer `vendor/package:constraint` instead).
+    #[command(name = "new", visible_alias = "create-project")]
+    New(NewArgs),
     /// Install packages from composer.lock.
     Install(InstallArgs),
     /// Resolve composer.json, write a composer.lock (full or partial
@@ -143,6 +152,10 @@ fn main() -> ExitCode {
     let offline = cli.offline || network_disabled_by_env();
     match cli.command {
         Command::Init(args) => match init::run(&args, cli.cache_dir.as_deref(), offline) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => resolver_error(&err),
+        },
+        Command::New(args) => match new::run(&args, cli.cache_dir.as_deref(), offline) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => resolver_error(&err),
         },

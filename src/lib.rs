@@ -9,6 +9,7 @@ pub mod install;
 pub mod link;
 pub mod lock;
 pub mod lock_writer;
+pub mod new;
 pub mod normalize;
 pub mod plan;
 pub mod plugins;

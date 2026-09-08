@@ -70,6 +70,54 @@ fn translate(args: &[String]) -> Option<Vec<String>> {
     Some(out)
 }
 
+/// Flags accepted for `create-project`, mapped onto viv `new`'s own set.
+/// Everything `new` doesn't support at all (`--prefer-source`, `--keep-vcs`,
+/// `--stability`, `--ask`, `--repository <url>`'s space-separated form, ...)
+/// is `Unknown`, falling over to the real Composer rather than silently
+/// dropping something that changes behaviour.
+fn classify_create_project(arg: &str) -> Flag {
+    match arg {
+        "--no-dev" | "--no-install" | "--no-scripts" => Flag::Keep,
+        "--prefer-dist" | "--no-interaction" | "-n" => Flag::Drop,
+        "--ignore-platform-reqs" | "--ignore-platform-req" | "-q" | "--quiet" => {
+            Flag::DropNoted("viv has no equivalent of {flag}, ignoring it")
+        }
+        _ => Flag::Unknown,
+    }
+}
+
+/// Translate `create-project`'s positionals unchanged (`viv new` takes the
+/// same `vendor/package [dir [constraint]]` shape) and its flags via
+/// [`classify_create_project`]; `--repository=<url>` (only the `=` form,
+/// see that function's own doc) passes straight through since viv's `new`
+/// takes the identical flag.
+fn translate_create_project(args: &[String]) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for arg in args {
+        if !arg.starts_with('-') {
+            out.push(arg.clone());
+            continue;
+        }
+        if arg.starts_with("--repository=") {
+            out.push(arg.clone());
+            continue;
+        }
+        let flag = arg.split('=').next().unwrap_or(arg);
+        match classify_create_project(flag) {
+            Flag::Keep => out.push(arg.clone()),
+            Flag::Drop => {}
+            Flag::DropNoted(msg) => {
+                err_out(&format!(
+                    "composer (viv shim): {}",
+                    msg.replace("{flag}", flag)
+                ));
+            }
+            Flag::Unknown => return None,
+        }
+    }
+    Some(out)
+}
+
 fn viv_path() -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
@@ -167,6 +215,7 @@ fn main() -> ExitCode {
         "install" => "install",
         "dump-autoload" | "dumpautoload" => "dump-autoload",
         "normalize" => "normalize",
+        "create-project" => "new",
         _ => "",
     };
 
@@ -178,6 +227,12 @@ fn main() -> ExitCode {
     if viv_command == "normalize" {
         // No flag translation needed: viv's `normalize` already matches Composer's.
         return exec_viv(&[vec!["normalize".to_string()], rest.to_vec()].concat());
+    }
+    if viv_command == "new" {
+        return match translate_create_project(rest) {
+            Some(translated) => exec_viv(&[vec!["new".to_string()], translated].concat()),
+            None => exec_real_composer(&args),
+        };
     }
 
     match translate(rest) {

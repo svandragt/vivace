@@ -7,9 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 - `viv init`: write a composer.json for a new project, no prompts ([#143](https://github.com/svandragt/vivace/issues/143))
+- `viv new`/`viv create-project`: start a project in a directory that doesn't exist yet, empty or from a package skeleton ([#139](https://github.com/svandragt/vivace/issues/139))
 
 ### Changed
 - `viv add`/`viv rm` are now the documented commands; `require`/`remove` remain aliases
+- `viv add`/`viv rm` always normalize `composer.json` after editing it; `--no-normalize` is now a deprecated no-op, same as `install`/`dump-autoload` ([#145](https://github.com/svandragt/vivace/issues/145))
 
 ## [0.7.0] - 2026-09-08
 ### Added

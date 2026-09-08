@@ -17,7 +17,7 @@
 //! resolve/lock/install chain: the same functions `viv add` calls once it
 //! has edited `composer.json`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
@@ -262,6 +262,33 @@ fn studly(input: &str) -> String {
             }
         })
         .collect()
+}
+
+/// `viv new <dir>` (#139): the same no-prompt defaults `run` writes for a
+/// bare `viv init`, into a directory `new` has already created — no flags of
+/// its own, since `new`'s own directory-name-only shape has nowhere to put
+/// `viv init`'s `--require`/`--license`/etc.
+pub(crate) fn write_defaults(
+    project_dir: &Path,
+    cache_dir: Option<&Path>,
+    offline: bool,
+) -> Result<()> {
+    run(
+        &InitArgs {
+            name: None,
+            description: None,
+            package_type: None,
+            license: None,
+            autoload: None,
+            require: Vec::new(),
+            require_dev: Vec::new(),
+            no_install: false,
+            force: false,
+            project_dir: project_dir.to_path_buf(),
+        },
+        cache_dir,
+        offline,
+    )
 }
 
 /// stdout via `writeln!`, not `println!`, to satisfy the `print_stdout` lint.
