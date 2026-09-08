@@ -59,7 +59,10 @@ project/mode combination is one of:
   Files that differ only in the absolute install path (some plugin-generated
   files, such as phpstan/extension-installer's `GeneratedConfig.php`, embed
   it) are normalised before this comparison, and the Details cell notes how
-  many were dropped.
+  many were dropped. `vendor/yiisoft/extensions.php` and
+  `vendor/craftcms/plugins.php` are compared as sorted lines, because the
+  real plugins write entries as each archive finishes extracting and two
+  Composer runs on one lock disagree on the order.
 - **differs** — the trees diverge; the first ten differing paths are listed.
 - **skipped** — a known-unsupported feature, an unmet platform requirement,
   or a Composer command that failed, not a failure: a `path`/`vcs` repository

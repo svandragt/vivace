@@ -268,6 +268,18 @@ run_mode() {
         normalised=$((normalised + 1))
         continue
       fi
+      # yii2-composer and craftcms/plugin-installer append entries from a
+      # per-package promise callback, so Composer's own entry order follows
+      # extraction timing and differs between two runs on one lock (#130).
+      # Compare those two maps as sorted lines: same entries, any order.
+      case ${file_b##*/vendor/} in
+        yiisoft/extensions.php | craftcms/plugins.php)
+          if diff -q <(sort "$file_a") <(sort "$file_b") >/dev/null 2>&1; then
+            normalised=$((normalised + 1))
+            continue
+          fi
+          ;;
+      esac
     fi
     real_diff+="$line"$'\n'
   done <<< "$diff_out"
