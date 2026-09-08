@@ -252,6 +252,14 @@ pub fn installed_php(
     let root_version = version::normalize(&root_pretty).context("root version")?;
     let root_reference = git_version.map_or(Value::Null, |v| Value::String(v.reference.clone()));
     let root_path = root_install_path(root);
+    // `extra.branch-alias` applies to the root package like any other
+    // `dev-*` package (#128: a detached checkout guessed back to
+    // `dev-main` still carries the branch alias declared for it).
+    let root_aliases: Vec<Value> =
+        branch_alias_for(&root_pretty, root.extra.pointer("/branch-alias"))
+            .into_iter()
+            .map(Into::into)
+            .collect();
 
     let mut versions: Map<String, Value> = Map::new();
     for package in packages {
@@ -291,7 +299,7 @@ pub fn installed_php(
     root_entry.insert("reference".into(), root_reference.clone());
     root_entry.insert("type".into(), root.r#type.clone().into());
     root_entry.insert("install_path".into(), root_path.clone().into());
-    root_entry.insert("aliases".into(), Value::Array(vec![]));
+    root_entry.insert("aliases".into(), Value::Array(root_aliases.clone()));
     root_entry.insert("dev_requirement".into(), false.into());
     versions.insert(root_name.clone(), Value::Object(root_entry));
 
@@ -362,7 +370,7 @@ pub fn installed_php(
     root_block.insert("reference".into(), root_reference);
     root_block.insert("type".into(), root.r#type.clone().into());
     root_block.insert("install_path".into(), root_path.into());
-    root_block.insert("aliases".into(), Value::Array(vec![]));
+    root_block.insert("aliases".into(), Value::Array(root_aliases));
     root_block.insert("dev".into(), dev.into());
 
     let mut top = Map::new();
@@ -381,15 +389,26 @@ pub fn installed_php(
 /// in `installed.php`'s `aliases`. Composer's `9999999-dev` stand-in for
 /// "no explicit alias" is `VersionParser::DEFAULT_BRANCH_ALIAS`.
 fn branch_alias(package: &Package) -> Option<String> {
-    let version = &package.version;
+    if let Some(alias) =
+        branch_alias_for(&package.version, package.raw.pointer("/extra/branch-alias"))
+    {
+        return Some(alias);
+    }
+    if package.raw.get("default-branch") == Some(&Value::Bool(true))
+        && !is_numeric_branch(&package.version)
+    {
+        return Some("9999999-dev".into());
+    }
+    None
+}
+
+/// The `extra.branch-alias` half of [`branch_alias`], shared with the root
+/// package (#128), which has no `default-branch` field of its own.
+fn branch_alias_for(version: &str, branch_alias_map: Option<&Value>) -> Option<String> {
     if !version.starts_with("dev-") && !version.ends_with("-dev") {
         return None;
     }
-    if let Some(map) = package
-        .raw
-        .pointer("/extra/branch-alias")
-        .and_then(Value::as_object)
-    {
+    if let Some(map) = branch_alias_map.and_then(Value::as_object) {
         for (source, target) in map {
             let Some(target) = target.as_str() else {
                 continue;
@@ -421,10 +440,6 @@ fn branch_alias(package: &Package) -> Option<String> {
             }
             return Some(collapse_branch_alias(&validated));
         }
-    }
-    if package.raw.get("default-branch") == Some(&Value::Bool(true)) && !is_numeric_branch(version)
-    {
-        return Some("9999999-dev".into());
     }
     None
 }

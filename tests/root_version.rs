@@ -106,6 +106,35 @@ fn named_branch_becomes_dev_prefixed() {
     assert!(installed.contains(&format!("'reference' => '{commit}',")));
 }
 
+/// #128: `extra.branch-alias` applies to the root package's guessed version
+/// the same way it does to any other `dev-*` package.
+#[test]
+fn extra_branch_alias_applies_to_the_guessed_root_version() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    init_repo(project);
+    let commit = head_commit(project);
+
+    let composer_json = fs::read_to_string(project.join("composer.json")).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&composer_json).unwrap();
+    value["extra"]["branch-alias"]["dev-main"] = serde_json::Value::String("3.1-dev".into());
+    fs::write(
+        project.join("composer.json"),
+        serde_json::to_string_pretty(&value).unwrap(),
+    )
+    .unwrap();
+
+    ctx.viv().arg("install").assert().success();
+
+    let installed = root_block(project);
+    assert!(installed.contains("'pretty_version' => 'dev-main',"));
+    assert!(installed.contains(&format!("'reference' => '{commit}',")));
+    assert!(
+        installed.contains("'aliases' => array(\n            0 => '3.1.x-dev',\n        ),"),
+        "{installed}"
+    );
+}
+
 #[test]
 fn tag_detached_head_reads_the_tag_name() {
     let ctx = TestContext::new();
