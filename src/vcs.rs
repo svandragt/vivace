@@ -727,12 +727,7 @@ pub struct RootVersion {
 /// as Composer falling through to its next (unsupported here) VCS guesser
 /// and finding nothing.
 ///
-/// ponytail: skips `guessFeatureVersion`'s "nearest real branch" heuristic
-/// (an `isFeatureBranch` name, e.g. not `master`/`main`/numeric/etc., walks
-/// every other branch with `git rev-list` to guess which one it forked
-/// from). A feature branch here keeps its own `dev-<name>` instead of
-/// Composer's guessed parent version; port `guessFeatureVersion` if that
-/// mismatch shows up on a real project. Also ponytail: a project whose git
+/// ponytail: a project whose git
 /// checkout is a parent directory up (no `.git` of its own, common in a
 /// monorepo subpackage) is treated as not a checkout at all, unlike
 /// Composer's own `git branch`, which walks up looking for one — the
