@@ -103,7 +103,7 @@ compat-refresh:
 # longer 120s: enough to prove a target still builds and finds nothing new.
 fuzz:
 	cd fuzz && for target in classmap_find_classes store_extract_archive lock_content_hash \
-			repository_expand_minified require_manipulator semver_parse_constraint; do \
+			repository_expand_minified semver_parse_constraint; do \
 		echo "==> $$target"; \
 		devbox run -- cargo +nightly fuzz run "$$target" -- -max_total_time=30 \
 			"corpus/$$target" "seeds/$$target" || exit 1; \

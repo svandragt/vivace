@@ -88,6 +88,12 @@ so that a script or CI job that still passes it doesn't fail, and prints
 `--no-normalize is a no-op on install since 0.6; install no longer touches
 composer.json` (or the `dump-autoload` equivalent) once.
 
+As of this release, `add`/`rm` (and their `require`/`remove` aliases) join
+that list (#145): both always normalize `composer.json` after editing it
+now, so `--no-normalize` prints `--no-normalize is a no-op on add since 0.8;
+add always normalizes composer.json now` (or the `rm` equivalent) once and
+otherwise does nothing.
+
 ## How to report a contract break
 
 If viv's `vendor/`, `composer.lock` or contractual stdout differs from what

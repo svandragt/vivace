@@ -1,6 +1,7 @@
 //! Resolver stage 5 (`docs/resolver-design.md`, composer/composer#42):
-//! `viv require`'s constraint synthesis and format-preserving
-//! `composer.json` edit, byte-diffed against a real Composer run.
+//! `viv require`'s constraint synthesis and `composer.json` edit,
+//! byte-diffed against a real Composer run (through `viv normalize`, since
+//! #145: `add`/`rm` always normalize now).
 //!
 //! `tests/fixtures/require-psr-container/composer.lock` and
 //! `composer.json.after` were recorded by running real Composer 2.10.2
@@ -36,6 +37,21 @@ use vivace::solver::{self, pool_builder::UpdateAllowMode};
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/require-psr-container")
+}
+
+/// `composer.lock`'s `content-hash` is `content_hash` of `composer.json`
+/// (`src/lock.rs`), which includes the `require`/`require-dev` objects'
+/// *own* key order. #145: `add`/`rm` now always normalize `composer.json`
+/// (sorting those sections), so the on-disk file — and its content-hash —
+/// no longer matches Composer's own unnormalized `JsonManipulator` edit
+/// that `composer.lock` fixtures here were recorded against. Every other
+/// field is still expected to match byte for byte.
+fn lock_without_content_hash(path: &Path) -> Value {
+    let mut lock: Value = serde_json::from_slice(&fs_err::read(path).unwrap()).unwrap();
+    if let Some(obj) = lock.as_object_mut() {
+        obj.remove("content-hash");
+    }
+    lock
 }
 
 fn assert_matches_expected(got: &str, expected_path: &Path) {
@@ -149,13 +165,6 @@ async fn remove_reproduces_composers_lock() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
-// The `JsonManipulator` port's own byte-diff against this same recorded
-// `composer.json.before`/`composer.json.after` pair lives in
-// `src/require.rs`'s `#[cfg(test)]` module: `Manipulator` is private to
-// that file (mirrors `Json/JsonManipulator.php` not being part of any
-// public API either), so an external integration test can't drive it
-// directly.
-
 /// End-to-end: the real `viv require` binary, then Composer's own
 /// `validate`/`install --dry-run`. Gated on `VIVACE_TEST_NETWORK=1`
 /// (`tests/update.rs`'s own pattern) so a bare `cargo nextest run` stays
@@ -192,29 +201,41 @@ fn viv_require_matches_composer_and_validates() {
     )
     .unwrap();
 
-    // Composer's own `JsonManipulator` output is what `composer.json.after`
-    // records; `viv require` reproduces it byte for byte only with
-    // `--no-normalize` (#95: without it, `viv require` also normalizes the
-    // file after writing it, which this fixture's formatting doesn't
-    // already match). `--no-install` matches the recorded command itself
-    // (see the module doc) and keeps this test scoped to the
+    // #145: `require`/`add` always normalize `composer.json` now
+    // (`--no-normalize` is a deprecated no-op, same shape as
+    // `install`/`dump-autoload`'s), so the written file is compared against
+    // `viv normalize`'s own output of Composer's recorded edit
+    // (`composer.json.after`), not Composer's own unnormalized
+    // `JsonManipulator` formatting. `--no-install` matches the recorded
+    // command itself (see the module doc) and keeps this test scoped to the
     // `composer.json`/lock edit, not a real dist fetch (#104: `viv require`
     // installs by default now).
     ctx.viv()
-        .args(["require", "psr/container", "--no-normalize", "--no-install"])
+        .args(["require", "psr/container", "--no-install"])
         .assert()
         .success();
 
     let got_json = fs_err::read_to_string(project.join("composer.json")).unwrap();
-    let want_json = fs_err::read_to_string(fixture.join("composer.json.after")).unwrap();
+
+    let want_normalized_ctx = TestContext::new();
+    let want_normalized_path = want_normalized_ctx.project.path().join("composer.json");
+    fs_err::copy(fixture.join("composer.json.after"), &want_normalized_path).unwrap();
+    want_normalized_ctx
+        .viv()
+        .arg("normalize")
+        .assert()
+        .success();
+    let want_normalized = fs_err::read_to_string(&want_normalized_path).unwrap();
     assert_eq!(
-        got_json, want_json,
+        got_json, want_normalized,
         "viv require's composer.json edit differs"
     );
 
-    let got_lock = fs_err::read_to_string(project.join("composer.lock")).unwrap();
-    let want_lock = fs_err::read_to_string(fixture.join("composer.lock")).unwrap();
-    assert_eq!(got_lock, want_lock, "viv require's lock differs");
+    assert_eq!(
+        lock_without_content_hash(&project.join("composer.lock")),
+        lock_without_content_hash(&fixture.join("composer.lock")),
+        "viv require's lock differs"
+    );
 
     let validate = Command::new("composer")
         .args(["validate", "--strict", "--no-check-publish"])
@@ -226,42 +247,6 @@ fn viv_require_matches_composer_and_validates() {
         "composer validate --strict failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&validate.stdout),
         String::from_utf8_lossy(&validate.stderr)
-    );
-
-    // Without `--no-normalize`, the same edit followed by normalizing must
-    // equal `viv normalize`'s own output on Composer's `composer.json.after`.
-    let normalized_ctx = TestContext::new();
-    let normalized_project = normalized_ctx.project.path();
-    fs_err::copy(
-        fixture.join("composer.json.before"),
-        normalized_project.join("composer.json"),
-    )
-    .unwrap();
-    fs_err::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/composer.lock"),
-        normalized_project.join("composer.lock"),
-    )
-    .unwrap();
-    normalized_ctx
-        .viv()
-        .args(["require", "psr/container", "--no-install"])
-        .assert()
-        .success();
-    let got_normalized = fs_err::read_to_string(normalized_project.join("composer.json")).unwrap();
-
-    let want_normalized_ctx = TestContext::new();
-    let want_normalized_path = want_normalized_ctx.project.path().join("composer.json");
-    fs_err::write(&want_normalized_path, &want_json).unwrap();
-    want_normalized_ctx
-        .viv()
-        .arg("normalize")
-        .assert()
-        .success();
-    let want_normalized = fs_err::read_to_string(&want_normalized_path).unwrap();
-
-    assert_eq!(
-        got_normalized, want_normalized,
-        "viv require without --no-normalize should match `viv normalize`'s output"
     );
 }
 
@@ -294,31 +279,37 @@ fn viv_remove_matches_composer_and_validates() {
     )
     .unwrap();
 
-    // See `viv_require_matches_composer_and_validates`'s comment: byte-exact
-    // parity with Composer's own edit needs `--no-normalize`, and
-    // `--no-install` keeps this scoped to the edit rather than a real dist
-    // fetch (#104: `viv remove` installs by default now).
+    // See `viv_require_matches_composer_and_validates`'s comment: #145
+    // means `remove`/`rm` always normalize now, so the written file is
+    // compared against `viv normalize`'s own output of Composer's recorded
+    // edit. `--no-install` keeps this scoped to the edit rather than a real
+    // dist fetch (#104: `viv remove` installs by default now).
     ctx.viv()
-        .args([
-            "remove",
-            "psr/container",
-            "--dev",
-            "--no-normalize",
-            "--no-install",
-        ])
+        .args(["remove", "psr/container", "--dev", "--no-install"])
         .assert()
         .success();
 
     let got_json = fs_err::read_to_string(project.join("composer.json")).unwrap();
-    let want_json = fs_err::read_to_string(fixture.join("composer.json.after")).unwrap();
+
+    let want_normalized_ctx = TestContext::new();
+    let want_normalized_path = want_normalized_ctx.project.path().join("composer.json");
+    fs_err::copy(fixture.join("composer.json.after"), &want_normalized_path).unwrap();
+    want_normalized_ctx
+        .viv()
+        .arg("normalize")
+        .assert()
+        .success();
+    let want_normalized = fs_err::read_to_string(&want_normalized_path).unwrap();
     assert_eq!(
-        got_json, want_json,
+        got_json, want_normalized,
         "viv remove's composer.json edit differs"
     );
 
-    let got_lock = fs_err::read_to_string(project.join("composer.lock")).unwrap();
-    let want_lock = fs_err::read_to_string(fixture.join("composer.lock")).unwrap();
-    assert_eq!(got_lock, want_lock, "viv remove's lock differs");
+    assert_eq!(
+        lock_without_content_hash(&project.join("composer.lock")),
+        lock_without_content_hash(&fixture.join("composer.lock")),
+        "viv remove's lock differs"
+    );
 
     let validate = Command::new("composer")
         .args(["validate", "--strict", "--no-check-publish"])
@@ -330,41 +321,5 @@ fn viv_remove_matches_composer_and_validates() {
         "composer validate --strict failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&validate.stdout),
         String::from_utf8_lossy(&validate.stderr)
-    );
-
-    // Without `--no-normalize`, the same edit followed by normalizing must
-    // equal `viv normalize`'s own output on Composer's `composer.json.after`.
-    let normalized_ctx = TestContext::new();
-    let normalized_project = normalized_ctx.project.path();
-    fs_err::copy(
-        fixture.join("composer.json.before"),
-        normalized_project.join("composer.json"),
-    )
-    .unwrap();
-    fs_err::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/composer.lock"),
-        normalized_project.join("composer.lock"),
-    )
-    .unwrap();
-    normalized_ctx
-        .viv()
-        .args(["remove", "psr/container", "--dev", "--no-install"])
-        .assert()
-        .success();
-    let got_normalized = fs_err::read_to_string(normalized_project.join("composer.json")).unwrap();
-
-    let want_normalized_ctx = TestContext::new();
-    let want_normalized_path = want_normalized_ctx.project.path().join("composer.json");
-    fs_err::write(&want_normalized_path, &want_json).unwrap();
-    want_normalized_ctx
-        .viv()
-        .arg("normalize")
-        .assert()
-        .success();
-    let want_normalized = fs_err::read_to_string(&want_normalized_path).unwrap();
-
-    assert_eq!(
-        got_normalized, want_normalized,
-        "viv remove without --no-normalize should match `viv normalize`'s output"
     );
 }

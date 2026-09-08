@@ -159,6 +159,16 @@ fn out(message: &str) {
     let _ = writeln!(std::io::stdout().lock(), "{message}");
 }
 
+/// `--no-normalize`'s deprecation notice (`docs/stability.md`'s
+/// "Deprecations" section): the flag is accepted, does nothing, and prints
+/// this once per invocation. Shared text so every command that carries the
+/// flag reads the same, since each writes it to stderr its own way
+/// (`install.rs`'s clears an in-progress `Progress` line first; `require.rs`
+/// has no progress display to clear).
+pub(crate) fn no_normalize_is_a_noop_message(command: &str, since: &str, reason: &str) -> String {
+    format!("--no-normalize is a no-op on {command} since {since}; {reason}")
+}
+
 /// Write `content` to `path` via a temp file in the same directory renamed
 /// over the target, so a reader never sees a partial write. Mirrors
 /// `install::write_atomic`, kept local so this module doesn't need that

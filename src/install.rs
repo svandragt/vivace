@@ -31,6 +31,7 @@ use crate::link::{LinkMode, link_tree};
 use crate::lock::{
     self, Lock, MISSING_REQUIREMENTS_HINT, Package, Root, STALE_LOCK_WARNING, read_lock,
 };
+use crate::normalize;
 use crate::plan::{self, Plan};
 use crate::plugins;
 use crate::scripts;
@@ -1445,9 +1446,10 @@ fn warn_out(message: &str) {
 /// the flag is hidden and does nothing now that neither command touches
 /// `composer.json`, but a script that still passes it shouldn't fail.
 fn warn_no_normalize_is_a_noop(command: &str) {
-    warn_out(&format!(
-        "--no-normalize is a no-op on {command} since 0.6; {command} no longer touches \
-         composer.json"
+    warn_out(&normalize::no_normalize_is_a_noop_message(
+        command,
+        "0.6",
+        &format!("{command} no longer touches composer.json"),
     ));
 }
 

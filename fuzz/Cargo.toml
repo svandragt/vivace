@@ -49,13 +49,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "require_manipulator"
-path = "fuzz_targets/require_manipulator.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "semver_parse_constraint"
 path = "fuzz_targets/semver_parse_constraint.rs"
 test = false

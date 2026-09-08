@@ -1,10 +1,10 @@
 name: Fuzz
 
 # #44: fuzz the hand-written parsers (classmap, the zip/tar path sanitiser,
-# the PHP-compatible JSON encoder behind content_hash, expand_minified, the
-# require.rs JSON scanner, parse_constraint). A nightly run gives each
-# target real wall-clock time; workflow_dispatch lets a maintainer re-run
-# after a fix without waiting for the schedule.
+# the PHP-compatible JSON encoder behind content_hash, expand_minified,
+# parse_constraint). A nightly run gives each target real wall-clock time;
+# workflow_dispatch lets a maintainer re-run after a fix without waiting for
+# the schedule.
 on:
   schedule:
     - cron: "17 3 * * *"
@@ -21,7 +21,6 @@ jobs:
           - store_extract_archive
           - lock_content_hash
           - repository_expand_minified
-          - require_manipulator
           - semver_parse_constraint
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
