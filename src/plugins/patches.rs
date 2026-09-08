@@ -400,7 +400,7 @@ pub fn apply(
     project_dir: &Path,
     vendor_dir: &Path,
     newly_linked: &[Package],
-    kept: &[Package],
+    kept: &[&Package],
     store: &Store,
 ) -> Result<()> {
     let (cfg, collection) = resolve(root, project_dir)?;
@@ -433,7 +433,11 @@ pub fn apply(
             // set has changed since: nothing to do.
             continue;
         }
-        let Some(target) = newly_linked.iter().chain(kept).find(|p| &p.name == package) else {
+        let Some(target) = newly_linked
+            .iter()
+            .chain(kept.iter().copied())
+            .find(|p| &p.name == package)
+        else {
             // Patches name a package that isn't actually locked/selected;
             // Composer's own `patchPackage` never fires for it either.
             continue;

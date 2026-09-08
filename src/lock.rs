@@ -749,12 +749,28 @@ pub fn read_root(path: &Path) -> Result<Root> {
 /// checks too (lock freshness, the `.vivace-state` hash) and shouldn't read
 /// the file twice.
 pub fn parse_root(bytes: &[u8]) -> Result<Root> {
-    serde_json::from_slice(bytes).context("parsing as JSON")
+    let value: Value = serde_json::from_slice(bytes).context("parsing as JSON")?;
+    root_from_value(&value)
+}
+
+/// [`parse_root`], for a caller (`install::run_impl`, #122) that already
+/// parsed the root `composer.json` into a `Value` for another reason (the
+/// content-hash, the scripts runner) and shouldn't parse the same bytes
+/// again just for `Root`.
+pub fn root_from_value(value: &Value) -> Result<Root> {
+    Root::deserialize(value).context("parsing as JSON")
 }
 
 /// Composer's `Locker::getContentHash`: an md5 of the sorted, compact JSON
 /// of the `composer.json` keys that decide what a lock should contain.
 pub(crate) fn content_hash(root_json: &[u8]) -> Result<String> {
+    let content: Value = serde_json::from_slice(root_json).context("parsing composer.json")?;
+    Ok(content_hash_from_value(&content))
+}
+
+/// [`content_hash`], for a caller that already holds the parsed `Value`
+/// (#122's install-path single-parse).
+pub(crate) fn content_hash_from_value(content: &Value) -> String {
     const RELEVANT: &[&str] = &[
         "name",
         "version",
@@ -768,7 +784,6 @@ pub(crate) fn content_hash(root_json: &[u8]) -> Result<String> {
         "repositories",
         "extra",
     ];
-    let content: Value = serde_json::from_slice(root_json).context("parsing composer.json")?;
     let mut relevant = std::collections::BTreeMap::new();
     if let Some(root) = content.as_object() {
         for key in RELEVANT {
@@ -786,7 +801,7 @@ pub(crate) fn content_hash(root_json: &[u8]) -> Result<String> {
     let encoded = php_json_encode(&Value::Object(
         relevant.into_iter().collect::<Map<String, Value>>(),
     ));
-    Ok(format!("{:x}", md5::compute(encoded)))
+    format!("{:x}", md5::compute(encoded))
 }
 
 /// PHP's `json_encode($value, 0)`: like `serde_json`'s compact encoding, but
@@ -870,10 +885,15 @@ fn write_php_json_string(s: &str, out: &mut String) {
 /// `tests/support/mod.rs`'s installer-fixture rig uses this `Err`-on-stale
 /// shape to stand in for a fixture's real (solver) rejection reason.
 pub fn validate_against_root(lock: &Lock, root_json: &[u8]) -> Result<()> {
+    let content: Value = serde_json::from_slice(root_json).context("parsing composer.json")?;
+    validate_against_root_value(lock, &content)
+}
+
+fn validate_against_root_value(lock: &Lock, content: &Value) -> Result<()> {
     let Some(locked_hash) = &lock.content_hash else {
         return Ok(());
     };
-    let current = content_hash(root_json)?;
+    let current = content_hash_from_value(content);
     if &current != locked_hash {
         bail!(
             "The lock file is not up to date with the latest changes in composer.json \
@@ -888,6 +908,12 @@ pub fn validate_against_root(lock: &Lock, root_json: &[u8]) -> Result<()> {
 /// warning, not to bail.
 pub fn is_fresh(lock: &Lock, root_json: &[u8]) -> Result<bool> {
     Ok(validate_against_root(lock, root_json).is_ok())
+}
+
+/// [`is_fresh`], for a caller that already holds the parsed `Value`
+/// (#122's install-path single-parse).
+pub fn is_fresh_from_value(lock: &Lock, content: &Value) -> Result<bool> {
+    Ok(validate_against_root_value(lock, content).is_ok())
 }
 
 /// Composer's exact wording (`Installer::doInstall`) for a stale

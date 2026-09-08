@@ -27,13 +27,17 @@ pub struct InstalledEntry {
 }
 
 #[derive(Debug, Default)]
-pub struct Plan {
-    pub keep: Vec<Package>,
+pub struct Plan<'a> {
+    /// Borrowed straight from `lock` (#122): a kept package is never
+    /// touched before the no-op check, so cloning its (potentially large)
+    /// raw JSON `Value` into an owned copy here would be pure waste on the
+    /// common no-op install.
+    pub keep: Vec<&'a Package>,
     pub install: Vec<Package>,
     pub remove: Vec<InstalledEntry>,
 }
 
-impl Plan {
+impl Plan<'_> {
     /// Nothing to fetch, link or delete; only the autoloader may need work.
     pub fn is_noop(&self) -> bool {
         self.install.is_empty() && self.remove.is_empty()
@@ -49,7 +53,12 @@ impl Plan {
 /// package a native adapter (`src/plugins.rs`) mapped outside `vendor/` (a
 /// `WordPress` plugin under `wp-content/plugins/`, say) still has to live
 /// somewhere sane, just not necessarily under `vendor/`.
-pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path, project_dir: &Path) -> Result<Plan> {
+pub fn plan<'a>(
+    lock: &'a Lock,
+    dev: bool,
+    vendor_dir: &Path,
+    project_dir: &Path,
+) -> Result<Plan<'a>> {
     let mut installed = read_installed(&vendor_dir.join("composer/installed.json"), project_dir)?;
     let mut plan = Plan::default();
     for package in lock.packages(dev) {
@@ -79,7 +88,7 @@ pub fn plan(lock: &Lock, dev: bool, vendor_dir: &Path, project_dir: &Path) -> Re
                 if package.r#type != "metapackage" && !on_disk {
                     plan.install.push(package.clone());
                 } else {
-                    plan.keep.push(package.clone());
+                    plan.keep.push(package);
                 }
             }
             // A stale entry's dir is replaced by the install itself, so it
@@ -275,8 +284,11 @@ mod tests {
         }
     }
 
-    fn names(packages: &[Package]) -> Vec<&str> {
-        packages.iter().map(|p| p.name.as_str()).collect()
+    /// `names(&plan.install)` (owned `Package`s) and `names(&plan.keep)`
+    /// (borrowed, #122) both need to work, so this borrows through either
+    /// via `Borrow<Package>` rather than picking one concrete element type.
+    fn names(packages: &[impl std::borrow::Borrow<Package>]) -> Vec<&str> {
+        packages.iter().map(|p| p.borrow().name.as_str()).collect()
     }
 
     #[test]

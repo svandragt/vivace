@@ -272,7 +272,11 @@ fn run_impl(
     }
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
-    let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
+    // Parsed once (#122) and threaded through the freshness check and the
+    // scripts runner below, instead of each re-parsing the same bytes.
+    let composer_json_value: Value =
+        serde_json::from_slice(&composer_json).context("parsing composer.json")?;
+    let root = lock::root_from_value(&composer_json_value).context("parsing composer.json")?;
     let read_lock_started = Instant::now();
     let mut lock = read_lock(&lock_path)?;
     tracing::debug!(
@@ -308,7 +312,7 @@ fn run_impl(
     // (`ERROR_LOCK_FILE_INVALID`) — vivace has no solver to tell "missing"
     // from "present but doesn't satisfy the constraint", so it only catches
     // the former, same as `missing_requirements`'s own doc comment.
-    if !lock::is_fresh(&lock, &composer_json)? {
+    if !lock::is_fresh_from_value(&lock, &composer_json_value)? {
         warn_out(STALE_LOCK_WARNING);
     }
     let missing = lock::missing_requirements(&lock, &root, dev);
@@ -378,7 +382,7 @@ fn run_impl(
         if !args.adopt {
             best_effort_adopt = adopted_names;
         }
-        plan.install.append(&mut plan.keep);
+        plan.install.extend(plan.keep.drain(..).cloned());
     }
 
     if args.dry_run {
@@ -392,8 +396,6 @@ fn run_impl(
         composer_json_sha256: hex(Sha256::digest(&composer_json)),
         patches_fingerprint: patches_fingerprint(&plugins, &root, &project_dir)?,
     };
-    let composer_json_value: Value =
-        serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let mut scripts = scripts::Runner::new(
         &composer_json_value,
         &project_dir,
@@ -592,7 +594,7 @@ fn run_impl(
         )?;
     }
 
-    let all: Vec<&Package> = plan.keep.iter().chain(&plan.install).collect();
+    let all: Vec<&Package> = plan.keep.iter().copied().chain(&plan.install).collect();
     // #93: drupal/core-composer-scaffold. Same phase as the patches above —
     // install directories are known, the autoloader isn't regenerated yet.
     plugins.apply_scaffold(&root, &project_dir, &vendor_dir, &all)?;

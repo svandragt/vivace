@@ -299,7 +299,7 @@ impl Plugins {
         project_dir: &std::path::Path,
         vendor_dir: &std::path::Path,
         newly_linked: &[Package],
-        kept: &[Package],
+        kept: &[&Package],
         store: &crate::store::Store,
     ) -> Result<()> {
         if self.patches {
