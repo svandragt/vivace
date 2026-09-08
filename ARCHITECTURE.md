@@ -109,8 +109,6 @@ Each of these fails with a clear error, naming the reason:
   `config.allow-plugins` is `false`/absent for it — `--no-plugins` downgrades
   the refusal to a warning and installs as Composer would with that flag
   (`docs/plugin-strategy.md`).
-- `--minimal-changes`: the flag parses but is not wired into the solver yet,
-  so it currently no-ops (`src/solver/policy.rs`).
 - GitLab, Bitbucket and other non-GitHub VCS hosts in `update`: they fall
   back to the generic git driver, which works but has no dist URL.
 - A non-git VCS-type dist or source (Mercurial, Subversion, Fossil).
