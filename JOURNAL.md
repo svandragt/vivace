@@ -775,3 +775,13 @@ adapter finally gets diffed against the real plugin it replaces. The
 release checklist gained a step: reinstall the local `viv` binary after
 tagging, since a stale one refuses plugins the new release already
 adapts.
+
+The first sweep under those conditions failed twice before it passed:
+pinned checkouts are detached, so the root version needs Composer's
+nearest-branch search, and the root's `branch-alias` belongs in its
+`aliases`. The third difference was Composer's own: yii2-composer writes
+its extensions map as archives finish extracting, and two Composer runs
+on one lock disagree, so the sweep compares that file and Craft's
+order-insensitively. At the tag: 24 rows identical, none differ, 4 skipped
+for upstream reasons, and 2 of 19 pinned projects would still refuse
+without `--no-plugins`.

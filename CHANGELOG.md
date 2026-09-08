@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.7.0] - 2026-09-08
 ### Added
 - Wire --minimal-changes into viv update ([#61](https://github.com/svandragt/vivace/issues/61))
 - Problem messages: port formatDeduplicatedRules and condenseVersionList ([#62](https://github.com/svandragt/vivace/issues/62))
