@@ -722,3 +722,43 @@ package's raw JSON that a no-op then discards. Store lookups touch the
 pointer mtime serially per package. All three are tracked locally; the
 fix is one parse in `run_impl` and a borrowing `plan.keep`, measured with
 `make bench-check` before it lands.
+
+## 2026-09-08, day: milestone 0.7 closed in one sitting
+
+**Scope first.** Triage of 0.7 moved the research and slimming items to a
+new 0.8 and Windows out of any milestone, leaving seven confidence items.
+Three more arrived from checking the adapters on real projects rather than
+fixtures: the sweep was passing `--no-plugins` to both sides, so no
+adapter had ever been diffed against Composer; every git checkout without
+a `version` got `1.0.0+no-version-set` where Composer reads the branch;
+and yii2-app-basic refused on codeception/c3.
+
+**Adopt by default.** A Composer-written `vendor/` is relinked from the
+store without `--adopt`; the shim still asks on a terminal. The first cut
+fetched every archive and so failed outright on a private dist, which the
+old warning path had tolerated. Adoption is now best-effort per package.
+The install stays Composer-consistent at every step: `installed.json` and
+the state file are written only after the last link succeeds.
+
+**Resolver.** `--minimal-changes` had parsed and done nothing. Wiring the
+pin set into the solver was not enough: the pool optimizer pruned the
+locked version as a duplicate before the solver saw the preference, the
+same policy object has to reach both, as `Installer::createPolicy` does.
+Problem messages gained the reason sort, `formatDeduplicatedRules` and
+`condenseVersionList`, with goldens from a local repository; the conflict
+line had also been naming the wrong side.
+
+**Adapters.** yii2-composer, craft plugin-installer, private-composer-
+installer, codeception/c3, drupal core-composer-scaffold and symfony/
+runtime; core-project-message and core-recipe-unpack are inert for
+install. The yii2 file exposed the fixture blind spot: one package cannot
+tell lock order from install order, craftcms/craft could. The sweep now
+runs plugins on both sides where every plugin is native and counts the
+rest; drupal/recommended-project reads `plugins: native`, identical.
+
+**Method.** Four lanes on one tree with named file ownership again; the
+plugin registry was shared append-only without incident. Two helper copies
+were left behind and are tracked locally, the audit's current in
+miniature. The perf gate caught one regression before it landed: a `git`
+subprocess on a non-repo cost a millisecond on the warm path until a
+`.git` existence check guarded it.
