@@ -700,3 +700,25 @@ targets refused. The shim tests' one-in-three failure turned out to be
 `ETXTBSY` from a copy still open when another test forked; a mutex
 settles it. Sweep at the tag: 36 rows identical, none differ. v0.6.0
 tagged.
+
+## 2026-09-08, morning: parked follow-ups and a perf audit
+
+**Audit residue cleared.** The night's four-lane session left two helper
+copies behind, exactly the current the audit had named: `vcs.rs` carried a
+third Hinnant `civil_from_days` and `install.rs` a private
+`default_cache_dir` beside `update.rs`'s shared one. Both now route through
+the one copy; the diff is thirteen lines in, thirty-nine out.
+
+**Store safety under composer-patches.** `patches::apply` breaks the
+hardlink with a `LinkMode::Copy` relink before `git apply`, but nothing
+asserted the store's side of that. A new e2e test resolves the
+`dists-v0` pointer for `psr/log` after a patched install and checks the
+store file is unpatched, single-linked and still read-only.
+
+**Perf audit, not yet acted on.** A read-only pass over the install path
+found `composer.json` parsed three times before the no-op check (typed
+root, content hash, scripts value) and `plan()` deep-cloning every kept
+package's raw JSON that a no-op then discards. Store lookups touch the
+pointer mtime serially per package. All three are tracked locally; the
+fix is one parse in `run_impl` and a borrowing `plan.keep`, measured with
+`make bench-check` before it lands.
