@@ -2,7 +2,7 @@
 //! that doesn't exist yet — `viv init` (#143) is the same thing for the
 //! directory you're already in.
 //!
-//! A bare directory name (no `/`) runs [`init::write_defaults`] inside it,
+//! A bare directory name (no `/`) runs `init::write_defaults` inside it,
 //! same as `viv init`. A `vendor/package[:constraint]` spec resolves that
 //! package's best version (default: newest stable), downloads its dist
 //! through the store exactly [`crate::install`] does for a locked package,

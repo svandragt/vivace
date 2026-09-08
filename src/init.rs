@@ -12,8 +12,8 @@
 //! checked with [`crate::validate::run`] — the same two passes `viv add`/
 //! `viv rm` and `viv validate` already run, so there is exactly one place
 //! that decides what "normalized" and "valid" mean. `--require`/
-//! `--require-dev` reuse [`crate::require::synthesize_constraint`] for a
-//! bare package name and [`crate::require::partial_update`] for the
+//! `--require-dev` reuse `crate::require::synthesize_constraint` for a
+//! bare package name and `crate::require::partial_update` for the
 //! resolve/lock/install chain: the same functions `viv add` calls once it
 //! has edited `composer.json`.
 
