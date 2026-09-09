@@ -638,12 +638,32 @@ fn viv_update_matches_composer_and_validates() {
 
     ctx.viv().arg("update").assert().success();
 
-    let got = fs_err::read_to_string(project.join("composer.lock")).unwrap();
-    let want = fs_err::read_to_string(fixture.join("composer.lock")).unwrap();
-    assert_eq!(
-        got, want,
-        "viv update's lock differs from the committed one"
+    // Compare against what Composer resolves right now, not a committed
+    // lock: upstream releases (monolog 3.12.0 on 2026-09-09) would otherwise
+    // fail this test with no viv change at all.
+    let composer_project = tempfile::tempdir().unwrap();
+    fs_err::copy(
+        fixture.join("composer.json"),
+        composer_project.path().join("composer.json"),
+    )
+    .unwrap();
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &composer_project.path().join(dir));
+    }
+    let composer = Command::new("composer")
+        .args(["update", "--no-install", "--no-scripts", "--no-plugins"])
+        .current_dir(composer_project.path())
+        .output()
+        .unwrap();
+    assert!(
+        composer.status.success(),
+        "composer update failed: {}",
+        String::from_utf8_lossy(&composer.stderr)
     );
+
+    let got = fs_err::read_to_string(project.join("composer.lock")).unwrap();
+    let want = fs_err::read_to_string(composer_project.path().join("composer.lock")).unwrap();
+    assert_eq!(got, want, "viv update's lock differs from Composer's");
 
     let validate = Command::new("composer")
         .args(["validate", "--strict", "--no-check-publish"])
