@@ -32,12 +32,12 @@ fetch() {
   case $url in
     https://api.github.com/*|https://github.com/*|https://codeload.github.com/*)
       if [ -n "$token" ]; then
-        curl -fsSL -H "Authorization: Bearer $token" -o "$dest.tmp" "$url"
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -H "Authorization: Bearer $token" -o "$dest.tmp" "$url"
       else
-        curl -fsSL -o "$dest.tmp" "$url"
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$dest.tmp" "$url"
       fi
       ;;
-    *) curl -fsSL -o "$dest.tmp" "$url" ;;
+    *) curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$dest.tmp" "$url" ;;
   esac
   mv "$dest.tmp" "$dest"
 }
