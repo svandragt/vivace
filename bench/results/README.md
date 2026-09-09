@@ -135,6 +135,27 @@ The same four scenarios run across the pinned public projects
 per-tool/per-project failures it skips instead of re-running every night are
 in `bench/skips.txt`.
 
+## Corpus aggregates
+
+`bench/aggregate.py` turns the latest `## <timestamp>` section of
+`bench/results/corpus.md` into the README's speed table: per scenario, the
+per-project ratio composer/viv and riff/viv, then the geometric mean and the
+min/max of those ratios. Geometric mean, not arithmetic, because these are
+speedups (ratios), not additive quantities — a project 10x slower and one
+0.1x slower should average to 1x, not 5x.
+
+A project/tool cell that is `n/a` or missing a row (a known failure, see
+`bench/skips.txt`) is skipped for that ratio, not treated as a zero; riff has
+no `update-warm` numbers at all in this corpus, so that column is `n/a`.
+When a ratio's range crosses 1×, the cell gets a footnote saying so rather
+than a plain claim either way.
+
+Regenerate with:
+
+```sh
+python3 bench/aggregate.py bench/results/corpus.md
+```
+
 ## Cold install: closing the gap to Riff (#1)
 
 Debug timings (`RUST_LOG=vivace=debug`) on the cold path showed the fetch
