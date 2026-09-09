@@ -859,3 +859,9 @@ what turned CI red. Fix in flight.
 
 **Committing in a shared tree.** Two agents at once means `git commit
 -a` grabs the other one's half-done edits. Commit by path.
+
+**Looked at, not used: swoole/typephp.** An AOT PHP-to-C++ compiler,
+active and well built, GPL-3.0. Its output embeds the Zend engine and
+its PHP subset drops the dynamic features Composer's plugin machinery
+uses, so it neither speeds up viv, which runs no PHP on the hot path,
+nor lets us compile plugins in place of hand-ported adapters.
