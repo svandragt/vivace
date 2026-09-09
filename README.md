@@ -238,8 +238,10 @@ without touching the network.[^14]
   `viv update` takes about twice Composer's time, with no network in the
   measurement; see the table above. Installs are where viv is far ahead,
   and riff still leads cold installs on a few projects.
-- **One error message still differs.** Composer's "found X but it conflicts
-  with your root require" wording is not ported yet.
+- **Two error messages still differ.** Composer's "found X but it conflicts
+  with your root require" wording is not ported yet, and when a version is
+  skipped for a security advisory and the solve then fails, Composer's
+  message says so and viv's does not.
 
 ## Scope
 
