@@ -145,13 +145,10 @@ async fn filter_advisories<A: AdvisoriesTransport>(
         None
     };
 
-    let mut kept = Vec::with_capacity(packages.len());
-    for (index, package) in packages.into_iter().enumerate() {
-        if index < exempt_upto {
-            kept.push(package);
-            continue;
-        }
+    let mut to_remove: HashSet<usize> = HashSet::new();
+    for (index, package) in packages.iter().enumerate().skip(exempt_upto) {
         if filter.audit.block_abandoned && audit::is_abandoned(&package.raw) {
+            to_remove.insert(index);
             continue;
         }
         if !package.is_dev
@@ -164,9 +161,39 @@ async fn filter_advisories<A: AdvisoriesTransport>(
             )
             .is_empty()
         {
+            to_remove.insert(index);
+        }
+    }
+    // #175: an alias and the package it aliases are always kept or removed
+    // together, mirroring `pool_optimizer::optimize`'s own alias guard (its
+    // module doc explains why). A branch alias is always `is_dev` and so
+    // never matches the advisory check itself, but leaving its now-filtered
+    // real package's index dangling in `alias_of` is exactly what made
+    // `pool_optimizer::optimize`'s later remap panic with "no entry found
+    // for key" (`pool_optimizer.rs`'s own alias remap assumes every
+    // `alias_of` still points at a package in the same pool).
+    for (index, package) in packages.iter().enumerate().skip(exempt_upto) {
+        if let Some(alias_of) = package.alias_of
+            && (to_remove.contains(&index) || to_remove.contains(&alias_of))
+        {
+            to_remove.insert(index);
+            to_remove.insert(alias_of);
+        }
+    }
+
+    let mut kept = Vec::with_capacity(packages.len());
+    let mut remap: HashMap<usize, usize> = HashMap::with_capacity(packages.len());
+    for (index, package) in packages.into_iter().enumerate() {
+        if to_remove.contains(&index) {
             continue;
         }
+        remap.insert(index, kept.len());
         kept.push(package);
+    }
+    for package in &mut kept {
+        if let Some(alias_of) = package.alias_of {
+            package.alias_of = Some(remap[&alias_of]);
+        }
     }
     Ok(kept)
 }
@@ -1054,4 +1081,134 @@ pub(crate) fn root_package(root: &Value, cache: &mut ConstraintCache) -> Result<
         has_self_version_requires: false,
         raw,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal, non-alias pool package: `raw` carries `abandoned` so
+    /// `audit::is_abandoned` has something to read.
+    fn package(name: &str, pretty_version: &str, abandoned: bool) -> Package {
+        let version = semver::normalize(pretty_version).unwrap();
+        Package {
+            stability: semver::stability(version.as_str()),
+            is_dev: false,
+            name: name.to_string(),
+            version,
+            pretty_version: pretty_version.to_string(),
+            requires: Vec::new(),
+            conflicts: Vec::new(),
+            provides: Vec::new(),
+            replaces: Vec::new(),
+            alias_of: None,
+            is_root_package_alias: false,
+            has_self_version_requires: false,
+            raw: Arc::new(serde_json::json!({
+                "name": name,
+                "version": pretty_version,
+                "abandoned": abandoned,
+            })),
+        }
+    }
+
+    /// A [`Package`] answering a fixed advisory-response body: mirrors
+    /// `tests/update.rs`'s `AdvisoriesFixture`, kept local since a unit test
+    /// can't reach across the `tests/` boundary.
+    struct FixtureAdvisories(Value);
+
+    impl AdvisoriesTransport for FixtureAdvisories {
+        #[allow(
+            clippy::unused_async_trait_impl,
+            reason = "the fixture answers synchronously; the trait is async for production"
+        )]
+        async fn post_advisories(&self, _packages: &[String]) -> Result<Value> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn insecure_audit() -> AuditConfig {
+        AuditConfig {
+            block_insecure: true,
+            block_abandoned: false,
+            ..AuditConfig::default()
+        }
+    }
+
+    fn abandoned_audit() -> AuditConfig {
+        AuditConfig {
+            block_insecure: false,
+            block_abandoned: true,
+            ..AuditConfig::default()
+        }
+    }
+
+    /// #175: a root-alias pool entry's `alias_of` still points at its real
+    /// package's index once the advisory filter drops that real package
+    /// from the middle of the `Vec` — before this fix, nothing remapped or
+    /// cascaded that dangling index, which is exactly what made
+    /// `pool_optimizer::optimize`'s own remap (`pool_optimizer.rs:191`)
+    /// panic with "no entry found for key" downstream. An alias and the
+    /// package it aliases must be kept or removed together, matching
+    /// `pool_optimizer::optimize`'s own alias guard.
+    #[tokio::test]
+    async fn filter_advisories_drops_an_alias_alongside_its_filtered_real_package() {
+        let real = package("vendor/pkg", "3.11.0", false);
+        let mut alias = package("vendor/pkg", "4.0.0", false);
+        alias.alias_of = Some(0);
+        alias.is_root_package_alias = true;
+        let packages = vec![real, alias];
+
+        let advisories = FixtureAdvisories(serde_json::json!({
+            "advisories": {
+                "vendor/pkg": [{
+                    "advisoryId": "PKSA-test-0001",
+                    "packageName": "vendor/pkg",
+                    "affectedVersions": ">=3.11.0,<3.11.1",
+                    "title": "fixture",
+                    "cve": null,
+                    "link": null,
+                    "reportedAt": "2024-01-01 00:00:00",
+                }],
+            },
+        }));
+        let audit = insecure_audit();
+        let filter = AdvisoryFilter {
+            transport: &advisories,
+            audit: &audit,
+            no_blocking: false,
+        };
+
+        let kept = filter_advisories(packages, 0, &filter).await.unwrap();
+        assert!(
+            kept.is_empty(),
+            "the alias must not outlive its filtered real package: {} left",
+            kept.len(),
+        );
+    }
+
+    /// #175: filtering a package positioned *before* an unrelated alias
+    /// pair must shift the alias's own surviving `alias_of` down to match —
+    /// the same remap `pool_optimizer::optimize` already does for its own
+    /// removals.
+    #[tokio::test]
+    async fn filter_advisories_remaps_alias_of_after_an_earlier_removal() {
+        let abandoned = package("vendor/other", "1.0.0", true);
+        let real = package("vendor/pkg", "1.0.0", false);
+        let mut alias = package("vendor/pkg", "2.0.0", false);
+        alias.alias_of = Some(1);
+        alias.is_root_package_alias = true;
+        let packages = vec![abandoned, real, alias];
+
+        let audit = abandoned_audit();
+        let filter = AdvisoryFilter {
+            transport: &NoAdvisories,
+            audit: &audit,
+            no_blocking: false,
+        };
+
+        let kept = filter_advisories(packages, 0, &filter).await.unwrap();
+        assert_eq!(kept.len(), 2, "expected the real+alias pair to survive");
+        assert_eq!(kept[1].alias_of, Some(0), "stale index was never remapped");
+    }
 }

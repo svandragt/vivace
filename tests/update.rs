@@ -222,6 +222,62 @@ async fn update_ignored_advisory_id_picks_the_covered_version() {
     assert_eq!(version, "3.11.0");
 }
 
+/// #175 regression: a root alias (`pool_builder.rs`'s `root_aliases`) pushes
+/// a second pool entry whose `alias_of` is a raw index into the pool built
+/// so far. When the advisory filter (`filter_advisories`) then drops the
+/// aliased-and-advisory-covered `3.11.0` real package from the middle of
+/// that same `Vec`, every index after it shifts — and before this fix
+/// nothing remapped the surviving alias's now-stale `alias_of`, so
+/// `pool_optimizer::optimize`'s own remap (`pool_optimizer.rs:191`) panicked
+/// with "no entry found for key" instead of the solve reaching a normal
+/// `Result`. Aliasing `3.11.0` itself also makes root's own requirement
+/// exact, so once the advisory removes it (and the fix cascades the now-
+/// orphaned alias's removal alongside it, matching `pool_optimizer::optimize`'s
+/// own "kept or removed together" alias rule) there is no candidate left to
+/// satisfy that exact pin — a clean `Problem`, not a panic, is the correct
+/// outcome here, mirroring what a real yanked-and-aliased Packagist version
+/// would do.
+#[tokio::test]
+async fn update_does_not_panic_when_the_advisory_filter_drops_an_aliased_version() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+    let root = serde_json::json!({
+        "name": "vivace/fixture-security-advisory-aliased",
+        "require": { "monolog/monolog": "3.11.0 as 4.0.0" }
+    });
+
+    let advisories_transport = AdvisoriesFixture::load();
+    let audit = vivace::lock::AuditConfig::default();
+    let filter = vivace::solver::pool_builder::AdvisoryFilter {
+        transport: &advisories_transport,
+        audit: &audit,
+        no_blocking: false,
+    };
+    let result = solver::solve_update_seeded(
+        &repo,
+        &root,
+        false,
+        false,
+        &[],
+        HashMap::new(),
+        Some(filter),
+    )
+    .await;
+    let err = match result {
+        Ok(_) => panic!("expected an unsatisfiable-pin Problem, the solve unexpectedly succeeded"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("monolog/monolog"),
+        "unexpected error: {err}"
+    );
+}
+
 /// #117: `symfony/string` requires the four `symfony/polyfill-*` packages
 /// this fixture's root `replace`s (mirroring `symfony/demo`'s own shape).
 /// Composer's own lock (`tests/fixtures/root-replace/composer.lock`) never
