@@ -234,9 +234,10 @@ without touching the network.[^14]
   project on the machine. If you patch vendor files by hand, install with
   `--link-mode copy`, or `--link-mode clone` for writable files sharing the
   store's disk space where the filesystem supports it.
-- **Cold installs are not the fastest available.** riff wins that column;
-  viv's cold time is bounded by GitHub's download throttling. Warm and no-op
-  installs are where viv is far ahead.
+- **Updating is slower than Composer.** On a real-sized lock a warm
+  `viv update` takes about twice Composer's time, with no network in the
+  measurement; see the table above. Installs are where viv is far ahead,
+  and riff still leads cold installs on a few projects.
 - **One error message still differs.** Composer's "found X but it conflicts
   with your root require" wording is not ported yet.
 
