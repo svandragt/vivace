@@ -162,6 +162,12 @@ native_inert_names=$({
   "$viv" diagnose --adapters | cut -f1
   awk '/^const KNOWN_INERT/,/^\];/' "$root/src/plugins/mod.rs" | grep -oE '"[^"]+"' | tr -d '"'
 })
+# An empty list means the detection broke, not that viv adapts nothing: the
+# v0.8.0 sweep ran once with every project on --no-plugins for that reason.
+if [ -z "$native_inert_names" ]; then
+  echo "compat: no native adapters detected; refusing to run a sweep that would test none" >&2
+  exit 1
+fi
 
 # Echoes the composer-plugin package names $1 (a project dir)'s lock
 # declares that its composer.json's config.allow-plugins enables: `true`

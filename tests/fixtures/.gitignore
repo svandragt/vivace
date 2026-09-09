@@ -1,0 +1,5 @@
+# Fixture trees may contain a vendor/ directory; the global gitignore
+# hides those, which has twice made a test pass locally against files CI
+# never had. Repo rules beat the global file, so un-ignore here.
+!vendor/
+!**/vendor/
