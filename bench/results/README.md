@@ -54,6 +54,16 @@ either can be missing without failing the other.
 down or stay within tolerance of the old one; a rise is a regression to
 explain in the release notes, not a new floor.
 
+`update-offline` (#165) runs `viv update --offline --no-install` against the
+same warm metadata cache as `update-warm`, but `--offline` reads the cache
+only and makes no revalidation requests at all, so it measures parsing the
+closure and running the solver with no network in the loop. That isolation
+is exactly what makes it gated, unlike `update-warm`: `update-warm`'s time
+still includes hundreds of 304 round trips, so a run-to-run swing there could
+be GitHub, not a regression in `viv` (#159); `update-offline`'s variance is
+ours alone, the same reasoning that gates `warm` and `noop`. Composer has no
+offline update flag, so this scenario runs for `viv` only.
+
 ## Corpus
 
 The same four scenarios run across the pinned public projects

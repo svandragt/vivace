@@ -5,7 +5,7 @@ Usage:
     bench/compare.py <hyperfine-json>... --baseline bench/results/baseline.json [--tolerance 0.15] [--write-baseline]
     bench/compare.py --self-test
 
-Fails (exit 1) when `viv`'s warm or noop mean regresses past
+Fails (exit 1) when `viv`'s warm, noop or update-offline mean regresses past
 baseline * (1 + tolerance). Cold and update-warm are informational only: both
 wait on the network (downloads, and 304 revalidations of every metadata file),
 so their variance is not ours (see bench/results/README.md). With
@@ -17,8 +17,8 @@ import json
 import sys
 
 TOLERANCE_DEFAULT = 0.15
-SCENARIOS = ("cold", "warm", "noop", "update-warm")
-CHECKED_SCENARIOS = ("warm", "noop")
+SCENARIOS = ("cold", "warm", "noop", "update-warm", "update-offline")
+CHECKED_SCENARIOS = ("warm", "noop", "update-offline")
 
 
 def means_from_hyperfine(paths):
@@ -99,6 +99,7 @@ def main(argv):
             "noop": means.get("noop"),
             "cold": means.get("cold"),
             "update-warm": means.get("update-warm"),
+            "update-offline": means.get("update-offline"),
         }
         with open(args.baseline, "w") as f:
             json.dump(all_baselines, f, indent=2, sort_keys=True)
@@ -119,24 +120,35 @@ def main(argv):
 
 
 def self_test():
-    baseline = {"warm": 1.0, "noop": 0.1}
+    baseline = {"warm": 1.0, "noop": 0.1, "update-offline": 0.2}
 
-    ok, rows = compare({"warm": 1.05, "noop": 0.10}, baseline, 0.15)
+    ok, rows = compare({"warm": 1.05, "noop": 0.10, "update-offline": 0.21}, baseline, 0.15)
     assert ok, "expected pass within tolerance"
 
-    ok, rows = compare({"warm": 1.20, "noop": 0.10}, baseline, 0.15)
+    ok, rows = compare({"warm": 1.20, "noop": 0.10, "update-offline": 0.21}, baseline, 0.15)
     assert not ok, "expected fail beyond tolerance"
     statuses = {r[0]: r[3] for r in rows}
     assert statuses["warm"] == "FAIL"
     assert statuses["noop"] == "ok"
 
-    ok, rows = compare({"warm": 1.0, "noop": 0.5, "cold": 2.0}, baseline, 0.15)
+    ok, rows = compare({"warm": 1.0, "noop": 0.10, "update-offline": 0.30}, baseline, 0.15)
+    assert not ok, "expected update-offline to be gated like warm/noop"
+    statuses = {r[0]: r[3] for r in rows}
+    assert statuses["update-offline"] == "FAIL"
+
+    ok, rows = compare({"warm": 1.0, "noop": 0.5, "cold": 2.0, "update-warm": 3.0}, baseline, 0.15)
     statuses = {r[0]: r[3] for r in rows}
     assert statuses["cold"] == "info", "cold must be informational only"
+    assert statuses["update-warm"] == "info", "update-warm must be informational only"
 
     ok, rows = compare({"warm": 5.0}, {}, 0.15)
     assert ok, "missing baseline entries must skip, not fail"
     assert rows[0][3] == "skip"
+
+    ok, rows = compare({"warm": 1.0, "update-offline": 0.5}, {"warm": 1.0}, 0.15)
+    assert ok, "missing update-offline baseline entry must skip, not fail"
+    statuses = {r[0]: r[3] for r in rows}
+    assert statuses["update-offline"] == "skip"
 
     print("bench/compare.py: self-test ok")
     return 0

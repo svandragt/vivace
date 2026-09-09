@@ -83,6 +83,11 @@ update_cmd_for() {
     viv)      echo "${VIV:-$root/target/release/viv} update $flags" ;;
   esac
 }
+update_offline_cmd_for() {
+  case $1 in
+    viv) echo "${VIV:-$root/target/release/viv} update --offline --no-install $flags" ;;
+  esac
+}
 
 # update-warm (#55): the metadata cache from `cache_for` is left in place
 # (never wiped, unlike the cold/warm install scenarios above) so every
@@ -111,6 +116,35 @@ for tool in $tools; do
     echo "run.sh: $tool update-warm failed:" >&2
     tail -20 "$log" >&2
     rm -f "$out/$tool-update.json"
+    failed="$failed $tool"
+    [ "$failed_rc" -eq 0 ] && failed_rc=1
+  fi
+done
+
+# update-offline (#165): same warm metadata cache as update-warm above, but
+# `--offline` so the solve reads only the cache, no revalidation requests at
+# all — isolates parse-plus-solve time from the network. Composer has no
+# offline update flag, so this runs for viv only.
+for tool in $tools; do
+  case $tool in
+    viv) ;;
+    *) echo "run.sh: $tool update-offline skipped, no offline update flag" >&2; continue ;;
+  esac
+  case " $failed " in
+    *" $tool "*) echo "run.sh: $tool update-offline skipped, install failed" >&2; continue ;;
+  esac
+  case " $skip_update " in
+    *" $tool "*) echo "run.sh: $tool update-offline skipped (bench/skips.txt)" >&2; continue ;;
+  esac
+  dir="$work/$tool-update"; rm -rf "$dir"; mkdir -p "$dir"
+  cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"
+  log="$out/$tool-update-offline.log"; : >"$log"
+  cmd="cd $dir && cp $proj/composer.json $proj/composer.lock . && export $(env_for "$tool") && $(update_offline_cmd_for "$tool") >>$log 2>&1"
+  if ! hyperfine --warmup 1 --runs "$runs" --export-json "$out/$tool-update-offline.json" \
+    --command-name "$tool update-offline" "$cmd"; then
+    echo "run.sh: $tool update-offline failed:" >&2
+    tail -20 "$log" >&2
+    rm -f "$out/$tool-update-offline.json"
     failed="$failed $tool"
     [ "$failed_rc" -eq 0 ] && failed_rc=1
   fi
