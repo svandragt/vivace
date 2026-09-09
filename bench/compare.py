@@ -6,7 +6,7 @@ Usage:
     bench/compare.py --self-test
 
 Fails (exit 1) when `viv`'s warm, noop or update-offline mean regresses past
-baseline * (1 + tolerance). Cold and update-warm are informational only: both
+baseline * (1 + tolerance) or baseline + 5 ms, whichever is larger. Cold and update-warm are informational only: both
 wait on the network (downloads, and 304 revalidations of every metadata file),
 so their variance is not ours (see bench/results/README.md). With
 --write-baseline, writes the measured means as the new baseline instead of
@@ -17,6 +17,7 @@ import json
 import sys
 
 TOLERANCE_DEFAULT = 0.15
+ABSOLUTE_SLACK_S = 0.005
 SCENARIOS = ("cold", "warm", "noop", "update-warm", "update-offline")
 CHECKED_SCENARIOS = ("warm", "noop", "update-offline")
 
@@ -51,7 +52,10 @@ def compare(means, baseline, tolerance):
         if base is None:
             rows.append((scenario, current, base, "skip"))
             continue
-        limit = base * (1 + tolerance)
+        # A runner's timer wobbles by a few milliseconds regardless of the
+        # scenario, so a 4 ms no-op cannot be held to 15 %: the limit is the
+        # larger of the relative tolerance and an absolute 5 ms of slack.
+        limit = max(base * (1 + tolerance), base + ABSOLUTE_SLACK_S)
         if current > limit:
             ok = False
             rows.append((scenario, current, base, "FAIL"))
@@ -127,6 +131,12 @@ def self_test():
 
     ok, rows = compare({"warm": 1.20, "noop": 0.10, "update-offline": 0.21}, baseline, 0.15)
     assert not ok, "expected fail beyond tolerance"
+
+    # 4 ms -> 5 ms is 25 % but inside the absolute slack; 4 ms -> 10 ms is not.
+    ok, _ = compare({"warm": 1.0, "noop": 0.005, "update-offline": 0.2}, {**baseline, "noop": 0.004}, 0.15)
+    assert ok, "expected absolute slack to absorb a 1 ms wobble"
+    ok, _ = compare({"warm": 1.0, "noop": 0.010, "update-offline": 0.2}, {**baseline, "noop": 0.004}, 0.15)
+    assert not ok, "expected a 6 ms rise on a 4 ms scenario to fail"
     statuses = {r[0]: r[3] for r in rows}
     assert statuses["warm"] == "FAIL"
     assert statuses["noop"] == "ok"
