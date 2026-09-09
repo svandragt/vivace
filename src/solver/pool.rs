@@ -25,6 +25,7 @@ use crate::semver::{self, Constraint, NormalizedVersion};
 /// `Box<dyn semver_php::Constraint>`), so sharing one parse is the only way
 /// to cache it at all (`bench/results/profile.md` §2.8,
 /// `solver::ConstraintCache`).
+#[derive(Clone)]
 pub struct Link {
     pub target: String,
     pub constraint: Option<Arc<Constraint>>,

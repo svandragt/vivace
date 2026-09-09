@@ -816,10 +816,12 @@ fn clone_links(links: &[Link]) -> Vec<Link> {
 /// re-dumping and reloading each first-solve package; vivace clones the
 /// already-built `Package` instead of round-tripping through the array
 /// dumper/loader, an equivalent transform since nothing about the package
-/// changes). Drops any alias wrapping (`alias_of` reset to `None`): the
-/// second solve's repository never carries `AliasPackage` entries either
-/// (`LockTransaction::getNewLockPackages` skips them before `$resultRepo` is
-/// built), so this is only ever called on a non-alias package.
+/// changes). Drops any alias wrapping (`alias_of` reset to `None`):
+/// `LockTransaction::getNewLockPackages` skips `AliasPackage` objects before
+/// `$resultRepo` is built, so this is only ever called on a non-alias
+/// package. The caller in `solver::resolve` then re-derives the branch alias
+/// from `extra.branch-alias`, as Composer's `PoolBuilder` does when it
+/// reloads that repository (#172).
 pub(crate) fn clone_package(package: &Package) -> Package {
     Package {
         name: package.name.clone(),

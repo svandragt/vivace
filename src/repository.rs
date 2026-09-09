@@ -1594,15 +1594,30 @@ fn is_version_loaded(
 /// pushes for the alias) and this module's own [`is_version_loaded`] (the
 /// alias's stability/constraint match) need it.
 pub(crate) fn branch_alias_target(pv: &PackageVersion) -> Option<String> {
-    if !(pv.version.starts_with("dev-") || pv.version.ends_with("-dev")) {
+    branch_alias_target_of(&pv.version, pv.branch_alias.as_ref())
+}
+
+/// [`branch_alias_target`], but reading `extra.branch-alias` straight from a
+/// pool [`crate::solver::pool::Package`]'s own `raw` entry instead of a
+/// [`PackageVersion`]: `solver::resolve`'s dev-split second solve rebuilds
+/// its pool from already-`Package`-shaped first-solve winners
+/// (`pool_builder::clone_package`), which never carried a `PackageVersion`
+/// to begin with, but still needs the *same* alias re-derived — Composer's
+/// own second `PoolBuilder` pass re-derives it from each reloaded package's
+/// metadata too, it never carries the first solve's `AliasPackage` object
+/// across (`pool_builder::clone_package`'s own doc comment's "never carries
+/// `AliasPackage` entries either" is only true of the *objects*, not of
+/// whether an alias exists in the rebuilt pool).
+pub(crate) fn branch_alias_target_from_raw(pretty_version: &str, raw: &Value) -> Option<String> {
+    let branch_alias = raw.get("extra").and_then(|extra| extra.get("branch-alias"));
+    branch_alias_target_of(pretty_version, branch_alias)
+}
+
+fn branch_alias_target_of(pretty_version: &str, branch_alias: Option<&Value>) -> Option<String> {
+    if !(pretty_version.starts_with("dev-") || pretty_version.ends_with("-dev")) {
         return None;
     }
-    let target = pv
-        .branch_alias
-        .as_ref()?
-        .as_object()?
-        .get(&pv.version)?
-        .as_str()?;
+    let target = branch_alias?.as_object()?.get(pretty_version)?.as_str()?;
     if !target.ends_with("-dev") {
         return None;
     }

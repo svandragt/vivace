@@ -268,14 +268,67 @@ async fn update_does_not_panic_when_the_advisory_filter_drops_an_aliased_version
         Some(filter),
     )
     .await;
-    let err = match result {
-        Ok(_) => panic!("expected an unsatisfiable-pin Problem, the solve unexpectedly succeeded"),
-        Err(err) => err,
+    let Err(err) = result else {
+        panic!("expected an unsatisfiable-pin Problem, the solve unexpectedly succeeded")
     };
     assert!(
         err.to_string().contains("monolog/monolog"),
         "unexpected error: {err}"
     );
+}
+
+/// #172: `yiisoft/yii2-app-basic` requires `yiisoft/yii2 ~2.0.54` under
+/// `minimum-stability: dev`. Real-world Packagist metadata carries a stray
+/// `extra.branch-alias` on `dev-master` (an artefact of the minified p2
+/// delta format inheriting a *different*, `.x-dev`-named branch's `extra`
+/// key forward, since `dev-master`'s own delta entry never resets it — both
+/// Composer's `MetadataMinifier::expand` and this crate's `expand_minified`
+/// reproduce it identically), so `dev-master`'s branch alias is the only
+/// candidate that numerically satisfies `~2.0.54` at all; Composer picks it
+/// too, `tests/fixtures/branch-alias-dev-split/repo`'s `dev-master` entry
+/// reproduces just that one field without needing the real, much larger
+/// yii2 provider file. `require-dev` non-empty forces `resolve`'s second,
+/// require-only solve (`extractDevPackages`'s dev split); before this fix
+/// that solve's pool dropped every branch alias outright
+/// (`pool_builder::clone_package`'s own doc comment claimed the dev-split
+/// pool never carries one, which is only true of the *object* Composer's
+/// `LockTransaction::getNewLockPackages` skips — its real `PoolBuilder`
+/// still re-derives a fresh alias from the reloaded package's own metadata),
+/// so the second solve had nothing left to satisfy `~1.0` and failed where
+/// the first solve, and Composer, succeed.
+#[tokio::test]
+async fn update_dev_split_keeps_a_branch_alias_that_satisfies_the_root_require() {
+    let cache = tempfile::tempdir().unwrap();
+    let repo_url = "https://satis.example.test";
+    let transport = FixtureTransport {
+        root: Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/branch-alias-dev-split/repo"),
+    };
+    let repo = Repository::load(repo_url, cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let root = serde_json::json!({
+        "name": "vivace/fixture-branch-alias-dev-split",
+        "minimum-stability": "dev",
+        "require": { "vendor/pkg": "^1.0" },
+        "require-dev": { "vendor/dev-only": "^1.0" },
+        "repositories": [
+            {"type": "composer", "url": repo_url},
+            {"packagist.org": false},
+        ],
+    });
+
+    let result = solver::solve_update(&repo, &root, false, false)
+        .await
+        .expect("dev-master's branch alias must still satisfy ^1.0 after the dev split");
+
+    let pkg = result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "vendor/pkg")
+        .expect("vendor/pkg must resolve, not be dropped by the dev split");
+    assert_eq!(pkg.pretty_version, "dev-master");
 }
 
 /// #117: `symfony/string` requires the four `symfony/polyfill-*` packages

@@ -46,10 +46,10 @@ use anyhow::Result;
 use serde_json::{Map, Value};
 
 use crate::audit::AdvisoriesTransport;
-use crate::repository::{Repository, Transport};
+use crate::repository::{Repository, Transport, branch_alias_target_from_raw};
 use crate::semver::{self, Constraint, NormalizedVersion};
 use policy::DefaultPolicy;
-use pool::Pool;
+use pool::{Package, Pool};
 use pool_builder::AdvisoryFilter;
 use transaction::{AliasEntry, ResolvedPackage};
 
@@ -268,6 +268,46 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     resolve(built, root, prefer_stable, prefer_lowest, preferred)
 }
 
+/// `pool_builder::push_package_version`'s alias-construction branch,
+/// re-derived for a package already reduced to a pool [`Package`] rather
+/// than a fresh `PackageVersion` (`resolve`'s dev-split second solve, which
+/// has no `PackageVersion` for its cloned winners to read a branch alias
+/// off — see the call site's doc comment for why this must exist at all).
+fn branch_alias_package(
+    base: &Package,
+    base_index: usize,
+    alias_normalized: &str,
+) -> Result<Package> {
+    Ok(Package {
+        name: base.name.clone(),
+        version: semver::normalize(alias_normalized)?,
+        pretty_version: pretty_alias_version(alias_normalized),
+        stability: semver::stability(alias_normalized),
+        is_dev: true,
+        requires: base.requires.clone(),
+        conflicts: base.conflicts.clone(),
+        provides: base.provides.clone(),
+        replaces: base.replaces.clone(),
+        alias_of: Some(base_index),
+        is_root_package_alias: false,
+        has_self_version_requires: false,
+        raw: Arc::clone(&base.raw),
+    })
+}
+
+/// `pool_builder`'s own private `pretty_alias`: the `9999999`-filled
+/// numeric branch target (`2.0.9999999.9999999-dev`) collapsed back to its
+/// `x`-form (`2.0.x-dev`) for display. Duplicated rather than exposed from
+/// `pool_builder` (off limits: another agent is mid-fix there) — three
+/// lines, and this alias never survives into user-facing output anyway
+/// (`transaction::resolved_packages` drops every `is_alias()` package
+/// before a lock or message ever sees one).
+fn pretty_alias_version(normalized: &str) -> String {
+    static NINES: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(\.9{7})+").unwrap());
+    NINES.replace(normalized, ".x").into_owned()
+}
+
 /// The merged-solve-then-dev-split pipeline shared by [`solve_update`] and
 /// [`solve_partial_update`]: only how `built`'s pool/request came to be
 /// differs between a full and a partial update.
@@ -317,7 +357,27 @@ fn resolve(
             if package.is_alias() {
                 continue;
             }
+            let base_index = second_packages.len();
             second_packages.push(pool_builder::clone_package(package));
+            // `clone_package`'s own doc says the second solve's repository
+            // never carries `AliasPackage` *objects* — true, but Composer's
+            // real `PoolBuilder` still re-derives a branch alias from every
+            // loaded package's own `extra.branch-alias` metadata, dev-split
+            // pool included; skipping that here left a `dev-*` winner whose
+            // branch alias is the only pool entry actually satisfying a
+            // numeric root require (#172: `dev-master`'s `2.0.x-dev` alias
+            // satisfying `~2.0.54`) unrepresented in the second pool, so the
+            // require-only solve failed where the first solve (and
+            // Composer) succeeded.
+            if let Some(alias_normalized) =
+                branch_alias_target_from_raw(&package.pretty_version, &package.raw)
+            {
+                second_packages.push(branch_alias_package(
+                    &second_packages[base_index],
+                    base_index,
+                    &alias_normalized,
+                )?);
+            }
         }
         let second_pool = Pool::new(second_packages);
         let second_request = pool_builder::require_only_request(root, fixed_count)?;
