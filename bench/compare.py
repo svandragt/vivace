@@ -179,6 +179,31 @@ def self_test():
     )
     assert not ok, "expected fail beyond tolerance"
     statuses = {r[0]: r[5] for r in rows}
+    assert statuses["warm"] == "FAIL"
+
+    # A ratio beyond tolerance still passes if the absolute cost this run is
+    # under 5 ms slack: noop's composer_mean is 1 ms, so even a doubled ratio
+    # is under a millisecond of real regression.
+    ok, rows = compare(
+        {"noop": 0.001},
+        {"noop": 0.001},
+        {"noop": 0.1},
+        0.15,
+    )
+    assert ok, "expected absolute slack to absorb a sub-millisecond wobble"
+    statuses = {r[0]: r[5] for r in rows}
+    assert statuses["noop"] == "ok"
+
+    # The same ratio, scaled up so the absolute excess crosses 5 ms, fails.
+    ok, rows = compare(
+        {"noop": 0.008},
+        {"noop": 0.001},
+        {"noop": 0.1},
+        0.15,
+    )
+    assert not ok, "expected a >=5ms excess at the same ratio to fail"
+    statuses = {r[0]: r[5] for r in rows}
+    assert statuses["noop"] == "FAIL"
 
     # Skip when the composer denominator is missing.
     ok, rows = compare(

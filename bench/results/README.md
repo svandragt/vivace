@@ -57,6 +57,11 @@ same job on the same runner in the same minute — the runner's speed cancels
 out of the ratio even though it doesn't cancel out of either mean alone.
 `baseline.json` stores these ratios, e.g. `{"monolog": {"warm": 0.09, ...}}`.
 
+A ratio beyond tolerance still passes if it costs under 5 ms in this run's
+actual seconds (`viv_mean - baseline_ratio * composer_mean`): differences
+under 5 ms are never a failure, since a fast scenario like `noop` can swing
+well past a relative tolerance on a runner-clock wobble too small to matter.
+
 `update-offline` (#165) runs `viv update --offline --no-install` against the
 same warm metadata cache as `update-warm`, but `--offline` reads the cache
 only and makes no revalidation requests at all, so it measures parsing the
