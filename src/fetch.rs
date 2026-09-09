@@ -1133,10 +1133,16 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::print_stderr)]
     async fn get_conditional_follows_a_redirect_to_another_host() {
         // 127.0.0.1 and 127.0.0.2 are both loopback (RFC 5735) but distinct
         // hosts, so this exercises the cross-host Authorization-dropping
-        // rule with no real DNS or network access.
+        // rule with no real DNS or network access. macOS only configures
+        // 127.0.0.1 on lo0, so skip there rather than fail.
+        if std::net::TcpListener::bind(("127.0.0.2", 0)).is_err() {
+            eprintln!("skipping: 127.0.0.2 is not a bindable loopback address here");
+            return;
+        }
         let (target_addr, target_auth) =
             spawn_responding_server("127.0.0.2", "HTTP/1.1 200 OK", "", br#"{"ok":true}"#);
         let location_headers = format!("Location: http://{target_addr}/packages.json\r\n");
