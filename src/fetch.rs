@@ -523,7 +523,11 @@ impl Fetcher {
                 &[]
             };
             let response = self.send_with_retries(name, &url, headers).await?;
-            if !response.status().is_redirection() {
+            // Only the statuses that carry a Location are redirects: 304 is
+            // also 3xx and is the normal answer to a conditional request.
+            let status = response.status();
+            let is_redirect = matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308);
+            if !is_redirect {
                 return Ok((response, url, label, hops, hop_started));
             }
             let elapsed = hop_started.elapsed();
@@ -1172,6 +1176,21 @@ mod tests {
             sent_to_target, "",
             "Authorization for 127.0.0.1 must not follow the redirect to 127.0.0.2"
         );
+    }
+
+    #[tokio::test]
+    async fn get_conditional_treats_304_as_not_modified_not_as_a_redirect() {
+        // 304 is 3xx without a Location; the hop loop must hand it back as
+        // NotModified rather than fail on the missing header.
+        let (addr, _auth) =
+            spawn_responding_server("127.0.0.1", "HTTP/1.1 304 Not Modified", "", b"");
+        let fetcher = Fetcher::new(Auth::default()).unwrap().secure_http(false);
+        let url = Url::parse(&format!("http://{addr}/packages.json")).unwrap();
+        let result = fetcher
+            .get_conditional("acme/repo", &url, Some("Thu, 01 Jan 2026 00:00:00 GMT"))
+            .await
+            .unwrap();
+        assert!(matches!(result, Conditional::NotModified), "{result:?}");
     }
 
     #[tokio::test]
