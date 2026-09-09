@@ -48,11 +48,14 @@ check) and `bench/laravel` (101 packages, closer to a real project's
 warm/no-op times). `bench/compare.py --project <name>` keys the baseline so
 either can be missing without failing the other.
 
-`baseline.json` never updates itself: every release downloads the CI run's
-`baseline-candidate` artifact and commits it as the new `baseline.json` (see
-"After a release" in `AGENTS.md`). A scenario's new baseline may only go
-down or stay within tolerance of the old one; a rise is a regression to
-explain in the release notes, not a new floor.
+The gate compares a ratio, not a raw mean: GitHub runners vary 30-45% run to
+run on identical code (Laravel `warm` measured 64 ms one run and 93 ms the
+next, confirmed by a local A/B), so a seconds-based baseline chases runner
+noise, not regressions. `bench/compare.py` instead computes
+`ratio = viv_mean / composer_mean` for the same scenario, measured in the
+same job on the same runner in the same minute — the runner's speed cancels
+out of the ratio even though it doesn't cancel out of either mean alone.
+`baseline.json` stores these ratios, e.g. `{"monolog": {"warm": 0.09, ...}}`.
 
 `update-offline` (#165) runs `viv update --offline --no-install` against the
 same warm metadata cache as `update-warm`, but `--offline` reads the cache
@@ -62,7 +65,16 @@ is exactly what makes it gated, unlike `update-warm`: `update-warm`'s time
 still includes hundreds of 304 round trips, so a run-to-run swing there could
 be GitHub, not a regression in `viv` (#159); `update-offline`'s variance is
 ours alone, the same reasoning that gates `warm` and `noop`. Composer has no
-offline update flag, so this scenario runs for `viv` only.
+offline update flag, so `update-offline`'s ratio uses composer's
+`update-warm` mean as its denominator instead: same runner, same minute, so
+it's still a stable number to divide by, even though it isn't the same
+scenario.
+
+`baseline.json` never updates itself: every release downloads the CI run's
+`baseline-candidate` artifact and commits it as the new `baseline.json` (see
+"After a release" in `AGENTS.md`). A scenario's new baseline ratio may only
+go down or stay within tolerance of the old one; a rise is a regression to
+explain in the release notes, not a new floor.
 
 ## Local mirror (#165, widened)
 
