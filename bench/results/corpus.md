@@ -211,13 +211,11 @@ viv 0.7.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 run
 | drupal/recommended-project | 68 | viv | 1.284 | 0.330 | 0.006 | 0.538 |
 
 - drupal/recommended-project/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
-| roots/bedrock | 73 | composer | 11.951 | 3.178 | 0.274 | n/a |
-| roots/bedrock | 73 | riff | 1.512 | 0.412 | 0.164 | n/a |
-| roots/bedrock | 73 | viv | 1.672 | 0.069 | 0.006 | n/a |
+| roots/bedrock | 73 | composer | 1.587 | 1.256 | 0.284 | 0.357 |
+| roots/bedrock | 73 | riff | 0.648 | 0.424 | 0.169 | n/a |
+| roots/bedrock | 73 | viv | 0.509 | 0.068 | 0.006 | 0.369 |
 
 - roots/bedrock/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
-- roots/bedrock/composer: run.sh: failed: composer viv
-- roots/bedrock/viv: run.sh: failed: composer viv
 | composer/composer | 36 | composer | 0.749 | 0.536 | 0.104 | 0.143 |
 | composer/composer | 36 | riff | 0.086 | 0.048 | 0.011 | n/a |
 | composer/composer | 36 | viv | 0.062 | 0.013 | 0.004 | 0.172 |
@@ -233,13 +231,12 @@ viv 0.7.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 run
 | slimphp/Slim-Skeleton | 57 | viv | 0.188 | 0.042 | 0.005 | 0.171 |
 
 - slimphp/Slim-Skeleton/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
-| yiisoft/yii2-app-basic | 93 | composer | 1.262 | 0.911 | 0.199 | n/a |
+| yiisoft/yii2-app-basic | 93 | composer | 1.351 | 0.983 | 0.199 | 0.483 |
 | yiisoft/yii2-app-basic | 93 | riff | n/a | n/a | n/a | n/a |
-| yiisoft/yii2-app-basic | 93 | viv | 0.257 | 0.043 | 0.006 | n/a |
+| yiisoft/yii2-app-basic | 93 | viv | 0.257 | 0.045 | 0.006 | n/a |
 
 - yiisoft/yii2-app-basic/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
-- yiisoft/yii2-app-basic/composer: run.sh: failed: composer viv
-- yiisoft/yii2-app-basic/viv: run.sh: failed: composer viv
+- yiisoft/yii2-app-basic/viv: run.sh: failed: viv
 | statamic/statamic | 160 | composer | 2.487 | 1.916 | 0.898 | 0.490 |
 | statamic/statamic | 160 | riff | 1.320 | 1.312 | 1.042 | n/a |
 | statamic/statamic | 160 | viv | 0.873 | 0.136 | 0.009 | 0.932 |
@@ -254,4 +251,6 @@ viv 0.7.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 run
 laravel/laravel was run twice, at 13:20:33Z and 14:13:42Z; the second run
 reproduced the first within 3%, and the rows above are the later run.
 Machine: AMD Ryzen 9 7900X3D (24 threads), ext4, 2026-09-09. viv 0.7.0,
-composer 2.10.2, riff 0.0.7.
+composer 2.10.2, riff 0.0.7. roots/bedrock and yii2-app-basic were rerun on
+2026-09-09 after the mirror learned to record every repository and
+reference-less dists (#171, #173); yii2's viv update-warm still fails (#172).

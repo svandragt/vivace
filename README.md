@@ -122,9 +122,9 @@ proxies, `installed.*`); the cosmetic differences are listed in
 
 | Scenario | viv vs Composer | viv vs riff |
 |---|---|---|
-| Cold | 4.9× (2.4 to 12.1) | 1.7× (0.6 to 64.4)[^5][^6] |
-| Warm | 18.4× (8.1 to 46.1) | 6.7× (2.0 to 134.4)[^6] |
-| No-op | 43.7× (19.7 to 99.8) | 20.0× (2.8 to 115.8) |
+| Cold | 4.5× (2.4 to 12.1) | 1.8× (0.6 to 64.4)[^5][^6] |
+| Warm | 16.9× (8.1 to 41.2) | 6.7× (2.0 to 134.4)[^6] |
+| No-op | 43.8× (19.7 to 99.8) | 20.1× (2.8 to 115.8) |
 | Update-warm | 0.7× (0.5 to 1.6)[^5] | n/a |
 
 ## Everyday commands
