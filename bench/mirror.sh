@@ -76,17 +76,19 @@ join_url() {
 }
 
 record_dist() {
-  name=$1 url=$2 ref=$3
-  [ -n "$url" ] && [ "$url" != "null" ] && [ -n "$ref" ] && [ "$ref" != "null" ] || return 0
+  name=$1 url=$2 key=$3
+  [ -n "$url" ] && [ "$url" != "null" ] || return 0
   vendor=${name%%/*} pkg=${name#*/}
-  fetch "$url" "$mirror/dists/$vendor/$pkg/$ref.zip"
+  fetch "$url" "$mirror/dists/$vendor/$pkg/$key.zip"
 }
 
 workdir=$(mktemp -d)
 index_py=$(mktemp)
 rewrite_py=$(mktemp)
 v1_listing_py=$(mktemp)
-trap 'rm -rf "$workdir"; rm -f "$index_py" "$rewrite_py" "$v1_listing_py"' EXIT
+listing_py=$(mktemp)
+missing_py=$(mktemp)
+trap 'rm -rf "$workdir"; rm -f "$index_py" "$rewrite_py" "$v1_listing_py" "$listing_py" "$missing_py"' EXIT
 
 cat > "$v1_listing_py" <<'PY'
 # Walks a v1 repository's provider-includes tree breadth-first
@@ -256,13 +258,78 @@ record_p2() {
 }
 
 lock="$proj/composer.lock"
-jq -r '(.packages // []) + (."packages-dev" // []) | .[] |
-  [.name, (.dist.url // ""), (.dist.reference // "")] | @tsv' "$lock" |
-while IFS="$(printf '\t')" read -r name url ref; do
+cat > "$listing_py" <<'PY'
+# Emits name/url/key for every locked dist, tab-separated, so the shell loop
+# below can record each one without re-deriving the key itself.
+import hashlib
+import json
+import sys
+
+
+def dist_key(url, reference):
+    # #173: reference when the lock has one, else the sha1 of the dist URL —
+    # WPackagist-style dists (SVN export, no reference) still get a stable
+    # key this way. Must match bench/run.sh's dist_key.
+    if reference:
+        return reference
+    return hashlib.sha1(url.encode()).hexdigest()
+
+
+with open(sys.argv[1]) as f:
+    lock = json.load(f)
+for key in ("packages", "packages-dev"):
+    for pkg in lock.get(key, []):
+        dist = pkg.get("dist") or {}
+        url = dist.get("url") or ""
+        if not url:
+            continue
+        print(f"{pkg['name']}\t{url}\t{dist_key(url, dist.get('reference') or '')}")
+PY
+python3 "$listing_py" "$lock" |
+while IFS="$(printf '\t')" read -r name url key; do
   [ -n "$name" ] || continue
-  record_dist "$name" "$url" "$ref"
+  record_dist "$name" "$url" "$key"
   record_p2 "$name"
 done
+
+cat > "$missing_py" <<'PY'
+# Asserts every locked dist landed under dists/ (#173): a miss here fails
+# the recording instead of silently falling through to the network (or,
+# under unshare -rn, failing bench/run.sh's cold install instead).
+import hashlib
+import json
+import os
+import sys
+
+
+def dist_key(url, reference):
+    # Must match bench/run.sh's dist_key.
+    if reference:
+        return reference
+    return hashlib.sha1(url.encode()).hexdigest()
+
+
+mirror, lock_path = sys.argv[1], sys.argv[2]
+with open(lock_path) as f:
+    lock = json.load(f)
+missing = []
+for section in ("packages", "packages-dev"):
+    for pkg in lock.get(section, []):
+        dist = pkg.get("dist") or {}
+        url = dist.get("url") or ""
+        if not url:
+            continue
+        vendor, name = pkg["name"].split("/", 1)
+        key = dist_key(url, dist.get("reference") or "")
+        path = os.path.join(mirror, "dists", vendor, name, f"{key}.zip")
+        if not os.path.isfile(path):
+            missing.append(f"{pkg['name']} -> {path}")
+if missing:
+    for m in missing:
+        print(f"mirror.sh: missing dist: {m}", file=sys.stderr)
+    sys.exit(1)
+PY
+python3 "$missing_py" "$mirror" "$lock"
 
 if [ -f "$proj/composer.json" ]; then
   jq -r '((.require // {}) + (."require-dev" // {})) | keys[]' "$proj/composer.json" |
@@ -302,11 +369,35 @@ PY
 cat > "$rewrite_py" <<'PY'
 # Points every dist URL in the recorded p2 files at the mirror's own,
 # not-yet-known port; bench/run.sh substitutes __PORT__ once it picks one.
-# Derives the URL from the package name and dist reference every time
-# (never from what's already on disk), so this is safe to rerun.
+# Derives the URL from the package name and dist key every time (never from
+# what's already on disk), so this is safe to rerun.
+import hashlib
 import json
 import os
 import sys
+
+
+def dist_key(url, reference):
+    # #173: reference when the lock has one, else the sha1 of the dist URL —
+    # WPackagist-style dists (SVN export, no reference) still get a stable
+    # key this way. Must match bench/run.sh's dist_key.
+    if reference:
+        return reference
+    return hashlib.sha1(url.encode()).hexdigest()
+
+
+PREFIX = "http://127.0.0.1:__PORT__/dists/"
+
+
+def existing_key(url):
+    # A p2 file already rewritten by an earlier mirror.sh run has its dist
+    # url pointing at the mirror itself; a no-reference dist's key must be
+    # read back off that url rather than re-derived (sha1 of the mirror's
+    # own url, not the original remote one, would drift on every rerun).
+    if url.startswith(PREFIX) and url.endswith(".zip"):
+        return url[len(PREFIX):-len(".zip")].rsplit("/", 1)[-1]
+    return None
+
 
 mirror = sys.argv[1]
 p2_root = os.path.join(mirror, "p2")
@@ -331,9 +422,10 @@ for root, _dirs, files in os.walk(p2_root):
                 versions = versions.values()
             for v in versions:
                 dist = v.get("dist")
-                if not dist or not dist.get("reference"):
+                if not dist or not dist.get("url"):
                     continue
-                new_url = f"http://127.0.0.1:__PORT__/dists/{vendor}/{pkg}/{dist['reference']}.zip"
+                key = dist.get("reference") or existing_key(dist["url"]) or dist_key(dist["url"], "")
+                new_url = f"{PREFIX}{vendor}/{pkg}/{key}.zip"
                 if dist.get("url") != new_url:
                     dist["url"] = new_url
                     changed = True

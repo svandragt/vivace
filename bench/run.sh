@@ -71,13 +71,24 @@ if [ -n "$mirror" ]; then
   rewrite_py=$(mktemp)
   cat > "$rewrite_py" <<'PY'
 # Points composer.json/composer.lock at the bench mirror's local server:
-# every dist URL in the lock, derived from name + reference like
+# every dist URL in the lock, derived from name + dist key like
 # bench/mirror.sh derives its own, and composer.json's repositories, kept
 # to the one composer-type repository plus disabling Packagist so cold
 # resolves against the mirror alone. secure-http is turned off for this
 # copy only: the mirror is deliberately plain HTTP on 127.0.0.1.
+import hashlib
 import json
 import sys
+
+
+def dist_key(url, reference):
+    # #173: reference when the lock has one, else the sha1 of the dist URL —
+    # WPackagist-style dists (SVN export, no reference) still get a stable
+    # key this way. Must match bench/mirror.sh's dist_key.
+    if reference:
+        return reference
+    return hashlib.sha1(url.encode()).hexdigest()
+
 
 json_path, lock_path, port = sys.argv[1], sys.argv[2], sys.argv[3]
 
@@ -86,10 +97,11 @@ with open(lock_path) as f:
 for key in ("packages", "packages-dev"):
     for pkg in lock.get(key, []):
         dist = pkg.get("dist")
-        if not dist or not dist.get("reference"):
+        if not dist or not dist.get("url"):
             continue
         vendor, name = pkg["name"].split("/", 1)
-        dist["url"] = f"http://127.0.0.1:{port}/dists/{vendor}/{name}/{dist['reference']}.zip"
+        dist_id = dist_key(dist["url"], dist.get("reference") or "")
+        dist["url"] = f"http://127.0.0.1:{port}/dists/{vendor}/{name}/{dist_id}.zip"
 with open(lock_path, "w") as f:
     json.dump(lock, f, indent=4)
 
