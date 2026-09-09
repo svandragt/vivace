@@ -50,6 +50,7 @@ impl Downloaded {
 const MAX_RETRIES: u32 = 3;
 
 /// Outcome of [`Fetcher::get_conditional`].
+#[derive(Debug)]
 pub enum Conditional {
     /// A body arrived (first fetch, or the cache was stale).
     Fresh {
@@ -310,14 +311,23 @@ impl Fetcher {
                 HeaderValue::from_str(since).context("invalid If-Modified-Since value")?,
             ));
         }
-        let response = self.send_with_retries(label, url, &headers).await?;
-        match response.status() {
+        // `label_url` is `url` itself: unlike `fetch`'s dist path (#98),
+        // repository metadata never has a secret substituted into it, so
+        // there's nothing to redact that isn't already in `url`. Only the
+        // final response and its own URL come back — the redirect target
+        // never reaches the caller, so the caller's cache stays keyed on the
+        // configured `url` no matter how many hops it took to fill.
+        let (response, final_url, _label, hops, hop_started) = self
+            .follow_redirects(label, url.clone(), url.clone(), &headers)
+            .await?;
+        let host = final_url.host_str().unwrap_or("").to_string();
+        let outcome = match response.status() {
             StatusCode::NOT_MODIFIED => Ok(Conditional::NotModified),
             StatusCode::NOT_FOUND => Ok(Conditional::NotFound),
             _ => {
                 let response = response
                     .error_for_status()
-                    .with_context(|| format!("fetching {}", redact(url)))?;
+                    .with_context(|| format!("fetching {}", redact(&final_url)))?;
                 let last_modified = response
                     .headers()
                     .get(reqwest::header::LAST_MODIFIED)
@@ -329,7 +339,17 @@ impl Fetcher {
                     last_modified,
                 })
             }
-        }
+        };
+        let elapsed = hop_started.elapsed();
+        self.record_hop(&host, elapsed);
+        tracing::debug!(
+            label,
+            host,
+            hop = hops,
+            elapsed_ms = elapsed.as_millis(),
+            "fetch hop (body complete)"
+        );
+        outcome
     }
 
     /// `POST url` with `packages[]=<name>` form fields, for
@@ -418,73 +438,114 @@ impl Fetcher {
         label_url: Url,
         temp_dir: &Path,
     ) -> Result<(Downloaded, String)> {
-        require_https(pkg_name, &start_url, self.secure_http)?;
+        let (response, url, label, hops, hop_started) = self
+            .follow_redirects(pkg_name, start_url, label_url, &[])
+            .await?;
+        let host = url.host_str().unwrap_or("").to_string();
+        let status = response.status();
+        let response = response.error_for_status().map_err(|err| {
+            let hint = credential_hint(
+                status.as_u16(),
+                url.host_str().unwrap_or(""),
+                self.auth.header_for(&url).is_some(),
+            )
+            .unwrap_or_default();
+            // `err`'s own Display embeds the request URL verbatim
+            // (reqwest's `Error::fmt`); strip it so a URL with
+            // credentials never reaches this message unredacted.
+            anyhow::anyhow!("{} fetching {}{hint}", err.without_url(), redact(&label))
+        })?;
+        // Timed through the body read (not just headers), so this hop's
+        // number is comparable to the redirect hops `follow_redirects`
+        // already recorded and reflects what actually holds up the fetch: a
+        // GitHub zipball's headers arrive quickly, the archive bytes behind
+        // them do not.
+        let (downloaded, sha1_hex) = read_body(response, temp_dir)
+            .await
+            .with_context(|| format!("reading response body from {}", redact(&label)))?;
+        let elapsed = hop_started.elapsed();
+        self.record_hop(&host, elapsed);
+        tracing::debug!(
+            package = %pkg_name,
+            host,
+            hop = hops,
+            status = status.as_u16(),
+            bytes = downloaded.len()?,
+            elapsed_ms = elapsed.as_millis(),
+            "fetch hop (body complete)"
+        );
+        Ok((downloaded, sha1_hex))
+    }
+
+    /// Follow redirects from `start_url`: the loop `get` (dist downloads) and
+    /// `get_conditional` (repository metadata, #174) both need — the same
+    /// [`MAX_REDIRECTS`] hop limit, a secure-http check on every hop's
+    /// target, and a `record_hop` timing entry for every redirect hop.
+    /// Authorization is dropped on a cross-host hop for free: each hop asks
+    /// `send_with_retries` for a fresh header via `Auth::header_for(&url)`,
+    /// which looks the credential up by that hop's own host.
+    /// `extra_headers` (`get_conditional`'s `If-Modified-Since`/`If-None-Match`)
+    /// is sent on the request to `start_url` and every hop that stays on its
+    /// host, and dropped the moment a hop crosses to a different host — a
+    /// mirror shouldn't get to decide whether the configured repository's
+    /// cache is stale.
+    ///
+    /// `label_url` is `get`'s #98 dance (see its own doc comment above): the
+    /// URL named in errors/logs for the first hop, in case it differs from
+    /// `start_url`. Returns the final (non-redirect) response together with
+    /// its actual request URL, its label, the hop count, and the `Instant`
+    /// its request started at — a caller with a body left to read (`get`)
+    /// records that hop's timing itself once the body finishes, exactly as
+    /// before this helper existed; `get_conditional` has no body to wait on
+    /// past a 304/404 and records right away.
+    async fn follow_redirects(
+        &self,
+        name: &str,
+        start_url: Url,
+        label_url: Url,
+        extra_headers: &[(HeaderName, HeaderValue)],
+    ) -> Result<(reqwest::Response, Url, Url, u8, std::time::Instant)> {
+        require_https(name, &start_url, self.secure_http)?;
+        let start_host = start_url.host_str().unwrap_or("").to_string();
         let mut url = start_url;
         let mut label = label_url;
         let mut hops = 0u8;
         loop {
             if redirect_budget_exhausted(hops) {
-                bail!("{pkg_name}: too many redirects fetching {}", redact(&label));
+                bail!("{name}: too many redirects fetching {}", redact(&label));
             }
             hops += 1;
             let host = url.host_str().unwrap_or("").to_string();
             let hop_started = std::time::Instant::now();
-            let response = self.send_with_retries(pkg_name, &url, &[]).await?;
-            if response.status().is_redirection() {
-                let elapsed = hop_started.elapsed();
-                self.record_hop(&host, elapsed);
-                tracing::debug!(
-                    package = %pkg_name,
-                    host,
-                    hop = hops,
-                    status = response.status().as_u16(),
-                    elapsed_ms = elapsed.as_millis(),
-                    "fetch hop (redirect)"
-                );
-                let location = response
-                    .headers()
-                    .get(reqwest::header::LOCATION)
-                    .context("redirect response has no Location header")?
-                    .to_str()
-                    .context("redirect Location header is not valid UTF-8")?
-                    .to_string();
-                url = redirect_target(&url, &location)?;
-                require_https(pkg_name, &url, self.secure_http)?;
-                label = url.clone();
-                continue;
+            let headers: &[(HeaderName, HeaderValue)] = if host == start_host {
+                extra_headers
+            } else {
+                &[]
+            };
+            let response = self.send_with_retries(name, &url, headers).await?;
+            if !response.status().is_redirection() {
+                return Ok((response, url, label, hops, hop_started));
             }
-            let status = response.status();
-            let response = response.error_for_status().map_err(|err| {
-                let hint = credential_hint(
-                    status.as_u16(),
-                    url.host_str().unwrap_or(""),
-                    self.auth.header_for(&url).is_some(),
-                )
-                .unwrap_or_default();
-                // `err`'s own Display embeds the request URL verbatim
-                // (reqwest's `Error::fmt`); strip it so a URL with
-                // credentials never reaches this message unredacted.
-                anyhow::anyhow!("{} fetching {}{hint}", err.without_url(), redact(&label))
-            })?;
-            // Timed through the body read (not just headers), so this hop's
-            // number is comparable to the redirect hop above and reflects
-            // what actually holds up the fetch: a GitHub zipball's headers
-            // arrive quickly, the archive bytes behind them do not.
-            let (downloaded, sha1_hex) = read_body(response, temp_dir)
-                .await
-                .with_context(|| format!("reading response body from {}", redact(&label)))?;
             let elapsed = hop_started.elapsed();
             self.record_hop(&host, elapsed);
             tracing::debug!(
-                package = %pkg_name,
+                label = name,
                 host,
                 hop = hops,
-                status = status.as_u16(),
-                bytes = downloaded.len()?,
+                status = response.status().as_u16(),
                 elapsed_ms = elapsed.as_millis(),
-                "fetch hop (body complete)"
+                "fetch hop (redirect)"
             );
-            return Ok((downloaded, sha1_hex));
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .context("redirect response has no Location header")?
+                .to_str()
+                .context("redirect Location header is not valid UTF-8")?
+                .to_string();
+            url = redirect_target(&url, &location)?;
+            require_https(name, &url, self.secure_http)?;
+            label = url.clone();
         }
     }
 
@@ -1012,5 +1073,142 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result, Conditional::NotModified));
+    }
+
+    /// Accepts one connection on `ip`, records its `Authorization` header
+    /// (empty string if absent), then answers with `status_line` and
+    /// `extra_headers` (each already `\r\n`-terminated) followed by `body`.
+    /// Same reasoning as `tests/repository.rs`'s `spawn_recording_server`: a
+    /// `packages.json` response is small enough that a raw `TcpListener`
+    /// beats a mock-server dependency for one hop.
+    fn spawn_responding_server(
+        ip: &str,
+        status_line: &str,
+        extra_headers: &str,
+        body: &'static [u8],
+    ) -> (std::net::SocketAddr, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind((ip, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let status_line = status_line.to_string();
+        let extra_headers = extra_headers.to_string();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stream.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let text = String::from_utf8_lossy(&request);
+            let authorization = text
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_string())
+                .unwrap_or_default();
+            let _ = tx.send(authorization);
+
+            let response = format!(
+                "{status_line}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body);
+        });
+        (addr, rx)
+    }
+
+    #[tokio::test]
+    async fn get_conditional_follows_a_redirect_to_another_host() {
+        // 127.0.0.1 and 127.0.0.2 are both loopback (RFC 5735) but distinct
+        // hosts, so this exercises the cross-host Authorization-dropping
+        // rule with no real DNS or network access.
+        let (target_addr, target_auth) =
+            spawn_responding_server("127.0.0.2", "HTTP/1.1 200 OK", "", br#"{"ok":true}"#);
+        let location_headers = format!("Location: http://{target_addr}/packages.json\r\n");
+        let (configured_addr, configured_auth) =
+            spawn_responding_server("127.0.0.1", "HTTP/1.1 302 Found", &location_headers, b"");
+
+        let project = tempfile::tempdir().unwrap();
+        fs_err::write(
+            project.path().join("auth.json"),
+            r#"{"http-basic": {"127.0.0.1": {"username": "user", "password": "pass"}}}"#,
+        )
+        .unwrap();
+        let auth = Auth::load(project.path()).unwrap();
+        let fetcher = Fetcher::new(auth).unwrap().secure_http(false);
+
+        let configured_url =
+            Url::parse(&format!("http://{configured_addr}/packages.json")).unwrap();
+        let result = fetcher
+            .get_conditional("acme/repo", &configured_url, None)
+            .await
+            .unwrap();
+        let Conditional::Fresh { body, .. } = result else {
+            panic!("expected a fresh body from the redirect target");
+        };
+        assert_eq!(body, br#"{"ok":true}"#);
+
+        // `get_conditional` never returns the redirect target's URL, only
+        // the body — the caller (composer_repo) can only ever cache this
+        // under `configured_url`, which is the property this test stands in
+        // for since caching itself lives outside this file.
+        let sent_to_configured = configured_auth
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(sent_to_configured, "Basic dXNlcjpwYXNz");
+        let sent_to_target = target_auth.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            sent_to_target, "",
+            "Authorization for 127.0.0.1 must not follow the redirect to 127.0.0.2"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_conditional_names_the_url_when_the_hop_limit_is_exceeded() {
+        // Redirects to itself forever; `follow_redirects` must give up at
+        // MAX_REDIRECTS instead of looping.
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            loop {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = stream.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buf[..n]);
+                    if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let response = "HTTP/1.1 302 Found\r\nLocation: /\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        let fetcher = Fetcher::new(Auth::default()).unwrap().secure_http(false);
+        let url = Url::parse(&format!("http://{addr}/packages.json")).unwrap();
+        let err = fetcher
+            .get_conditional("acme/repo", &url, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(&addr.to_string()), "{err}");
     }
 }
