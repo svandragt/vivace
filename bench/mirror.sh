@@ -1,11 +1,25 @@
 #!/usr/bin/env sh
-# Records one project's dists and Packagist p2 metadata into a local mirror
-# so bench/run.sh's cold and update-warm scenarios need no network (#165,
-# widened). The recorded p2 files are then rewritten so every dist URL
-# points at a placeholder local server address (http://127.0.0.1:__PORT__/...)
-# that bench/run.sh fills in with the port it actually picks at serve time.
+# Records one project's dists and p2 metadata into a local mirror so
+# bench/run.sh's cold and update-warm scenarios need no network (#165,
+# widened; #171 widened further to every repository, not just Packagist).
+# The recorded p2 files are then rewritten so every dist URL points at a
+# placeholder local server address (http://127.0.0.1:__PORT__/...) that
+# bench/run.sh fills in with the port it actually picks at serve time.
 #
 # Usage: bench/mirror.sh <project-dir> <mirror-dir>
+#
+# #171: metadata is recorded from every repository the project's
+# composer.json names, not just Packagist. For each locked package (plus
+# everything in require/require-dev), Packagist is tried first (unless
+# disabled with a `{"packagist.org": false}` repositories entry), then each
+# `"composer"`-type repository in the order composer.json lists them,
+# stopping at the first that has the package. A v2 repository (`metadata-url`)
+# is recorded as-is. A v1 repository (`providers-url`/`provider-includes`,
+# e.g. asset-packagist.org) has its provider listing walked once per
+# repository to find the package's hash, and the resulting per-package
+# `packages` object is written straight into the mirror's own p2 shape — see
+# `src/repository.rs`'s `parse_provider_versions_sync`, which accepts that
+# same version-keyed shape.
 #
 # Idempotent: an already-recorded dist or p2 file is left alone, and the
 # rewrite step always derives the URL from the package name and dist
@@ -29,17 +43,36 @@ fetch() {
   url=$1 dest=$2
   [ -f "$dest" ] && return 0
   mkdir -p "$(dirname "$dest")"
+  rc=0
   case $url in
     https://api.github.com/*|https://github.com/*|https://codeload.github.com/*)
       if [ -n "$token" ]; then
-        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -H "Authorization: Bearer $token" -o "$dest.tmp" "$url"
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -H "Authorization: Bearer $token" -o "$dest.tmp" "$url" || rc=$?
       else
-        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$dest.tmp" "$url"
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$dest.tmp" "$url" || rc=$?
       fi
       ;;
-    *) curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$dest.tmp" "$url" ;;
+    *) curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$dest.tmp" "$url" || rc=$? ;;
   esac
+  # Explicit rc, not just curl's own exit status: a caller using fetch as an
+  # `if` condition (record_p2's per-repository fallback, #171) runs under a
+  # `set -e` that's suspended for the whole function body, so falling
+  # through to `mv` after a failed curl would move a nonexistent .tmp file
+  # right past the failure instead of reporting it.
+  [ "$rc" -eq 0 ] || return "$rc"
   mv "$dest.tmp" "$dest"
+}
+
+# Joins a repository base URL to a path from its packages.json
+# (metadata-url/providers-url/provider-includes keys are sometimes absolute,
+# sometimes relative) — not a full RFC 3986 join, just enough for the two
+# shapes Packagist-alike repositories actually send.
+join_url() {
+  case $2 in
+    http://*|https://*) printf '%s' "$2" ;; # already absolute (Packagist's own metadata-url)
+    /*) printf '%s%s' "${1%/}" "$2" ;;
+    *)  printf '%s/%s' "${1%/}" "$2" ;;
+  esac
 }
 
 record_dist() {
@@ -49,16 +82,176 @@ record_dist() {
   fetch "$url" "$mirror/dists/$vendor/$pkg/$ref.zip"
 }
 
+workdir=$(mktemp -d)
+index_py=$(mktemp)
+rewrite_py=$(mktemp)
+v1_listing_py=$(mktemp)
+trap 'rm -rf "$workdir"; rm -f "$index_py" "$rewrite_py" "$v1_listing_py"' EXIT
+
+cat > "$v1_listing_py" <<'PY'
+# Walks a v1 repository's provider-includes tree breadth-first
+# (ComposerRepository::loadProviderListings, mirrored in src/repository.rs's
+# load_provider_listing) and writes every package name it lists, tab-
+# separated with its providers-url hash, to $3. Fetches through curl itself
+# (same retry flags as mirror.sh's own fetch()) rather than shelling back
+# into it, since this is the one place the script needs real JSON recursion.
+import json
+import os
+import subprocess
+import sys
+from collections import deque
+
+repo_base, workdir, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+includes = json.loads(sys.stdin.read())
+
+
+def fetch(url, dest):
+    if os.path.exists(dest):
+        return True
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".tmp"
+    rc = subprocess.run(
+        ["curl", "-fsSL", "--retry", "5", "--retry-all-errors", "--retry-delay", "2", "-o", tmp, url]
+    ).returncode
+    if rc != 0:
+        return False
+    os.rename(tmp, dest)
+    return True
+
+
+def join(base, path):
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    return f"{base.rstrip('/')}{path}" if path.startswith("/") else f"{base.rstrip('/')}/{path}"
+
+
+listing = {}
+queue = deque(includes.items())
+while queue:
+    path, meta = queue.popleft()
+    sha = meta.get("sha256")
+    if not sha:
+        continue
+    file_path = path.replace("%hash%", sha)
+    cache = os.path.join(workdir, "incl-" + file_path.replace("/", "_").replace("%", "_"))
+    if not fetch(join(repo_base, file_path), cache):
+        continue
+    with open(cache) as f:
+        data = json.load(f)
+    for name, entry in (data.get("providers") or {}).items():
+        h = entry.get("sha256")
+        if h:
+            listing[name.lower()] = h
+    for k, v in (data.get("provider-includes") or {}).items():
+        queue.append((k, v))
+
+with open(out_path, "w") as f:
+    for name, h in listing.items():
+        f.write(f"{name}\t{h}\n")
+PY
+
+# Builds the ordered repository list (Packagist first, unless disabled, then
+# composer.json's "composer"-type repositories in listed order) into
+# $workdir/repo-<i>.*: .base/.kind always, plus .metadata_url (v2) or
+# .providers_url/.listing (v1). Only metadata-url and providers-url/
+# provider-includes are handled — Satis's older eager includes/inline
+# packages output isn't in scope, neither WPackagist-alike nor
+# asset-packagist.org repositories use it.
+repo_count=0
+add_repo() {
+  base=$1
+  root="$workdir/root-$repo_count.json"
+  fetch "$(join_url "$base" "/packages.json")" "$root" || return 0
+  metadata_url=$(jq -r '.["metadata-url"] // empty' "$root")
+  if [ -n "$metadata_url" ]; then
+    echo "$base" > "$workdir/repo-$repo_count.base"
+    echo "v2" > "$workdir/repo-$repo_count.kind"
+    echo "$metadata_url" > "$workdir/repo-$repo_count.metadata_url"
+    repo_count=$((repo_count + 1))
+    return 0
+  fi
+  providers_url=$(jq -r '.["providers-url"] // empty' "$root")
+  if [ -n "$providers_url" ]; then
+    echo "$base" > "$workdir/repo-$repo_count.base"
+    echo "v1" > "$workdir/repo-$repo_count.kind"
+    echo "$providers_url" > "$workdir/repo-$repo_count.providers_url"
+    jq -c '.["provider-includes"] // {}' "$root" |
+      python3 "$v1_listing_py" "$base" "$workdir" "$workdir/repo-$repo_count.listing"
+    repo_count=$((repo_count + 1))
+  fi
+}
+
+packagist_disabled=false
+composer_repos_file="$workdir/composer-repos.txt"
+: > "$composer_repos_file"
+if [ -f "$proj/composer.json" ]; then
+  packagist_disabled=$(jq -r '
+    (.repositories // []) | if type == "array"
+      then any(.[]; type == "object" and has("packagist.org") and .["packagist.org"] == false)
+      else false
+    end' "$proj/composer.json")
+  jq -r '(.repositories // []) | if type == "array"
+    then .[] | select(.type == "composer") | .url
+    else empty
+  end' "$proj/composer.json" > "$composer_repos_file"
+fi
+
+[ "$packagist_disabled" = "true" ] || add_repo "https://repo.packagist.org"
+while IFS= read -r url; do
+  [ -n "$url" ] || continue
+  add_repo "$url"
+done < "$composer_repos_file"
+
 record_p2() {
   name=$1
   case $name in */*) ;; *) return 0 ;; esac # skip php/ext-* virtual packages
   vendor=${name%%/*} pkg=${name#*/}
-  for suffix in "" "~dev"; do
-    dest="$mirror/p2/$vendor/$pkg$suffix.json"
-    [ -f "$dest" ] && continue
-    # A missing dev-branch file (no default-branch releases) is normal;
-    # don't fail the whole recording over it.
-    fetch "https://repo.packagist.org/p2/$vendor/$pkg$suffix.json" "$dest" || true
+  # Not "dest": fetch() assigns its own $1/$2 straight into the caller's
+  # shell (sh has no function-local scoping), so a name shared with fetch()'s
+  # own "dest" parameter gets silently clobbered the moment the v1 branch
+  # below calls fetch() for something other than this file (#171 regression
+  # caught by an end-to-end run, not the syntax check).
+  p2_path="$mirror/p2/$vendor/$pkg.json"
+  [ -f "$p2_path" ] && return 0
+  i=0
+  while [ "$i" -lt "$repo_count" ]; do
+    base=$(cat "$workdir/repo-$i.base")
+    case $(cat "$workdir/repo-$i.kind") in
+      v2)
+        meta=$(cat "$workdir/repo-$i.metadata_url")
+        path=$(printf '%s' "$meta" | sed "s#%package%#$name#")
+        if fetch "$(join_url "$base" "$path")" "$p2_path"; then
+          # A missing dev-branch file (no default-branch releases) is
+          # normal; don't fail the whole recording over it.
+          devpath=$(printf '%s' "$meta" | sed "s#%package%#$name~dev#")
+          fetch "$(join_url "$base" "$devpath")" "$mirror/p2/$vendor/$pkg~dev.json" || true
+          return 0
+        fi
+        ;;
+      v1)
+        listing="$workdir/repo-$i.listing"
+        hash=""
+        [ -f "$listing" ] && hash=$(awk -F'\t' -v n="$name" '$1 == n { print $2; exit }' "$listing")
+        if [ -n "$hash" ]; then
+          purl=$(cat "$workdir/repo-$i.providers_url")
+          ppath=$(printf '%s' "$purl" | sed "s#%package%#$name#; s#%hash%#$hash#")
+          cache="$workdir/prov-$i-$(printf '%s' "$name" | tr '/' '_').json"
+          if fetch "$(join_url "$base" "$ppath")" "$cache" &&
+             jq -e --arg n "$name" '(.packages // {})[$n]' "$cache" >/dev/null 2>&1; then
+            # v1 keys each entry by version label (an object), the same
+            # shape src/repository.rs's Provider::Providers arm accepts
+            # directly; flattened to a plain list here anyway so every
+            # recorded p2 file — v1 or v2 sourced — has the one shape the
+            # rewrite step below already assumes.
+            jq -c --arg n "$name" \
+              '{packages: {($n): ((.packages // {})[$n] | if type == "object" then [.[]] else . end)}}' \
+              "$cache" > "$p2_path"
+            return 0
+          fi
+        fi
+        ;;
+    esac
+    i=$((i + 1))
   done
 }
 
@@ -78,10 +271,6 @@ if [ -f "$proj/composer.json" ]; then
     record_p2 "$name"
   done
 fi
-
-index_py=$(mktemp)
-rewrite_py=$(mktemp)
-trap 'rm -f "$index_py" "$rewrite_py"' EXIT
 
 cat > "$index_py" <<'PY'
 # Rebuilds packages.json's available-packages list from whatever p2 files
@@ -133,6 +322,13 @@ for root, _dirs, files in os.walk(p2_root):
             if "/" not in name:
                 continue
             vendor, pkg = name.split("/", 1)
+            # A repository's own metadata-url can serve either shape (v2's
+            # usual plain list, or a version-keyed object like v1's/
+            # wp-packages.org's) — src/repository.rs accepts both
+            # (parse_provider_versions_sync), so this does too rather than
+            # assuming every recorded file is a list.
+            if isinstance(versions, dict):
+                versions = versions.values()
             for v in versions:
                 dist = v.get("dist")
                 if not dist or not dist.get("reference"):

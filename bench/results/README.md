@@ -67,9 +67,17 @@ offline update flag, so this scenario runs for `viv` only.
 ## Local mirror (#165, widened)
 
 `bench/mirror.sh <project-dir> <mirror-dir>` records a project once: every
-locked package's dist zip, and the Packagist p2 metadata (both the release
-and `~dev` files) for every locked package plus everything named in
-`composer.json`'s require/require-dev. It then rewrites every dist URL in
+locked package's dist zip, and p2 metadata (both the release and `~dev`
+files) for every locked package plus everything named in `composer.json`'s
+require/require-dev. Metadata comes from every repository the project
+names, not just Packagist (#171): Packagist is tried first (unless disabled
+with a `{"packagist.org": false}` entry), then each `"composer"`-type
+repository in listed order, stopping at the first that has the package. A
+v2 (`metadata-url`) repository is recorded as-is; a v1
+(`providers-url`/`provider-includes`) one, e.g. `asset-packagist.org`'s
+bower-asset/npm-asset packages, has its provider listing walked once to
+find each package's hash, and the per-package `packages` object recorded
+straight into the mirror's own p2 files. It then rewrites every dist URL in
 the recorded p2 files to point at a not-yet-known local port
 (`http://127.0.0.1:__PORT__/...`), derived from the package name and dist
 reference so the rewrite never depends on what the URL already was.
