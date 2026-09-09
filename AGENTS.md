@@ -151,3 +151,9 @@ check locally against the committed baseline.
 2. Triage the milestones with the `triage-milestones` skill
    (`.claude/skills/triage-milestones/`): prune the current one to its
    theme and seed the next.
+3. Refresh the bench baseline: download the `baseline-candidate` artifact
+   from the release commit's CI run (`gh run download <run-id> --name
+   baseline-candidate --dir /tmp/baseline`) and commit its `baseline.json`
+   as `bench/results/baseline.json`. A scenario's new baseline may only go
+   down or stay within tolerance of the old one; a rise is a regression to
+   explain in the release notes, not a new floor.

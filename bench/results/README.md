@@ -40,6 +40,20 @@ Notes
 
 Raw hyperfine JSON: `composer.json`, `riff.json`, `viv.json`, `presto.json`.
 
+## CI bench gate (#164)
+
+The `bench` job runs two projects, gated against `baseline.json`'s
+per-project entry: `tests/fixtures/monolog` (2 packages, a fast smoke
+check) and `bench/laravel` (101 packages, closer to a real project's
+warm/no-op times). `bench/compare.py --project <name>` keys the baseline so
+either can be missing without failing the other.
+
+`baseline.json` never updates itself: every release downloads the CI run's
+`baseline-candidate` artifact and commits it as the new `baseline.json` (see
+"After a release" in `AGENTS.md`). A scenario's new baseline may only go
+down or stay within tolerance of the old one; a rise is a regression to
+explain in the release notes, not a new floor.
+
 ## Corpus
 
 The same four scenarios run across the pinned public projects
