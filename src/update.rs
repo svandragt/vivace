@@ -31,7 +31,11 @@ use crate::link::LinkMode;
 use crate::normalize;
 use crate::repository::{HttpTransport, Repository};
 use crate::scripts;
-use crate::solver::{self, pool_builder::UpdateAllowMode, transaction::ResolvedPackage};
+use crate::solver::{
+    self,
+    pool_builder::{AdvisoryFilter, UpdateAllowMode},
+    transaction::ResolvedPackage,
+};
 
 /// `viv update` flags: `docs/resolver-design.md` stages 4 (full update) and
 /// 5 (partial update, `--minimal-changes`, `--lock`).
@@ -101,6 +105,43 @@ pub struct UpdateArgs {
     /// (`composer update --no-install`): today's `viv update` behaviour.
     #[arg(long)]
     pub no_install: bool,
+    /// Allows installing a version a known security advisory covers or a
+    /// package Packagist marks abandoned, instead of blocking it by default
+    /// (#175, `audit.block-insecure`/`audit.block-abandoned`). Also settable
+    /// via `COMPOSER_NO_SECURITY_BLOCKING=1`.
+    #[arg(long)]
+    pub no_blocking: bool,
+    /// Deprecated alias for `--no-blocking`.
+    #[arg(long = "no-security-blocking", hide = true)]
+    pub no_security_blocking: bool,
+}
+
+/// `Platform::getBoolEnv('COMPOSER_NO_SECURITY_BLOCKING')`: non-empty and not
+/// the literal `"0"` (`main.rs`'s own `network_disabled` reads
+/// `COMPOSER_DISABLE_NETWORK` the same way). Shared with `require.rs`'s
+/// `--no-blocking`/`--no-security-blocking`.
+pub(crate) fn no_security_blocking_env() -> bool {
+    std::env::var("COMPOSER_NO_SECURITY_BLOCKING")
+        .is_ok_and(|value| !value.is_empty() && value != "0")
+}
+
+/// `AdvisoryFilter`'s config/flag half, read the same way `bin_dir` reads
+/// `config.bin-dir` off the raw root `Value` rather than the fuller
+/// `lock::parse_root` (`update`/`require` each only need this one piece).
+/// `no_blocking` is the caller's own CLI flag(s), already OR'd with the
+/// deprecated alias; the env var applies on top either way.
+pub(crate) fn audit_config_and_no_blocking(
+    root: &Value,
+    no_blocking: bool,
+) -> Result<(crate::lock::AuditConfig, bool)> {
+    let audit_config: crate::lock::AuditConfig = root
+        .pointer("/config/audit")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .context("parsing config.audit")?
+        .unwrap_or_default();
+    Ok((audit_config, no_blocking || no_security_blocking_env()))
 }
 
 pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -265,6 +306,14 @@ async fn solve(
     };
     let fetcher = build_fetcher(project_dir, root, offline)?;
     let repo = build_repository(root, &cache_dir, &fetcher).await?;
+    let (audit_config, no_blocking) =
+        audit_config_and_no_blocking(root, args.no_blocking || args.no_security_blocking)?;
+    let advisories_transport = crate::audit::HttpTransport { fetcher: &fetcher };
+    let advisories = Some(AdvisoryFilter {
+        transport: &advisories_transport,
+        audit: &audit_config,
+        no_blocking,
+    });
 
     if args.packages.is_empty() {
         // #90: a warm update's closure is almost always the previous
@@ -286,6 +335,7 @@ async fn solve(
             args.prefer_lowest,
             &seed,
             preferred,
+            advisories,
         )
         .await;
     }
@@ -323,6 +373,7 @@ async fn solve(
         mode,
         &seed,
         preferred,
+        advisories,
     )
     .await
 }

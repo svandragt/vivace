@@ -182,6 +182,7 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
             false,
             false,
             args.no_install,
+            false,
         )?;
         out(&format!("Wrote {}", composer_json_path.display()));
     }

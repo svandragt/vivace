@@ -623,12 +623,39 @@ impl Default for Config {
     }
 }
 
-/// `config.audit`: `viv audit`'s ignore list and abandoned-package policy.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// `config.audit`: `viv audit`'s ignore list and abandoned-package policy,
+/// plus the update/require pool filter's own switches (#175,
+/// `AdvisoriesPolicyConfig`/`AbandonedPolicyConfig::fromRawConfig`'s
+/// BC-audit-config path — the new `config.policy.*` surface those classes
+/// also read is not ported, matching this crate's "port behaviour, not
+/// structure" rule for a feature vivace doesn't otherwise expose).
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AuditConfig {
     pub ignore: AuditIgnore,
     pub abandoned: AbandonedPolicy,
+    /// `config.audit.block-insecure`: drop a pool version a known security
+    /// advisory covers during `update`/`add`/`rm`
+    /// (`$auditConfig['block-insecure'] ?? true`). Composer default: true.
+    #[serde(rename = "block-insecure")]
+    pub block_insecure: bool,
+    /// `config.audit.block-abandoned`: same, for an abandoned package
+    /// (`$auditConfig['block-abandoned'] ?? false`). Composer default:
+    /// false — unlike `abandoned` above (`viv audit`'s own default-`fail`
+    /// policy), this only gates the update/require pool filter.
+    #[serde(rename = "block-abandoned")]
+    pub block_abandoned: bool,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        AuditConfig {
+            ignore: AuditIgnore::default(),
+            abandoned: AbandonedPolicy::default(),
+            block_insecure: true,
+            block_abandoned: false,
+        }
+    }
 }
 
 /// `config.audit.ignore`: either a bare list of advisory IDs/package names

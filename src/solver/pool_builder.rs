@@ -40,6 +40,8 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::{Map, Value};
 
+use crate::audit::{self, AdvisoriesTransport, NoAdvisories};
+use crate::lock::AuditConfig;
 use crate::repository::{
     ClosureRoot, DevAcceptance, PackageVersion, Repository, Transport, branch_alias_target,
 };
@@ -75,6 +77,107 @@ pub struct BuildResult {
     pub platform_overrides: Map<String, Value>,
 }
 
+/// `SecurityAdvisoryPoolFilter::filter`'s BC-audit-config inputs (#175):
+/// `None` disables the filter outright — the pre-#175 `build`/`build_partial`
+/// signatures pass that, so they stay network-free.
+pub struct AdvisoryFilter<'a, A: AdvisoriesTransport> {
+    pub transport: &'a A,
+    pub audit: &'a AuditConfig,
+    /// `--no-blocking`/`--no-security-blocking`/`COMPOSER_NO_SECURITY_BLOCKING=1`.
+    pub no_blocking: bool,
+}
+
+/// `SecurityAdvisoryPoolFilter::filter`'s BC-audit-config path: drops a
+/// candidate `Package` (everything in `packages[exempt_upto..]`, `Package`s
+/// before that are root/platform/a locked package that isn't being updated,
+/// this module's own doc comment at the `exempt_upto` assignment) whose
+/// version a known security advisory covers (`audit.block-insecure`) or that
+/// Packagist marks abandoned (`audit.block-abandoned`), honouring
+/// `audit.ignore` and `--no-blocking`. A dev package (`dev-master`, a branch
+/// alias, ...) is never advisory-checked
+/// (`SecurityAdvisoryPoolFilter::getMatchingAdvisories`'s own
+/// `$package->isDev()` skip) but is still abandoned-checked, matching
+/// upstream's own asymmetry there.
+///
+/// The advisories POST failing outright (`--offline`, an unreachable
+/// endpoint, an auth error) is not a hard failure: Composer's own
+/// `ignore-unreachable` defaults to `true` for the `update` block scope
+/// (`IgnoreUnreachable::default()`), so it warns and returns the pool
+/// unfiltered for the advisory half rather than failing the command
+/// (`SecurityAdvisoryPoolFilter::filter`'s own unreachable-repos warning).
+/// Abandoned-blocking never depends on this POST (it reads a field already
+/// on the package's own fetched metadata), so it still applies even then.
+///
+/// ponytail: a version this removes never resurfaces in the solver's own
+/// "could not be found"/"no matching package" message the way Composer's
+/// own advisory-aware `Problem` wording does (`solver::problem`'s module
+/// doc still lists this as not ported) — no fixture here drives a solve to
+/// actually fail because of it; widen `problem.rs` if one does.
+async fn filter_advisories<A: AdvisoriesTransport>(
+    packages: Vec<Package>,
+    exempt_upto: usize,
+    filter: &AdvisoryFilter<'_, A>,
+) -> Result<Vec<Package>> {
+    if filter.no_blocking || (!filter.audit.block_insecure && !filter.audit.block_abandoned) {
+        return Ok(packages);
+    }
+
+    let mut names: Vec<String> = Vec::new();
+    for package in &packages[exempt_upto..] {
+        if !names.iter().any(|n| n == &package.name) {
+            names.push(package.name.clone());
+        }
+    }
+
+    let response = if filter.audit.block_insecure {
+        match audit::fetch_advisories(filter.transport, &names).await {
+            Ok(response) => Some(response),
+            Err(err) => {
+                warn_out(
+                    "Security advisory data could not be fetched from some repositories \
+                     (ignored per policy.ignore-unreachable); matches may be incomplete:",
+                );
+                warn_out(&format!("  - {err}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut kept = Vec::with_capacity(packages.len());
+    for (index, package) in packages.into_iter().enumerate() {
+        if index < exempt_upto {
+            kept.push(package);
+            continue;
+        }
+        if filter.audit.block_abandoned && audit::is_abandoned(&package.raw) {
+            continue;
+        }
+        if !package.is_dev
+            && let Some(response) = &response
+            && !audit::matching_advisory_ids(
+                response,
+                &filter.audit.ignore,
+                &package.name,
+                &package.version,
+            )
+            .is_empty()
+        {
+            continue;
+        }
+        kept.push(package);
+    }
+    Ok(kept)
+}
+
+/// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr`
+/// lint (`audit.rs`'s own `warn_out` does the same).
+fn warn_out(message: &str) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr().lock(), "{message}");
+}
+
 /// `Installer::doUpdate`'s first solve: root `require` and `require-dev`
 /// merged (`Installer.php:1061-1067`), against every package the
 /// repository's closure discovers.
@@ -84,13 +187,14 @@ pub async fn build<T: Transport>(
     prefer_stable: bool,
     prefer_lowest: bool,
 ) -> Result<BuildResult> {
-    build_seeded(
+    build_seeded::<T, NoAdvisories>(
         repo,
         root,
         prefer_stable,
         prefer_lowest,
         &[],
         &HashMap::new(),
+        None,
     )
     .await
 }
@@ -114,13 +218,14 @@ pub async fn build<T: Transport>(
     clippy::implicit_hasher,
     reason = "internal API, only ever called with the default hasher"
 )]
-pub async fn build_seeded<T: Transport>(
+pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
     prefer_stable: bool,
     prefer_lowest: bool,
     seed: &[String],
     preferred: &HashMap<String, semver::NormalizedVersion>,
+    advisories: Option<AdvisoryFilter<'_, A>>,
 ) -> Result<BuildResult> {
     build_partial_seeded(
         repo,
@@ -131,6 +236,7 @@ pub async fn build_seeded<T: Transport>(
         prefer_lowest,
         seed,
         preferred,
+        advisories,
     )
     .await
 }
@@ -232,7 +338,7 @@ pub async fn build_partial<T: Transport>(
     prefer_stable: bool,
     prefer_lowest: bool,
 ) -> Result<BuildResult> {
-    build_partial_seeded(
+    build_partial_seeded::<T, NoAdvisories>(
         repo,
         root,
         locked_by_name,
@@ -241,6 +347,7 @@ pub async fn build_partial<T: Transport>(
         prefer_lowest,
         &[],
         &HashMap::new(),
+        None,
     )
     .await
 }
@@ -263,9 +370,10 @@ pub async fn build_partial<T: Transport>(
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors build_partial plus one seed slice and the minimal-changes pin set"
+    reason = "mirrors build_partial plus one seed slice, the minimal-changes pin set, and the \
+              advisory pool filter"
 )]
-pub async fn build_partial_seeded<T: Transport>(
+pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
     locked_by_name: &HashMap<String, Value>,
@@ -274,6 +382,7 @@ pub async fn build_partial_seeded<T: Transport>(
     prefer_lowest: bool,
     seed: &[String],
     preferred: &HashMap<String, semver::NormalizedVersion>,
+    advisories: Option<AdvisoryFilter<'_, A>>,
 ) -> Result<BuildResult> {
     let require = string_map(root, "require");
     let require_dev = string_map(root, "require-dev");
@@ -368,6 +477,13 @@ pub async fn build_partial_seeded<T: Transport>(
             packages.push(package_from_lock_entry(entry, &mut constraint_cache)?);
         }
     }
+    // Everything pushed so far (platform, root, locked-out-and-not-updated)
+    // is exempt from the advisory/abandoned filter below
+    // (`SecurityAdvisoryPoolFilter::filter`'s `!$package instanceof
+    // RootPackageInterface && !PlatformRepository::isPlatformPackage(...) &&
+    // !$request->isLockedPackage($package)`); everything pushed after this
+    // point is a fresh closure-fetched candidate and is checked.
+    let exempt_upto = packages.len();
 
     let push_started = Instant::now();
     for versions in closure.into_values() {
@@ -388,6 +504,11 @@ pub async fn build_partial_seeded<T: Transport>(
         "converted the metadata closure into pool packages"
     );
 
+    let packages = if let Some(advisories) = &advisories {
+        filter_advisories(packages, exempt_upto, advisories).await?
+    } else {
+        packages
+    };
     let pool = Pool::new(packages);
     let request = Request {
         requires: root_requires(&require, &require_dev)?,

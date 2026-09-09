@@ -1,0 +1,25 @@
+{
+    "advisories": {
+        "monolog/monolog": [
+            {
+                "advisoryId": "PKSA-test-0001",
+                "packageName": "monolog/monolog",
+                "remoteId": "monolog/monolog/2024-01-01-1.yaml",
+                "title": "Fixture advisory covering exactly monolog/monolog 3.11.0",
+                "link": null,
+                "cve": null,
+                "affectedVersions": ">=3.11.0,<3.11.1",
+                "source": "FriendsOfPHP/security-advisories",
+                "reportedAt": "2024-01-01 00:00:00",
+                "composerRepository": "https://packagist.org",
+                "severity": "high",
+                "sources": [
+                    {
+                        "name": "FriendsOfPHP/security-advisories",
+                        "remoteId": "monolog/monolog/2024-01-01-1.yaml"
+                    }
+                ]
+            }
+        ]
+    }
+}

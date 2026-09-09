@@ -45,10 +45,12 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::{Map, Value};
 
+use crate::audit::AdvisoriesTransport;
 use crate::repository::{Repository, Transport};
 use crate::semver::{self, Constraint, NormalizedVersion};
 use policy::DefaultPolicy;
 use pool::Pool;
+use pool_builder::AdvisoryFilter;
 use transaction::{AliasEntry, ResolvedPackage};
 
 /// Distinct constraint text -> its parsed `Constraint`, shared for the
@@ -142,17 +144,25 @@ pub async fn solve_update<T: Transport>(
     clippy::implicit_hasher,
     reason = "internal API, only ever called with the default hasher"
 )]
-pub async fn solve_update_seeded<T: Transport>(
+pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
     prefer_stable: bool,
     prefer_lowest: bool,
     seed: &[String],
     preferred: HashMap<String, NormalizedVersion>,
+    advisories: Option<AdvisoryFilter<'_, A>>,
 ) -> Result<UpdateResult> {
-    let built =
-        pool_builder::build_seeded(repo, root, prefer_stable, prefer_lowest, seed, &preferred)
-            .await?;
+    let built = pool_builder::build_seeded(
+        repo,
+        root,
+        prefer_stable,
+        prefer_lowest,
+        seed,
+        &preferred,
+        advisories,
+    )
+    .await?;
     resolve(built, root, prefer_stable, prefer_lowest, preferred)
 }
 
@@ -174,7 +184,7 @@ pub async fn solve_partial_update<T: Transport>(
     allow_list: &[String],
     mode: pool_builder::UpdateAllowMode,
 ) -> Result<UpdateResult> {
-    solve_partial_update_seeded(
+    solve_partial_update_seeded::<T, crate::audit::NoAdvisories>(
         repo,
         root,
         prefer_stable,
@@ -184,6 +194,7 @@ pub async fn solve_partial_update<T: Transport>(
         mode,
         &[],
         HashMap::new(),
+        None,
     )
     .await
 }
@@ -199,9 +210,10 @@ pub async fn solve_partial_update<T: Transport>(
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors solve_partial_update plus one seed slice and the minimal-changes pin set"
+    reason = "mirrors solve_partial_update plus one seed slice, the minimal-changes pin set, \
+              and the advisory pool filter"
 )]
-pub async fn solve_partial_update_seeded<T: Transport>(
+pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
     prefer_stable: bool,
@@ -211,6 +223,7 @@ pub async fn solve_partial_update_seeded<T: Transport>(
     mode: pool_builder::UpdateAllowMode,
     seed: &[String],
     preferred: HashMap<String, NormalizedVersion>,
+    advisories: Option<AdvisoryFilter<'_, A>>,
 ) -> Result<UpdateResult> {
     let locked_requires: HashMap<String, Vec<String>> = locked_by_name
         .iter()
@@ -249,6 +262,7 @@ pub async fn solve_partial_update_seeded<T: Transport>(
         prefer_lowest,
         seed,
         &preferred,
+        advisories,
     )
     .await?;
     resolve(built, root, prefer_stable, prefer_lowest, preferred)

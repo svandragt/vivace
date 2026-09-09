@@ -139,6 +139,8 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             // `InstallArgs`; without this, `update::run`'s own new chaining
             // (#104) would install twice.
             no_install: true,
+            no_blocking: false,
+            no_security_blocking: false,
         };
         update::run(&update_args, Some(&cache_dir), offline)
             .with_context(|| format!("resolving {spec}"))?;

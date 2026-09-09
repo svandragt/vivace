@@ -13,6 +13,7 @@
 //! Now that normalizing is unconditional, the intermediate formatting never
 //! survives to disk, so the edit is a plain parse-map-serialize instead.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -23,7 +24,11 @@ use crate::install::{self, InstallArgs};
 use crate::link::LinkMode;
 use crate::normalize;
 use crate::scripts;
-use crate::solver::{self, pool_builder::UpdateAllowMode};
+use crate::solver::{
+    self,
+    pool_builder::{AdvisoryFilter, UpdateAllowMode},
+};
+use crate::update::audit_config_and_no_blocking;
 
 /// `viv add` flags.
 #[expect(
@@ -73,6 +78,15 @@ pub struct RequireArgs {
     /// (`composer require --no-install`): today's `viv add` behaviour.
     #[arg(long)]
     pub no_install: bool,
+    /// Allows installing a version a known security advisory covers or a
+    /// package Packagist marks abandoned, instead of blocking it by default
+    /// (#175, `audit.block-insecure`/`audit.block-abandoned`). Also settable
+    /// via `COMPOSER_NO_SECURITY_BLOCKING=1`.
+    #[arg(long)]
+    pub no_blocking: bool,
+    /// Deprecated alias for `--no-blocking`.
+    #[arg(long = "no-security-blocking", hide = true)]
+    pub no_security_blocking: bool,
 }
 
 /// `viv rm` flags.
@@ -111,6 +125,15 @@ pub struct RemoveArgs {
     /// (`composer remove --no-install`): today's `viv rm` behaviour.
     #[arg(long)]
     pub no_install: bool,
+    /// Allows installing a version a known security advisory covers or a
+    /// package Packagist marks abandoned, instead of blocking it by default
+    /// (#175, `audit.block-insecure`/`audit.block-abandoned`). Also settable
+    /// via `COMPOSER_NO_SECURITY_BLOCKING=1`.
+    #[arg(long)]
+    pub no_blocking: bool,
+    /// Deprecated alias for `--no-blocking`.
+    #[arg(long = "no-security-blocking", hide = true)]
+    pub no_security_blocking: bool,
 }
 
 pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -174,6 +197,7 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
         args.no_scripts,
         args.no_plugins,
         args.no_install,
+        args.no_blocking || args.no_security_blocking,
     )
 }
 
@@ -226,6 +250,7 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
         args.no_scripts,
         args.no_plugins,
         args.no_install,
+        args.no_blocking || args.no_security_blocking,
     )
 }
 
@@ -250,6 +275,7 @@ pub(crate) fn partial_update(
     no_scripts: bool,
     no_plugins: bool,
     no_install: bool,
+    no_blocking: bool,
 ) -> Result<()> {
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
@@ -282,6 +308,13 @@ pub(crate) fn partial_update(
     // miss errors cleanly instead of silently reaching the network.
     let fetcher = crate::update::build_fetcher(project_dir, &root, offline)?;
     let repo = runtime.block_on(crate::update::build_repository(&root, &cache_dir, &fetcher))?;
+    let (audit_config, no_blocking) = audit_config_and_no_blocking(&root, no_blocking)?;
+    let advisories_transport = crate::audit::HttpTransport { fetcher: &fetcher };
+    let advisories = Some(AdvisoryFilter {
+        transport: &advisories_transport,
+        audit: &audit_config,
+        no_blocking,
+    });
 
     // A brand new `composer.json` (no lock yet) cannot do a partial update
     // (`PoolBuilder::buildPool` requires a locked repository); fall back to
@@ -291,7 +324,7 @@ pub(crate) fn partial_update(
         let lock_bytes = fs_err::read(&lock_path)?;
         let lock: Value = serde_json::from_slice(&lock_bytes).context("parsing composer.lock")?;
         let locked_by_name = locked_packages_by_name(&lock);
-        runtime.block_on(solver::solve_partial_update(
+        runtime.block_on(solver::solve_partial_update_seeded(
             &repo,
             &root,
             prefer_stable,
@@ -299,13 +332,19 @@ pub(crate) fn partial_update(
             &locked_by_name,
             names,
             mode,
+            &[],
+            HashMap::new(),
+            advisories,
         ))?
     } else {
-        runtime.block_on(solver::solve_update(
+        runtime.block_on(solver::solve_update_seeded(
             &repo,
             &root,
             prefer_stable,
             prefer_lowest,
+            &[],
+            HashMap::new(),
+            advisories,
         ))?
     };
 
@@ -699,6 +738,8 @@ mod tests {
             no_scripts: true,
             no_plugins: true,
             no_install: true,
+            no_blocking: false,
+            no_security_blocking: false,
         };
         let err = run_require(&args, None, true).unwrap_err();
         assert!(err.to_string().contains("composer.json"), "{err:#}");

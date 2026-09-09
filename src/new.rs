@@ -207,6 +207,8 @@ fn run_from_package(
                 no_scripts: args.no_scripts,
                 no_plugins: false,
                 no_install: args.no_install,
+                no_blocking: false,
+                no_security_blocking: false,
             },
             Some(&cache_dir),
             offline,

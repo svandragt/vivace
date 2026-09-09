@@ -116,6 +116,112 @@ async fn update_reproduces_the_monolog_lock() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// A fixture-served `packagist.org/api/security-advisories/` response,
+/// the same `AdvisoriesTransport` seam `tests/audit.rs`'s own
+/// `FixtureTransport` uses.
+struct AdvisoriesFixture {
+    body: Value,
+}
+
+impl AdvisoriesFixture {
+    fn load() -> Self {
+        let body = fs_err::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/security-advisory/advisories-response.json"),
+        )
+        .unwrap();
+        AdvisoriesFixture {
+            body: serde_json::from_str(&body).unwrap(),
+        }
+    }
+}
+
+impl vivace::audit::AdvisoriesTransport for AdvisoriesFixture {
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "the fixture reads an in-memory body synchronously; the trait is async for \
+                  production (tests/audit.rs's own FixtureTransport does the same)"
+    )]
+    async fn post_advisories(&self, _packages: &[String]) -> anyhow::Result<Value> {
+        Ok(self.body.clone())
+    }
+}
+
+/// #175: solves the `security-advisory` fixture (`monolog/monolog: ^3.0`,
+/// which resolves to 3.11.0 unfiltered) against a fixture advisory covering
+/// exactly that version, and returns the version actually picked.
+async fn resolved_monolog_version(no_blocking: bool, ignore: vivace::lock::AuditIgnore) -> String {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/security-advisory");
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+    let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
+    let root: Value = serde_json::from_slice(&composer_json).unwrap();
+
+    let advisories_transport = AdvisoriesFixture::load();
+    let audit = vivace::lock::AuditConfig {
+        ignore,
+        ..vivace::lock::AuditConfig::default()
+    };
+    let filter = vivace::solver::pool_builder::AdvisoryFilter {
+        transport: &advisories_transport,
+        audit: &audit,
+        no_blocking,
+    };
+    let result = solver::solve_update_seeded(
+        &repo,
+        &root,
+        false,
+        false,
+        &[],
+        HashMap::new(),
+        Some(filter),
+    )
+    .await
+    .unwrap();
+    result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "monolog/monolog")
+        .unwrap()
+        .pretty_version
+        .clone()
+}
+
+/// The default (`audit.block-insecure` true, `--no-blocking` unset): the
+/// advisory-covered 3.11.0 is dropped from the pool, so the solve picks the
+/// next newest version the constraint still allows.
+#[tokio::test]
+async fn update_drops_a_version_a_security_advisory_covers_by_default() {
+    let version =
+        resolved_monolog_version(false, vivace::lock::AuditIgnore::List(Vec::new())).await;
+    assert_eq!(version, "3.10.0");
+}
+
+/// `--no-blocking` (`AdvisoryFilter::no_blocking`) disables the filter
+/// outright, so the advisory-covered version is picked again.
+#[tokio::test]
+async fn update_no_blocking_picks_the_advisory_covered_version() {
+    let version = resolved_monolog_version(true, vivace::lock::AuditIgnore::List(Vec::new())).await;
+    assert_eq!(version, "3.11.0");
+}
+
+/// `audit.ignore` naming the advisory's id has the same effect as
+/// `--no-blocking`, but only for that one advisory.
+#[tokio::test]
+async fn update_ignored_advisory_id_picks_the_covered_version() {
+    let version = resolved_monolog_version(
+        false,
+        vivace::lock::AuditIgnore::List(vec!["PKSA-test-0001".to_string()]),
+    )
+    .await;
+    assert_eq!(version, "3.11.0");
+}
+
 /// #117: `symfony/string` requires the four `symfony/polyfill-*` packages
 /// this fixture's root `replace`s (mirroring `symfony/demo`'s own shape).
 /// Composer's own lock (`tests/fixtures/root-replace/composer.lock`) never
@@ -155,9 +261,17 @@ async fn seeding_with_an_unreachable_lock_name_does_not_change_the_lock() {
         "acme/unreachable".to_string(),
         "monolog/monolog".to_string(),
     ];
-    let result = solver::solve_update_seeded(&repo, &root, false, false, &seed, HashMap::new())
-        .await
-        .unwrap();
+    let result = solver::solve_update_seeded(
+        &repo,
+        &root,
+        false,
+        false,
+        &seed,
+        HashMap::new(),
+        None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
+    )
+    .await
+    .unwrap();
     let options = vivace::lock_writer::LockOptions {
         minimum_stability: result.minimum_stability,
         stability_flags: &result.stability_flags,
@@ -364,9 +478,17 @@ async fn minimal_changes_keeps_the_locked_version() {
         })
         .collect();
 
-    let result = solver::solve_update_seeded(&repo, &root, false, false, &seed, preferred)
-        .await
-        .unwrap();
+    let result = solver::solve_update_seeded(
+        &repo,
+        &root,
+        false,
+        false,
+        &seed,
+        preferred,
+        None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
+    )
+    .await
+    .unwrap();
 
     let psr_log = result.non_dev.iter().find(|p| p.name == "psr/log").unwrap();
     assert_eq!(

@@ -185,6 +185,24 @@ pub struct HttpTransport<'a> {
     pub fetcher: &'a Fetcher,
 }
 
+/// A witness [`AdvisoriesTransport`] for `pool_builder`'s pre-#175
+/// signatures (`build`/`build_partial`), which pass `None` for the pool
+/// filter and so never actually call this: Rust still needs a concrete type
+/// argument for `Option<pool_builder::AdvisoryFilter<'_, A>>`'s `A` even
+/// though the value is `None`.
+pub struct NoAdvisories;
+
+impl AdvisoriesTransport for NoAdvisories {
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "never actually called (this type is only ever a None witness); async only to \
+                  satisfy the trait"
+    )]
+    async fn post_advisories(&self, _packages: &[String]) -> Result<Value> {
+        unreachable!("NoAdvisories is only ever used as a None witness type, never called")
+    }
+}
+
 impl AdvisoriesTransport for HttpTransport<'_> {
     async fn post_advisories(&self, packages: &[String]) -> Result<Value> {
         let url = Url::parse(ADVISORIES_URL).expect("hardcoded URL");
@@ -194,12 +212,57 @@ impl AdvisoriesTransport for HttpTransport<'_> {
     }
 }
 
-async fn fetch_advisories<T: AdvisoriesTransport>(
+/// `pub(crate)`: `solver::pool_builder`'s update/require pool filter (#175)
+/// posts through this same function, so an offline run or an auth failure
+/// fails the exact same way `viv audit`'s own POST does.
+pub(crate) async fn fetch_advisories<T: AdvisoriesTransport>(
     transport: &T,
     names: &[String],
 ) -> Result<AdvisoriesResponse> {
     let body = transport.post_advisories(names).await?;
     serde_json::from_value(body).context("parsing packagist security-advisories response")
+}
+
+/// `SecurityAdvisoryPoolFilter::getMatchingAdvisories`, minus the caller's
+/// own `$package->isDev()` skip (`pool_builder`'s filter applies that before
+/// ever calling this, since a dev package is exempt from the check
+/// entirely, not just from a version match): every advisory id from
+/// `response` whose `affectedVersions` matches `version` and that `ignore`
+/// doesn't cover, for one already-fetched package name. No
+/// `--ignore-severity` equivalent exists for blocking (only `viv audit`
+/// itself has that flag), so severity-based ignoring never applies here.
+pub(crate) fn matching_advisory_ids(
+    response: &AdvisoriesResponse,
+    ignore: &AuditIgnore,
+    name: &str,
+    version: &semver::NormalizedVersion,
+) -> Vec<String> {
+    let Some(raw_advisories) = response.advisories.get(name) else {
+        return Vec::new();
+    };
+    raw_advisories
+        .iter()
+        .filter(|raw| {
+            semver::parse_constraint(&raw.affected_versions)
+                .is_ok_and(|constraint| constraint.matches(version))
+        })
+        .filter(|raw| matches!(ignore_status(raw, ignore, &[]), IgnoreStatus::Active))
+        .map(|raw| raw.advisory_id.clone())
+        .collect()
+}
+
+/// `CompletePackageInterface::isAbandoned`, read straight off a pool
+/// package's raw provider-metadata `abandoned` field for the update/require
+/// pool filter's `audit.block-abandoned` (`AuditPackage::abandonment` is
+/// this same check for the audited-install path, which reads from
+/// `installed.json`/the lock instead, and also carries the suggested
+/// replacement — the pool filter only ever needs the yes/no, never reports
+/// it, so this stays a `bool`).
+pub(crate) fn is_abandoned(raw: &Value) -> bool {
+    matches!(
+        raw.get("abandoned"),
+        Some(Value::Bool(true) | Value::String(_))
+    )
 }
 
 /// One audited package: name, its own version (to filter advisories by
@@ -314,8 +377,10 @@ fn read_installed(path: &Path, dev: bool) -> Result<Vec<AuditPackage>> {
 }
 
 /// One `security-advisories` API response: `{"advisories": {"pkg": [...]}}`.
+/// `pub(crate)`: `pool_builder`'s filter holds one of these across its own
+/// per-package loop instead of re-fetching per package (#175).
 #[derive(Debug, Deserialize)]
-struct AdvisoriesResponse {
+pub(crate) struct AdvisoriesResponse {
     #[serde(default)]
     advisories: HashMap<String, Vec<RawAdvisory>>,
 }
