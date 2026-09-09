@@ -168,9 +168,20 @@ bench_project() {
     run_tools=$(sed "s/\b$tool\b//" <<< "$run_tools")
   done
 
+  # BENCH_MIRROR=1 (#165, widened): record this project's dists and p2
+  # metadata once, and forward the recording to bench/run.sh so cold and
+  # update-warm run against it instead of the real network.
+  local mirror_dir=""
+  if [ "${BENCH_MIRROR:-}" = "1" ]; then
+    mirror_dir="$work/mirror/$safe"
+    log "recording mirror for $name"
+    "$root/bench/mirror.sh" "$srcdir" "$mirror_dir"
+  fi
+
   log "benchmarking $name ($packages packages, $runs runs)"
   if ! run_out=$(BENCH_FLAGS="--no-plugins --no-scripts" BENCH_RUNS="$runs" \
       BENCH_WORK="$work/bench" BENCH_OUT="$out" BENCH_SKIP_UPDATE="$skip_update" \
+      BENCH_MIRROR="$mirror_dir" \
       "$root/bench/run.sh" "$srcdir" $run_tools 2>&1); then
     log "bench/run.sh reported a problem for $name (see footnote per affected tool)"
   fi
@@ -255,7 +266,8 @@ tool_bin() {
   echo "## $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo ""
   echo "viv $(ver_from "$viv_bin"), composer $(ver_from composer), riff $(ver_from "$riff_bin")," \
-    "flags \`--no-plugins --no-scripts\`, $runs runs each."
+    "flags \`--no-plugins --no-scripts\`, $runs runs each$( \
+      [ "${BENCH_MIRROR:-}" = "1" ] && echo ", from a local mirror")."
   echo ""
   echo "| Project | Packages | Tool | Cold | Warm | No-op | Update-warm |"
   echo "|---|---|---|---|---|---|---|"

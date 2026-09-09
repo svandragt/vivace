@@ -64,6 +64,69 @@ be GitHub, not a regression in `viv` (#159); `update-offline`'s variance is
 ours alone, the same reasoning that gates `warm` and `noop`. Composer has no
 offline update flag, so this scenario runs for `viv` only.
 
+## Local mirror (#165, widened)
+
+`bench/mirror.sh <project-dir> <mirror-dir>` records a project once: every
+locked package's dist zip, and the Packagist p2 metadata (both the release
+and `~dev` files) for every locked package plus everything named in
+`composer.json`'s require/require-dev. It then rewrites every dist URL in
+the recorded p2 files to point at a not-yet-known local port
+(`http://127.0.0.1:__PORT__/...`), derived from the package name and dist
+reference so the rewrite never depends on what the URL already was.
+Rerunning a complete recording changes nothing (dist files are skipped when
+present; the p2 rewrite recomputes the same URL every time).
+
+`bench/run.sh` and `bench/corpus.sh` (`BENCH_MIRROR=<dir>` and
+`BENCH_MIRROR=1` respectively) serve that recording with `miniserve` on a
+free port for the run, substitute the real port into a served copy, and
+rewrite each scenario's scratch `composer.json`/`composer.lock` to match:
+the lock's dist URLs point at the mirror, `repositories` is
+`[{"type":"composer","url":"http://127.0.0.1:<port>"},
+{"packagist.org":false}]`, and `config.secure-http` is turned off for that
+copy (the mirror is deliberately plain HTTP on loopback). Composer and riff
+both accept this; viv needs no change since it reads dist URLs straight
+from the lock.
+
+Serving it with python's `http.server` was tried first and measured
+*slower* than the real network: `bench/laravel` cold went to 5.5s for viv
+and 4.5s for riff, against ~1.1s for viv from real Packagist on a GitHub
+runner. `http.server`'s `ThreadingHTTPServer` defaults to HTTP/1.0 (no
+keep-alive, so every one of the 101 dists opens a fresh connection and
+thread); `--protocol HTTP/1.1` alone dropped viv's median per-dist hop from
+1050ms to 57ms and cold to ~0.21s, but the server still couldn't survive
+raw concurrency — `curl --parallel` fetching all 101 dists at once against
+it took over 90 seconds with connection resets. `miniserve` (added via
+`devbox add`) serves the same 101 dists over `curl --parallel` in well
+under a tenth of a second and needed no protocol flag, so it replaced
+`http.server` outright rather than keeping the HTTP/1.1 flag as a fix.
+
+This is why `cold` and `update-warm` become reproducible: `cold` used to
+wait on real Packagist and GitHub, so its variance was partly network, not
+`viv`; against the mirror, both are gated the same way `warm`/`noop`/
+`update-offline` already are (see "CI bench gate" above). The honest
+caveat: `cold`'s numbers no longer include real Packagist or GitHub
+latency, so they're a lower bound on a real cold install, not a substitute
+for one — the corpus run and any release-facing number should say so.
+
+Two mirror-specific carve-outs, both because the mirror only records the
+one locked dist per package, not every version Packagist could offer:
+
+- viv's `update-warm` command has always run install too (unlike
+  composer/riff's `--no-install` in this scenario); against a mirror a
+  legitimate version bump has nothing to install from, so `run.sh` adds
+  `--no-install` for viv only when `BENCH_MIRROR` is set, leaving the
+  real-network baseline unchanged.
+- riff's `update-warm` fails against the mirror: it issues a duplicate
+  conditional GET for the same p2 file within one request burst, gets a
+  `304` back for one of them, and treats that empty body as the package
+  having zero versions instead of reusing its first, already-fetched
+  response. This reproduces against both `http.server` and `miniserve`, so
+  it's riff's own request handling racing itself, not one server's `304`
+  behaviour; real Packagist never returns a `304` to a same-burst request,
+  so this only shows up against a low-latency local mirror and isn't worth
+  working around here. `run.sh` skips riff's `update-warm` under
+  `BENCH_MIRROR` with the usual skip-note on stderr.
+
 ## Corpus
 
 The same four scenarios run across the pinned public projects

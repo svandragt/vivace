@@ -9,6 +9,7 @@
     "cargo-machete": "latest",
     "cargo-fuzz": "latest",
     "cargo-llvm-cov": "latest",
+    "miniserve": "latest",
     "linuxPackages.perf": {
       "version": "latest",
       "platforms": [
