@@ -8,14 +8,18 @@ macOS, and not yet at 1.0.
 ## Try it
 
 Download a prebuilt binary from the [releases
-page](https://github.com/svandragt/vivace/releases) (Linux x86_64, aarch64
-and musl; macOS x86_64 and aarch64), or install it another way:
+page](https://github.com/svandragt/vivace/releases) (Linux x86_64 and
+aarch64 as static musl builds, also packaged as a .deb; macOS x86_64 and
+aarch64), or install it another way:
 
 ```sh
-cargo binstall vivace
+cargo binstall --git https://github.com/svandragt/vivace vivace
 # or build from source:
 cargo install --git https://github.com/svandragt/vivace --tag v0.8.0 vivace
 ```
+
+Both commands also upgrade an existing install; add `--force` to
+`cargo install` when the version has not changed.
 
 Then run it in a project that already has a `composer.json` and
 `composer.lock`:
@@ -94,8 +98,8 @@ viv cache clean            # deletes viv's store under ~/.cache/vivace
 rm ~/.cargo/bin/viv ~/.cargo/bin/composer   # the binary and the shim
 ```
 
-Use `apt remove vivace` or `brew uninstall vivace` if you installed a
-package instead. Nothing else is written outside the project and the cache.
+Use `apt remove vivace` if you installed the .deb instead. Nothing else is
+written outside the project and the cache.
 
 ## Is it safe to try
 
@@ -113,8 +117,10 @@ viv, both for a Composer plugin viv doesn't yet support.[^4] See
 
 10 projects from viv's compatibility corpus, 2026-09-09, from a local
 mirror so no network is measured, AMD Ryzen 9 7900X3D (24 threads) on
-ext4, viv 0.7.0, composer 2.10.2, riff 0.0.7, `--no-plugins --no-scripts`,
-three runs each. Each cell is how many times faster viv is, with the range across projects; below 1× viv is slower. Per-project numbers are in
+ext4, a viv 0.8.0 development build, composer 2.10.2, riff 0.0.7,
+`--no-plugins --no-scripts`, three runs each. Each cell is how many times
+faster viv is, with the range across projects; below 1× viv is slower.
+Per-project numbers are in
 [`bench/results/corpus.md`](bench/results/corpus.md). riff's column
 measures the same job as viv and Composer (checksums, `platform_check.php`,
 proxies, `installed.*`); the cosmetic differences are listed in
@@ -141,6 +147,7 @@ viv install --no-progress  # skip the fetch/link progress line on a terminal
 viv update                # resolves, writes composer.lock and installs
 viv update psr/log -w     # partial update with dependencies, then installs
 viv update --no-install   # resolve and write the lock only
+viv update --no-blocking  # allow versions with a security advisory, as Composer's flag does
 viv add psr/container      # edits composer.json, updates the lock and installs (alias: require)
 viv rm psr/container       # same, minus the package (--no-install opts out too, alias: remove)
 viv dump-autoload -o
@@ -161,8 +168,8 @@ over ordering. `install` and `update` never touch `composer.json`.[^11]
 `make install-shim` installs a `composer` binary next to `viv` (plain
 `make install` leaves your real Composer untouched). Put it on `PATH`
 ahead of the real Composer, or symlink it as `composer` in CI: everyday
-commands run through viv, and anything viv doesn't cover falls through to
-your real Composer install.[^12]
+`install`, `dump-autoload`, `normalize` and `create-project` run through
+viv; every other command falls through to your real Composer install.[^12]
 
 ## Plugins
 
@@ -224,11 +231,13 @@ without touching the network.[^14]
 - **Some Composer plugins stop the install.** symfony/flex and any plugin
   without a native adapter make viv exit with an error naming the plugin.
   `--no-plugins` installs as Composer would without them, but the plugin's
-  work is not done. Of the 19 pinned test projects, 2 are in this position:
+  work is not done. Of the 20 pinned test projects, 2 are in this position:
   `symfony/demo` and `roots/bedrock`.
-- **The shim needs a real Composer for everything else.** Commands viv does
-  not cover, such as `create-project` or `search`, are passed to the
-  Composer on your `PATH`. With no real Composer installed they fail.
+- **The shim needs a real Composer for everything else.** It maps only
+  `install`, `dump-autoload`, `normalize` and `create-project` to viv;
+  `update`, `require`, `search` and the rest go to the Composer on your
+  `PATH`, and with no real Composer installed they fail. Call `viv update`
+  directly to use viv's own.
 - **`vendor/` files are read-only by default.** viv hardlinks them from a
   shared store, so an edit inside `vendor/` fails instead of changing every
   project on the machine. If you patch vendor files by hand, install with
@@ -250,19 +259,21 @@ with Composer, and the `composer` shim passes those commands through.
 
 Commands viv runs itself, with the same output as Composer:
 
-- Install and resolve: `install`, `update`, `update-lock`, `require`,
-  `remove`, `dump-autoload`, `normalize`.
+- Start and resolve: `init`, `new` (`create-project`), `install`, `update`,
+  `update-lock`, `add` (`require`), `rm` (`remove`), `dump-autoload`,
+  `normalize`.
 - Inspect: `show`, `tree`, `why`, `outdated`, `audit`, `validate`.
 - Run: `run`, `exec`, the lifecycle scripts, and the cache commands.
 - `diagnose` prints viv's own report, not Composer's.
 
-Commands that stay with Composer: `create-project`, `init`, `search`,
-`config`, `global`, `self-update`, `licenses`, `depends` and the rest.
+Commands that stay with Composer: `search`, `config`, `global`,
+`self-update`, `licenses`, `depends` and the rest.
 
 ### Works with
 
-- Repositories: Packagist, Private Packagist and Satis, `path`, `vcs`, git
-  and GitHub sources.
+- Repositories: Packagist, Private Packagist and Satis, including a local
+  `file://` mirror, `path`, `vcs`, git and GitHub sources; redirects are
+  followed.
 - Packages: zip and tar dists, a git checkout when there is no dist,
   `preferred-install: source`, sha1 checks, credentials from `auth.json`
   and `COMPOSER_AUTH`.
@@ -270,8 +281,10 @@ Commands that stay with Composer: `create-project`, `init`, `search`,
   `--classmap-authoritative`; `platform_check.php`; `vendor/bin` proxies;
   lifecycle scripts.
 - Commands: `install`, full and partial `update` including
-  `--minimal-changes`, `require`, `remove`, `dump-autoload`, and offline
-  mode with `--offline` or `COMPOSER_DISABLE_NETWORK`.
+  `--minimal-changes` and Composer's default blocking of versions with a
+  security advisory (`--no-blocking` to allow them), `add`, `rm`,
+  `dump-autoload`, and offline mode with `--offline` or
+  `COMPOSER_DISABLE_NETWORK`.
 - Plugins: the ones with native adapters, listed under [Plugins](#plugins).
 
 ## Development
@@ -281,7 +294,7 @@ and hyperfine for the fixtures and benchmarks.
 
 ```sh
 make install    # put viv on your PATH (~/.cargo/bin); make install-shim adds the composer drop-in
-make check      # fmt, clippy, tests, cargo deny
+make check      # fmt, clippy, tests, cargo deny, cargo machete, cargo doc
 make test
 make bench      # composer vs riff vs viv on bench/laravel
 VIVACE_TEST_NETWORK=1 make test   # includes the end-to-end install
@@ -298,12 +311,12 @@ their original copyright notices.[^16]
 [^1]: viv relinks every package from its own content-addressed store into `vendor/`, using hardlinks so files aren't copied or re-extracted.
 [^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
 [^3]: The skips are pre-existing failures on Composer's side, such as an expired auth token — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.8.0.md`](compat/results/v0.8.0.md).
-[^4]: Of viv's 19 pinned compatibility projects, the two that need `--no-plugins` are `symfony/demo` and `roots/bedrock`.
+[^4]: Of viv's 20 pinned compatibility projects, the two that need `--no-plugins` are `symfony/demo` and `roots/bedrock`.
 [^5]: The ratio's range crosses 1×: within noise on some projects.
 [^6]: riff's phpunit/phpunit cold and warm times (7.7 s and 8.5 s) are an outlier against its other rows in this corpus; kept in the range, not dropped; see [`bench/results/corpus.md`](bench/results/corpus.md).
 [^10]: `install` runs the root's lifecycle scripts (`pre-install-cmd`, `post-autoload-dump`, `post-install-cmd`) as Composer does.
 [^11]: Normalisation follows `ergebnis/composer-normalize`'s rules, so a project already using that plugin sees no change.
-[^12]: The shim maps `install`, `dump-autoload` and `normalize` with their supported flags to `viv`; everything else — `update`, `require`, plugins, an unrecognised flag — it hands through to the real Composer binary unchanged. Point `VIV_COMPOSER_PATH` at the real binary if it isn't first on `PATH`. The shim only has something to hand through to if a real Composer is on `PATH` in the first place: if there isn't one, those commands fail rather than silently falling back to viv.
+[^12]: The shim maps `install`, `dump-autoload`, `normalize` and `create-project` with their supported flags to `viv`; everything else, `update`, `require`, an unrecognised flag, it hands through to the real Composer binary unchanged. Point `VIV_COMPOSER_PATH` at the real binary if it isn't first on `PATH`. The shim only has something to hand through to if a real Composer is on `PATH` in the first place: if there isn't one, those commands fail rather than silently falling back to viv.
 [^13]: [`docs/plugin-strategy.md`](docs/plugin-strategy.md) lists which plugin falls into which category.
 [^14]: The store lives under `$XDG_CACHE_HOME/vivace/`, keyed by the sha256 hash of each package archive, and installing hardlinks files from it into `vendor/` instead of extracting them again. Store files are read-only, so an accidental edit to a vendor file fails instead of silently changing every project that shares that file on disk; projects that patch their vendor files should use `--link-mode copy` instead. A no-op install compares the lock against `vendor/composer/installed.json` and a small state file, without spawning PHP or making a network request. The autoloader files (`vendor/autoload.php`, `vendor/composer/*.php`, `installed.json`, `installed.php`, `platform_check.php`) are generated by a port of Composer's own generator, tested against Composer's own golden test cases, and checked end to end by byte-diffing `vendor/` against real Composer 2.10.2 output. See [`ARCHITECTURE.md`](ARCHITECTURE.md), [`docs/composer-contract.md`](docs/composer-contract.md) and [`docs/stability.md`](docs/stability.md) for the detail.
 [^15]: [`JOURNAL.md`](JOURNAL.md), including the study of [Riff](https://github.com/shyim/riff) and [Presto](https://github.com/paramientos/presto) that preceded the code.
