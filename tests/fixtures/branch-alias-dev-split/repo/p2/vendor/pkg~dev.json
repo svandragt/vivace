@@ -1,0 +1,26 @@
+{
+    "packages": {
+        "vendor/pkg": [
+            {
+                "name": "vendor/pkg",
+                "version": "dev-master",
+                "version_normalized": "dev-master",
+                "extra": {
+                    "branch-alias": {
+                        "dev-master": "1.x-dev"
+                    }
+                },
+                "source": {
+                    "url": "https://example.test/vendor/pkg.git",
+                    "type": "git",
+                    "reference": "0000000000000000000000000000000000000dev"
+                },
+                "dist": {
+                    "url": "https://example.test/vendor/pkg/dev-master.zip",
+                    "type": "zip",
+                    "shasum": ""
+                }
+            }
+        ]
+    }
+}
