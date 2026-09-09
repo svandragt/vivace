@@ -1275,6 +1275,8 @@ impl<T: Transport> Repository<T> {
     ) -> Result<HashMap<String, Vec<PackageVersion>>> {
         let closure_started = Instant::now();
         let requests_before = self.request_count();
+        let files_before = CACHE_FILES_PARSED.load(Ordering::Relaxed);
+        let bytes_before = CACHE_BYTES_PARSED.load(Ordering::Relaxed);
 
         let mut walk = ClosureWalk {
             skip,
@@ -1361,6 +1363,8 @@ impl<T: Transport> Repository<T> {
             packages = walk.result.len(),
             requests = self.request_count() - requests_before,
             waves,
+            files_parsed = CACHE_FILES_PARSED.load(Ordering::Relaxed) - files_before,
+            bytes_parsed = CACHE_BYTES_PARSED.load(Ordering::Relaxed) - bytes_before,
             elapsed_ms = closure_started.elapsed().as_millis(),
             "loaded metadata closure"
         );
@@ -1737,6 +1741,14 @@ async fn parse_json_blocking(bytes: Vec<u8>, context: String) -> Result<Value> {
         .with_context(|| context)
 }
 
+/// #159: how much of a closure load is disk-read-plus-parse rather than
+/// network wait, sampled before/after [`Repository::load_closure_seeded`]
+/// the same way `requests`/`request_count` already brackets request counts.
+/// Global rather than a `Repository` field since [`read_cache_file`] is a
+/// free function with no `&self` to carry one on.
+static CACHE_FILES_PARSED: AtomicUsize = AtomicUsize::new(0);
+static CACHE_BYTES_PARSED: AtomicUsize = AtomicUsize::new(0);
+
 /// Reads a cache file written by [`write_cache_file`]: the raw provider
 /// JSON with a `last-modified` key merged in, mirroring Composer's own
 /// `Cache` format for this file (`ComposerRepository.php:1793-1797`) so the
@@ -1744,6 +1756,8 @@ async fn parse_json_blocking(bytes: Vec<u8>, context: String) -> Result<Value> {
 async fn read_cache_file(path: &Path) -> Result<Option<(Value, Option<String>)>> {
     match fs_err::read(path) {
         Ok(bytes) => {
+            CACHE_FILES_PARSED.fetch_add(1, Ordering::Relaxed);
+            CACHE_BYTES_PARSED.fetch_add(bytes.len(), Ordering::Relaxed);
             let data = parse_json_blocking(
                 bytes,
                 format!("{}: cached file is not valid JSON", path.display()),

@@ -294,6 +294,13 @@ async fn solve(
     cache_dir: Option<&Path>,
     offline: bool,
 ) -> Result<solver::UpdateResult> {
+    // #159: fetcher/repository construction plus the current lock's own
+    // read+parse (seeding `--minimal-changes`/#90's prefetch), all of it
+    // ahead of `pool_builder`'s own closure walk and its `closure_started`
+    // timer, so it would otherwise vanish from the profile as an
+    // unaccounted gap between "resolved metadata and solved" and "loaded
+    // metadata closure".
+    let setup_started = Instant::now();
     let prefer_stable = args.prefer_stable
         || root
             .get("prefer-stable")
@@ -328,6 +335,10 @@ async fn solve(
         } else {
             HashMap::new()
         };
+        tracing::debug!(
+            elapsed_ms = setup_started.elapsed().as_millis(),
+            "built fetcher/repository and read the current lock, ahead of the closure walk"
+        );
         return solver::solve_update_seeded(
             &repo,
             root,

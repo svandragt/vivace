@@ -499,3 +499,137 @@ already documents for `warm`/`noop`/`cold`.
 - **riff comparison** for both install and update-warm: `riff` isn't on
   `PATH` in this sandbox; `bench/run.sh` already skips it gracefully (install
   scenarios take an explicit tool list; `update-warm` checks `command -v`).
+
+## 6. Offline update split (#159)
+
+Same machine as above (AMD Ryzen 9 7900X3D, 24 vCPU, Linux 7.0), release
+build (`devbox run -- cargo build --release`, commit `3c60df9` plus this
+session's timing-only changes below), warm `XDG_CACHE_HOME` (one prior
+`viv update` per fixture), `bench/laravel` (101 packages) and
+`tests/fixtures/monolog`. Load average (`uptime`, 1-minute) stayed at
+0.8–1.8 through every timed run except the 20-run advisory-delta hyperfine
+below, which briefly touched 4.1 right at its start (a backup `rsync`); its
+own σ (0.9–1.5 ms) shows no effect. `RUST_LOG=vivace=debug` for the phase
+split, run via `devbox run --` so `platform.rs`'s `php` probe resolves the
+right binary (outside devbox, `viv update` fails outright: `ext-filter` is
+missing from a bare `php` on `PATH`).
+
+Code changes, all `-v`-gated `tracing::debug!` calls with no behaviour
+change, same idiom as the spans `bench/results/profile.md` §2's own table
+already lists: `src/repository.rs` (two `AtomicUsize`s counting cached-file
+reads and bytes, sampled before/after `load_closure_seeded` the same way its
+existing `requests`/`request_count` delta already is), `src/solver/
+pool_builder.rs` (advisory-filter step timed separately from the
+closure-to-pool conversion it sits between; platform-package detection
+timed separately, since it shells out to `php`), `src/solver/mod.rs` (the
+dev-split second solve timed as a whole — pool clone, second solve,
+partition — alongside `solver::solve`'s own existing per-solve rule
+generation/SAT breakdown), `src/update.rs` (fetcher/repository construction
+and the current lock's own read+parse, timed as the setup ahead of the
+closure walk).
+
+### 6.1 Wall-clock: offline vs with network (5 runs each, `hyperfine --warmup 1`)
+
+| Fixture | `--offline` | with network (304s) |
+|---|---|---|
+| bench/laravel (101 pkgs) | **593 ± 7 ms** | 1041 ± 18 ms |
+| monolog (3 pkgs) | **39.4 ± 0.6 ms** | 334 ± 50 ms (noisy — one of 5 runs came in at 425 ms, flagged by hyperfine itself; Packagist round-trip latency varies run to run, as §2.2 already found) |
+
+Both figures land close to the issue's own two comments (1132/940 ms and
+187/47 ms on a different session of this same machine), confirming nothing
+drifted since. The network share is now the *minority* of laravel's wall
+time (~43%) and the *majority* of monolog's (~88%) — exactly inverted from
+each other, because monolog's whole offline cost is a handful of small
+files while laravel's is a real pool build and solve.
+
+### 6.2 Phase split, `--offline` (median of 5 runs, `RUST_LOG=vivace=debug`)
+
+| Phase | laravel (101 pkgs) | % | monolog (3 pkgs) | % |
+|---|---|---|---|---|
+| Setup (fetcher/repo build, read current lock) | 5 ms | 0.9% | 3 ms | 9.1% |
+| **Read + JSON-parse cached metadata** (closure walk) | **299 ms** (108 files, 7.93 MB) | **52.8%** | **5 ms** (3 files, 96 KB) | 15.2% |
+| Post-closure drop/teardown (pool-size-dependent, see below) | 81 ms | 14.3% | ~0 ms | ~0% |
+| Platform detection (shells out to `php`) | 26 ms | 4.6% | 24 ms | 72.7% |
+| Pool building (closure → `Package`s) | 9 ms | 1.6% | 0 ms | 0% |
+| Advisory filter (`--offline`: no advisories POST, abandoned-only scan) | 0 ms | 0% | 0 ms | 0% |
+| Pool optimiser (`pool_optimizer::optimize`) | 21 ms | 3.7% | 0 ms | 0% |
+| CDCL solve (merged + dev-split, SAT total) | 62 ms | 11.0% | 0 ms | 0% |
+| Post-solve drop/teardown (pool-size-dependent) | 61 ms | 10.8% | 1 ms | 3.0% |
+| Lock write | 2 ms | 0.4% | 0 ms | 0% |
+| **Total** | **566 ms**¹ | 100% | **33 ms**¹ | 100% |
+
+¹ Sum of the medians above; the hyperfine wall-clock in §6.1 (593/39.4 ms)
+also includes process startup/exit (`fork`+`exec` of `viv` itself, dynamic
+linking, shell/`sh -c` overhead from this session's own harness), which
+these in-process spans can't see — the ~25 ms (laravel) / ~6 ms (monolog)
+gap to the hyperfine mean is that outside-the-process overhead, not a
+missing phase above.
+
+**The two "drop/teardown" rows are not a phase anyone times explicitly.**
+They're the gap between one `tracing::debug!` and the next when nothing
+else in the source is scheduled to run: on laravel, `packages` peaks at
+3,175 entries before the optimiser and settles at 647/186 after, each
+carrying an `Arc<Value>` to that package's raw metadata plus several small
+`Vec<Link>` fields — dropping that many heap-allocated structures takes real
+time. The same gaps are ~0 ms on monolog, where the pool never gets past
+~90 entries: the size dependence is the evidence, not a name in the
+`tracing` output. Not investigated further (this task's own instruction:
+name the phase, don't start a fix) — a candidate for `bench/results/
+profile.md`'s existing ranked-candidates table (§3) if someone picks it up,
+possibly the same `Arc`-sharing shape that already made `push_package_version`
+(§2.8) and `PoolOptimizer` (§2.6) expensive, just paid on the way out instead
+of the way in.
+
+**Answering the issue's question:** on laravel, JSON parsing 7.93 MB across
+108 cached provider files is **53% of the offline wall time** — the ceiling
+on what a cache-format change (a binary/mmap-able format instead of
+per-file JSON, an index instead of a full closure walk) could recover is
+therefore *at most* about half of `update`'s offline cost, not the whole
+thing. The other half (267 of 566 ms) splits unevenly: pool-size-dependent
+drop/teardown is the single largest remaining piece (142 ms, 25% of the
+total — both gaps combined, untouched by a parse-format change since it's
+downstream of parsing), the solve pipeline itself is smaller (pool building
++ optimiser + CDCL + dev-split, 92 ms, 16%), and the rest (33 ms, 6%) is
+fixed setup/platform-detection/lock-write that doesn't scale with project
+size at all. On monolog, by contrast, there's essentially no pool to build
+(parsing 96 KB and solving 90-odd platform+root packages is
+sub-millisecond); its whole 33 ms offline floor is almost entirely the
+fixed cost — mostly the `php` subprocess spawn for platform detection (24 of
+33 ms, 73%), a cost every `update` pays regardless of project size and one
+#159 didn't ask to be fixed here but is worth naming: a project small enough
+that its own work is negligible pays almost entirely for probing its own
+PHP environment.
+
+### 6.3 `perf`/flamegraph: still blocked
+
+Same blocker as §5: `perf_event_paranoid = 4`, no root, no `CAP_PERFMON`.
+Re-checked for this task specifically — `devbox run -- perf record -o
+/tmp/test.perf -- sleep 0.2` fails with the same `perf_event_paranoid`
+error devbox's own bundled `perf` reports; `cargo flamegraph` is installed
+(`flamegraph-flamegraph 0.6.14` via devbox) but shells out to the same
+blocked `perf` on Linux. No top-15 symbol table for this section;
+`BLOCKER: environment`, unchanged since §5.
+
+### 6.4 Advisory-step delta (0d9993b)
+
+`hyperfine --warmup 2 --runs 20`, monolog, `--offline`, this build (commit
+`3c60df9` + this session's timing spans) vs a worktree built from `86378b8`
+(the commit immediately before 0d9993b's advisory blocking landed):
+
+| Build | Mean | σ |
+|---|---|---|
+| `86378b8` (pre-advisory-filter) | 38.6 ms | 0.9 ms |
+| this build (post-advisory-filter) | 39.4 ms | 1.5 ms |
+
+**+0.8 ms (~2%)**, not the +15 ms (47→62 ms) the CI gate's baseline update
+saw. Both this session's own §6.2 (`filtered the pool for advisories`:
+0 ms, median of 5) and this A/B agree the advisory step itself costs
+nothing measurable under `--offline` (`filter_advisories`'s own early
+`no_blocking`/`!block_insecure && !block_abandoned` check returns before
+touching the network only when blocking is off; monolog's fixture has
+blocking on, so it still walks the abandoned-check loop, just over 90-odd
+packages instead of thousands). The CI gate's 47→62 ms figure most likely
+reflects GitHub-runner-specific noise (a shared, often-throttled CPU) rather
+than this step's real cost on quieter hardware — worth a second look on the
+runner itself if the gate flags it again, not a regression to chase from
+this session's numbers alone.

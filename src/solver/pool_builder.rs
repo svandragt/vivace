@@ -495,7 +495,12 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    let platform_started = Instant::now();
     let mut packages = platform_packages(&platform_overrides)?;
+    tracing::debug!(
+        elapsed_ms = platform_started.elapsed().as_millis(),
+        "detected platform packages (shells out to `php`)"
+    );
     packages.push(root_package(root, &mut constraint_cache)?);
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
@@ -531,11 +536,17 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         "converted the metadata closure into pool packages"
     );
 
+    let advisory_started = Instant::now();
     let packages = if let Some(advisories) = &advisories {
         filter_advisories(packages, exempt_upto, advisories).await?
     } else {
         packages
     };
+    tracing::debug!(
+        elapsed_ms = advisory_started.elapsed().as_millis(),
+        packages = packages.len(),
+        "filtered the pool for advisories (--offline: should bail fast)"
+    );
     let pool = Pool::new(packages);
     let request = Request {
         requires: root_requires(&require, &require_dev)?,

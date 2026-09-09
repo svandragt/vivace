@@ -41,6 +41,7 @@ pub mod watch_graph;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use serde_json::{Map, Value};
@@ -333,6 +334,11 @@ fn resolve(
         .and_then(Value::as_object)
         .is_none_or(Map::is_empty);
 
+    // #159: the dev-split second solve as a whole (cloning the winners into
+    // a second pool, re-solving, then partitioning `first_solve` by name) —
+    // `solver::solve`'s own "solved pool" debug line already times the SAT
+    // part alone, this wraps the surrounding pool-clone/partition work too.
+    let dev_split_started = Instant::now();
     let (non_dev, dev) = if require_dev_empty {
         (first_solve, Vec::new())
     } else {
@@ -391,6 +397,11 @@ fn resolve(
             .collect();
         (non_dev, dev)
     };
+    tracing::debug!(
+        elapsed_ms = dev_split_started.elapsed().as_millis(),
+        require_dev_empty,
+        "dev-split second solve (no-op when require-dev is empty)"
+    );
 
     Ok(UpdateResult {
         non_dev,
