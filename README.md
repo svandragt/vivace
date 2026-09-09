@@ -2,7 +2,7 @@
 
 `viv` installs PHP dependencies from a Composer `composer.lock` file and
 writes a `vendor/` directory that matches what Composer would write, byte
-for byte. It's a proof of concept at v0.7.0, tested in CI on Linux and
+for byte. It's a proof of concept at v0.8.0, tested in CI on Linux and
 macOS, and not yet at 1.0.
 
 ## Try it
@@ -14,7 +14,7 @@ and musl; macOS x86_64 and aarch64), or install it another way:
 ```sh
 cargo binstall vivace
 # or build from source:
-cargo install --git https://github.com/svandragt/vivace --tag v0.7.0 vivace
+cargo install --git https://github.com/svandragt/vivace --tag v0.8.0 vivace
 ```
 
 Then run it in a project that already has a `composer.json` and
@@ -102,7 +102,7 @@ package instead. Nothing else is written outside the project and the cache.
 viv's contract is that its output matches Composer's byte for byte. Before
 every release, a compatibility sweep installs a mix of pinned popular
 projects and a random sample of Packagist packages with both Composer and
-viv, then compares the results.[^2] The v0.7.0 sweep: 36 rows identical, 0
+viv, then compares the results.[^2] The v0.8.0 sweep: 36 rows identical, 0
 differ, 4 skipped.[^3]
 
 Two of the pinned projects still need `--no-plugins` to install with
@@ -294,7 +294,7 @@ their original copyright notices.[^16]
 
 [^1]: viv relinks every package from its own content-addressed store into `vendor/`, using hardlinks so files aren't copied or re-extracted.
 [^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
-[^3]: The skips are pre-existing failures on Composer's side, such as an expired auth token — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.7.0.md`](compat/results/v0.7.0.md).
+[^3]: The skips are pre-existing failures on Composer's side, such as an expired auth token — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.8.0.md`](compat/results/v0.8.0.md).
 [^4]: Of viv's 19 pinned compatibility projects, the two that need `--no-plugins` are `symfony/demo` and `roots/bedrock`.
 [^5]: The ratio's range crosses 1×: within noise on some projects.
 [^6]: riff's phpunit/phpunit cold and warm times (7.7 s and 8.5 s) are an outlier against its other rows in this corpus; kept in the range, not dropped; see [`bench/results/corpus.md`](bench/results/corpus.md).

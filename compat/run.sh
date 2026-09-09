@@ -155,12 +155,13 @@ skip_reason_for() {
 # --- plugin native/inert detection (#124) -----------------------------------
 
 # Package names `viv` ports a native adapter for, or that are inert (don't
-# affect install): read straight from src/plugins/mod.rs's own const arrays
-# so this list can't drift from what viv actually adapts.
+# affect install): asked of the binary under test (`viv diagnose --adapters`,
+# #127) so this list can't drift from what viv actually adapts. The inert
+# list is still a const array of names in src/plugins/mod.rs.
 native_inert_names=$({
-  awk '/^const NATIVE_ADAPTERS/,/^\];/' "$root/src/plugins/mod.rs"
-  awk '/^const KNOWN_INERT/,/^\];/' "$root/src/plugins/mod.rs"
-} | grep -oE '"[^"]+"' | tr -d '"')
+  "$viv" diagnose --adapters | cut -f1
+  awk '/^const KNOWN_INERT/,/^\];/' "$root/src/plugins/mod.rs" | grep -oE '"[^"]+"' | tr -d '"'
+})
 
 # Echoes the composer-plugin package names $1 (a project dir)'s lock
 # declares that its composer.json's config.allow-plugins enables: `true`

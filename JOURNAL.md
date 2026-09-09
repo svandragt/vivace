@@ -865,3 +865,25 @@ active and well built, GPL-3.0. Its output embeds the Zend engine and
 its PHP subset drops the dynamic features Composer's plugin machinery
 uses, so it neither speeds up viv, which runs no PHP on the hot path,
 nor lets us compile plugins in place of hand-ported adapters.
+
+## 2026-09-09, evening: 0.8.0
+
+**The network came out of the bench.** A recorded local mirror serves all
+three tools, so cold and update numbers are ours to gate. The first
+mirrored corpus run changed the story twice: on a real-sized lock viv's
+warm update is half Composer's speed with no network to blame, and half
+of that time is parsing cached JSON. The README speed table is now ten
+projects and says where riff and Composer are ahead.
+
+**Field bugs the mirror found.** A redirecting repository broke `update`
+outright. Composer blocks advisory-covered versions before it solves,
+and viv did not, so locks could differ; ported, with `--no-blocking`.
+A branch alias that alone satisfies a root constraint vanished from the
+second solve. Each surfaced only because the mirror made the update
+scenario run for Composer and fail for viv alone.
+
+**Two regressions in one day.** The redirect fix treated 304 as a
+redirect; the advisory filter left alias indices stale. Both caught
+within the hour, both now tested. The lesson was already written down
+earlier today: a hunt that dispatches every finding at once pays for it
+in focus and in regressions. And watch CI after every push.

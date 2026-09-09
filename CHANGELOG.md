@@ -5,15 +5,44 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.8.0] - 2026-09-09
 ### Added
 - `--link-mode clone`: reflink (Linux `FICLONE`, macOS `clonefile`) into `vendor/`, falling back to hardlink then copy where the filesystem doesn't support it ([#19](https://github.com/svandragt/vivace/issues/19))
 - `viv init`: write a composer.json for a new project, no prompts ([#143](https://github.com/svandragt/vivace/issues/143))
 - `viv new`/`viv create-project`: start a project in a directory that doesn't exist yet, empty or from a package skeleton ([#139](https://github.com/svandragt/vivace/issues/139))
+- `update`, `add` and `rm` block versions covered by a security advisory, and abandoned packages when configured, as Composer does by default; `--no-blocking` and `config.audit.*` turn it off ([#175](https://github.com/svandragt/vivace/issues/175))
+- `update`, `add` and `rm` print Composer's lock file operations: what changed, old version to new ([#156](https://github.com/svandragt/vivace/issues/156))
+- Composer-type repositories with a `file://` URL, such as a local Satis build ([#161](https://github.com/svandragt/vivace/issues/161))
+- `viv diagnose --adapters` (hidden) lists every native adapter and the upstream version it ports; a weekly workflow opens an issue when one falls behind ([#127](https://github.com/svandragt/vivace/issues/127))
 
 ### Changed
 - `viv add`/`viv rm` are now the documented commands; `require`/`remove` remain aliases
 - `viv add`/`viv rm` always normalize `composer.json` after editing it; `--no-normalize` is now a deprecated no-op, same as `install`/`dump-autoload` ([#145](https://github.com/svandragt/vivace/issues/145))
-- `viv update` no longer normalizes `composer.json`; only commands that edit it (`add`, `rm`, `init`) do. `--no-normalize` on `update` is now a deprecated no-op, same as `install`/`dump-autoload`
+- `viv update` no longer normalizes `composer.json`; only commands that edit it (`add`, `rm`, `init`) do. `--no-normalize` on `update` is now a deprecated no-op
+- `add`, `rm` and `init` keep `composer.json`'s existing indentation, tabs included, instead of forcing four spaces ([#163](https://github.com/svandragt/vivace/issues/163))
+- Native plugin adapters sit behind one `Adapter` trait; `install` never names an adapter, and adapter tests run as their own CI job ([#127](https://github.com/svandragt/vivace/issues/127))
+
+### Fixed
+- `update` failed on a project whose second repository redirects (asset-packagist.org): metadata requests now follow redirects ([#174](https://github.com/svandragt/vivace/issues/174))
+- `update` failed where a root constraint is met only by a branch alias under `minimum-stability: dev`, such as yiisoft/yii2 on yii2-app-basic; the second, require-only solve dropped every alias ([#172](https://github.com/svandragt/vivace/issues/172))
+- `add`, `rm` and `init` resolved against Packagist alone and ignored `--offline`; they now use the project's `repositories` and stay offline when asked ([#158](https://github.com/svandragt/vivace/issues/158), [#160](https://github.com/svandragt/vivace/issues/160))
+- The lock's `content-hash` was computed before `composer.json` was normalised, so a fresh `add` left the lock stale ([#155](https://github.com/svandragt/vivace/issues/155))
+- A metapackage with no dist and no source (shopware/conflicts) failed to install ([#149](https://github.com/svandragt/vivace/issues/149))
+- The phpstan/extension-installer adapter wrote a different `PHPSTAN_VERSION_CONSTRAINT` from the real plugin when constraints intersect ([#153](https://github.com/svandragt/vivace/issues/153))
+- `viv run` no longer warns about `Composer\Config::disableProcessTimeout`, and prints skip notices as plain warnings ([#154](https://github.com/svandragt/vivace/issues/154))
+
+### Performance
+- Install hot path: `composer.json` parsed once, no deep clone before the no-op check; Laravel no-op 5.4 to 4.7 ms ([#122](https://github.com/svandragt/vivace/issues/122))
+- Store extraction opens each file once ([#146](https://github.com/svandragt/vivace/issues/146))
+- Profiled the warm update: on Laravel offline, JSON parsing is 53 percent and pool teardown 25 percent; follow-ups filed ([#159](https://github.com/svandragt/vivace/issues/159))
+- README speed table is now ten corpus projects, three tools, from a local mirror with no network measured ([#141](https://github.com/svandragt/vivace/issues/141))
+
+### Tooling
+- Bench: local mirror mode so cold and update scenarios contain no network; `update-offline` scenario; Laravel joins monolog in the CI gate; the gate compares viv to Composer on the same runner ([#164](https://github.com/svandragt/vivace/issues/164), [#165](https://github.com/svandragt/vivace/issues/165), [#171](https://github.com/svandragt/vivace/issues/171), [#173](https://github.com/svandragt/vivace/issues/173))
+- Compat sweep skips a failed clone instead of aborting ([#148](https://github.com/svandragt/vivace/issues/148))
+- Fuzz targets build again and CI builds them on every push ([#147](https://github.com/svandragt/vivace/issues/147))
+- Removed the JsonManipulator port and the unreachable impossible-packages optimiser pass ([#144](https://github.com/svandragt/vivace/issues/144), [#145](https://github.com/svandragt/vivace/issues/145))
 
 ## [0.7.0] - 2026-09-08
 ### Added
@@ -162,3 +191,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [0.5.0]: https://github.com/svandragt/vivace/releases/tag/v0.5.0
 [0.6.0]: https://github.com/svandragt/vivace/releases/tag/v0.6.0
 [0.7.0]: https://github.com/svandragt/vivace/releases/tag/v0.7.0
+[0.8.0]: https://github.com/svandragt/vivace/releases/tag/v0.8.0
