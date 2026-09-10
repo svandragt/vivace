@@ -152,28 +152,31 @@ async fn filter_advisories<A: AdvisoriesTransport>(
     // package list, #90's same seed) never needs asking again — only the
     // remainder, normally empty, so no request at all.
     let remainder = match &filter.prefetched {
-        Some((covered, _)) => names.iter().filter(|n| !covered.contains(*n)).cloned().collect(),
+        Some((covered, _)) => names
+            .iter()
+            .filter(|n| !covered.contains(*n))
+            .cloned()
+            .collect(),
         None => names,
     };
 
-    let remainder_response = if filter.audit.block_insecure
-        && !filter.endpoints.is_empty()
-        && !remainder.is_empty()
-    {
-        match audit::fetch_advisories_from(filter.transport, filter.endpoints, &remainder).await {
-            Ok(response) => Some(response),
-            Err(err) => {
-                warn_out(
-                    "Security advisory data could not be fetched from some repositories \
+    let remainder_response =
+        if filter.audit.block_insecure && !filter.endpoints.is_empty() && !remainder.is_empty() {
+            match audit::fetch_advisories_from(filter.transport, filter.endpoints, &remainder).await
+            {
+                Ok(response) => Some(response),
+                Err(err) => {
+                    warn_out(
+                        "Security advisory data could not be fetched from some repositories \
                      (ignored per policy.ignore-unreachable); matches may be incomplete:",
-                );
-                warn_out(&format!("  - {err}"));
-                None
+                    );
+                    warn_out(&format!("  - {err}"));
+                    None
+                }
             }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
     let has_matching_advisory = |name: &str, version: &semver::NormalizedVersion| {
         let hits = |response: &AdvisoriesResponse| {
@@ -545,9 +548,17 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         })
         .into();
 
-    let accept = |name: &str, stability: &str| is_acceptable(name, stability, &acceptable, &stability_flags);
+    let accept =
+        |name: &str, stability: &str| is_acceptable(name, stability, &acceptable, &stability_flags);
     let (closure, prefetch_result) = tokio::join!(
-        repo.load_closure_seeded(&roots, dev_acceptance, &skip, seed, &accept, &mut constraint_cache),
+        repo.load_closure_seeded(
+            &roots,
+            dev_acceptance,
+            &skip,
+            seed,
+            &accept,
+            &mut constraint_cache
+        ),
         prefetch,
     );
     let closure = closure?;
@@ -1322,11 +1333,7 @@ mod tests {
             clippy::unused_async_trait_impl,
             reason = "the fixture answers synchronously; the trait is async for production"
         )]
-        async fn post_advisories(
-            &self,
-            _url: &reqwest::Url,
-            packages: &[String],
-        ) -> Result<Value> {
+        async fn post_advisories(&self, _url: &reqwest::Url, packages: &[String]) -> Result<Value> {
             self.requests.lock().unwrap().push(packages.to_vec());
             Ok(serde_json::json!({"advisories": {}}))
         }
