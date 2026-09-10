@@ -312,9 +312,26 @@ async fn solve(
         None => default_cache_dir()?,
     };
     let fetcher = build_fetcher(project_dir, root, offline)?;
-    let repo = build_repository(root, &cache_dir, &fetcher).await?;
-    let (audit_config, no_blocking) =
-        audit_config_and_no_blocking(root, args.no_blocking || args.no_security_blocking)?;
+    let full_update = args.packages.is_empty();
+    // #190: `build_repository`'s `packages.json` fetch is the one network
+    // round trip in this span; the audit config parse and (for a full
+    // update) the lock read need neither its result nor the network, so run
+    // them alongside it instead of serially after.
+    let (repo, audit_result, locked_result) = tokio::join!(
+        build_repository(root, &cache_dir, &fetcher),
+        async { audit_config_and_no_blocking(root, args.no_blocking || args.no_security_blocking) },
+        async {
+            // #90: a warm update's closure is almost always the previous
+            // `composer.lock` again; seeding with its package names starts
+            // fetching all of them in the first wave instead of discovering
+            // most of them one BFS level's round trip at a time. No lock
+            // yet (first-ever update) just means an empty seed, same as
+            // before.
+            full_update.then(|| read_locked_by_name(lock_path))
+        },
+    );
+    let repo = repo?;
+    let (audit_config, no_blocking) = audit_result?;
     // #182: only the repositories that actually advertise `security-advisories`
     // in their own `packages.json`, so a Satis/mirror-only project's update
     // never posts anywhere Composer itself wouldn't.
@@ -328,13 +345,9 @@ async fn solve(
         prefetched: None,
     });
 
-    if args.packages.is_empty() {
-        // #90: a warm update's closure is almost always the previous
-        // `composer.lock` again; seeding with its package names starts
-        // fetching all of them in the first wave instead of discovering
-        // most of them one BFS level's round trip at a time. No lock yet
-        // (first-ever update) just means an empty seed, same as before.
-        let locked_by_name = read_locked_by_name(lock_path)?;
+    if full_update {
+        let locked_by_name =
+            locked_result.expect("full_update is true, so read_locked_by_name ran above")?;
         let seed: Vec<String> = locked_by_name.keys().cloned().collect();
         let preferred = if args.minimal_changes {
             preferred_versions(&locked_by_name, &[])?

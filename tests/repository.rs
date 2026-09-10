@@ -425,9 +425,10 @@ async fn v1_providers_url_cache_hit_makes_no_further_requests() {
 
     // A fresh `Repository` (no in-memory memoization) against the same warm
     // disk cache: every provider-includes/provider file is sha256-matched,
-    // so nothing beyond `packages.json` itself is requested again... but
-    // `packages.json` uses `Last-Modified`, so its one revalidation still
-    // counts. The sha256-verified files must not add any further calls.
+    // so nothing beyond `packages.json` itself could be requested again --
+    // and `packages.json` itself (#190, `ComposerRepository::
+    // loadRootServerFile`'s own `$rootMaxAge`) is served straight off disk
+    // within its 10-minute TTL, with no request at all.
     let transport2 =
         FixtureTransport::with_roots([("satis-providers".to_string(), satis_root("providers"))]);
     let repo2 = Repository::load("https://satis-providers", cache.path(), &transport2)
@@ -439,9 +440,9 @@ async fn v1_providers_url_cache_hit_makes_no_further_requests() {
         .unwrap();
     assert_eq!(
         transport2.call_count(),
-        1,
-        "only packages.json's own Last-Modified revalidation, no provider-includes/provider \
-         file requests once their sha256 matches the cache"
+        0,
+        "packages.json served from disk within its TTL, no provider-includes/provider file \
+         requests once their sha256 matches the cache"
     );
 }
 

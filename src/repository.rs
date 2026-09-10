@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -862,10 +862,26 @@ impl ComposerSource {
         let base_url = configured;
 
         let packages_cache_path = cache_dir.join("packages.json");
-        let root = match get_cached_json(transport, &packages_url, &packages_cache_path).await? {
-            CachedJson::NotFound => bail!("{packages_url}: not found"),
-            CachedJson::Data(data) => data,
+        // #190: split out of the caller's "built fetcher/repository" span so
+        // the profile shows fetch time separately from everything else that
+        // span used to lump in.
+        let fetch_started = Instant::now();
+        let (root, outcome) = match get_cached_json(
+            transport,
+            &packages_url,
+            &packages_cache_path,
+            Some(PACKAGES_JSON_MAX_AGE),
+        )
+        .await?
+        {
+            (CachedJson::NotFound, _) => bail!("{packages_url}: not found"),
+            (CachedJson::Data(data), outcome) => (data, outcome),
         };
+        tracing::debug!(
+            elapsed_ms = fetch_started.elapsed().as_millis(),
+            outcome = ?outcome,
+            "fetched packages.json for {packages_url}"
+        );
         let requests = AtomicUsize::new(0);
         let requests = &requests;
 
@@ -1069,7 +1085,7 @@ impl ComposerSource {
             .cache_dir
             .join(format!("provider-{}.json", file_name.replace('/', "$")));
         requests.fetch_add(1, Ordering::Relaxed);
-        match get_cached_json(transport, &url, &cache_path).await? {
+        match get_cached_json(transport, &url, &cache_path, None).await?.0 {
             CachedJson::NotFound => Ok(Vec::new()),
             CachedJson::Data(data) => parse_provider_versions(data, name).await,
         }
@@ -1544,10 +1560,17 @@ impl<T: Transport> Repository<T> {
         transport: T,
     ) -> Result<Repository<T>> {
         let entries = parse_repositories(root)?;
-        let mut sources = Vec::with_capacity(entries.len());
-        for entry in entries {
-            sources.push(Source::load(entry, cache_root, &transport).await?);
-        }
+        // #190: each source's `packages.json` fetch is otherwise a serial
+        // round trip ahead of anything else, so run them concurrently.
+        // `try_join_all` preserves `entries`' own order in its `Vec` result,
+        // same as the loop it replaces did, regardless of which finishes
+        // first.
+        let sources = futures::future::try_join_all(
+            entries
+                .into_iter()
+                .map(|entry| Source::load(entry, cache_root, &transport)),
+        )
+        .await?;
         Ok(Repository {
             transport,
             sources,
@@ -2372,6 +2395,27 @@ enum CachedJson {
     Data(Value),
 }
 
+/// #190's debug line wants to say more than `CachedJson` does about how the
+/// body was obtained: `ComposerRepository::loadRootServerFile`'s own
+/// `$rootMaxAge` short-circuit (served from disk, no request at all) versus
+/// a conditional GET that came back 304, versus a real fetch.
+#[derive(Debug, Clone, Copy)]
+enum CacheOutcome {
+    /// Served from disk within `max_age`, no request issued
+    /// (`loadRootServerFile`'s `$age <= $rootMaxAge` branch).
+    Fresh,
+    /// A conditional GET came back 304.
+    NotModified,
+    /// A conditional GET returned a new body.
+    Fetched,
+}
+
+/// `ComposerRepository::loadRootServerFile`'s `$rootMaxAge` (`600` at every
+/// call site but two, `ComposerRepository.php:627` etc.): `packages.json` is
+/// served straight off disk, no request at all, for this long after it was
+/// last written.
+const PACKAGES_JSON_MAX_AGE: Duration = Duration::from_secs(600);
+
 /// The conditional-GET-against-a-disk-cache dance `packages.json` and every
 /// v2/lazy provider file share: read a cached body and its `Last-Modified`,
 /// send that back as `If-Modified-Since`, and cache a fresh response before
@@ -2381,17 +2425,34 @@ enum CachedJson {
 /// "not modified" instead of erroring, so the cached body here is used as
 /// read, and only a truly uncached URL (`since` is `None`) surfaces that
 /// transport's "network disabled" error.
+///
+/// `max_age`, when given, skips even the conditional GET while the cache
+/// file's own mtime is within it (`PACKAGES_JSON_MAX_AGE`'s own doc); every
+/// other caller (the provider-file fetches) passes `None` and always
+/// revalidates, matching `loadRootServerFile`'s other callers that pass no
+/// `$rootMaxAge`.
 async fn get_cached_json<T: Transport>(
     transport: &T,
     url: &Url,
     cache_path: &Path,
-) -> Result<CachedJson> {
+    max_age: Option<Duration>,
+) -> Result<(CachedJson, CacheOutcome)> {
+    if let Some(max_age) = max_age
+        && let Ok(metadata) = fs_err::metadata(cache_path)
+        && let Ok(modified) = metadata.modified()
+        && let Ok(age) = SystemTime::now().duration_since(modified)
+        && age <= max_age
+        && let Some((data, _)) = read_cache_file(cache_path).await?
+    {
+        return Ok((CachedJson::Data(data), CacheOutcome::Fresh));
+    }
     let cached = read_cache_file(cache_path).await?;
     let since = cached.as_ref().and_then(|(_, lm)| lm.as_deref());
     match transport.get(url, since).await? {
-        Conditional::NotFound => Ok(CachedJson::NotFound),
-        Conditional::NotModified => Ok(CachedJson::Data(
-            cached.context("server sent 304 but nothing is cached")?.0,
+        Conditional::NotFound => Ok((CachedJson::NotFound, CacheOutcome::Fetched)),
+        Conditional::NotModified => Ok((
+            CachedJson::Data(cached.context("server sent 304 but nothing is cached")?.0),
+            CacheOutcome::NotModified,
         )),
         Conditional::Fresh {
             body,
@@ -2402,7 +2463,7 @@ async fn get_cached_json<T: Transport>(
                 obj.insert("last-modified".to_string(), Value::String(lm.clone()));
             }
             write_cache_file(cache_path, &data)?;
-            Ok(CachedJson::Data(data))
+            Ok((CachedJson::Data(data), CacheOutcome::Fetched))
         }
     }
 }
