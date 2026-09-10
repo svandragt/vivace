@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
@@ -197,7 +197,10 @@ impl PackageVersion {
             .map(str::to_string);
         let version_normalized = match version_normalized {
             Some(v) => v,
-            None => crate::version::normalize(&version)?,
+            None => {
+                VERSION_NORMALIZE_CALLS.fetch_add(1, Ordering::Relaxed);
+                crate::version::normalize(&version)?
+            }
         };
         let require = map_field(obj, "require");
         let require_dev = map_field(obj, "require-dev");
@@ -1277,6 +1280,12 @@ impl<T: Transport> Repository<T> {
         let requests_before = self.request_count();
         let files_before = CACHE_FILES_PARSED.load(Ordering::Relaxed);
         let bytes_before = CACHE_BYTES_PARSED.load(Ordering::Relaxed);
+        let read_ns_before = STAGE_READ_NS.load(Ordering::Relaxed);
+        let json_parse_ns_before = STAGE_JSON_PARSE_NS.load(Ordering::Relaxed);
+        let expand_ns_before = STAGE_EXPAND_NS.load(Ordering::Relaxed);
+        let convert_ns_before = STAGE_CONVERT_NS.load(Ordering::Relaxed);
+        let versions_before = VERSIONS_PRODUCED.load(Ordering::Relaxed);
+        let normalize_calls_before = VERSION_NORMALIZE_CALLS.load(Ordering::Relaxed);
 
         let mut walk = ClosureWalk {
             skip,
@@ -1367,6 +1376,17 @@ impl<T: Transport> Repository<T> {
             bytes_parsed = CACHE_BYTES_PARSED.load(Ordering::Relaxed) - bytes_before,
             elapsed_ms = closure_started.elapsed().as_millis(),
             "loaded metadata closure"
+        );
+        tracing::debug!(
+            read_ms = (STAGE_READ_NS.load(Ordering::Relaxed) - read_ns_before) / 1_000_000,
+            json_parse_ms =
+                (STAGE_JSON_PARSE_NS.load(Ordering::Relaxed) - json_parse_ns_before) / 1_000_000,
+            expand_ms = (STAGE_EXPAND_NS.load(Ordering::Relaxed) - expand_ns_before) / 1_000_000,
+            convert_ms = (STAGE_CONVERT_NS.load(Ordering::Relaxed) - convert_ns_before) / 1_000_000,
+            versions_produced = VERSIONS_PRODUCED.load(Ordering::Relaxed) - versions_before,
+            normalize_calls =
+                VERSION_NORMALIZE_CALLS.load(Ordering::Relaxed) - normalize_calls_before,
+            "#176: read+parse cached metadata stage split"
         );
         Ok(walk.result)
     }
@@ -1695,24 +1715,47 @@ fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<Packa
     // is only needed because JSON objects and arrays aren't interchangeable
     // in Rust).
     if let Value::Object(versions) = entry {
-        return versions
+        let convert_started = Instant::now();
+        let result: Result<Vec<PackageVersion>> = versions
             .into_values()
             .map(PackageVersion::from_owned_value)
             .collect();
+        STAGE_CONVERT_NS.fetch_add(
+            convert_started.elapsed().as_nanos() as u64,
+            Ordering::Relaxed,
+        );
+        if let Ok(versions) = &result {
+            VERSIONS_PRODUCED.fetch_add(versions.len(), Ordering::Relaxed);
+        }
+        return result;
     }
     let Value::Array(list) = entry else {
         bail!("{name}: provider entry is not a list");
     };
     let minified = data.get("minified").and_then(Value::as_str) == Some("composer/2.0");
+    let expand_started = Instant::now();
     let expanded = if minified {
         expand_minified(list)
     } else {
         list
     };
-    expanded
+    STAGE_EXPAND_NS.fetch_add(
+        expand_started.elapsed().as_nanos() as u64,
+        Ordering::Relaxed,
+    );
+    let convert_started = Instant::now();
+    let result: Result<Vec<PackageVersion>> = expanded
         .into_iter()
         .map(PackageVersion::from_owned_value)
-        .collect()
+        .collect();
+    STAGE_CONVERT_NS.fetch_add(
+        convert_started.elapsed().as_nanos() as u64,
+        Ordering::Relaxed,
+    );
+    if let Ok(versions) = &result {
+        VERSIONS_PRODUCED.fetch_add(versions.len(), Ordering::Relaxed);
+    }
+    result
 }
 
 /// The other big-body CPU still on the fetch loop after `parse_provider_versions`:
@@ -1733,12 +1776,20 @@ const INLINE_PARSE_MAX_BYTES: usize = 64 * 1024;
 
 async fn parse_json_blocking(bytes: Vec<u8>, context: String) -> Result<Value> {
     if bytes.len() <= INLINE_PARSE_MAX_BYTES {
-        return serde_json::from_slice(&bytes).with_context(|| context);
+        let started = Instant::now();
+        let parsed = serde_json::from_slice(&bytes);
+        STAGE_JSON_PARSE_NS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        return parsed.with_context(|| context);
     }
-    tokio::task::spawn_blocking(move || serde_json::from_slice::<Value>(&bytes))
-        .await
-        .context("JSON parse task panicked")?
-        .with_context(|| context)
+    tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        let parsed = serde_json::from_slice::<Value>(&bytes);
+        STAGE_JSON_PARSE_NS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        parsed
+    })
+    .await
+    .context("JSON parse task panicked")?
+    .with_context(|| context)
 }
 
 /// #159: how much of a closure load is disk-read-plus-parse rather than
@@ -1749,12 +1800,25 @@ async fn parse_json_blocking(bytes: Vec<u8>, context: String) -> Result<Value> {
 static CACHE_FILES_PARSED: AtomicUsize = AtomicUsize::new(0);
 static CACHE_BYTES_PARSED: AtomicUsize = AtomicUsize::new(0);
 
+/// #176's split of the 299 ms `read + JSON-parse cached metadata` phase
+/// §6.2 already named: same idiom as the pair above, one accumulator per
+/// stage, sampled before/after [`Repository::load_closure_seeded`].
+static STAGE_READ_NS: AtomicU64 = AtomicU64::new(0);
+static STAGE_JSON_PARSE_NS: AtomicU64 = AtomicU64::new(0);
+static STAGE_EXPAND_NS: AtomicU64 = AtomicU64::new(0);
+static STAGE_CONVERT_NS: AtomicU64 = AtomicU64::new(0);
+static VERSIONS_PRODUCED: AtomicUsize = AtomicUsize::new(0);
+static VERSION_NORMALIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 /// Reads a cache file written by [`write_cache_file`]: the raw provider
 /// JSON with a `last-modified` key merged in, mirroring Composer's own
 /// `Cache` format for this file (`ComposerRepository.php:1793-1797`) so the
 /// value can be sent back as `If-Modified-Since` next time.
 async fn read_cache_file(path: &Path) -> Result<Option<(Value, Option<String>)>> {
-    match fs_err::read(path) {
+    let read_started = Instant::now();
+    let read = fs_err::read(path);
+    STAGE_READ_NS.fetch_add(read_started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    match read {
         Ok(bytes) => {
             CACHE_FILES_PARSED.fetch_add(1, Ordering::Relaxed);
             CACHE_BYTES_PARSED.fetch_add(bytes.len(), Ordering::Relaxed);

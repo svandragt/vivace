@@ -633,3 +633,96 @@ reflects GitHub-runner-specific noise (a shared, often-throttled CPU) rather
 than this step's real cost on quieter hardware — worth a second look on the
 runner itself if the gate flags it again, not a regression to chase from
 this session's numbers alone.
+
+## 7. Splitting the 299 ms read+parse phase (#176)
+
+Same machine/session as §6, `bench/laravel` copied to scratch with its own
+`XDG_CACHE_HOME`, warmed with one `viv update --no-install` then measured
+with `viv update --offline --no-install`, release build,
+`RUST_LOG=vivace=debug`, median of 5 runs. New `-v`-gated `tracing::debug!`
+accumulators in `src/repository.rs` (`STAGE_READ_NS`/`STAGE_JSON_PARSE_NS`/
+`STAGE_EXPAND_NS`/`STAGE_CONVERT_NS`, same idiom as §6's
+`CACHE_FILES_PARSED`/`CACHE_BYTES_PARSED`) split the phase at: (a) file read
+(`fs_err::read` in `read_cache_file`), (b) `serde_json::from_slice` to
+`Value` (`parse_json_blocking`), (c) `expand_minified`, (d) `PackageVersion::
+from_owned_value` (version normalisation plus the `require`/`require-dev`/
+`replace`/`provide`/`conflict` map clones). Left in place, matching this
+file's existing spans.
+
+| Stage | Median | Share of stage sum |
+|---|---|---|
+| (a) file read | 25 ms | 3% |
+| (b) JSON parse to `Value` | 107 ms | 13% |
+| (c) `expand_minified` | **519 ms** | **64%** |
+| (d) convert to `PackageVersion` | 158 ms | 20% |
+| Stage sum | 809 ms | — |
+| **Wall-clock (`loaded metadata closure`)** | **375 ms** | — |
+
+The stage sum (809 ms) is well over the wall-clock (375 ms): (c)/(d) run on
+tokio's blocking pool and (a)/(b) inline on the multi-threaded async
+executor, up to `LOAD_BATCH_SIZE` (100) fetches concurrently on this
+machine's 24 vCPUs, so these are CPU-seconds spent, not serial wall-time —
+real, just diluted by parallelism already present in the closure walk.
+
+Counts: 108 cached files, 7,931,447 bytes (matches §6's 7.93 MB); 13,996
+`PackageVersion`s produced by (c)+(d); only 3,175 survive
+`pool_builder`'s constraint filter into the pool (its own "converted the
+metadata closure into pool packages" line) — 77% of the parse/expand/convert
+work on this fixture is discarded immediately after; 0 calls to
+`version::normalize` (every cached entry already carries
+`version_normalized`, so that regex path is free here).
+
+**The issue's own suspicion is confirmed, and sharper than guessed:** raw
+JSON parsing (b) is only 13% of the split, not the dominant cost — `serde_json`
+itself runs at a normal ~264 MB/s in isolation (see experiment 1). The actual
+weight is (c) `expand_minified`, 5x the cost of parsing: its `expanded.push
+(next.clone())` (`src/repository.rs`, the minifier's expand loop) does a full
+deep clone of the *entire* cumulative merged object — every field seen so
+far, not just this version's diff — once per version, 13,996 times on this
+fixture. That's the real reason 7.9 MB takes hundreds of ms: not the JSON
+grammar, the O(n) full-object clone chain the minified format's inheritance
+forces.
+
+**Experiment 1: typed struct instead of `Value`.** Standalone microbench
+(`serde_json::from_slice` over the same 108 cached files, single-threaded,
+20 iterations) parsing to `serde_json::Value` vs a `#[derive(Deserialize)]`
+`{ packages: HashMap<String, Vec<Value>>, minified: Option<String> }`: **30.15
+ms/iter vs 30.38 ms/iter — no measurable difference.** Not applicable as
+framed: every per-version entry has to stay a generic `Value` regardless of
+the outer struct's shape, because `PackageVersion::raw` keeps it verbatim for
+the lock/dumper later (`src/repository.rs`'s own doc comment on
+`from_owned_value`); typing only the two outer keys (`packages`/`minified`)
+covers too small a share of the parse to matter.
+
+**Experiment 2: skip expansion for versions the constraints/lock can't
+select.** Not applicable as a cheap pre-filter, and viv already matches
+Composer here: minified diffs are a cumulative chain (`expand_minified`'s
+`current` merges forward, entry N only decodable from entry N-1's already-
+expanded form), and `is_version_loaded`'s constraint check needs
+`version_normalized`, which only exists after that entry's own expansion —
+there's no field to test before paying the clone. `ComposerRepository::
+isVersionAcceptable` has the identical shape: Composer's `PoolBuilder` also
+fetches and expands a needed name's whole provider file, then filters
+version-by-version after, so this isn't a place viv fell behind Composer's
+own loader. What profiling *did* surface (not guessed, per this task's own
+instruction): 77% of the fully expanded-and-converted versions above are
+discarded immediately by that same filter — real waste, just not one a
+"skip before expand" rule can reach without changing `expand_minified`'s own
+shape, which is a design change, not a quick experiment; flagged here, not
+attempted.
+
+**Recommendation for #176:** a cache keyed on the *raw parsed `Value`* (the
+issue's literal proposal, `bincode`/`postcard` next to the cached JSON) only
+removes stages (a)+(b) — 132 ms of the 809 ms stage sum, ~16%, and the
+smaller half of the phase. It leaves (c) `expand_minified`'s clone chain and
+(d)'s field extraction — 677 ms, 84% — completely unrecovered, because both
+run *after* the point that cache would return. A cache keyed on the fully
+expanded-and-converted `PackageVersion` form removes all four stages on a
+warm hit (up to the full 809 ms/375 ms), but only on a warm hit — every cold
+`update` (no prior cache, or a 200 replacing a changed file) still pays
+`expand_minified`'s clone in full. The cheaper, cache-independent fix is
+`expand_minified`'s `next.clone()` itself: it's the single biggest line item
+here (64% of the split) and fixing it helps every run, cold or warm, not
+just a cache hit — a real lever this task didn't attempt (design change,
+flagged per §2.6/§2.7's precedent), and one worth ranking above the cache
+format question #176 opened with.
