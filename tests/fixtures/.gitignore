@@ -3,3 +3,6 @@
 # never had. Repo rules beat the global file, so un-ignore here.
 !vendor/
 !**/vendor/
+
+# A show test installs into this fixture; the result is scratch, not a golden.
+show/outdated-monolog/vendor/
