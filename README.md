@@ -243,10 +243,11 @@ without touching the network.[^14]
   project on the machine. If you patch vendor files by hand, install with
   `--link-mode copy`, or `--link-mode clone` for writable files sharing the
   store's disk space where the filesystem supports it.
-- **Cold installs are not always the fastest.** riff leads cold installs
-  on a few projects, Drupal-shaped ones in particular, where viv's native
-  installer adapters do extra work; see the table above. Warm and no-op
-  installs, and updates, are where viv is ahead on every project.
+- **Cold installs are not always the fastest.** In the corpus above riff
+  leads cold installs on two of ten projects, drupal/recommended-project by
+  0.6 s and slimphp/Slim-Skeleton by 50 ms; the cause is not established.
+  On the other eight, and on every warm install, no-op and update, viv is
+  ahead.
 - **Two error messages still differ.** Composer's "found X but it conflicts
   with your root require" wording is not ported yet, and when a version is
   skipped for a security advisory and the solve then fails, Composer's

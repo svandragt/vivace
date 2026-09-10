@@ -128,6 +128,10 @@ check locally against the committed baseline.
 1. Refresh the docs against the code: `README.md`, `ARCHITECTURE.md`,
    `AGENTS.md`, `docs/*.md`, `compat/README.md`, `bench/results/README.md`
    (command list, flags, numbers table, install snippet tag, scope in/out).
+   Read `README.md` end to end after the corpus run and the sweep, not
+   before: every claim in "Speed", "Is it safe to try" and "Reasons not to
+   use viv" must match a number in the new table or sweep. A stale speed
+   caveat has shipped in two releases.
 2. Run the bench gate (`make bench-check`) and update the README numbers
    table.
 3. Run the compat sweep (`make compat`) and commit
