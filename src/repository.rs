@@ -914,14 +914,61 @@ impl ComposerSource {
                 .get("provider-includes")
                 .and_then(Value::as_object)
                 .unwrap_or(&empty);
-            let listing = load_provider_listing(
+            let listing = match load_provider_listing(
                 transport,
                 requests,
                 &base_url,
                 &cache_dir,
                 provider_includes,
             )
-            .await?;
+            .await
+            {
+                Ok(listing) => listing,
+                // wpackagist rotates a `provider-includes` file's sha256-named
+                // path whenever it regenerates; a root served straight off
+                // disk within `PACKAGES_JSON_MAX_AGE` can still name a hash
+                // the server has already dropped. Retry once against a
+                // truly-fresh root (`transport.get` directly, bypassing both
+                // the TTL and the conditional-GET's own cached
+                // `If-Modified-Since`) before giving up.
+                Err(err) if err.is::<ProviderFileNotFound>() => {
+                    let fresh_root = match transport.get(&packages_url, None).await? {
+                        Conditional::NotFound => bail!("{packages_url}: not found"),
+                        Conditional::NotModified => {
+                            bail!("{packages_url}: unexpected 304 for an unconditional request")
+                        }
+                        Conditional::Fresh {
+                            body,
+                            last_modified,
+                        } => {
+                            let mut data = parse_json_blocking(
+                                body,
+                                format!("{packages_url}: not valid JSON"),
+                            )
+                            .await?;
+                            if let (Some(lm), Value::Object(obj)) = (&last_modified, &mut data) {
+                                obj.insert("last-modified".to_string(), Value::String(lm.clone()));
+                            }
+                            write_cache_file(&packages_cache_path, &data)?;
+                            data
+                        }
+                    };
+                    let fresh_includes = fresh_root
+                        .get("provider-includes")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    load_provider_listing(
+                        transport,
+                        requests,
+                        &base_url,
+                        &cache_dir,
+                        &fresh_includes,
+                    )
+                    .await?
+                }
+                Err(err) => return Err(err),
+            };
             Provider::Providers {
                 providers_url: providers_url.to_string(),
                 listing,
@@ -1377,6 +1424,26 @@ fn digest_hex(bytes: &[u8], kind: HashKind) -> String {
     }
 }
 
+/// [`get_hash_verified_json`]'s `Conditional::NotFound`, distinguished from
+/// any other failure so [`ComposerSource::load`]'s v1 `providers-url` branch
+/// can retry once against a freshly reloaded root instead of failing
+/// outright: a repository like wpackagist rotates a `provider-includes`
+/// file's sha256-named path whenever it regenerates, so a hash a root cached
+/// within `PACKAGES_JSON_MAX_AGE` still names can already be gone.
+/// `ComposerRepository::whatProvides` copes the same way, reloading the root
+/// with no `$rootMaxAge` before rebuilding the listing
+/// (`ComposerRepository.php:1150`).
+#[derive(Debug)]
+struct ProviderFileNotFound(Url);
+
+impl std::fmt::Display for ProviderFileNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: not found", self.0)
+    }
+}
+
+impl std::error::Error for ProviderFileNotFound {}
+
 /// A content-addressed fetch: the cache key's expected hash is known up
 /// front (unlike `get_cached_json`'s `Last-Modified` revalidation), so a
 /// cache hit needs no transport call at all, and a miss is an unconditional
@@ -1415,7 +1482,7 @@ async fn get_hash_verified_json<T: Transport>(
     requests.fetch_add(1, Ordering::Relaxed);
     let body = match transport.get(url, None).await? {
         Conditional::Fresh { body, .. } => body,
-        Conditional::NotFound => bail!("{url}: not found"),
+        Conditional::NotFound => return Err(ProviderFileNotFound(url.clone()).into()),
         Conditional::NotModified => bail!("{url}: unexpected 304 for an unconditional request"),
     };
     if let Some(parent) = cache_path.parent() {

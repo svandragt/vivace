@@ -5,6 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+- A v1 repository such as wpackagist rotating a provider file's hash no longer fails an update: viv reloads the repository's `packages.json` and retries once, as Composer does
+
 ### Added
 - `--metadata-ttl <seconds>` on `update`, `add` and `rm`, or `VIV_METADATA_TTL`: skip revalidating cached package metadata younger than the window, so a second update shortly after the first makes no metadata requests. Off by default ([#191](https://github.com/svandragt/vivace/issues/191))
 

@@ -552,6 +552,116 @@ async fn v1_providers_url_cache_hit_makes_no_further_requests() {
     );
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::new(), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
+}
+
+// #: wpackagist rotates a v1 `provider-includes` file's sha256-named path
+// whenever it regenerates it; a `packages.json` cached within #190's
+// `PACKAGES_JSON_MAX_AGE` can still name a hash the server has already
+// dropped, 404-ing the listing fetch
+// (`viv_update_reproduces_composers_lock_against_real_wpackagist`, CI on
+// 4ddaf72). `ComposerSource::load` retries once against a freshly (and
+// unconditionally) reloaded root, the same way `ComposerRepository::
+// whatProvides` copes by reloading with no `$rootMaxAge`.
+#[tokio::test]
+async fn v1_provider_hash_rotation_forces_a_root_reload() {
+    let pkg_body = br#"{"packages":{"acme/foo":{"1.0.0":{"name":"acme/foo","version":"1.0.0"}}}}"#;
+    let pkg_hash = sha256_hex(pkg_body);
+
+    let listing_before = format!(r#"{{"providers":{{"acme/foo":{{"sha256":"{pkg_hash}"}}}}}}"#);
+    let hash_before = sha256_hex(listing_before.as_bytes());
+    // Different content (an extra space), so its sha256 -- and thus its
+    // hash-named path -- differs from `listing_before`'s, the same way
+    // wpackagist's regenerated listing gets a new name even when the
+    // packages it lists haven't changed.
+    let listing_after = format!(r#"{{"providers":{{"acme/foo":{{"sha256":"{pkg_hash}"}} }}}}"#);
+    let hash_after = sha256_hex(listing_after.as_bytes());
+
+    let root_after = format!(
+        r#"{{"providers-url":"/p/%package%$%hash%.json","provider-includes":{{"p/providers$%hash%.json":{{"sha256":"{hash_after}"}}}}}}"#
+    );
+
+    // The server's current state: `provider-includes` already names the
+    // rotated hash, and the pre-rotation listing is gone, exactly like
+    // wpackagist once it regenerates.
+    let fixture_dir = tempfile::tempdir().unwrap();
+    fs_err::create_dir_all(fixture_dir.path().join("p/acme")).unwrap();
+    fs_err::write(fixture_dir.path().join("packages.json"), &root_after).unwrap();
+    fs_err::write(
+        fixture_dir
+            .path()
+            .join(format!("p/providers${hash_after}.json")),
+        &listing_after,
+    )
+    .unwrap();
+    fs_err::write(
+        fixture_dir
+            .path()
+            .join(format!("p/acme/foo${pkg_hash}.json")),
+        pkg_body,
+    )
+    .unwrap();
+
+    // A warm disk cache left over from before the rotation: `packages.json`
+    // is within `PACKAGES_JSON_MAX_AGE`, so it's served straight off disk --
+    // no request at all -- still naming the now-gone `hash_before`.
+    let cache = tempfile::tempdir().unwrap();
+    let repo_cache_dir = cache.path().join("repo").join("v1-rotation");
+    fs_err::create_dir_all(&repo_cache_dir).unwrap();
+    let cached_root = format!(
+        r#"{{"providers-url":"/p/%package%$%hash%.json","provider-includes":{{"p/providers$%hash%.json":{{"sha256":"{hash_before}"}}}},"last-modified":"{FIXED_LAST_MODIFIED}"}}"#
+    );
+    fs_err::write(repo_cache_dir.join("packages.json"), &cached_root).unwrap();
+
+    let transport = FixtureTransport::with_roots([(
+        "v1-rotation".to_string(),
+        fixture_dir.path().to_path_buf(),
+    )]);
+    let repo = Repository::load("https://v1-rotation", cache.path(), &transport)
+        .await
+        .unwrap();
+    let versions = repo
+        .load_package("acme/foo", DevAcceptance::NonDevOnly)
+        .await
+        .unwrap();
+    assert_eq!(versions.len(), 1);
+
+    assert_eq!(
+        transport
+            .calls()
+            .iter()
+            .filter(|url| url.ends_with("/packages.json"))
+            .count(),
+        1,
+        "packages.json refetched exactly once, to recover from the stale hash: {:?}",
+        transport.calls()
+    );
+    assert!(
+        transport
+            .calls()
+            .iter()
+            .any(|url| url.contains(&format!("providers${hash_before}"))),
+        "expected the stale hash to be tried (and 404) before the reload: {:?}",
+        transport.calls()
+    );
+    assert!(
+        transport
+            .calls()
+            .iter()
+            .any(|url| url.contains(&format!("providers${hash_after}"))),
+        "expected the rotated provider-includes listing to be fetched after reloading root: {:?}",
+        transport.calls()
+    );
+}
+
 // wpackagist.org (#105) is a v1 repository whose provider files aren't
 // minified: each `packages[name]` entry is an object keyed by version
 // label, the same shape as an inline `packages` entry, not the plain list
