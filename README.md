@@ -8,9 +8,9 @@ macOS, and not yet at 1.0.
 ## Try it
 
 Download a prebuilt binary from the [releases
-page](https://github.com/svandragt/vivace/releases) (Linux x86_64 and
-aarch64 as static musl builds, also packaged as a .deb; macOS x86_64 and
-aarch64), or install it another way:
+page](https://github.com/svandragt/vivace/releases) (Linux x86_64 as glibc
+and static musl builds, aarch64 as static musl, also packaged as a .deb;
+macOS x86_64 and aarch64), or install it another way:
 
 ```sh
 cargo binstall --git https://github.com/svandragt/vivace vivace

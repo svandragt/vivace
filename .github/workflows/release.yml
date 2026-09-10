@@ -18,9 +18,13 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             musl: true
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            deb: true
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             musl: true
+            deb: true
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
@@ -58,18 +62,19 @@ jobs:
         with:
           name: dist-${{ matrix.target }}
           path: vivace-*.tar.gz
-      # Debian packaging only makes sense for the musl (Linux) targets.
+      # Debian packaging: gnu x86_64 for glibc hosts (faster binary), musl
+      # aarch64 since there is no gnu aarch64 build.
       - name: Install cargo-deb
-        if: matrix.musl
+        if: matrix.deb
         run: cargo install cargo-deb --version 3.8.0 --locked
       # --no-strip: cargo-deb strips with the host's strip, which cannot read
       # the aarch64 binary on an x86_64 runner; the tarballs ship unstripped
       # too, so the .deb matches them.
       - name: Build .deb package
-        if: matrix.musl
+        if: matrix.deb
         run: cargo deb --no-build --no-strip --target ${{ matrix.target }} -o dist/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: matrix.musl
+        if: matrix.deb
         with:
           name: dist-deb-${{ matrix.target }}
           path: dist/*.deb

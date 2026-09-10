@@ -512,3 +512,21 @@ riff has and viv doesn't; the two cold-column projects in the issue are
 better explained by the GitHub-latency variance `bench/results/README.md`
 already flags for cold numbers than by any skipped or faster step.
 
+
+## Shipped binary (#168)
+
+One-off measurement: v0.8.0 release musl tarball vs. a gnu build of the
+same commit, `bench/laravel`, 20 runs each (hyperfine, warm store + metadata
+cache per binary).
+
+| Scenario | musl | gnu | ratio |
+|---|---|---|---|
+| warm install (`rm -rf vendor` each run) | 46.4 ms ± 2.7 | 41.6 ms ± 1.6 | 1.12x |
+| no-op install | 5.9 ms ± 0.5 | 4.6 ms ± 0.5 | 1.29x |
+| `update --no-install --offline` | 842.1 ms ± 47.4 | 626.9 ms ± 13.7 | 1.34x |
+
+The offline update is 34% slower on musl, over the issue's 15% tolerance.
+Decision: add an `x86_64-unknown-linux-gnu` release build and build the
+.deb from it instead of the musl x86_64 build; keep the musl builds
+(x86_64 and aarch64) for static/portable installs and as the aarch64 .deb
+source, since there is no gnu aarch64 cross target in this pipeline.
