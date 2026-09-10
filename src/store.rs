@@ -19,6 +19,7 @@ use std::collections::HashSet;
 use std::io::Cursor;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
@@ -852,13 +853,16 @@ fn max_inflated_bytes(archive_len: u64) -> u64 {
 
 /// Running totals for one archive's extraction, checked as entries and bytes
 /// are produced (not after the fact) so a zip/tar bomb is caught mid-copy
-/// instead of after it has already filled the disk.
+/// instead of after it has already filled the disk. Counters are atomic (not
+/// `&mut` fields) so a large zip's parallel extraction (#193) can share one
+/// `ExtractLimits` across its worker threads via a plain shared reference,
+/// the same totals it would have produced running on one thread.
 struct ExtractLimits<'a> {
     package: &'a str,
     max_bytes: u64,
-    entries: u64,
-    written: u64,
-    files: u64,
+    entries: AtomicU64,
+    written: AtomicU64,
+    files: AtomicU64,
 }
 
 impl<'a> ExtractLimits<'a> {
@@ -866,9 +870,9 @@ impl<'a> ExtractLimits<'a> {
         ExtractLimits {
             package,
             max_bytes: max_inflated_bytes(archive_len),
-            entries: 0,
-            written: 0,
-            files: 0,
+            entries: AtomicU64::new(0),
+            written: AtomicU64::new(0),
+            files: AtomicU64::new(0),
         }
     }
 
@@ -877,12 +881,15 @@ impl<'a> ExtractLimits<'a> {
     /// tree just extracted — that walk was the extra `openat` per file the
     /// riff comparison found (`bench/results/README.md`).
     fn manifest(&self) -> String {
-        format!("files={} bytes={}\n", self.files, self.written)
+        format!(
+            "files={} bytes={}\n",
+            self.files.load(Ordering::Relaxed),
+            self.written.load(Ordering::Relaxed)
+        )
     }
 
-    fn count_entry(&mut self) -> Result<()> {
-        self.entries += 1;
-        if self.entries > MAX_ENTRIES {
+    fn count_entry(&self) -> Result<()> {
+        if self.entries.fetch_add(1, Ordering::Relaxed) + 1 > MAX_ENTRIES {
             bail!(
                 "{}: archive has more than {MAX_ENTRIES} entries, refusing to extract further \
                  (zip/tar bomb protection)",
@@ -895,7 +902,7 @@ impl<'a> ExtractLimits<'a> {
     /// Wrap `writer` so every byte written through it counts against this
     /// archive's inflated-size cap, erroring mid-write (not after) once the
     /// cap is exceeded.
-    fn counted<'w, W: std::io::Write>(&'w mut self, writer: W) -> CountingWriter<'w, 'a, W> {
+    fn counted<'w, W: std::io::Write>(&'w self, writer: W) -> CountingWriter<'w, 'a, W> {
         CountingWriter {
             limits: self,
             inner: writer,
@@ -904,14 +911,15 @@ impl<'a> ExtractLimits<'a> {
 }
 
 struct CountingWriter<'a, 'b, W> {
-    limits: &'a mut ExtractLimits<'b>,
+    limits: &'a ExtractLimits<'b>,
     inner: W,
 }
 
 impl<W: std::io::Write> std::io::Write for CountingWriter<'_, '_, W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.limits.written += buf.len() as u64;
-        if self.limits.written > self.limits.max_bytes {
+        let written = self.limits.written.fetch_add(buf.len() as u64, Ordering::Relaxed)
+            + buf.len() as u64;
+        if written > self.limits.max_bytes {
             return Err(std::io::Error::other(format!(
                 "{}: inflated size exceeds the {} byte cap, refusing to extract further (zip/tar \
                  bomb protection)",
@@ -979,7 +987,7 @@ fn extract_tar<R: std::io::Read + std::io::Seek>(
     dest: &Path,
 ) -> Result<String> {
     use std::io::SeekFrom;
-    let mut limits = ExtractLimits::new(package, archive_len);
+    let limits = ExtractLimits::new(package, archive_len);
     // Peek the first few bytes to sniff gzip/bzip2 magic, then rewind: works
     // for both an in-memory `Cursor` and an on-disk `File`, unlike the old
     // `bytes.starts_with(...)` check a `Read`-only stream can't do twice.
@@ -994,11 +1002,11 @@ fn extract_tar<R: std::io::Read + std::io::Seek>(
     }
     reader.seek(SeekFrom::Start(0))?;
     if filled >= 2 && magic[..2] == [0x1f, 0x8b] {
-        extract_tar_entries(flate2::read::GzDecoder::new(reader), dest, &mut limits)?;
+        extract_tar_entries(flate2::read::GzDecoder::new(reader), dest, &limits)?;
     } else if filled >= 3 && &magic[..3] == b"BZh" {
-        extract_tar_entries(bzip2_rs::DecoderReader::new(reader), dest, &mut limits)?;
+        extract_tar_entries(bzip2_rs::DecoderReader::new(reader), dest, &limits)?;
     } else {
-        extract_tar_entries(reader, dest, &mut limits)?;
+        extract_tar_entries(reader, dest, &limits)?;
     }
     Ok(limits.manifest())
 }
@@ -1006,7 +1014,7 @@ fn extract_tar<R: std::io::Read + std::io::Seek>(
 fn extract_tar_entries<R: std::io::Read>(
     reader: R,
     dest: &Path,
-    limits: &mut ExtractLimits<'_>,
+    limits: &ExtractLimits<'_>,
 ) -> Result<()> {
     let mut archive = tar::Archive::new(reader);
     let mut pending_symlinks = Vec::new();
@@ -1049,7 +1057,7 @@ fn extract_tar_entries<R: std::io::Read>(
             fs_err::remove_file(&path)?;
         }
         let executable = entry.header().mode().unwrap_or(0) & 0o111 != 0;
-        limits.files += 1;
+        limits.files.fetch_add(1, Ordering::Relaxed);
         let mut file = limits.counted(fs_err::File::create(&path)?);
         std::io::copy(&mut entry, &mut file)
             .with_context(|| format!("writing tar entry {name}"))?;
@@ -1064,6 +1072,13 @@ fn extract_tar_entries<R: std::io::Read>(
     strip_single_top_dir(dest)
 }
 
+/// Above this many entries, `extract_zip` splits the archive across threads
+/// (#193): `drupal/core`'s 27k-entry zip took 734 ms on one thread while
+/// every other package in the install had long finished. Also the divisor
+/// `extract_zip_parallel` uses to size its thread count, so a 5,000-entry
+/// archive gets 2 threads rather than the machine's whole core count.
+const PARALLEL_EXTRACT_THRESHOLD: usize = 2_000;
+
 /// Extract `bytes` into `dest`, applying Composer's single-top-directory
 /// rule. Files become 0444, or 0555 when the entry carried any exec bit; the
 /// rest of the zip mode is ignored.
@@ -1073,67 +1088,183 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
     archive_len: u64,
     dest: &Path,
 ) -> Result<String> {
-    let mut limits = ExtractLimits::new(package, archive_len);
-    let mut archive = zip::ZipArchive::new(reader)?;
-    let mut pending_symlinks = Vec::new();
-    let mut created_dirs = HashSet::new();
-    for index in 0..archive.len() {
-        limits.count_entry()?;
-        let mut entry = archive.by_index(index)?;
-        let name = std::str::from_utf8(entry.name_raw())
-            .map_err(|_| anyhow::anyhow!("zip entry {index} is not valid UTF-8"))?
-            .to_owned();
-        let path = dest.join(sanitise(&name)?);
-        if entry.is_dir() {
-            mkdir_755_once(&path, dest, &mut created_dirs)?;
-            continue;
+    extract_zip_with_threshold(package, reader, archive_len, dest, PARALLEL_EXTRACT_THRESHOLD)
+}
+
+/// `extract_zip`, with the entry-count threshold above which extraction
+/// splits across threads exposed as a parameter: production always calls
+/// [`extract_zip`], which hardcodes [`PARALLEL_EXTRACT_THRESHOLD`]; a test
+/// passes `usize::MAX` to force the single-thread path on an archive that
+/// would otherwise go parallel, to compare the two against the same input.
+fn extract_zip_with_threshold<R: std::io::Read + std::io::Seek>(
+    package: &str,
+    mut reader: R,
+    archive_len: u64,
+    dest: &Path,
+    threshold: usize,
+) -> Result<String> {
+    let limits = ExtractLimits::new(package, archive_len);
+    let mut archive = zip::ZipArchive::new(&mut reader)?;
+    let entry_count = archive.len();
+    let pending_symlinks = if entry_count > threshold {
+        // Release the borrow `archive` holds on `reader` so it can be read
+        // from the top again; re-parsing the central directory once more
+        // per worker thread below is cheap next to the 27k `by_index` reads
+        // (and their inflate + write) that dwarf it.
+        drop(archive);
+        reader.seek(std::io::SeekFrom::Start(0))?;
+        let mut bytes = Vec::with_capacity(usize::try_from(archive_len).unwrap_or(0));
+        std::io::Read::read_to_end(&mut reader, &mut bytes)?;
+        extract_zip_parallel(&bytes, entry_count, dest, &limits)?
+    } else {
+        let mut created_dirs = HashSet::new();
+        let mut pending = Vec::new();
+        for index in 0..entry_count {
+            extract_one_zip_entry(&mut archive, index, dest, &limits, &mut created_dirs, &mut pending)?;
         }
-        if let Some(parent) = path.parent() {
-            mkdir_755_once(parent, dest, &mut created_dirs)?;
-        }
-        if entry.is_symlink() {
-            let mut target = Vec::new();
-            std::io::copy(&mut entry, &mut limits.counted(&mut target))
-                .with_context(|| format!("reading zip symlink target {name}"))?;
-            let target = String::from_utf8(target).map_err(|_| {
-                anyhow::anyhow!("zip symlink entry {name} target is not valid UTF-8")
-            })?;
-            pending_symlinks.push((path, target));
-            continue;
-        }
-        limits.files += 1;
-        // A repeated entry name would otherwise hit EACCES: the first pass
-        // already chmod'd the file read-only, so a plain create fails.
-        // Detect that with create_new instead of a stat-per-entry, and
-        // retry once after removing the stale file.
-        let opened = fs_err::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path);
-        let opened = match opened {
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                fs_err::remove_file(&path)?;
-                fs_err::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-            }
-            other => other,
-        };
-        let mut file = limits.counted(opened?);
-        std::io::copy(&mut entry, &mut file)
-            .with_context(|| format!("writing zip entry {name}"))?;
-        let executable = entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0);
-        file.inner
-            .set_permissions(PermissionsExt::from_mode(if executable {
-                0o555
-            } else {
-                0o444
-            }))?;
-    }
+        pending.into_iter().map(|(_, path, target)| (path, target)).collect()
+    };
     create_pending_symlinks(dest, pending_symlinks)?;
     strip_single_top_dir(dest)?;
     Ok(limits.manifest())
+}
+
+/// One zip entry's worth of `extract_zip`'s work, shared by the
+/// single-thread loop and every `extract_zip_parallel` worker: read the
+/// entry, make its directory, and either write the file or defer its
+/// symlink (tagged with `index` so workers processing entries out of order
+/// can be re-sorted back into archive order once every thread joins).
+fn extract_one_zip_entry<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    index: usize,
+    dest: &Path,
+    limits: &ExtractLimits<'_>,
+    created_dirs: &mut HashSet<PathBuf>,
+    pending_symlinks: &mut Vec<(usize, PathBuf, String)>,
+) -> Result<()> {
+    limits.count_entry()?;
+    let mut entry = archive.by_index(index)?;
+    let name = std::str::from_utf8(entry.name_raw())
+        .map_err(|_| anyhow::anyhow!("zip entry {index} is not valid UTF-8"))?
+        .to_owned();
+    let path = dest.join(sanitise(&name)?);
+    if entry.is_dir() {
+        mkdir_755_once(&path, dest, created_dirs)?;
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        mkdir_755_once(parent, dest, created_dirs)?;
+    }
+    if entry.is_symlink() {
+        let mut target = Vec::new();
+        std::io::copy(&mut entry, &mut limits.counted(&mut target))
+            .with_context(|| format!("reading zip symlink target {name}"))?;
+        let target = String::from_utf8(target)
+            .map_err(|_| anyhow::anyhow!("zip symlink entry {name} target is not valid UTF-8"))?;
+        pending_symlinks.push((index, path, target));
+        return Ok(());
+    }
+    limits.files.fetch_add(1, Ordering::Relaxed);
+    // A repeated entry name would otherwise hit EACCES: the first pass
+    // already chmod'd the file read-only, so a plain create fails. Detect
+    // that with create_new instead of a stat-per-entry, and retry once
+    // after removing the stale file. Two threads racing on the same
+    // duplicate name hit the same dance: whichever loses the create_new
+    // race removes the stale file and retries, same as the single-thread
+    // case.
+    let opened = fs_err::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path);
+    let opened = match opened {
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            fs_err::remove_file(&path)?;
+            fs_err::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+        }
+        other => other,
+    };
+    let mut file = limits.counted(opened?);
+    std::io::copy(&mut entry, &mut file).with_context(|| format!("writing zip entry {name}"))?;
+    let executable = entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0);
+    file.inner
+        .set_permissions(PermissionsExt::from_mode(if executable {
+            0o555
+        } else {
+            0o444
+        }))?;
+    Ok(())
+}
+
+/// The `> PARALLEL_EXTRACT_THRESHOLD` half of `extract_zip`: `n` threads
+/// (`available_parallelism`, capped at 8, capped again so each thread has at
+/// least `PARALLEL_EXTRACT_THRESHOLD` entries of its own) each reopen `bytes`
+/// as their own `ZipArchive` and process every `index % n == t` entry.
+/// Directories are created per thread (`create_dir_all` is race-safe on
+/// EEXIST, so two threads racing on a shared ancestor is fine); symlinks are
+/// collected per thread and returned in archive order for the caller to
+/// apply once every worker has finished. The first entry to error stops that
+/// thread; the others notice on their next entry and stop too, and that
+/// first error is what `extract_zip_with_threshold` returns.
+fn extract_zip_parallel(
+    bytes: &[u8],
+    entry_count: usize,
+    dest: &Path,
+    limits: &ExtractLimits<'_>,
+) -> Result<Vec<(PathBuf, String)>> {
+    let n = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(8)
+        .min(entry_count / PARALLEL_EXTRACT_THRESHOLD)
+        .max(1);
+    let stop = AtomicBool::new(false);
+    let per_thread: Vec<Result<Vec<(usize, PathBuf, String)>>> = std::thread::scope(|scope| {
+        (0..n)
+            .map(|t| {
+                let stop = &stop;
+                scope.spawn(move || -> Result<Vec<(usize, PathBuf, String)>> {
+                    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+                    let mut created_dirs = HashSet::new();
+                    let mut pending = Vec::new();
+                    let mut index = t;
+                    while index < entry_count {
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if let Err(err) = extract_one_zip_entry(
+                            &mut archive,
+                            index,
+                            dest,
+                            limits,
+                            &mut created_dirs,
+                            &mut pending,
+                        ) {
+                            stop.store(true, Ordering::Relaxed);
+                            return Err(err);
+                        }
+                        index += n;
+                    }
+                    Ok(pending)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().expect("zip extraction worker thread panicked"))
+            .collect()
+    });
+    let mut all: Vec<(usize, PathBuf, String)> = per_thread
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    all.sort_by_key(|(index, _, _)| *index);
+    Ok(all
+        .into_iter()
+        .map(|(_, path, target)| (path, target))
+        .collect())
 }
 
 /// If `dest` holds exactly one entry (ignoring `.DS_Store`) and it is a
@@ -1987,6 +2118,120 @@ mod tests {
             err.contains(&MAX_ENTRIES.to_string()),
             "error should name the limit: {err}"
         );
+    }
+
+    /// A full snapshot of an extracted tree: regular files by content and
+    /// mode, symlinks by target — `read_tree` above only covers file
+    /// contents, not enough to tell a mode or a dropped symlink apart.
+    fn full_tree_snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, (Vec<u8>, u32)> {
+        fn walk(
+            root: &Path,
+            dir: &Path,
+            files: &mut std::collections::BTreeMap<PathBuf, (Vec<u8>, u32)>,
+        ) {
+            for entry in fs_err::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                let rel = path.strip_prefix(root).unwrap().to_path_buf();
+                let file_type = entry.file_type().unwrap();
+                if file_type.is_dir() {
+                    walk(root, &path, files);
+                } else if file_type.is_symlink() {
+                    let target = fs_err::read_link(&path).unwrap();
+                    files.insert(rel, (target.to_string_lossy().into_owned().into_bytes(), 0));
+                } else {
+                    files.insert(rel, (fs_err::read(&path).unwrap(), mode_of(&path)));
+                }
+            }
+        }
+        let mut files = std::collections::BTreeMap::new();
+        walk(dir, dir, &mut files);
+        files
+    }
+
+    /// #193: a ~5,000-entry archive (above `PARALLEL_EXTRACT_THRESHOLD`)
+    /// extracted across threads produces exactly the same tree — same
+    /// files, contents and modes, same symlink — as forcing the threshold
+    /// to `usize::MAX` extracts on one thread.
+    #[test]
+    fn parallel_extraction_matches_single_threaded_extraction() {
+        let names: Vec<String> = (0..5_000).map(|i| format!("d{}/f{i}.txt", i % 50)).collect();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (i, name) in names.iter().enumerate() {
+            let mut options = SimpleFileOptions::default();
+            if i % 200 == 0 {
+                options = options.unix_permissions(0o755);
+            }
+            writer.start_file(name, options).unwrap();
+            writer.write_all(b"hello").unwrap();
+        }
+        writer
+            .add_symlink("link", "d0/f0.txt", SimpleFileOptions::default())
+            .unwrap();
+        let zip_bytes = writer.finish().unwrap().into_inner();
+
+        let parallel = tempfile::tempdir().unwrap();
+        extract_zip_with_threshold(
+            "acme/pkg",
+            Cursor::new(&zip_bytes),
+            zip_bytes.len() as u64,
+            parallel.path(),
+            PARALLEL_EXTRACT_THRESHOLD,
+        )
+        .unwrap();
+
+        let sequential = tempfile::tempdir().unwrap();
+        extract_zip_with_threshold(
+            "acme/pkg",
+            Cursor::new(&zip_bytes),
+            zip_bytes.len() as u64,
+            sequential.path(),
+            usize::MAX,
+        )
+        .unwrap();
+
+        assert_eq!(
+            full_tree_snapshot(parallel.path()),
+            full_tree_snapshot(sequential.path())
+        );
+    }
+
+    /// #193: the inflated-size cap is a shared `ExtractLimits` (atomics, not
+    /// per-thread counters), so it still trips once the *sum* across every
+    /// worker thread crosses it, even though no single thread's own share
+    /// would.
+    #[test]
+    #[allow(
+        unsafe_code,
+        reason = "nextest gives this test its own process; no other thread touches env vars"
+    )]
+    fn limits_ceiling_trips_across_threads_on_a_large_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        // SAFETY: single-threaded within this test process at this point.
+        unsafe {
+            std::env::set_var("VIV_MAX_INFLATED_BYTES", "50000");
+        }
+        let payload = [0u8; 100];
+        let names: Vec<String> = (0..3_000).map(|i| format!("d{}/f{i}", i % 50)).collect();
+        let entries: Vec<(&str, &[u8], Option<u32>)> =
+            names.iter().map(|n| (n.as_str(), &payload[..], None)).collect();
+        let zip = zip_of(&entries);
+        let err = format!(
+            "{:#}",
+            store
+                .add_zip(&package("acme/pkg", "abc"), &zip)
+                .unwrap_err()
+        );
+        // SAFETY: see above.
+        unsafe {
+            std::env::remove_var("VIV_MAX_INFLATED_BYTES");
+        }
+        assert!(
+            err.contains("acme/pkg"),
+            "error should name the package: {err}"
+        );
+        assert!(err.contains("50000"), "error should name the limit: {err}");
     }
 
     #[test]
