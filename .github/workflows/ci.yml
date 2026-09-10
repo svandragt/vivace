@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push to the same branch supersedes the run in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -62,8 +67,11 @@ jobs:
       - run: devbox run -- cargo +nightly fuzz build
         working-directory: fuzz
 
-  # macOS is a supported platform; this job blocks like the Linux one.
+  # macOS is a supported platform; this job blocks like the Linux one. It
+  # waits for the Linux gate so a fmt or clippy slip is paid once, on the
+  # cheaper runner.
   check-macos:
+    needs: check
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
