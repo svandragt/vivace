@@ -917,7 +917,10 @@ struct CountingWriter<'a, 'b, W> {
 
 impl<W: std::io::Write> std::io::Write for CountingWriter<'_, '_, W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let written = self.limits.written.fetch_add(buf.len() as u64, Ordering::Relaxed)
+        let written = self
+            .limits
+            .written
+            .fetch_add(buf.len() as u64, Ordering::Relaxed)
             + buf.len() as u64;
         if written > self.limits.max_bytes {
             return Err(std::io::Error::other(format!(
@@ -1088,7 +1091,13 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
     archive_len: u64,
     dest: &Path,
 ) -> Result<String> {
-    extract_zip_with_threshold(package, reader, archive_len, dest, PARALLEL_EXTRACT_THRESHOLD)
+    extract_zip_with_threshold(
+        package,
+        reader,
+        archive_len,
+        dest,
+        PARALLEL_EXTRACT_THRESHOLD,
+    )
 }
 
 /// `extract_zip`, with the entry-count threshold above which extraction
@@ -1120,9 +1129,19 @@ fn extract_zip_with_threshold<R: std::io::Read + std::io::Seek>(
         let mut created_dirs = HashSet::new();
         let mut pending = Vec::new();
         for index in 0..entry_count {
-            extract_one_zip_entry(&mut archive, index, dest, &limits, &mut created_dirs, &mut pending)?;
+            extract_one_zip_entry(
+                &mut archive,
+                index,
+                dest,
+                &limits,
+                &mut created_dirs,
+                &mut pending,
+            )?;
         }
-        pending.into_iter().map(|(_, path, target)| (path, target)).collect()
+        pending
+            .into_iter()
+            .map(|(_, path, target)| (path, target))
+            .collect()
     };
     create_pending_symlinks(dest, pending_symlinks)?;
     strip_single_top_dir(dest)?;
@@ -1251,7 +1270,11 @@ fn extract_zip_parallel(
             })
             .collect::<Vec<_>>()
             .into_iter()
-            .map(|handle| handle.join().expect("zip extraction worker thread panicked"))
+            .map(|handle| {
+                handle
+                    .join()
+                    .expect("zip extraction worker thread panicked")
+            })
             .collect()
     });
     let mut all: Vec<(usize, PathBuf, String)> = per_thread
@@ -1614,7 +1637,13 @@ mod tests {
             ("vendor/pkg/src/A.php", b"a", None),
             ("vendor/pkg/src/B.php", b"b", None),
         ]);
-        extract_zip("acme/pkg", Cursor::new(&first), first.len() as u64, dest.path()).unwrap();
+        extract_zip(
+            "acme/pkg",
+            Cursor::new(&first),
+            first.len() as u64,
+            dest.path(),
+        )
+        .unwrap();
         let second = zip_of(&[("vendor/pkg/src/A.php", b"a-again", Some(0o755))]);
         extract_zip(
             "acme/pkg",
@@ -2155,7 +2184,9 @@ mod tests {
     /// to `usize::MAX` extracts on one thread.
     #[test]
     fn parallel_extraction_matches_single_threaded_extraction() {
-        let names: Vec<String> = (0..5_000).map(|i| format!("d{}/f{i}.txt", i % 50)).collect();
+        let names: Vec<String> = (0..5_000)
+            .map(|i| format!("d{}/f{i}.txt", i % 50))
+            .collect();
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for (i, name) in names.iter().enumerate() {
             let mut options = SimpleFileOptions::default();
@@ -2214,8 +2245,10 @@ mod tests {
         }
         let payload = [0u8; 100];
         let names: Vec<String> = (0..3_000).map(|i| format!("d{}/f{i}", i % 50)).collect();
-        let entries: Vec<(&str, &[u8], Option<u32>)> =
-            names.iter().map(|n| (n.as_str(), &payload[..], None)).collect();
+        let entries: Vec<(&str, &[u8], Option<u32>)> = names
+            .iter()
+            .map(|n| (n.as_str(), &payload[..], None))
+            .collect();
         let zip = zip_of(&entries);
         let err = format!(
             "{:#}",
