@@ -339,7 +339,7 @@ async fn solve(
             elapsed_ms = setup_started.elapsed().as_millis(),
             "built fetcher/repository and read the current lock, ahead of the closure walk"
         );
-        return solver::solve_update_seeded(
+        let result = solver::solve_update_seeded(
             &repo,
             root,
             prefer_stable,
@@ -349,6 +349,8 @@ async fn solve(
             advisories,
         )
         .await;
+        forget_repo(repo);
+        return result;
     }
 
     if !lock_path.exists() {
@@ -374,7 +376,7 @@ async fn solve(
     } else {
         HashMap::new()
     };
-    solver::solve_partial_update_seeded(
+    let result = solver::solve_partial_update_seeded(
         &repo,
         root,
         prefer_stable,
@@ -386,7 +388,24 @@ async fn solve(
         preferred,
         advisories,
     )
-    .await
+    .await;
+    forget_repo(repo);
+    result
+}
+
+/// #177: `repo` (`build_repository`'s `Repository`) memoizes every fetched
+/// provider file's parsed metadata in its own `loaded` cache — on
+/// bench/laravel offline, 7.93 MB across 108 files — and this is its last
+/// use: `update`/`add`/`rm` write the lock and exit moments after the solve
+/// above returns. `bench/results/profile.md` §6 measured ~61 ms recursively
+/// dropping that parsed-JSON tree here, time spent on a process about to
+/// exit anyway. `Repository` has no `Drop` impl with side effects (no temp
+/// files, no locks — the only `impl Drop` in this codebase is `auth.rs`'s
+/// test-only `EnvGuard`), so forgetting it is safe. Shared with
+/// `require::partial_update`, which builds its own `repo` over this same
+/// seam; `install` never reaches either path, so its own drop is untouched.
+pub(crate) fn forget_repo<T: crate::repository::Transport>(repo: crate::repository::Repository<T>) {
+    std::mem::forget(repo);
 }
 
 /// `locked_by_name` for the full-update path (#90's seed, keyed the same

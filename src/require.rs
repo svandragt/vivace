@@ -347,6 +347,9 @@ pub(crate) fn partial_update(
             advisories,
         ))?
     };
+    // #177: `repo` is never read again below (see `update::forget_repo`'s
+    // own doc for why forgetting it here is safe and worth it).
+    crate::update::forget_repo(repo);
 
     let options = crate::lock_writer::LockOptions {
         minimum_stability: result.minimum_stability,

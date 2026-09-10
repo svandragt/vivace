@@ -403,17 +403,40 @@ fn resolve(
         "dev-split second solve (no-op when require-dev is empty)"
     );
 
+    // #177: `built.pool`/`built.request` (the merged-solve pool — up to
+    // hundreds of `Package`s, each an `Arc<Value>` of raw metadata plus
+    // several `Vec<Link>` fields — and the request it solved against) are
+    // never read again below; `update`/`add`/`rm` write the lock and exit
+    // moments after this returns. `bench/results/profile.md` §6 measured 61
+    // ms freeing them here on bench/laravel offline (11% of the update),
+    // with nothing scheduled to run while it happens. Neither type has a
+    // `Drop` impl with side effects (no temp files, no locks — grep confirms
+    // the only `impl Drop` in this codebase is `auth.rs`'s test-only
+    // `EnvGuard`), so forgetting them is safe. `install` never reaches this
+    // function, so its own drop is untouched.
+    let pool_builder::BuildResult {
+        pool,
+        request,
+        minimum_stability,
+        stability_flags,
+        platform_reqs,
+        platform_dev_reqs,
+        platform_overrides,
+    } = built;
+    std::mem::forget(pool);
+    std::mem::forget(request);
+
     Ok(UpdateResult {
         non_dev,
         dev,
         aliases,
         prefer_stable,
         prefer_lowest,
-        minimum_stability: built.minimum_stability,
-        stability_flags: built.stability_flags,
-        platform_reqs: built.platform_reqs,
-        platform_dev_reqs: built.platform_dev_reqs,
-        platform_overrides: built.platform_overrides,
+        minimum_stability,
+        stability_flags,
+        platform_reqs,
+        platform_dev_reqs,
+        platform_overrides,
     })
 }
 
