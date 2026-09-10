@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 ### Performance
+- `viv update` asks for security advisories while the metadata closure is still loading, instead of after it; Laravel's warm update drops from 0.75 s to 0.65 s ([#189](https://github.com/svandragt/vivace/issues/189))
 - Cold install extracts an archive with more than 2,000 entries across up to eight threads, and creates each directory once instead of per file; drupal/recommended-project's cold install from a local mirror falls from 1263 ms to 728 ms, ahead of riff's 744 ms ([#193](https://github.com/svandragt/vivace/issues/193))
 
 ## [0.9.0] - 2026-09-10

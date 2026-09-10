@@ -434,10 +434,13 @@ fn read_installed(path: &Path, dev: bool) -> Result<Vec<AuditPackage>> {
 }
 
 /// One `security-advisories` API response: `{"advisories": {"pkg": [...]}}`.
-/// `pub(crate)`: `pool_builder`'s filter holds one of these across its own
-/// per-package loop instead of re-fetching per package (#175).
+/// `pub`: `pool_builder::AdvisoryFilter`'s own `prefetched` field is `pub`
+/// too (a test outside this crate builds one, #189), so this must be
+/// reachable at the same visibility even though it's otherwise an internal
+/// detail — `pool_builder`'s filter holds one across its own per-package
+/// loop instead of re-fetching per package (#175).
 #[derive(Debug, Deserialize)]
-pub(crate) struct AdvisoriesResponse {
+pub struct AdvisoriesResponse {
     #[serde(default)]
     advisories: HashMap<String, Vec<RawAdvisory>>,
 }

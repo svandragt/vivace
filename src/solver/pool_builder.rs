@@ -41,7 +41,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::{Map, Value};
 
-use crate::audit::{self, AdvisoriesTransport, NoAdvisories};
+use crate::audit::{self, AdvisoriesResponse, AdvisoriesTransport, NoAdvisories};
 use crate::lock::AuditConfig;
 use crate::repository::{
     ClosureRoot, DevAcceptance, PackageVersion, Repository, Transport, branch_alias_target,
@@ -91,6 +91,11 @@ pub struct AdvisoryFilter<'a, A: AdvisoriesTransport> {
     pub audit: &'a AuditConfig,
     /// `--no-blocking`/`--no-security-blocking`/`COMPOSER_NO_SECURITY_BLOCKING=1`.
     pub no_blocking: bool,
+    /// #189: a response already fetched for `.0`'s names, concurrently with
+    /// the metadata closure walk (usually the previous lock's package
+    /// names, #90's same seed). `filter_advisories` only fetches the pool's
+    /// names that aren't in `.0`, which is normally none of them.
+    pub prefetched: Option<(HashSet<String>, AdvisoriesResponse)>,
 }
 
 /// `SecurityAdvisoryPoolFilter::filter`'s BC-audit-config path: drops a
@@ -142,8 +147,20 @@ async fn filter_advisories<A: AdvisoriesTransport>(
         }
     }
 
-    let response = if filter.audit.block_insecure && !filter.endpoints.is_empty() {
-        match audit::fetch_advisories_from(filter.transport, filter.endpoints, &names).await {
+    // #189: everything the concurrent prefetch already asked for (usually
+    // every name here, since it started from the previous lock's own
+    // package list, #90's same seed) never needs asking again — only the
+    // remainder, normally empty, so no request at all.
+    let remainder = match &filter.prefetched {
+        Some((covered, _)) => names.iter().filter(|n| !covered.contains(*n)).cloned().collect(),
+        None => names,
+    };
+
+    let remainder_response = if filter.audit.block_insecure
+        && !filter.endpoints.is_empty()
+        && !remainder.is_empty()
+    {
+        match audit::fetch_advisories_from(filter.transport, filter.endpoints, &remainder).await {
             Ok(response) => Some(response),
             Err(err) => {
                 warn_out(
@@ -158,22 +175,24 @@ async fn filter_advisories<A: AdvisoriesTransport>(
         None
     };
 
+    let has_matching_advisory = |name: &str, version: &semver::NormalizedVersion| {
+        let hits = |response: &AdvisoriesResponse| {
+            !audit::matching_advisory_ids(response, &filter.audit.ignore, name, version).is_empty()
+        };
+        filter
+            .prefetched
+            .as_ref()
+            .is_some_and(|(_, response)| hits(response))
+            || remainder_response.as_ref().is_some_and(hits)
+    };
+
     let mut to_remove: HashSet<usize> = HashSet::new();
     for (index, package) in packages.iter().enumerate().skip(exempt_upto) {
         if filter.audit.block_abandoned && audit::is_abandoned(&package.raw) {
             to_remove.insert(index);
             continue;
         }
-        if !package.is_dev
-            && let Some(response) = &response
-            && !audit::matching_advisory_ids(
-                response,
-                &filter.audit.ignore,
-                &package.name,
-                &package.version,
-            )
-            .is_empty()
-        {
+        if !package.is_dev && has_matching_advisory(&package.name, &package.version) {
             to_remove.insert(index);
         }
     }
@@ -502,16 +521,42 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         },
     ];
     let mut constraint_cache: ConstraintCache = ConstraintCache::new();
-    let closure = repo
-        .load_closure_seeded(
-            &roots,
-            dev_acceptance,
-            &skip,
-            seed,
-            &|name, stability| is_acceptable(name, stability, &acceptable, &stability_flags),
-            &mut constraint_cache,
-        )
-        .await?;
+
+    // #189: the same gate `filter_advisories` uses to decide whether it will
+    // ever POST at all, checked up front so the request starts alongside the
+    // closure walk instead of 295ms after it: with #90's seed being the
+    // previous lock's own package names, this covers almost every name the
+    // walk is about to (re)discover.
+    let mut advisories = advisories;
+    let prefetch_names: Option<HashSet<String>> = advisories.as_ref().and_then(|filter| {
+        (!filter.no_blocking
+            && filter.audit.block_insecure
+            && !filter.endpoints.is_empty()
+            && !seed.is_empty())
+        .then(|| seed.iter().cloned().collect())
+    });
+    let prefetch: futures::future::OptionFuture<_> = prefetch_names
+        .as_ref()
+        .map(|_| {
+            let filter = advisories
+                .as_ref()
+                .expect("prefetch_names is only set from an existing advisories filter");
+            audit::fetch_advisories_from(filter.transport, filter.endpoints, seed)
+        })
+        .into();
+
+    let accept = |name: &str, stability: &str| is_acceptable(name, stability, &acceptable, &stability_flags);
+    let (closure, prefetch_result) = tokio::join!(
+        repo.load_closure_seeded(&roots, dev_acceptance, &skip, seed, &accept, &mut constraint_cache),
+        prefetch,
+    );
+    let closure = closure?;
+    if let (Some(names), Some(Ok(response))) = (prefetch_names, prefetch_result) {
+        advisories
+            .as_mut()
+            .expect("prefetch_names is only set from an existing advisories filter")
+            .prefetched = Some((names, response));
+    }
 
     let platform_overrides = root
         .pointer("/config/platform")
@@ -1227,6 +1272,7 @@ mod tests {
             endpoints: &endpoints,
             audit: &audit,
             no_blocking: false,
+            prefetched: None,
         };
 
         let kept = filter_advisories(packages, 0, &filter).await.unwrap();
@@ -1256,10 +1302,93 @@ mod tests {
             endpoints: &[],
             audit: &audit,
             no_blocking: false,
+            prefetched: None,
         };
 
         let kept = filter_advisories(packages, 0, &filter).await.unwrap();
         assert_eq!(kept.len(), 2, "expected the real+alias pair to survive");
         assert_eq!(kept[1].alias_of, Some(0), "stale index was never remapped");
+    }
+
+    /// A witness [`AdvisoriesTransport`] that records every `names` list it's
+    /// asked with, for asserting on requests `filter_advisories` does (or
+    /// skips) rather than on the response it gets back.
+    struct RecordingAdvisories {
+        requests: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl AdvisoriesTransport for RecordingAdvisories {
+        #[allow(
+            clippy::unused_async_trait_impl,
+            reason = "the fixture answers synchronously; the trait is async for production"
+        )]
+        async fn post_advisories(
+            &self,
+            _url: &reqwest::Url,
+            packages: &[String],
+        ) -> Result<Value> {
+            self.requests.lock().unwrap().push(packages.to_vec());
+            Ok(serde_json::json!({"advisories": {}}))
+        }
+    }
+
+    fn empty_advisories_response() -> AdvisoriesResponse {
+        serde_json::from_value(serde_json::json!({"advisories": {}})).unwrap()
+    }
+
+    /// #189: `filter.prefetched` already covering a pool name means
+    /// `filter_advisories` never re-asks for it; a name it doesn't cover is
+    /// still asked for, on its own.
+    #[tokio::test]
+    async fn filter_advisories_only_requests_names_missing_from_the_prefetch() {
+        let audit = insecure_audit();
+        let endpoints = one_endpoint();
+
+        let covering_both = ["vendor/a", "vendor/b"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let transport = RecordingAdvisories {
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+        let filter = AdvisoryFilter {
+            transport: &transport,
+            endpoints: &endpoints,
+            audit: &audit,
+            no_blocking: false,
+            prefetched: Some((covering_both, empty_advisories_response())),
+        };
+        let packages = vec![
+            package("vendor/a", "1.0.0", false),
+            package("vendor/b", "1.0.0", false),
+        ];
+        filter_advisories(packages, 0, &filter).await.unwrap();
+        assert!(
+            transport.requests.lock().unwrap().is_empty(),
+            "prefetch covered every pool name, no follow-up request expected"
+        );
+
+        let covering_one: HashSet<String> = ["vendor/a".to_string()].into_iter().collect();
+        let transport = RecordingAdvisories {
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+        let filter = AdvisoryFilter {
+            transport: &transport,
+            endpoints: &endpoints,
+            audit: &audit,
+            no_blocking: false,
+            prefetched: Some((covering_one, empty_advisories_response())),
+        };
+        let packages = vec![
+            package("vendor/a", "1.0.0", false),
+            package("vendor/b", "1.0.0", false),
+        ];
+        filter_advisories(packages, 0, &filter).await.unwrap();
+        let requests = transport.requests.into_inner().unwrap();
+        assert_eq!(
+            requests,
+            vec![vec!["vendor/b".to_string()]],
+            "only the name missing from the prefetch should be requested"
+        );
     }
 }

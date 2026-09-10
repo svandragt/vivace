@@ -187,6 +187,7 @@ async fn resolved_monolog_version(no_blocking: bool, ignore: vivace::lock::Audit
         endpoints: &endpoints,
         audit: &audit,
         no_blocking,
+        prefetched: None,
     };
     let result = solver::solve_update_seeded(
         &repo,
@@ -313,6 +314,7 @@ async fn update_makes_no_advisory_request_when_no_repository_advertises() {
         endpoints: &endpoints,
         audit: &audit,
         no_blocking: false,
+        prefetched: None,
     };
     let result = solver::solve_update_seeded(
         &repo,
@@ -402,6 +404,7 @@ async fn update_does_not_panic_when_the_advisory_filter_drops_an_aliased_version
         endpoints: &endpoints,
         audit: &audit,
         no_blocking: false,
+        prefetched: None,
     };
     let result = solver::solve_update_seeded(
         &repo,

@@ -325,6 +325,7 @@ async fn solve(
         endpoints: &advisory_endpoints,
         audit: &audit_config,
         no_blocking,
+        prefetched: None,
     });
 
     if args.packages.is_empty() {

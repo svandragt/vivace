@@ -317,6 +317,7 @@ pub(crate) fn partial_update(
         endpoints: &advisory_endpoints,
         audit: &audit_config,
         no_blocking,
+        prefetched: None,
     });
 
     // A brand new `composer.json` (no lock yet) cannot do a partial update
