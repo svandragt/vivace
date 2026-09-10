@@ -106,8 +106,8 @@ written outside the project and the cache.
 viv's contract is that its output matches Composer's byte for byte. Before
 every release, a compatibility sweep installs a mix of pinned popular
 projects and a random sample of Packagist packages with both Composer and
-viv, then compares the results.[^2] The v0.8.0 sweep: 36 rows identical, 0
-differ, 4 skipped.[^3]
+viv, then compares the results.[^2] The v0.9.0 sweep: 26 rows identical, 0
+differ, 14 skipped.[^3]
 
 Two of the pinned projects still need `--no-plugins` to install with
 viv, both for a Composer plugin viv doesn't yet support.[^4] See
@@ -115,9 +115,9 @@ viv, both for a Composer plugin viv doesn't yet support.[^4] See
 
 ## Speed
 
-10 projects from viv's compatibility corpus, 2026-09-09, from a local
+10 projects from viv's compatibility corpus, 2026-09-10, from a local
 mirror so no network is measured, AMD Ryzen 9 7900X3D (24 threads) on
-ext4, a viv 0.8.0 development build, composer 2.10.2, riff 0.0.7,
+ext4, viv 0.9.0, composer 2.10.2, riff 0.0.7,
 `--no-plugins --no-scripts`, three runs each. Each cell is how many times
 faster viv is, with the range across projects; below 1× viv is slower.
 Per-project numbers are in
@@ -128,10 +128,10 @@ proxies, `installed.*`); the cosmetic differences are listed in
 
 | Scenario | viv vs Composer | viv vs riff |
 |---|---|---|
-| Cold | 4.5× (2.4 to 12.1) | 1.8× (0.6 to 64.4)[^5][^6] |
-| Warm | 16.9× (8.1 to 41.2) | 6.7× (2.0 to 134.4)[^6] |
-| No-op | 43.8× (19.7 to 99.8) | 20.1× (2.8 to 115.8) |
-| Update-warm | 0.7× (0.5 to 1.6)[^5] | n/a |
+| Cold | 4.0× (1.6 to 10.7) | 1.7× (0.6 to 69.4)[^5][^6] |
+| Warm | 14.0× (5.9 to 40.0) | 6.5× (2.0 to 114.2)[^6] |
+| No-op | 45.0× (23.0 to 104.4) | 22.8× (2.8 to 111.7) |
+| Update-warm | 1.6× (1.1 to 3.9) | n/a |
 
 ## Everyday commands
 
@@ -243,10 +243,10 @@ without touching the network.[^14]
   project on the machine. If you patch vendor files by hand, install with
   `--link-mode copy`, or `--link-mode clone` for writable files sharing the
   store's disk space where the filesystem supports it.
-- **Updating is slower than Composer.** On a real-sized lock a warm
-  `viv update` takes about twice Composer's time, with no network in the
-  measurement; see the table above. Installs are where viv is far ahead,
-  and riff still leads cold installs on a few projects.
+- **Cold installs are not always the fastest.** riff leads cold installs
+  on a few projects, Drupal-shaped ones in particular, where viv's native
+  installer adapters do extra work; see the table above. Warm and no-op
+  installs, and updates, are where viv is ahead on every project.
 - **Two error messages still differ.** Composer's "found X but it conflicts
   with your root require" wording is not ported yet, and when a version is
   skipped for a security advisory and the solve then fails, Composer's
@@ -310,10 +310,10 @@ their original copyright notices.[^16]
 
 [^1]: viv relinks every package from its own content-addressed store into `vendor/`, using hardlinks so files aren't copied or re-extracted.
 [^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
-[^3]: The skips are pre-existing failures on Composer's side, such as an expired auth token — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.8.0.md`](compat/results/v0.8.0.md).
+[^3]: The skips are pre-existing failures on Composer's side, such as an expired auth token — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.9.0.md`](compat/results/v0.9.0.md).
 [^4]: Of viv's 20 pinned compatibility projects, the two that need `--no-plugins` are `symfony/demo` and `roots/bedrock`.
 [^5]: The ratio's range crosses 1×: within noise on some projects.
-[^6]: riff's phpunit/phpunit cold and warm times (7.7 s and 8.5 s) are an outlier against its other rows in this corpus; kept in the range, not dropped; see [`bench/results/corpus.md`](bench/results/corpus.md).
+[^6]: riff's phpunit/phpunit cold and warm times (8.2 s and 8.6 s) are an outlier against its other rows in this corpus; kept in the range, not dropped; see [`bench/results/corpus.md`](bench/results/corpus.md).
 [^10]: `install` runs the root's lifecycle scripts (`pre-install-cmd`, `post-autoload-dump`, `post-install-cmd`) as Composer does.
 [^11]: Normalisation follows `ergebnis/composer-normalize`'s rules, so a project already using that plugin sees no change.
 [^12]: The shim maps `install`, `dump-autoload`, `normalize` and `create-project` with their supported flags to `viv`; everything else, `update`, `require`, an unrecognised flag, it hands through to the real Composer binary unchanged. Point `VIV_COMPOSER_PATH` at the real binary if it isn't first on `PATH`. The shim only has something to hand through to if a real Composer is on `PATH` in the first place: if there isn't one, those commands fail rather than silently falling back to viv.
