@@ -40,6 +40,7 @@ pub mod transaction;
 pub mod watch_graph;
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -145,6 +146,11 @@ pub async fn solve_update<T: Transport>(
     clippy::implicit_hasher,
     reason = "internal API, only ever called with the default hasher"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors solve_update plus one seed slice, the minimal-changes pin set, the \
+              advisory pool filter, and the platform-probe cache dir"
+)]
 pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
@@ -153,6 +159,7 @@ pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     seed: &[String],
     preferred: HashMap<String, NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
+    cache_dir: Option<&Path>,
 ) -> Result<UpdateResult> {
     let built = pool_builder::build_seeded(
         repo,
@@ -162,6 +169,7 @@ pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
         seed,
         &preferred,
         advisories,
+        cache_dir,
     )
     .await?;
     resolve(built, root, prefer_stable, prefer_lowest, preferred)
@@ -196,6 +204,7 @@ pub async fn solve_partial_update<T: Transport>(
         &[],
         HashMap::new(),
         None,
+        None,
     )
     .await
 }
@@ -212,7 +221,7 @@ pub async fn solve_partial_update<T: Transport>(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors solve_partial_update plus one seed slice, the minimal-changes pin set, \
-              and the advisory pool filter"
+              the advisory pool filter, and the platform-probe cache dir"
 )]
 pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -225,6 +234,7 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     seed: &[String],
     preferred: HashMap<String, NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
+    cache_dir: Option<&Path>,
 ) -> Result<UpdateResult> {
     let locked_requires: HashMap<String, Vec<String>> = locked_by_name
         .iter()
@@ -264,6 +274,7 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
         seed,
         &preferred,
         advisories,
+        cache_dir,
     )
     .await?;
     resolve(built, root, prefer_stable, prefer_lowest, preferred)

@@ -212,6 +212,26 @@ fn cache_clean_removes_the_cache_dir() {
     assert!(!ctx.cache.path().exists());
 }
 
+/// #178: `viv cache clean` also removes a populated `platform-v0` bucket
+/// (the cached `php` platform-detection probe), not just the buckets that
+/// existed before that cache — `unexpected_entries`'s allow-list has to
+/// know the new name or `clean` would refuse the whole dir as foreign.
+#[test]
+fn cache_clean_removes_a_platform_bucket() {
+    let ctx = TestContext::new();
+    fs::create_dir_all(ctx.cache.path().join("platform-v0")).unwrap();
+    fs::write(
+        ctx.cache.path().join("platform-v0/deadbeef.json"),
+        "{\"php_version\":\"8.4.0\"}",
+    )
+    .unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["cache", "clean"]);
+    viv_snapshot!(ctx, cmd);
+    assert!(!ctx.cache.path().exists());
+}
+
 /// #36: a directory that isn't a vivace cache is left alone.
 #[test]
 fn cache_clean_refuses_a_directory_with_foreign_content() {

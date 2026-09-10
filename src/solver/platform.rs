@@ -23,18 +23,29 @@
 //! overridden (matching this function's pre-existing behaviour, not
 //! `PlatformRepository::addOverriddenPackage`'s own "no-op if nothing to
 //! override" case — narrowing that is left for when a fixture needs it).
+//!
+//! #178: the `php` subprocess above is 24-26ms, most of an offline update's
+//! wall time. [`cached_platform_packages`] caches its JSON result under
+//! `<cache_dir>/platform-v0/<key>.json`, `key` a hash of everything cheap to
+//! `stat`/read that identifies *this* interpreter+ini (`cache_key`'s own doc
+//! comment has the exact list and the trade-off it accepts) — a cache hit
+//! costs one `stat` on the resolved `php` binary instead of running it.
 
 use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::semver;
 use crate::solver::pool::{Link, Package};
+use crate::store::{PLATFORM_BUCKET, hex};
 
 /// One `platform_packages()` entry before overrides/normalisation:
 /// `PlatformRepository::addExtension`/`addLibrary`'s `CompletePackage` plus
@@ -69,7 +80,7 @@ impl Entry {
     clippy::struct_excessive_bools,
     reason = "mirrors the probe script's own flat JSON fields"
 )]
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 struct Probe {
     php_version: String,
@@ -404,6 +415,79 @@ fn run_probe() -> Option<Probe> {
         return None;
     }
     serde_json::from_slice(&output.stdout).ok()
+}
+
+/// The `php` a bare `Command::new("php")` would run: a manual `PATH` scan
+/// (same pattern as `bin/composer.rs`'s `real_composer`) so its identity can
+/// be hashed for the cache key below without itself shelling out.
+fn resolve_php_path() -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join("php"))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The mtime of whatever default `php.ini` this build would load absent any
+/// `-c`/`PHPRC`/scan-dir override: `<php_path>/../lib/php.ini` (the usual
+/// Unix layout next to a `bin/php`) or `/etc/php.ini`. `None` when neither
+/// exists, which is a legitimate "no ini" case, not an error.
+fn default_ini_mtime(php_path: &Path) -> Option<std::time::SystemTime> {
+    let sibling = php_path.parent()?.parent()?.join("lib").join("php.ini");
+    [sibling, PathBuf::from("/etc/php.ini")]
+        .into_iter()
+        .find_map(|candidate| fs_err::metadata(candidate).ok()?.modified().ok())
+}
+
+/// #178's cache key: everything cheap to `stat`/read that changes when the
+/// interpreter or its ini configuration would, without a `php` shell-out to
+/// find out (`php_ini_loaded_file()` is itself one). Deliberately *not* the
+/// actually-loaded `php.ini` path — an ini reachable only through some other
+/// `-c`/env mechanism this key doesn't cover is missed until `viv cache
+/// clean`, the trade-off the design accepts for never shelling out to ask.
+fn cache_key(php_path: &Path) -> Option<String> {
+    let meta = fs_err::metadata(php_path).ok()?;
+    let mtime = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    let ini_scan_dir = std::env::var("PHP_INI_SCAN_DIR").unwrap_or_default();
+    let phprc = std::env::var("PHPRC").unwrap_or_default();
+    let mut input = format!(
+        "{}|{}|{}.{}|{ini_scan_dir}|{phprc}",
+        php_path.display(),
+        meta.len(),
+        mtime.as_secs(),
+        mtime.subsec_nanos(),
+    );
+    if let Some(ini_mtime) =
+        default_ini_mtime(php_path).and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+    {
+        use std::fmt::Write as _;
+        let _ = write!(
+            input,
+            "|{}.{}",
+            ini_mtime.as_secs(),
+            ini_mtime.subsec_nanos()
+        );
+    }
+    Some(hex(Sha256::digest(input.as_bytes())))
+}
+
+/// Cache hit: read and parse `<cache_dir>/platform-v0/<key>.json`. Cache
+/// miss (or unparseable, e.g. an older/newer `viv`'s `Probe` shape): run the
+/// real probe and write it back, best-effort (a write failure just means
+/// the next `update` probes again, same as today).
+fn cached_probe(cache_dir: &Path, php_path: &Path) -> Option<Probe> {
+    let key = cache_key(php_path)?;
+    let cache_path = cache_dir.join(PLATFORM_BUCKET).join(format!("{key}.json"));
+    if let Ok(bytes) = fs_err::read(&cache_path)
+        && let Ok(probe) = serde_json::from_slice(&bytes)
+    {
+        return Some(probe);
+    }
+    let probe = run_probe()?;
+    if let Ok(bytes) = serde_json::to_vec(&probe) {
+        let _ = cache_path.parent().map(fs_err::create_dir_all);
+        let _ = fs_err::write(&cache_path, bytes);
+    }
+    Some(probe)
 }
 
 /// "" => 0, "a" => 1, "zg" => 33 (`Version::convertAlphaVersionToIntVersion`).
@@ -1169,16 +1253,38 @@ fn php_entries(probe: &Probe) -> Vec<Entry> {
 ///
 /// `overrides` is `config.platform` verbatim (`Installer::doUpdate`'s
 /// `$this->config->get('platform')`); see the module doc comment for its
-/// semantics.
+/// semantics. Always probes fresh; [`cached_platform_packages`] is the
+/// cache-aware entry point pool building wants (#178).
 pub(crate) fn platform_packages(overrides: &Map<String, Value>) -> Result<Vec<Package>> {
-    let probe = run_probe();
+    packages_from_probe(run_probe().as_ref(), overrides)
+}
 
+/// Same as [`platform_packages`], except an unchanged `php` interpreter
+/// costs one `stat` instead of a `php` shell-out (#178: 24-26ms on every
+/// `update`). `cache_dir` is the resolved store root (the same one
+/// `install`'s dist cache lives under); `None` (no cache dir resolved yet)
+/// falls back to a fresh probe every time, same as [`platform_packages`].
+pub(crate) fn cached_platform_packages(
+    overrides: &Map<String, Value>,
+    cache_dir: Option<&Path>,
+) -> Result<Vec<Package>> {
+    let probe = match (cache_dir, resolve_php_path()) {
+        (Some(cache_dir), Some(php_path)) => cached_probe(cache_dir, &php_path).or_else(run_probe),
+        _ => run_probe(),
+    };
+    packages_from_probe(probe.as_ref(), overrides)
+}
+
+fn packages_from_probe(
+    probe: Option<&Probe>,
+    overrides: &Map<String, Value>,
+) -> Result<Vec<Package>> {
     let mut entries = vec![
         Entry::new("composer-plugin-api", "2.9.0"),
         Entry::new("composer-runtime-api", "2.2.2"),
     ];
 
-    if let Some(probe) = &probe {
+    if let Some(probe) = probe {
         entries.extend(php_entries(probe));
         entries.extend(extension_entries(probe));
         entries.extend(library_entries(probe));
@@ -1329,5 +1435,133 @@ mod tests {
     #[test]
     fn version_id_matches_the_documented_example() {
         assert_eq!(convert_version_id(20_607), "2.6.7");
+    }
+
+    // #178: `cached_probe` shells out to a fake `php` on `PATH` instead of a
+    // real interpreter, so these run hermetically like the rest of this
+    // module's tests.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Prepends `dir` to `PATH` for the guard's lifetime and restores it on
+    /// drop; serialised by `ENV_LOCK` since `PATH` is process-global and
+    /// this module's tests run in parallel otherwise (same pattern as
+    /// `auth.rs`'s own `EnvGuard`).
+    struct PathGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        saved: Option<std::ffi::OsString>,
+    }
+
+    impl PathGuard {
+        #[allow(
+            unsafe_code,
+            reason = "serialised by ENV_LOCK for the guard's lifetime"
+        )]
+        fn prepend(dir: &Path) -> PathGuard {
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let saved = std::env::var_os("PATH");
+            let mut paths = vec![dir.to_path_buf()];
+            if let Some(saved) = &saved {
+                paths.extend(std::env::split_paths(saved));
+            }
+            let new_path = std::env::join_paths(paths).unwrap();
+            // SAFETY: serialised by ENV_LOCK for the guard's lifetime; no
+            // other thread reads/writes PATH while it's held.
+            unsafe {
+                std::env::set_var("PATH", new_path);
+            }
+            PathGuard { _lock: lock, saved }
+        }
+    }
+
+    impl Drop for PathGuard {
+        #[allow(
+            unsafe_code,
+            reason = "serialised by ENV_LOCK for the guard's lifetime"
+        )]
+        fn drop(&mut self) {
+            unsafe {
+                match &self.saved {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+    }
+
+    /// A fake `php` that ignores the piped probe script and prints a
+    /// `Probe`-shaped JSON whose `php_version` embeds the number of times
+    /// it has been run (read back from `counter`, one line appended per
+    /// run) — the test's way of telling "cache hit" (line count unchanged)
+    /// from "cache miss, redetected" (line count and version both moved).
+    fn write_fake_php(path: &Path, counter: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fs_err::write(
+            path,
+            format!(
+                "#!/bin/sh\necho x >> {}\ncat > /dev/null\nn=$(wc -l < {} | tr -d ' ')\ncat <<JSON\n{{\"php_version\":\"8.4.$n\",\"int_size\":8,\"extensions\":{{}}}}\nJSON\n",
+                counter.display(),
+                counter.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = fs_err::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs_err::set_permissions(path, perms).unwrap();
+    }
+
+    #[test]
+    fn cached_probe_hits_for_an_unchanged_binary_and_redetects_after_a_mtime_change() {
+        let bin_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let php_path = bin_dir.path().join("php");
+        let counter = bin_dir.path().join("count");
+        write_fake_php(&php_path, &counter);
+        // `run_probe`'s `Command::new("php")` does its own PATH lookup, so
+        // it has to resolve to this same fake script (and be serialised
+        // against every other test's own `PathGuard`, PATH being process-
+        // global).
+        let _guard = PathGuard::prepend(bin_dir.path());
+
+        let first = cached_probe(cache_dir.path(), &php_path).unwrap();
+        assert_eq!(first.php_version, "8.4.1");
+        assert_eq!(fs_err::read_to_string(&counter).unwrap().lines().count(), 1);
+
+        // Same binary, same mtime: cache hit, `php` is not run again.
+        let second = cached_probe(cache_dir.path(), &php_path).unwrap();
+        assert_eq!(second.php_version, "8.4.1");
+        assert_eq!(fs_err::read_to_string(&counter).unwrap().lines().count(), 1);
+
+        // Only the mtime moves forward (script content is untouched): a
+        // fresh detection, not a second cache write of the same key.
+        let bumped = filetime::FileTime::from_unix_time(
+            filetime::FileTime::from_last_modification_time(&fs_err::metadata(&php_path).unwrap())
+                .unix_seconds()
+                + 5,
+            0,
+        );
+        filetime::set_file_mtime(&php_path, bumped).unwrap();
+
+        let third = cached_probe(cache_dir.path(), &php_path).unwrap();
+        assert_eq!(third.php_version, "8.4.2");
+        assert_eq!(fs_err::read_to_string(&counter).unwrap().lines().count(), 2);
+    }
+
+    #[test]
+    fn cached_platform_packages_reads_through_a_fake_php_on_path() {
+        let bin_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        write_fake_php(&bin_dir.path().join("php"), &bin_dir.path().join("count"));
+        let _guard = PathGuard::prepend(bin_dir.path());
+
+        let packages = cached_platform_packages(&Map::new(), Some(cache_dir.path())).unwrap();
+        let php = packages.iter().find(|p| p.name == "php").unwrap();
+        assert_eq!(php.pretty_version, "8.4.1");
+        assert!(
+            cache_dir.path().join(PLATFORM_BUCKET).is_dir(),
+            "a cache-miss detection must write the bucket back"
+        );
     }
 }

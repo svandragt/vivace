@@ -31,6 +31,10 @@ const DISTS_BUCKET: &str = "dists-v0";
 /// `viv x`'s (#85) per-tool synthetic-root envs: `tools-v0/<vendor>/<name>/<key>/`,
 /// see [`Store::tool_env_dir`].
 pub(crate) const TOOLS_BUCKET: &str = "tools-v0";
+/// #178's cached `php` platform-detection probe:
+/// `platform-v0/<sha256 of the interpreter's identity>.json`, see
+/// `solver::platform`.
+pub(crate) const PLATFORM_BUCKET: &str = "platform-v0";
 const LOCK_FILE: &str = ".lock";
 
 /// An opened store. Dropping it releases the shared lock.
@@ -323,9 +327,15 @@ impl Store {
         for entry in fs_err::read_dir(&self.root)? {
             let entry = entry?;
             let name = entry.file_name();
-            if [ARCHIVE_BUCKET, DISTS_BUCKET, TOOLS_BUCKET, LOCK_FILE]
-                .iter()
-                .any(|keep| name == *keep)
+            if [
+                ARCHIVE_BUCKET,
+                DISTS_BUCKET,
+                TOOLS_BUCKET,
+                PLATFORM_BUCKET,
+                LOCK_FILE,
+            ]
+            .iter()
+            .any(|keep| name == *keep)
             {
                 continue;
             }
@@ -460,9 +470,15 @@ impl Store {
         }
         for entry in fs_err::read_dir(dir)? {
             let name = entry?.file_name();
-            if ![ARCHIVE_BUCKET, DISTS_BUCKET, TOOLS_BUCKET, LOCK_FILE]
-                .iter()
-                .any(|keep| name == *keep)
+            if ![
+                ARCHIVE_BUCKET,
+                DISTS_BUCKET,
+                TOOLS_BUCKET,
+                PLATFORM_BUCKET,
+                LOCK_FILE,
+            ]
+            .iter()
+            .any(|keep| name == *keep)
             {
                 unexpected.push(name.to_string_lossy().into_owned());
             }

@@ -193,6 +193,10 @@ fn diagnose_project(project_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Deliberately the uncached [`platform_packages`], not
+/// [`crate::solver::platform::cached_platform_packages`]: this module's own
+/// doc comment promises nothing on disk is written, and caching would write
+/// a `platform-v0` entry.
 fn diagnose_platform(root_json: &Value) -> Result<()> {
     let overrides = root_json
         .pointer("/config/platform")

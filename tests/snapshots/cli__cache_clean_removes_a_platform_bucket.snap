@@ -1,0 +1,10 @@
+---
+source: tests/cli.rs
+expression: snapshot
+---
+success: true
+exit_code: 0
+----- stdout -----
+Removed the vivace cache at [CACHE]
+
+----- stderr -----

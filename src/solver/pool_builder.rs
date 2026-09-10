@@ -33,6 +33,7 @@
 //! through the ordinary `Pool::whatProvides` walk.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -46,7 +47,7 @@ use crate::repository::{
     ClosureRoot, DevAcceptance, PackageVersion, Repository, Transport, branch_alias_target,
 };
 use crate::semver;
-use crate::solver::platform::platform_packages;
+use crate::solver::platform::cached_platform_packages;
 use crate::solver::policy::DefaultPolicy;
 use crate::solver::pool::{Link, Package, Pool};
 use crate::solver::pool_optimizer;
@@ -222,6 +223,7 @@ pub async fn build<T: Transport>(
         &[],
         &HashMap::new(),
         None,
+        None,
     )
     .await
 }
@@ -245,6 +247,11 @@ pub async fn build<T: Transport>(
     clippy::implicit_hasher,
     reason = "internal API, only ever called with the default hasher"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors build plus one seed slice, the minimal-changes pin set, the advisory pool \
+              filter, and the platform-probe cache dir"
+)]
 pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
@@ -253,6 +260,7 @@ pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     seed: &[String],
     preferred: &HashMap<String, semver::NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
+    cache_dir: Option<&Path>,
 ) -> Result<BuildResult> {
     build_partial_seeded(
         repo,
@@ -264,6 +272,7 @@ pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
         seed,
         preferred,
         advisories,
+        cache_dir,
     )
     .await
 }
@@ -375,6 +384,7 @@ pub async fn build_partial<T: Transport>(
         &[],
         &HashMap::new(),
         None,
+        None,
     )
     .await
 }
@@ -397,8 +407,8 @@ pub async fn build_partial<T: Transport>(
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors build_partial plus one seed slice, the minimal-changes pin set, and the \
-              advisory pool filter"
+    reason = "mirrors build_partial plus one seed slice, the minimal-changes pin set, the \
+              advisory pool filter, and the platform-probe cache dir"
 )]
 pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -410,6 +420,7 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     seed: &[String],
     preferred: &HashMap<String, semver::NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
+    cache_dir: Option<&Path>,
 ) -> Result<BuildResult> {
     let require = string_map(root, "require");
     let require_dev = string_map(root, "require-dev");
@@ -496,7 +507,7 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         .cloned()
         .unwrap_or_default();
     let platform_started = Instant::now();
-    let mut packages = platform_packages(&platform_overrides)?;
+    let mut packages = cached_platform_packages(&platform_overrides, cache_dir)?;
     tracing::debug!(
         elapsed_ms = platform_started.elapsed().as_millis(),
         "detected platform packages (shells out to `php`)"

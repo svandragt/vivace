@@ -347,6 +347,7 @@ async fn solve(
             &seed,
             preferred,
             advisories,
+            Some(&cache_dir),
         )
         .await;
         forget_repo(repo);
@@ -387,6 +388,7 @@ async fn solve(
         &seed,
         preferred,
         advisories,
+        Some(&cache_dir),
     )
     .await;
     forget_repo(repo);

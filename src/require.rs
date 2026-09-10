@@ -335,6 +335,7 @@ pub(crate) fn partial_update(
             &[],
             HashMap::new(),
             advisories,
+            Some(&cache_dir),
         ))?
     } else {
         runtime.block_on(solver::solve_update_seeded(
@@ -345,6 +346,7 @@ pub(crate) fn partial_update(
             &[],
             HashMap::new(),
             advisories,
+            Some(&cache_dir),
         ))?
     };
     // #177: `repo` is never read again below (see `update::forget_repo`'s
