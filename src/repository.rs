@@ -807,6 +807,16 @@ struct ComposerSource {
     /// `available-packages`/`available-package-patterns` (#119), parsed only
     /// for the `metadata-url` protocol ([`AvailablePackages`]'s own doc).
     available: Option<AvailablePackages>,
+    /// This source's `security-advisories.api-url` (#182), canonicalized
+    /// against `base_url` the same way `notify_url` is. `hasSecurityAdvisories`
+    /// also allows a bare `security-advisories.metadata: true` with no
+    /// `api-url` (Composer then folds the check into each package's own
+    /// lazy metadata fetch, `ComposerRepository::getSecurityAdvisories`'s
+    /// `metadata` branch); that path isn't ported (`audit.rs`'s module doc
+    /// already flags the per-package metadata advisories path as
+    /// unimplemented), so a source advertising only `metadata: true` is
+    /// treated as not providing advisories here.
+    security_advisories_api_url: Option<String>,
     cache_dir: PathBuf,
 }
 
@@ -913,6 +923,12 @@ impl ComposerSource {
             .or_else(|| root.get("notify"))
             .and_then(Value::as_str)
             .map(|url| canonicalize_url(&base_url, url));
+        let security_advisories_api_url = root
+            .get("security-advisories")
+            .and_then(Value::as_object)
+            .and_then(|config| config.get("api-url"))
+            .and_then(Value::as_str)
+            .map(|url| canonicalize_url(&base_url, url));
 
         Ok(ComposerSource {
             base_url,
@@ -920,6 +936,7 @@ impl ComposerSource {
             inline_packages,
             notify_url,
             available,
+            security_advisories_api_url,
             cache_dir,
         })
     }
@@ -1108,6 +1125,20 @@ impl Source {
         match &self.kind {
             SourceKind::Composer(source) => source.allows(name),
             SourceKind::Vcs(_) => true,
+        }
+    }
+
+    /// This source's `security-advisories.api-url`, if it advertises one
+    /// (#182). Not gated by `filters`: `RepositorySet::getSecurityAdvisoriesForConstraints`
+    /// loops over every repository regardless of its own `only`/`exclude`/
+    /// `canonical` config — those only ever gate which source answers for a
+    /// *package*, never whether a source is asked for advisories. A VCS
+    /// source never advertises (`ComposerRepository` is the only
+    /// `AdvisoryProviderInterface` implementation upstream).
+    fn security_advisories_api_url(&self) -> Option<&str> {
+        match &self.kind {
+            SourceKind::Composer(source) => source.security_advisories_api_url.as_deref(),
+            SourceKind::Vcs(_) => None,
         }
     }
 
@@ -1531,6 +1562,20 @@ impl<T: Transport> Repository<T> {
     /// map without a request.
     pub fn request_count(&self) -> usize {
         self.requests.load(Ordering::Relaxed)
+    }
+
+    /// Every source's own `security-advisories.api-url` that advertised one
+    /// (#182), in repository priority order, one entry per advertising
+    /// source (not deduplicated: `RepositorySet::getSecurityAdvisoriesForConstraints`
+    /// asks each advertising repository in turn, even if two happen to
+    /// share the same `api-url`). Empty means no source advertises, so the
+    /// advisory pool filter and `viv audit` both skip the request entirely.
+    pub fn security_advisory_urls(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .filter_map(|source| source.security_advisories_api_url())
+            .map(str::to_string)
+            .collect()
     }
 
     /// Fetch a package's versions across every source in priority order

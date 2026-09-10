@@ -83,6 +83,11 @@ pub struct BuildResult {
 /// signatures pass that, so they stay network-free.
 pub struct AdvisoryFilter<'a, A: AdvisoriesTransport> {
     pub transport: &'a A,
+    /// Every repository's own advertised `security-advisories.api-url`
+    /// (#182, `Repository::security_advisory_urls`). Empty means none of
+    /// this solve's repositories advertise, so the filter never even builds
+    /// a names list, let alone posts anywhere.
+    pub endpoints: &'a [String],
     pub audit: &'a AuditConfig,
     /// `--no-blocking`/`--no-security-blocking`/`COMPOSER_NO_SECURITY_BLOCKING=1`.
     pub no_blocking: bool,
@@ -109,6 +114,13 @@ pub struct AdvisoryFilter<'a, A: AdvisoriesTransport> {
 /// Abandoned-blocking never depends on this POST (it reads a field already
 /// on the package's own fetched metadata), so it still applies even then.
 ///
+/// `filter.endpoints` empty (no repository in this solve's set advertises
+/// `security-advisories`, #182 — a Satis-only or `packagist.org: false`
+/// project) skips the POST branch entirely: no names list is even worth
+/// building for it, no request is made, and no warning fires, mirroring
+/// `RepositorySet::getSecurityAdvisoriesForConstraints`'s loop simply
+/// having nothing to iterate.
+///
 /// ponytail: a version this removes never resurfaces in the solver's own
 /// "could not be found"/"no matching package" message the way Composer's
 /// own advisory-aware `Problem` wording does (`solver::problem`'s module
@@ -130,8 +142,8 @@ async fn filter_advisories<A: AdvisoriesTransport>(
         }
     }
 
-    let response = if filter.audit.block_insecure {
-        match audit::fetch_advisories(filter.transport, &names).await {
+    let response = if filter.audit.block_insecure && !filter.endpoints.is_empty() {
+        match audit::fetch_advisories_from(filter.transport, filter.endpoints, &names).await {
             Ok(response) => Some(response),
             Err(err) => {
                 warn_out(
@@ -1146,9 +1158,21 @@ mod tests {
             clippy::unused_async_trait_impl,
             reason = "the fixture answers synchronously; the trait is async for production"
         )]
-        async fn post_advisories(&self, _packages: &[String]) -> Result<Value> {
+        async fn post_advisories(
+            &self,
+            _url: &reqwest::Url,
+            _packages: &[String],
+        ) -> Result<Value> {
             Ok(self.0.clone())
         }
+    }
+
+    /// One fixture endpoint, standing in for a repository's advertised
+    /// `security-advisories.api-url` (#182): every test here has exactly one
+    /// advertising repository, so the URL's actual value never matters --
+    /// `FixtureAdvisories` ignores it.
+    fn one_endpoint() -> Vec<String> {
+        vec!["https://example.test/api/security-advisories/".to_string()]
     }
 
     fn insecure_audit() -> AuditConfig {
@@ -1197,8 +1221,10 @@ mod tests {
             },
         }));
         let audit = insecure_audit();
+        let endpoints = one_endpoint();
         let filter = AdvisoryFilter {
             transport: &advisories,
+            endpoints: &endpoints,
             audit: &audit,
             no_blocking: false,
         };
@@ -1227,6 +1253,7 @@ mod tests {
         let audit = abandoned_audit();
         let filter = AdvisoryFilter {
             transport: &NoAdvisories,
+            endpoints: &[],
             audit: &audit,
             no_blocking: false,
         };

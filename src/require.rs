@@ -309,9 +309,12 @@ pub(crate) fn partial_update(
     let fetcher = crate::update::build_fetcher(project_dir, &root, offline)?;
     let repo = runtime.block_on(crate::update::build_repository(&root, &cache_dir, &fetcher))?;
     let (audit_config, no_blocking) = audit_config_and_no_blocking(&root, no_blocking)?;
+    // #182: same per-repository advertised endpoints `update::solve` uses.
+    let advisory_endpoints = repo.security_advisory_urls();
     let advisories_transport = crate::audit::HttpTransport { fetcher: &fetcher };
     let advisories = Some(AdvisoryFilter {
         transport: &advisories_transport,
+        endpoints: &advisory_endpoints,
         audit: &audit_config,
         no_blocking,
     });

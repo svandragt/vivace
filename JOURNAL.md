@@ -887,3 +887,23 @@ redirect; the advisory filter left alias indices stale. Both caught
 within the hour, both now tested. The lesson was already written down
 earlier today: a hunt that dispatches every finding at once pays for it
 in focus and in regressions. And watch CI after every push.
+
+## 2026-09-10: 0.9.0, the update gets fast
+
+**Where the time was.** A phase profile said "JSON parse, 53 percent".
+A finer one said the JSON parser was 13 percent of that and the rest was
+Packagist's minified format being expanded by deep-cloning the running
+merge once per version, fourteen thousand times, for three thousand
+versions the walk would accept. Expanding lazily, only on acceptance,
+took Laravel's warm update from 607 to 260 ms; forgetting caches at
+exit, caching platform detection and indexing the pool by name took it
+to 230. Composer does the same update in 311 ms on the same mirror.
+
+**What almost went wrong.** The first design filtered versions at parse
+time. It would have passed every test and written a wrong lock the day
+a second requirer widened a constraint. The agent that found that
+stopped and said so. A fixture for that shape is parked.
+
+**Priority.** Speed, then what the maintainer hits, then reasons to
+choose viv over Composer. Compatibility is the floor, not the pitch.
+Adapters wait until a project the maintainer runs needs one.

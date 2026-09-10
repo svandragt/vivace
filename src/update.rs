@@ -315,9 +315,14 @@ async fn solve(
     let repo = build_repository(root, &cache_dir, &fetcher).await?;
     let (audit_config, no_blocking) =
         audit_config_and_no_blocking(root, args.no_blocking || args.no_security_blocking)?;
+    // #182: only the repositories that actually advertise `security-advisories`
+    // in their own `packages.json`, so a Satis/mirror-only project's update
+    // never posts anywhere Composer itself wouldn't.
+    let advisory_endpoints = repo.security_advisory_urls();
     let advisories_transport = crate::audit::HttpTransport { fetcher: &fetcher };
     let advisories = Some(AdvisoryFilter {
         transport: &advisories_transport,
+        endpoints: &advisory_endpoints,
         audit: &audit_config,
         no_blocking,
     });

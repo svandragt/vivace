@@ -14,7 +14,7 @@ mod common;
 
 use std::collections::HashMap;
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::{FixtureTransport, TestContext, fixtures_root};
@@ -142,9 +142,23 @@ impl vivace::audit::AdvisoriesTransport for AdvisoriesFixture {
         reason = "the fixture reads an in-memory body synchronously; the trait is async for \
                   production (tests/audit.rs's own FixtureTransport does the same)"
     )]
-    async fn post_advisories(&self, _packages: &[String]) -> anyhow::Result<Value> {
+    async fn post_advisories(
+        &self,
+        _url: &reqwest::Url,
+        _packages: &[String],
+    ) -> anyhow::Result<Value> {
         Ok(self.body.clone())
     }
+}
+
+/// The `security-advisory` fixture's own `packages.json` advertises exactly
+/// one `security-advisories.api-url` (`tests/fixtures/packagist/repo.packagist.org/packages.json`,
+/// shared by every `Repository::load("https://repo.packagist.org", ...)`
+/// call in this file); every test below builds its `AdvisoryFilter` against
+/// that same one endpoint, matching what `repo.security_advisory_urls()`
+/// would actually return.
+fn advertised_endpoints() -> Vec<String> {
+    vec!["https://packagist.org/api/security-advisories/".to_string()]
 }
 
 /// #175: solves the `security-advisory` fixture (`monolog/monolog: ^3.0`,
@@ -167,8 +181,10 @@ async fn resolved_monolog_version(no_blocking: bool, ignore: vivace::lock::Audit
         ignore,
         ..vivace::lock::AuditConfig::default()
     };
+    let endpoints = advertised_endpoints();
     let filter = vivace::solver::pool_builder::AdvisoryFilter {
         transport: &advisories_transport,
+        endpoints: &endpoints,
         audit: &audit,
         no_blocking,
     };
@@ -223,6 +239,132 @@ async fn update_ignored_advisory_id_picks_the_covered_version() {
     assert_eq!(version, "3.11.0");
 }
 
+/// #182: serves the shared Packagist fixture's own `packages.json`
+/// unmodified, except with its `security-advisories` key stripped -- a
+/// Satis/mirror-only repository that never advertises the endpoint,
+/// without needing a second, full copy of the monolog fixture's
+/// provider/metadata files.
+struct NoAdvertiserTransport {
+    root: std::path::PathBuf,
+}
+
+impl vivace::repository::Transport for &NoAdvertiserTransport {
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "reads a fixture file synchronously; the trait is async for production"
+    )]
+    async fn get(
+        &self,
+        url: &reqwest::Url,
+        if_modified_since: Option<&str>,
+    ) -> anyhow::Result<vivace::fetch::Conditional> {
+        let path = url.path().trim_start_matches('/');
+        if path == "packages.json" {
+            let mut body: Value = serde_json::from_slice(&fs_err::read(self.root.join(path))?)?;
+            body.as_object_mut().unwrap().remove("security-advisories");
+            return Ok(vivace::fetch::Conditional::Fresh {
+                body: serde_json::to_vec(&body)?,
+                last_modified: None,
+            });
+        }
+        if if_modified_since == Some(common::FIXED_LAST_MODIFIED) {
+            return Ok(vivace::fetch::Conditional::NotModified);
+        }
+        match fs_err::read(self.root.join(path)) {
+            Ok(body) => Ok(vivace::fetch::Conditional::Fresh {
+                body,
+                last_modified: Some(common::FIXED_LAST_MODIFIED.to_string()),
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Ok(vivace::fetch::Conditional::NotFound)
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+}
+
+/// #182 (done-when): a repository set where nothing advertises
+/// `security-advisories` makes no advisory request at all -- `NoAdvisories`'s
+/// own `unreachable!()` (`audit.rs`) would panic this test if the filter
+/// ever tried -- and the advisory-covered 3.11.0 is picked despite
+/// `audit.block-insecure`'s Composer default of `true`, the same outcome
+/// `--no-blocking` produces when there is something to block against.
+#[tokio::test]
+async fn update_makes_no_advisory_request_when_no_repository_advertises() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/security-advisory");
+    let cache = tempfile::tempdir().unwrap();
+    let transport = NoAdvertiserTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+    let endpoints = repo.security_advisory_urls();
+    assert!(
+        endpoints.is_empty(),
+        "packages.json here has security-advisories stripped"
+    );
+
+    let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
+    let root: Value = serde_json::from_slice(&composer_json).unwrap();
+    let audit = vivace::lock::AuditConfig::default();
+    let filter = vivace::solver::pool_builder::AdvisoryFilter {
+        transport: &vivace::audit::NoAdvisories,
+        endpoints: &endpoints,
+        audit: &audit,
+        no_blocking: false,
+    };
+    let result = solver::solve_update_seeded(
+        &repo,
+        &root,
+        false,
+        false,
+        &[],
+        HashMap::new(),
+        Some(filter),
+        None,
+    )
+    .await
+    .unwrap();
+    let version = result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "monolog/monolog")
+        .unwrap()
+        .pretty_version
+        .clone();
+    assert_eq!(version, "3.11.0");
+}
+
+/// #182 (`viv audit`'s own no-advertiser case): empty `endpoints` makes no
+/// POST at all (`NoAdvisories`'s own `unreachable!()` would panic this test
+/// if `audit` ever tried), and reports the same "No security vulnerability
+/// advisories found." Composer's own `Auditor::audit` gives for zero
+/// matches -- it has no distinct wording for "nothing advertises" either.
+#[tokio::test]
+async fn audit_reports_no_advisories_when_no_repository_advertises() {
+    let packages = vec![vivace::audit::AuditPackage {
+        name: "monolog/monolog".to_string(),
+        version: "3.11.0".to_string(),
+        abandoned: None,
+    }];
+    let args = vivace::audit::AuditArgs {
+        no_dev: false,
+        format: vivace::audit::Format::Plain,
+        locked: false,
+        abandoned: None,
+        ignore_severity: Vec::new(),
+        project_dir: PathBuf::from("."),
+    };
+    let config = vivace::lock::Config::default();
+    let (status, rendered) =
+        vivace::audit::audit(&args, &packages, &config, &[], &vivace::audit::NoAdvisories)
+            .await
+            .unwrap();
+    assert_eq!(status, 0);
+    assert_eq!(rendered, "No security vulnerability advisories found.");
+}
+
 /// #175 regression: a root alias (`pool_builder.rs`'s `root_aliases`) pushes
 /// a second pool entry whose `alias_of` is a raw index into the pool built
 /// so far. When the advisory filter (`filter_advisories`) then drops the
@@ -254,8 +396,10 @@ async fn update_does_not_panic_when_the_advisory_filter_drops_an_aliased_version
 
     let advisories_transport = AdvisoriesFixture::load();
     let audit = vivace::lock::AuditConfig::default();
+    let endpoints = advertised_endpoints();
     let filter = vivace::solver::pool_builder::AdvisoryFilter {
         transport: &advisories_transport,
+        endpoints: &endpoints,
         audit: &audit,
         no_blocking: false,
     };

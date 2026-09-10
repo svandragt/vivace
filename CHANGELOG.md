@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-10
+### Performance
+- `viv update` expands Packagist's minified metadata lazily, once per version the resolver accepts, instead of materialising every version; Laravel's warm update from a local mirror falls from 607 ms to 230 ms, past Composer's 311 ms ([#176](https://github.com/svandragt/vivace/issues/176))
+- `update`, `add` and `rm` no longer free the metadata cache and the pool before exiting ([#177](https://github.com/svandragt/vivace/issues/177))
+- Platform detection (the `php` shell-out) is cached under the cache dir, keyed by the php binary; 22 ms off every update ([#178](https://github.com/svandragt/vivace/issues/178))
+- The pool indexes packages by name, so rule generation stops scanning: 65 ms to 29 ms on Laravel ([#181](https://github.com/svandragt/vivace/issues/181))
+- Linux x86_64 releases ship a glibc build next to the static musl one and the .deb uses it; the musl build measured 12 to 34 percent slower ([#168](https://github.com/svandragt/vivace/issues/168))
+
+### Fixed
+- The php-http/discovery adapter adds its generated strategy to the autoload classmap, as the plugin does ([#157](https://github.com/svandragt/vivace/issues/157))
+- With no `php` on PATH, `viv update` says which platform it assumed instead of blaming a missing extension, and a non-matching platform version is reported as Composer does: "found php[8.3.0] but it does not match the constraint" ([#169](https://github.com/svandragt/vivace/issues/169))
+
+### Tooling
+- The CI bench gate compares viv to Composer measured on the same runner, on the median run, so runner speed cancels out
+- `bench/results/profile.md` §6 to §8 record where a warm update spends its time
+
 ## [0.8.0] - 2026-09-09
 ### Added
 - `--link-mode clone`: reflink (Linux `FICLONE`, macOS `clonefile`) into `vendor/`, falling back to hardlink then copy where the filesystem doesn't support it ([#19](https://github.com/svandragt/vivace/issues/19))
@@ -192,3 +208,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [0.6.0]: https://github.com/svandragt/vivace/releases/tag/v0.6.0
 [0.7.0]: https://github.com/svandragt/vivace/releases/tag/v0.7.0
 [0.8.0]: https://github.com/svandragt/vivace/releases/tag/v0.8.0
+[0.9.0]: https://github.com/svandragt/vivace/releases/tag/v0.9.0

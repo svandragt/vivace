@@ -1,14 +1,19 @@
-//! `viv audit`: security advisories from Packagist, a native
-//! `Auditor`/`AuditCommand` port. Not wired into `install`/`update` yet
-//! (Composer itself only runs it there when `audit.abandoned`/network is
-//! enabled; that wiring is a separate task).
+//! `viv audit`: security advisories from every repository that advertises
+//! them, a native `Auditor`/`AuditCommand` port. Not wired into
+//! `install`/`update` yet (Composer itself only runs it there when
+//! `audit.abandoned`/network is enabled; that wiring is a separate task).
 //!
-//! One POST to `packagist.org/api/security-advisories/` with every audited
-//! package's name (`ComposerRepository::getSecurityAdvisories`'s plain,
-//! non-lazy path — the `available-package-patterns` metadata path is not
-//! implemented, matching `src/repository.rs`'s own skip list). Each
-//! returned advisory is kept only if its `affectedVersions` constraint
-//! matches the package's own locked/installed version.
+//! One POST per advertising repository's own `security-advisories.api-url`
+//! (#182, `run`'s own `Repository::security_advisory_urls` call), each with
+//! every audited package's name
+//! (`ComposerRepository::getSecurityAdvisories`'s plain, non-lazy path —
+//! the `available-package-patterns` metadata path is not implemented,
+//! matching `src/repository.rs`'s own skip list). No repository advertising
+//! makes no request at all, the same as Composer's own
+//! `RepositorySet::getSecurityAdvisoriesForConstraints` loop, which simply
+//! has nothing to iterate. Each returned advisory is kept only if its
+//! `affectedVersions` constraint matches the package's own locked/installed
+//! version.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,11 +26,8 @@ use serde_json::{Map, Value};
 
 use crate::fetch::Fetcher;
 use crate::lock::{AbandonedPolicy, AuditIgnore, Config, read_lock};
+use crate::repository::{HttpTransport as RepoHttpTransport, Repository};
 use crate::semver;
-
-/// `ComposerRepository`'s hardcoded advisories endpoint (`securityAdvisoryConfig['api-url']`
-/// for packagist.org's own `packages.json`).
-const ADVISORIES_URL: &str = "https://packagist.org/api/security-advisories/";
 
 /// `viv audit` flags.
 #[derive(Args, Debug, Clone)]
@@ -78,7 +80,7 @@ const ABANDONED_HEADERS: [&str; 2] = ["Abandoned Package", "Suggested Replacemen
 /// active advisory or a failing abandoned package was found) rather than an
 /// `Err`, which is reserved for a genuine failure to audit at all (no lock,
 /// no network, ...).
-pub fn run(args: &AuditArgs) -> Result<u8> {
+pub fn run(args: &AuditArgs, cache_dir: Option<&Path>, offline: bool) -> Result<u8> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json =
@@ -102,28 +104,50 @@ pub fn run(args: &AuditArgs) -> Result<u8> {
     }
 
     let auth = crate::auth::Auth::load(&project_dir)?;
-    let fetcher = Fetcher::new(auth)?.secure_http(root.config.secure_http);
-    let transport = HttpTransport { fetcher: &fetcher };
+    let fetcher = Fetcher::new(auth)?
+        .secure_http(root.config.secure_http)
+        .offline(offline);
+    let cache_dir = match cache_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => crate::update::default_cache_dir()?,
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let (status, rendered) = runtime.block_on(audit(args, &packages, &root.config, &transport))?;
+    // #182: the same repository set `viv update` solves against, just to
+    // read off which one(s) advertise `security-advisories` -- a project
+    // whose repositories are Satis/mirror-only never posts anywhere.
+    let root_value: Value =
+        serde_json::from_slice(&composer_json).context("parsing composer.json")?;
+    let repo_transport = RepoHttpTransport { fetcher: &fetcher };
+    let repo = runtime.block_on(Repository::from_composer_json(
+        &root_value,
+        &cache_dir,
+        repo_transport,
+    ))?;
+    let endpoints = repo.security_advisory_urls();
+
+    let transport = HttpTransport { fetcher: &fetcher };
+    let (status, rendered) =
+        runtime.block_on(audit(args, &packages, &root.config, &endpoints, &transport))?;
     if !rendered.is_empty() {
         out(&rendered);
     }
     Ok(status)
 }
 
-/// The testable core: given already-loaded packages and the root
-/// `composer.json`'s `config`, POST to Packagist, filter/ignore/group the
-/// advisories, and render every section. `run` wires CLI args and a real
-/// [`Fetcher`]-backed transport around this; tests inject a fixture
-/// transport instead (`repository::Transport`'s own seam, for the same
-/// reason).
+/// The testable core: given already-loaded packages, the root
+/// `composer.json`'s `config`, and the repositories that advertise
+/// `security-advisories` (`endpoints`, #182), POST to each one,
+/// filter/ignore/group the advisories, and render every section. `run`
+/// wires CLI args and a real [`Fetcher`]-backed transport around this;
+/// tests inject a fixture transport instead (`repository::Transport`'s own
+/// seam, for the same reason).
 pub async fn audit<T: AdvisoriesTransport>(
     args: &AuditArgs,
     packages: &[AuditPackage],
     config: &Config,
+    endpoints: &[String],
     transport: &T,
 ) -> Result<(u8, String)> {
     let abandoned_policy = match &args.abandoned {
@@ -138,7 +162,7 @@ pub async fn audit<T: AdvisoriesTransport>(
         }
     }
 
-    let response = fetch_advisories(transport, &names).await?;
+    let response = fetch_advisories_from(transport, endpoints, &names).await?;
     let (advisories, ignored_advisories) = process_advisories(
         packages,
         &response,
@@ -170,12 +194,14 @@ pub async fn audit<T: AdvisoriesTransport>(
     Ok((status, rendered))
 }
 
-/// Where `viv audit` gets bytes for the advisories POST. Production wraps
+/// Where `viv audit` gets bytes for the advisories POST, one per
+/// advertising repository's own `api-url` (#182). Production wraps
 /// [`Fetcher`]; tests serve a recorded response body and count calls
 /// (`repository::Transport`'s own seam, for the same reason).
 pub trait AdvisoriesTransport {
     fn post_advisories(
         &self,
+        url: &Url,
         packages: &[String],
     ) -> impl std::future::Future<Output = Result<Value>> + Send;
 }
@@ -198,16 +224,15 @@ impl AdvisoriesTransport for NoAdvisories {
         reason = "never actually called (this type is only ever a None witness); async only to \
                   satisfy the trait"
     )]
-    async fn post_advisories(&self, _packages: &[String]) -> Result<Value> {
+    async fn post_advisories(&self, _url: &Url, _packages: &[String]) -> Result<Value> {
         unreachable!("NoAdvisories is only ever used as a None witness type, never called")
     }
 }
 
 impl AdvisoriesTransport for HttpTransport<'_> {
-    async fn post_advisories(&self, packages: &[String]) -> Result<Value> {
-        let url = Url::parse(ADVISORIES_URL).expect("hardcoded URL");
+    async fn post_advisories(&self, url: &Url, packages: &[String]) -> Result<Value> {
         self.fetcher
-            .post_json("packagist.org security advisories", &url, packages)
+            .post_json("security advisories", url, packages)
             .await
     }
 }
@@ -217,10 +242,42 @@ impl AdvisoriesTransport for HttpTransport<'_> {
 /// fails the exact same way `viv audit`'s own POST does.
 pub(crate) async fn fetch_advisories<T: AdvisoriesTransport>(
     transport: &T,
+    url: &Url,
     names: &[String],
 ) -> Result<AdvisoriesResponse> {
-    let body = transport.post_advisories(names).await?;
-    serde_json::from_value(body).context("parsing packagist security-advisories response")
+    let body = transport.post_advisories(url, names).await?;
+    serde_json::from_value(body).context("parsing security-advisories response")
+}
+
+/// Every `endpoints` entry (one repository's own advertised `api-url`,
+/// #182) asked with the *same*, un-narrowed `names` list, then merged into
+/// one response (`RepositorySet::getSecurityAdvisoriesForConstraints`'s
+/// `array_merge_recursive` of each repository's own `advisories` map — the
+/// `ksort` afterwards is dropped, nothing here depends on map order).
+/// Composer asks every advertising repository the full package-constraint
+/// map, not a per-repository subset narrowed to the names that repository
+/// actually resolved (`RepositorySet.php`'s loop passes the one shared
+/// `$packageConstraintMap` to each repository's own `getSecurityAdvisories`
+/// call). An empty `endpoints` makes no request at all and returns an empty
+/// response, matching `viv audit`'s and the pool filter's own
+/// no-repository-advertises behaviour.
+pub(crate) async fn fetch_advisories_from<T: AdvisoriesTransport>(
+    transport: &T,
+    endpoints: &[String],
+    names: &[String],
+) -> Result<AdvisoriesResponse> {
+    let mut merged = AdvisoriesResponse {
+        advisories: HashMap::new(),
+    };
+    for endpoint in endpoints {
+        let url = Url::parse(endpoint)
+            .with_context(|| format!("{endpoint:?}: invalid security-advisories api-url"))?;
+        let response = fetch_advisories(transport, &url, names).await?;
+        for (name, mut list) in response.advisories {
+            merged.advisories.entry(name).or_default().append(&mut list);
+        }
+    }
+    Ok(merged)
 }
 
 /// `SecurityAdvisoryPoolFilter::getMatchingAdvisories`, minus the caller's

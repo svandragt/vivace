@@ -2,7 +2,7 @@
 
 `viv` installs PHP dependencies from a Composer `composer.lock` file and
 writes a `vendor/` directory that matches what Composer would write, byte
-for byte. It's a proof of concept at v0.8.0, tested in CI on Linux and
+for byte. It's a proof of concept at v0.9.0, tested in CI on Linux and
 macOS, and not yet at 1.0.
 
 ## Try it
@@ -15,7 +15,7 @@ macOS x86_64 and aarch64), or install it another way:
 ```sh
 cargo binstall --git https://github.com/svandragt/vivace vivace
 # or build from source:
-cargo install --git https://github.com/svandragt/vivace --tag v0.8.0 vivace
+cargo install --git https://github.com/svandragt/vivace --tag v0.9.0 vivace
 ```
 
 Both commands also upgrade an existing install; add `--force` to

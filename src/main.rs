@@ -210,7 +210,7 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Command::Audit(args) => match audit::run(&args) {
+        Command::Audit(args) => match audit::run(&args, cli.cache_dir.as_deref(), offline) {
             Ok(status) => ExitCode::from(status),
             Err(err) => {
                 err_out(&format!("{err:#}"));

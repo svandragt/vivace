@@ -39,10 +39,22 @@ impl AdvisoriesTransport for FixtureTransport {
     // The fixture transport reads an in-memory body synchronously; no
     // `.await` is needed, but the trait signature is async for production.
     #[allow(clippy::unused_async_trait_impl)]
-    async fn post_advisories(&self, _packages: &[String]) -> anyhow::Result<Value> {
+    async fn post_advisories(
+        &self,
+        _url: &reqwest::Url,
+        _packages: &[String],
+    ) -> anyhow::Result<Value> {
         *self.calls.lock().unwrap() += 1;
         Ok(self.body.clone())
     }
+}
+
+/// One fixture endpoint, standing in for a repository's advertised
+/// `security-advisories.api-url` (#182): every scenario here has exactly
+/// one advertising repository, so its actual value never matters --
+/// `FixtureTransport` ignores it.
+fn endpoints() -> Vec<String> {
+    vec!["https://example.test/api/security-advisories/".to_string()]
 }
 
 fn args(locked: bool, format: Format) -> AuditArgs {
@@ -77,8 +89,14 @@ fn vulnerable_lock_matches_composer_every_format() {
     ] {
         let transport = FixtureTransport::new("vulnerable");
         let cli_args = args(true, format);
-        let (status, rendered) =
-            futures::executor::block_on(audit(&cli_args, &packages, &config, &transport)).unwrap();
+        let (status, rendered) = futures::executor::block_on(audit(
+            &cli_args,
+            &packages,
+            &config,
+            &endpoints(),
+            &transport,
+        ))
+        .unwrap();
         assert_eq!(status, 1, "{name}: an active advisory exits 1");
         assert_eq!(
             format!("{rendered}\n"),
@@ -113,8 +131,14 @@ fn config_audit_ignore_exits_clean_with_reason() {
     ] {
         let transport = FixtureTransport::new("vulnerable");
         let cli_args = args(true, format);
-        let (status, rendered) =
-            futures::executor::block_on(audit(&cli_args, &packages, &config, &transport)).unwrap();
+        let (status, rendered) = futures::executor::block_on(audit(
+            &cli_args,
+            &packages,
+            &config,
+            &endpoints(),
+            &transport,
+        ))
+        .unwrap();
         assert_eq!(status, 0, "{name}: ignored-only exits 0");
         assert_eq!(
             format!("{rendered}\n"),
@@ -134,8 +158,14 @@ fn ignore_severity_flag_ignores_by_severity() {
     let transport = FixtureTransport::new("vulnerable");
     let mut cli_args = args(true, Format::Plain);
     cli_args.ignore_severity = vec!["low".to_string()];
-    let (status, rendered) =
-        futures::executor::block_on(audit(&cli_args, &packages, &config, &transport)).unwrap();
+    let (status, rendered) = futures::executor::block_on(audit(
+        &cli_args,
+        &packages,
+        &config,
+        &endpoints(),
+        &transport,
+    ))
+    .unwrap();
     assert_eq!(status, 0);
     assert_eq!(
         format!("{rendered}\n"),
@@ -160,8 +190,14 @@ fn clean_lock_reports_no_advisories() {
     ] {
         let transport = FixtureTransport::new("clean");
         let cli_args = args(true, format);
-        let (status, rendered) =
-            futures::executor::block_on(audit(&cli_args, &packages, &config, &transport)).unwrap();
+        let (status, rendered) = futures::executor::block_on(audit(
+            &cli_args,
+            &packages,
+            &config,
+            &endpoints(),
+            &transport,
+        ))
+        .unwrap();
         assert_eq!(status, 0, "{name}");
         assert_eq!(
             format!("{rendered}\n"),
@@ -188,8 +224,14 @@ fn abandoned_package_fails_by_default_and_can_be_ignored() {
     ] {
         let transport = FixtureTransport::new("abandoned");
         let cli_args = args(true, format);
-        let (status, rendered) =
-            futures::executor::block_on(audit(&cli_args, &packages, &config, &transport)).unwrap();
+        let (status, rendered) = futures::executor::block_on(audit(
+            &cli_args,
+            &packages,
+            &config,
+            &endpoints(),
+            &transport,
+        ))
+        .unwrap();
         assert_eq!(status, 1, "{name}: abandoned fails by default");
         assert_eq!(
             format!("{rendered}\n"),
@@ -201,8 +243,14 @@ fn abandoned_package_fails_by_default_and_can_be_ignored() {
     let transport = FixtureTransport::new("abandoned");
     let mut cli_args = args(true, Format::Plain);
     cli_args.abandoned = Some("ignore".to_string());
-    let (status, rendered) =
-        futures::executor::block_on(audit(&cli_args, &packages, &config, &transport)).unwrap();
+    let (status, rendered) = futures::executor::block_on(audit(
+        &cli_args,
+        &packages,
+        &config,
+        &endpoints(),
+        &transport,
+    ))
+    .unwrap();
     assert_eq!(status, 0, "--abandoned=ignore silences it");
     assert_eq!(rendered, "No security vulnerability advisories found.");
 }
