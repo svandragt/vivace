@@ -186,21 +186,7 @@ impl PackageVersion {
             .as_object()
             .context("provider version entry is not an object")?;
         let name = string_field(obj, "name")?;
-        let version = string_field(obj, "version")?;
-        // `version_normalized === VersionParser::DEFAULT_BRANCH_ALIAS` (a
-        // literal "9999999-dev") or missing entirely both mean: recompute
-        // it (`ComposerRepository.php:1327-1330`).
-        let version_normalized = obj
-            .get("version_normalized")
-            .and_then(Value::as_str)
-            .filter(|v| *v != "9999999-dev")
-            .map(str::to_string);
-        let version_normalized = if let Some(v) = version_normalized {
-            v
-        } else {
-            VERSION_NORMALIZE_CALLS.fetch_add(1, Ordering::Relaxed);
-            crate::version::normalize(&version)?
-        };
+        let (version, version_normalized) = version_fields(obj)?;
         let require = map_field(obj, "require");
         let require_dev = map_field(obj, "require-dev");
         let replace = map_field(obj, "replace");
@@ -212,10 +198,7 @@ impl PackageVersion {
             .unwrap_or(false);
         let dist = obj.get("dist").cloned();
         let source = obj.get("source").cloned();
-        let branch_alias = obj
-            .get("extra")
-            .and_then(|extra| extra.get("branch-alias"))
-            .cloned();
+        let branch_alias = branch_alias_field(obj);
         let time = obj.get("time").and_then(Value::as_str).map(str::to_string);
         Ok(PackageVersion {
             name,
@@ -241,6 +224,47 @@ fn string_field(obj: &Map<String, Value>, key: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .with_context(|| format!("provider version entry missing {key:?}"))
+}
+
+/// `version`/`version_normalized`, shared between [`PackageVersion::from_owned_value`]
+/// (the whole-object parse) and [`DeltaKey::from_delta`] (#176's cheap
+/// pre-acceptance read of the same two fields straight off a minified
+/// delta, before it's ever merged into a full object): both are present on
+/// every entry a minified provider file ships, never inherited, so reading
+/// them off the delta directly is exactly as correct as reading them off
+/// the fully expanded object.
+fn version_fields(obj: &Map<String, Value>) -> Result<(String, String)> {
+    let version = string_field(obj, "version")?;
+    // `version_normalized === VersionParser::DEFAULT_BRANCH_ALIAS` (a
+    // literal "9999999-dev") or missing entirely both mean: recompute
+    // it (`ComposerRepository.php:1327-1330`).
+    let version_normalized = obj
+        .get("version_normalized")
+        .and_then(Value::as_str)
+        .filter(|v| *v != "9999999-dev")
+        .map(str::to_string);
+    let version_normalized = if let Some(v) = version_normalized {
+        v
+    } else {
+        VERSION_NORMALIZE_CALLS.fetch_add(1, Ordering::Relaxed);
+        crate::version::normalize(&version)?
+    };
+    Ok((version, version_normalized))
+}
+
+/// `extra.branch-alias`, shared the same way as [`version_fields`]. Only
+/// correct read directly off `obj` when `obj` is either a fully expanded
+/// object ([`PackageVersion::from_owned_value`]'s own use) or one entry of
+/// a non-minified chain, where every entry already stands alone
+/// ([`DeltaKey::from_delta`]'s use for a v1 provider list): `extra` itself
+/// can be inherited across a *minified* chain the same as any other field
+/// (Composer's `MetadataMinifier` omits it once it stops changing), so
+/// [`DeltaKey::from_minified_chain`] tracks a running `extra` forward
+/// instead of calling this per delta.
+fn branch_alias_field(obj: &Map<String, Value>) -> Option<Value> {
+    obj.get("extra")
+        .and_then(|extra| extra.get("branch-alias"))
+        .cloned()
 }
 
 fn map_field(obj: &Map<String, Value>, key: &str) -> Map<String, Value> {
@@ -277,6 +301,314 @@ fn expand_minified(versions: Vec<Value>) -> Vec<Value> {
         current = Some(next);
     }
     expanded.into_iter().map(Value::Object).collect()
+}
+
+/// #176: [`is_version_loaded`]'s pre-acceptance screen, read straight off a
+/// minified delta with no merge/clone against the running chain --
+/// [`version_fields`]/[`branch_alias_field`]'s cheap half.
+#[derive(Clone)]
+struct DeltaKey {
+    version: String,
+    version_normalized: String,
+    branch_alias: Option<Value>,
+}
+
+impl DeltaKey {
+    /// A non-minified (v1) entry: every one stands alone, so
+    /// `branch_alias_field` reading straight off it is exactly the fully
+    /// expanded value, not a simplification.
+    fn from_delta(delta: &Value) -> Result<DeltaKey> {
+        let obj = delta
+            .as_object()
+            .context("provider version entry is not an object")?;
+        let (version, version_normalized) = version_fields(obj)?;
+        let branch_alias = branch_alias_field(obj);
+        Ok(DeltaKey {
+            version,
+            version_normalized,
+            branch_alias,
+        })
+    }
+
+    /// A minified chain: `version`/`version_normalized` are still read
+    /// straight off each delta (never inherited, verified on the recorded
+    /// fixtures), but `extra` -- and with it `branch-alias` -- follows
+    /// `MetadataMinifier`'s own inheritance rule same as any other field:
+    /// omitted from a delta entirely once it stops changing, not just
+    /// `"__unset"`. A dev branch whose `extra` matches the version before
+    /// it therefore carries no `extra` key at all, and reading
+    /// `branch_alias_field` straight off that delta would wrongly read "no
+    /// alias". Tracks the running `extra` value forward instead: carried
+    /// unchanged when a delta omits `extra`, replaced when a delta carries
+    /// one, cleared on the literal `"__unset"` -- one shallow lookup per
+    /// delta, not a clone of the merged object.
+    fn from_minified_chain(deltas: &[Value]) -> Result<Vec<DeltaKey>> {
+        let mut keys = Vec::with_capacity(deltas.len());
+        let mut current_extra: Option<Value> = None;
+        for delta in deltas {
+            let obj = delta
+                .as_object()
+                .context("provider version entry is not an object")?;
+            let (version, version_normalized) = version_fields(obj)?;
+            match obj.get("extra") {
+                Some(value) if value == "__unset" => current_extra = None,
+                Some(value) => current_extra = Some(value.clone()),
+                None => {}
+            }
+            let branch_alias = current_extra
+                .as_ref()
+                .and_then(|extra| extra.get("branch-alias"))
+                .cloned();
+            keys.push(DeltaKey {
+                version,
+                version_normalized,
+                branch_alias,
+            });
+        }
+        Ok(keys)
+    }
+}
+
+/// One `"composer"` source's own provider-file fetch for a name (a lazy
+/// `metadata_url` fetch or a hash-verified `providers-url` one), expansion
+/// deferred until a version is actually accepted (#176,
+/// `bench/results/profile.md` §7): `expand_minified`'s `next.clone()` used
+/// to run once per version regardless of whether `is_version_loaded` ever
+/// wanted it -- 13,996 times on `bench/laravel`, only 3,175 ever accepted.
+/// `deltas` is the parsed list exactly as the provider file shipped it (for
+/// `minified: true`, filtered down to the object entries `expand_minified`
+/// itself would have kept, dropping the rest the same way it silently did);
+/// `keys` is each surviving delta's own [`DeltaKey`], read once up front
+/// (cheap: two-to-three field reads, not a clone of the whole merged
+/// object) so `is_version_loaded` never has to pay for expansion just to
+/// screen a version out.
+#[derive(Clone)]
+struct DeltaChain {
+    minified: bool,
+    deltas: Vec<Value>,
+    keys: Vec<DeltaKey>,
+    notify_url: Option<String>,
+    /// Memoised running state for [`DeltaChain::expand`]: the last index
+    /// replayed and the merged `Map` that produced it, so accepting indices
+    /// in increasing order (the common case: `ClosureWalk::process` always
+    /// scans a chain from its start) costs one `insert`/`remove` per key per
+    /// index, not a clone. A request for an index at or before it restarts
+    /// the replay from scratch (#176's own design note: "if a later widen
+    /// accepts an earlier index, restart from 0") -- there's no snapshot
+    /// history to rewind to, only the latest position.
+    replay: Option<(usize, Map<String, Value>)>,
+}
+
+impl DeltaChain {
+    fn from_deltas(deltas: Vec<Value>, minified: bool) -> Result<DeltaChain> {
+        // `expand_minified`'s own `let Value::Object(diff) = version else {
+        // continue }`: a non-object entry in a minified chain is silently
+        // dropped, never merged and never converted. A non-minified (v1)
+        // list has no such quirk -- every entry stands alone, so a
+        // malformed one must still surface as the same error
+        // `PackageVersion::from_owned_value` would have raised on it today.
+        let deltas: Vec<Value> = if minified {
+            deltas.into_iter().filter(Value::is_object).collect()
+        } else {
+            deltas
+        };
+        let keys = if minified {
+            DeltaKey::from_minified_chain(&deltas)?
+        } else {
+            deltas
+                .iter()
+                .map(DeltaKey::from_delta)
+                .collect::<Result<Vec<_>>>()?
+        };
+        Ok(DeltaChain {
+            minified,
+            deltas,
+            keys,
+            notify_url: None,
+            replay: None,
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.deltas.len()
+    }
+
+    fn key(&self, index: usize) -> &DeltaKey {
+        &self.keys[index]
+    }
+
+    /// Stamps `ComposerSource`'s own `notify_url` the same way
+    /// `ComposerSource::load_versions` used to, post-hoc, on the finished
+    /// `Vec<PackageVersion>`: applied here instead, at the point a single
+    /// entry's merged object is finalized, since entries no longer all
+    /// finish at the same time. A free function taking `notify_url`
+    /// explicitly rather than `&self`, so [`DeltaChain::expand_all`] can
+    /// call it after consuming `self.deltas` by value.
+    fn finalize(notify_url: Option<&str>, mut map: Map<String, Value>) -> Result<PackageVersion> {
+        if let Some(url) = notify_url
+            && !map.contains_key("notification-url")
+        {
+            map.insert(
+                "notification-url".to_string(),
+                Value::String(url.to_string()),
+            );
+        }
+        let convert_started = Instant::now();
+        let pv = PackageVersion::from_owned_value(Value::Object(map));
+        STAGE_CONVERT_NS.fetch_add(elapsed_ns(convert_started.elapsed()), Ordering::Relaxed);
+        if pv.is_ok() {
+            VERSIONS_PRODUCED.fetch_add(1, Ordering::Relaxed);
+        }
+        pv
+    }
+
+    /// Replays deltas up to and including `index` against one running
+    /// `Map` (`MetadataMinifier::expand` semantics: `"__unset"` removes a
+    /// key), continuing from the last replay when `index` is at or after
+    /// it, and pays the one deep clone this type exists to avoid only for
+    /// `index` itself.
+    fn expand(&mut self, index: usize) -> Result<PackageVersion> {
+        if !self.minified {
+            let expand_started = Instant::now();
+            let Value::Object(map) = self.deltas[index].clone() else {
+                unreachable!("non-object entries error at construction for a non-minified chain")
+            };
+            STAGE_EXPAND_NS.fetch_add(elapsed_ns(expand_started.elapsed()), Ordering::Relaxed);
+            return DeltaChain::finalize(self.notify_url.as_deref(), map);
+        }
+        let expand_started = Instant::now();
+        let (start, mut current) = match self.replay.take() {
+            Some((last, map)) if last <= index => (last + 1, Some(map)),
+            _ => (0, None),
+        };
+        for delta in &self.deltas[start..=index] {
+            let Value::Object(diff) = delta.clone() else {
+                // `from_deltas` already filtered these out for a minified
+                // chain; defensive only.
+                continue;
+            };
+            current = Some(match current.take() {
+                None => diff,
+                Some(mut prev) => {
+                    for (key, value) in diff {
+                        if value == "__unset" {
+                            prev.remove(&key);
+                        } else {
+                            prev.insert(key, value);
+                        }
+                    }
+                    prev
+                }
+            });
+        }
+        let map = current.expect("index within bounds implies at least one delta processed");
+        self.replay = Some((index, map.clone()));
+        STAGE_EXPAND_NS.fetch_add(elapsed_ns(expand_started.elapsed()), Ordering::Relaxed);
+        DeltaChain::finalize(self.notify_url.as_deref(), map)
+    }
+
+    /// Every consumer that still wants the whole name's versions up front
+    /// (`Repository::load_package`'s public contract: `require.rs`/`new.rs`/
+    /// `show.rs` and the test below all read the full list) rather than
+    /// screening by constraint first: replays every index the same way
+    /// [`expand_minified`] always did, so behaviour is unchanged even
+    /// though, unlike [`DeltaChain::expand`], it doesn't skip a single one.
+    fn expand_all(self) -> Result<Vec<PackageVersion>> {
+        let notify_url = self.notify_url;
+        let expand_started = Instant::now();
+        let expanded = if self.minified {
+            expand_minified(self.deltas)
+        } else {
+            self.deltas
+        };
+        STAGE_EXPAND_NS.fetch_add(elapsed_ns(expand_started.elapsed()), Ordering::Relaxed);
+        expanded
+            .into_iter()
+            .map(|value| {
+                let Value::Object(map) = value else {
+                    unreachable!("expand_minified/a v1 list only ever holds objects here")
+                };
+                DeltaChain::finalize(notify_url.as_deref(), map)
+            })
+            .collect()
+    }
+}
+
+/// A name's landed fetch, one entry per source that contributed it
+/// (mirrors `Repository::load_package`'s own `versions.extend(found)` loop;
+/// kept separate here rather than flattened because each source's own
+/// minified chain replays independently). Eager/inline/VCS/v1-keyed-object
+/// sources were never the #176 bottleneck (`bench/results/profile.md` §7:
+/// only a `"composer"` source's lazy/hash-verified provider *list* pays
+/// `expand_minified`'s clone chain) and stay `Ready`, already fully parsed.
+#[derive(Clone)]
+enum SourceVersions {
+    Ready(Vec<PackageVersion>),
+    Deferred(DeltaChain),
+}
+
+impl SourceVersions {
+    fn len(&self) -> usize {
+        match self {
+            SourceVersions::Ready(versions) => versions.len(),
+            SourceVersions::Deferred(chain) => chain.len(),
+        }
+    }
+
+    fn key(&self, index: usize) -> (&str, &str, Option<&Value>) {
+        match self {
+            SourceVersions::Ready(versions) => {
+                let pv = &versions[index];
+                (
+                    pv.version.as_str(),
+                    pv.version_normalized.as_str(),
+                    pv.branch_alias.as_ref(),
+                )
+            }
+            SourceVersions::Deferred(chain) => {
+                let key = chain.key(index);
+                (
+                    key.version.as_str(),
+                    key.version_normalized.as_str(),
+                    key.branch_alias.as_ref(),
+                )
+            }
+        }
+    }
+
+    fn expand(&mut self, index: usize) -> Result<PackageVersion> {
+        match self {
+            SourceVersions::Ready(versions) => Ok(versions[index].clone()),
+            SourceVersions::Deferred(chain) => chain.expand(index),
+        }
+    }
+
+    fn expand_all(self) -> Result<Vec<PackageVersion>> {
+        match self {
+            SourceVersions::Ready(versions) => Ok(versions),
+            SourceVersions::Deferred(chain) => chain.expand_all(),
+        }
+    }
+
+    /// `ComposerSource::load_versions`'s own post-hoc `notification-url`
+    /// stamp, applied now for an already-`Ready` source (same timing as
+    /// before) or stashed for a `Deferred` one to apply per entry, whenever
+    /// that entry is finally expanded.
+    fn set_notify_url(&mut self, notify_url: Option<&String>) {
+        match self {
+            SourceVersions::Ready(versions) => {
+                let Some(url) = notify_url else { return };
+                for version in versions {
+                    if let Value::Object(obj) = &mut version.raw
+                        && !obj.contains_key("notification-url")
+                    {
+                        obj.insert("notification-url".to_string(), Value::String(url.clone()));
+                    }
+                }
+            }
+            SourceVersions::Deferred(chain) => chain.notify_url = notify_url.cloned(),
+        }
+    }
 }
 
 /// One `require`/`require-dev` pair whose names seed a `load_closure`
@@ -600,10 +932,11 @@ impl ComposerSource {
         self.available.as_ref().is_none_or(|a| a.allows(name))
     }
 
-    /// This source's versions for `name` (already lowercased), applying its
-    /// own `notify_url` to whichever entries don't already carry one. `dev`
-    /// only matters for `Provider::Lazy`, which is the only mechanism that
-    /// splits dev out into a separate `~dev` file.
+    /// This source's versions for `name` (already lowercased), fully
+    /// expanded and converted (`Repository::load_package`'s public
+    /// contract). Built on [`ComposerSource::load_versions_deferred`]'s same
+    /// fetch, just expanded all at once (#176: [`SourceVersions::expand_all`])
+    /// instead of screened by constraint first.
     async fn load_versions<T: Transport>(
         &self,
         transport: &T,
@@ -611,22 +944,47 @@ impl ComposerSource {
         name: &str,
         dev: DevAcceptance,
     ) -> Result<Vec<PackageVersion>> {
-        let mut versions = match &self.provider {
+        let chains = self
+            .load_versions_deferred(transport, requests, name, dev)
+            .await?;
+        let mut versions = Vec::new();
+        for chain in chains {
+            versions.extend(chain.expand_all()?);
+        }
+        Ok(versions)
+    }
+
+    /// Same sources, same fetches, as [`ComposerSource::load_versions`], but
+    /// expansion of a `"composer"` provider file's versions is deferred
+    /// (#176, `bench/results/profile.md` §7): [`Repository::load_closure_seeded`]'s
+    /// `ClosureWalk` screens each [`SourceVersions`]'s cheap keys against its
+    /// constraints before ever paying for a full expansion, only calling
+    /// [`SourceVersions::expand`] on the ones it actually accepts. `dev` only
+    /// matters for `Provider::Lazy`, which is the only mechanism that splits
+    /// dev out into a separate `~dev` file.
+    async fn load_versions_deferred<T: Transport>(
+        &self,
+        transport: &T,
+        requests: &AtomicUsize,
+        name: &str,
+        dev: DevAcceptance,
+    ) -> Result<Vec<SourceVersions>> {
+        let mut chains = match &self.provider {
             Provider::Lazy { metadata_url } => {
-                let mut versions = Vec::new();
+                let mut chains = Vec::new();
                 if dev.wants_non_dev() {
-                    versions.extend(
+                    chains.extend(
                         self.fetch_lazy(transport, requests, metadata_url, name, false)
                             .await?,
                     );
                 }
                 if dev.wants_dev() {
-                    versions.extend(
+                    chains.extend(
                         self.fetch_lazy(transport, requests, metadata_url, name, true)
                             .await?,
                     );
                 }
-                versions
+                chains
             }
             Provider::Providers {
                 providers_url,
@@ -656,21 +1014,15 @@ impl ComposerSource {
                 .await?;
                 parse_provider_versions(data, name).await?
             }
-            Provider::Eager { packages } => packages.get(name).cloned().unwrap_or_default(),
+            Provider::Eager { packages } => match packages.get(name) {
+                Some(versions) => vec![SourceVersions::Ready(versions.clone())],
+                None => Vec::new(),
+            },
         };
-        if let Some(notify_url) = &self.notify_url {
-            for version in &mut versions {
-                if let Value::Object(obj) = &mut version.raw
-                    && !obj.contains_key("notification-url")
-                {
-                    obj.insert(
-                        "notification-url".to_string(),
-                        Value::String(notify_url.clone()),
-                    );
-                }
-            }
+        for chain in &mut chains {
+            chain.set_notify_url(self.notify_url.as_ref());
         }
-        Ok(versions)
+        Ok(chains)
     }
 
     async fn fetch_lazy<T: Transport>(
@@ -680,9 +1032,11 @@ impl ComposerSource {
         metadata_url: &str,
         name: &str,
         dev_file: bool,
-    ) -> Result<Vec<PackageVersion>> {
+    ) -> Result<Vec<SourceVersions>> {
         if !dev_file && let Some(inline) = self.inline_packages.get(name) {
-            return parse_inline_versions(name, inline);
+            return Ok(vec![SourceVersions::Ready(parse_inline_versions(
+                name, inline,
+            )?)]);
         }
         let file_name = if dev_file {
             format!("{name}~dev")
@@ -774,6 +1128,31 @@ impl Source {
                 source.load_versions(transport, requests, name, dev).await
             }
             SourceKind::Vcs(source) => source.load_versions(transport, requests, name).await,
+        }
+    }
+
+    /// [`Source::load_versions`], but expansion deferred (#176): only
+    /// [`Repository::load_closure_seeded`]'s `ClosureWalk` calls this, since
+    /// it's the one caller that screens versions by constraint before
+    /// needing them expanded at all. A VCS source has nothing to defer --
+    /// its one package's one ref was never the bottleneck this exists for --
+    /// so it's wrapped `Ready`, same as [`Source::load_versions`] returns it.
+    async fn load_versions_deferred<T: Transport>(
+        &self,
+        transport: &T,
+        requests: &AtomicUsize,
+        name: &str,
+        dev: DevAcceptance,
+    ) -> Result<Vec<SourceVersions>> {
+        match &self.kind {
+            SourceKind::Composer(source) => {
+                source
+                    .load_versions_deferred(transport, requests, name, dev)
+                    .await
+            }
+            SourceKind::Vcs(source) => Ok(vec![SourceVersions::Ready(
+                source.load_versions(transport, requests, name).await?,
+            )]),
         }
     }
 }
@@ -1082,6 +1461,17 @@ pub struct Repository<T: Transport> {
     /// `load_package`/`load_closure` call over names already loaded this
     /// run costs zero transport calls.
     loaded: Mutex<HashMap<String, Vec<PackageVersion>>>,
+    /// [`Repository::load_package_lazy`]'s own memo (#176): kept separate
+    /// from `loaded` rather than shared, since it caches the *deferred*
+    /// `SourceVersions` form a `ClosureWalk` fetch wants, not the fully
+    /// expanded one `load_package` returns -- populating one from the other
+    /// would mean paying for a full expansion (`loaded`) or losing the
+    /// warm-repeat-costs-no-transport-calls guarantee (`loaded_lazy`)
+    /// depending on which way it went. A repeated `load_closure*` call over
+    /// a name this repository already fetched (`viv show`'s own repeat
+    /// queries, or a test exercising the same `Repository` twice) still
+    /// costs zero transport calls, same as `loaded` always has.
+    loaded_lazy: Mutex<HashMap<String, Vec<SourceVersions>>>,
     /// Count of `transport.get` calls issued for a provider file (#55):
     /// every one of these is a real request, warm cache or not, for a
     /// `Last-Modified`-revalidated fetch — a warm metadata cache still
@@ -1108,6 +1498,7 @@ impl<T: Transport> Repository<T> {
             transport,
             sources: vec![source],
             loaded: Mutex::new(HashMap::new()),
+            loaded_lazy: Mutex::new(HashMap::new()),
             requests: AtomicUsize::new(0),
         })
     }
@@ -1130,6 +1521,7 @@ impl<T: Transport> Repository<T> {
             transport,
             sources,
             loaded: Mutex::new(HashMap::new()),
+            loaded_lazy: Mutex::new(HashMap::new()),
             requests: AtomicUsize::new(0),
         })
     }
@@ -1179,6 +1571,53 @@ impl<T: Transport> Repository<T> {
         Ok(versions)
     }
 
+    /// [`Repository::load_package`], but expansion deferred (#176) through
+    /// its own `loaded_lazy` memo rather than `loaded`: caching the fully
+    /// expanded form here would pay for every version's expansion on the
+    /// first call regardless of acceptance, defeating the point; a repeat
+    /// `load_closure*` call over an already-fetched name still costs zero
+    /// transport calls either way. Only [`Repository::load_closure_seeded`]'s
+    /// `ClosureWalk` calls this (it already de-duplicates a name *within*
+    /// one walk via `prefetching`, so this memo only matters across
+    /// multiple walks on the same `Repository`); a `viv add`'s constraint
+    /// synthesis calls `load_package` directly on its own, separate
+    /// `Repository` (`require.rs`'s `synthesize_constraint` builds a fresh
+    /// one), so the two never share either cache regardless.
+    async fn load_package_lazy(
+        &self,
+        name: &str,
+        dev: DevAcceptance,
+    ) -> Result<Vec<SourceVersions>> {
+        if let Some(cached) = self
+            .loaded_lazy
+            .lock()
+            .expect("loaded_lazy mutex")
+            .get(name)
+        {
+            return Ok(cached.clone());
+        }
+        let mut chains = Vec::new();
+        for source in &self.sources {
+            if !source.allows(name) {
+                continue;
+            }
+            let found = source
+                .load_versions_deferred(&self.transport, &self.requests, name, dev)
+                .await?;
+            let found_len: usize = found.iter().map(SourceVersions::len).sum();
+            let canonical_hit = source.filters.canonical && found_len > 0;
+            chains.extend(found);
+            if canonical_hit {
+                break;
+            }
+        }
+        self.loaded_lazy
+            .lock()
+            .expect("loaded_lazy mutex")
+            .insert(name.to_string(), chains.clone());
+        Ok(chains)
+    }
+
     /// `load_package(&name, dev)`, but keyed by its own `name`: a free
     /// function so both the seed wave and the BFS fill loop in
     /// [`Repository::load_closure_seeded`] push the *same* concrete future
@@ -1188,8 +1627,8 @@ impl<T: Transport> Repository<T> {
         &self,
         name: String,
         dev: DevAcceptance,
-    ) -> (String, Result<Vec<PackageVersion>>) {
-        let versions = self.load_package(&name, dev).await;
+    ) -> (String, Result<Vec<SourceVersions>>) {
+        let versions = self.load_package_lazy(&name, dev).await;
         (name, versions)
     }
 
@@ -1367,8 +1806,12 @@ impl<T: Transport> Repository<T> {
             prefetching.remove(&name);
             walk.land(name, versions)?;
         }
+        // Moved out before `walk`'s own bookkeeping is forgotten below
+        // (#177): `result` still needs to be returned and dropped normally,
+        // it's `states`/`versions_by_name`/`stashed`/`queue` that don't.
+        let result = std::mem::take(&mut walk.result);
         tracing::debug!(
-            packages = walk.result.len(),
+            packages = result.len(),
             requests = self.request_count() - requests_before,
             waves,
             files_parsed = CACHE_FILES_PARSED.load(Ordering::Relaxed) - files_before,
@@ -1387,7 +1830,22 @@ impl<T: Transport> Repository<T> {
                 VERSION_NORMALIZE_CALLS.load(Ordering::Relaxed) - normalize_calls_before,
             "#176: read+parse cached metadata stage split"
         );
-        Ok(walk.result)
+        // #177: dropping `states`/`versions_by_name`/`stashed`/`queue` here
+        // (thousands of `Value`/`String` entries by the time a large
+        // closure lands) measured at 81 ms on bench/laravel, right after
+        // this function's own last use of any of them; the process exits
+        // soon after `update`/`add`/`show` finish with it either way, the
+        // same reasoning `update.rs`/`solver`'s own `mem::forget` of the
+        // repository cache and pool already relies on (fccebef). Only one
+        // `impl Drop` exists in the crate at all (a test guard in
+        // `auth.rs`), so leaking the rest of `walk` is safe.
+        let teardown_started = Instant::now();
+        std::mem::forget(walk);
+        tracing::debug!(
+            teardown_ms = teardown_started.elapsed().as_millis(),
+            "#177: forgot ClosureWalk bookkeeping instead of dropping it"
+        );
+        Ok(result)
     }
 }
 
@@ -1445,15 +1903,18 @@ struct ClosureWalk<'a> {
     states: HashMap<String, NameState>,
     /// A name's full, unfiltered fetch result, once landed
     /// (`ComposerRepository::loadAsyncPackages`'s own per-repo cache of the
-    /// raw provider file: `Repository::load_package` already fetches every
-    /// version over the wire, this just remembers them across a later
-    /// widen so a widen never re-fetches).
-    versions_by_name: HashMap<String, Vec<PackageVersion>>,
+    /// raw provider file: `Repository::load_package_lazy` already fetches
+    /// every version over the wire, this just remembers them across a later
+    /// widen so a widen never re-fetches). `SourceVersions` rather than
+    /// `Vec<PackageVersion>`: expansion of a `"composer"` source's own
+    /// versions stays deferred until [`ClosureWalk::process`] actually
+    /// accepts one (#176).
+    versions_by_name: HashMap<String, Vec<SourceVersions>>,
     /// A landed fetch for a name not yet discovered (a seed prefetch that
     /// raced ahead of the require chain reaching it, or one `roots` never
     /// actually needs): held here until [`ClosureWalk::discover`] reaches
     /// it, or dropped unread if the walk finishes first.
-    stashed: HashMap<String, Vec<PackageVersion>>,
+    stashed: HashMap<String, Vec<SourceVersions>>,
     queue: VecDeque<String>,
     result: HashMap<String, Vec<PackageVersion>>,
 }
@@ -1515,10 +1976,15 @@ impl ClosureWalk<'_> {
     /// `require` links in turn (`PoolBuilder::loadPackage`'s own walk over
     /// `$package->getRequires()`, done once per *version*, run here once
     /// per newly accepted [`PackageVersion`]). A no-op if `name` hasn't
-    /// landed yet, or has landed but nothing new is accepted.
+    /// landed yet, or has landed but nothing new is accepted. Screens each
+    /// candidate by its cheap [`SourceVersions::key`] first (#176: no clone
+    /// of the full merged object) and only [`SourceVersions::expand`]s the
+    /// ones `is_version_loaded` actually accepts — always in increasing
+    /// index order within a chain, so a `"composer"` source's own deferred
+    /// expansion stays the linear replay it's memoised for.
     fn process(&mut self, name: &str) -> Result<()> {
         let mut newly_matched = Vec::new();
-        if let Some(versions) = self.versions_by_name.get(name) {
+        if self.versions_by_name.contains_key(name) {
             // Only the constraints added since this name's last scan: an
             // already-rejected version was already tested against every
             // earlier one (union/OR semantics mean that verdict can't
@@ -1530,12 +1996,26 @@ impl ClosureWalk<'_> {
             // `land`'s later call would see nothing left to test at all.
             let tested = self.states[name].constraints_tested;
             let new_constraints = &self.states[name].constraints[tested..];
-            for pv in versions {
-                if self.states[name].scanned.contains(&pv.version_normalized) {
-                    continue;
-                }
-                if is_version_loaded(pv, name, new_constraints, self.accept)? {
-                    newly_matched.push(pv.clone());
+            let chains = self
+                .versions_by_name
+                .get_mut(name)
+                .expect("checked by contains_key above");
+            for chain in chains.iter_mut() {
+                for i in 0..chain.len() {
+                    let (version, version_normalized, branch_alias) = chain.key(i);
+                    if self.states[name].scanned.contains(version_normalized) {
+                        continue;
+                    }
+                    if is_version_loaded(
+                        version,
+                        version_normalized,
+                        branch_alias,
+                        name,
+                        new_constraints,
+                        self.accept,
+                    )? {
+                        newly_matched.push(chain.expand(i)?);
+                    }
                 }
             }
             let state = self.states.get_mut(name).expect("marked before process");
@@ -1569,7 +2049,7 @@ impl ClosureWalk<'_> {
     /// versions and [`ClosureWalk::process`] them immediately; otherwise
     /// it's a seed prefetch racing ahead of discovery, so [`stash`
     /// it][`ClosureWalk::stashed`] for `discover` to claim later.
-    fn land(&mut self, name: String, versions: Vec<PackageVersion>) -> Result<()> {
+    fn land(&mut self, name: String, versions: Vec<SourceVersions>) -> Result<()> {
         if self.states.contains_key(&name) {
             self.versions_by_name.insert(name.clone(), versions);
             self.process(&name)
@@ -1580,24 +2060,30 @@ impl ClosureWalk<'_> {
     }
 }
 
-/// `ComposerRepository::isVersionAcceptable`: `pv` is loaded if either its
-/// `version_normalized` or its branch alias (`branch_alias_target`) is both
-/// stability-acceptable for `name` (`accept`) and matches at least one of
-/// `constraints` — the same version can pass on its alias even when its own
-/// (`dev-*`) stability wouldn't, which is why a plain `is_acceptable` check
-/// on `pv.version_normalized` alone isn't enough.
+/// `ComposerRepository::isVersionAcceptable`: a version is loaded if either
+/// its `version_normalized` or its branch alias (`branch_alias_target_of`)
+/// is both stability-acceptable for `name` (`accept`) and matches at least
+/// one of `constraints` — the same version can pass on its alias even when
+/// its own (`dev-*`) stability wouldn't, which is why a plain
+/// `is_acceptable` check on `version_normalized` alone isn't enough. Takes
+/// `version`/`version_normalized`/`branch_alias` rather than a whole
+/// [`PackageVersion`] (#176): the one thing this screen needs before a
+/// version is worth the cost of actually expanding it
+/// ([`SourceVersions::key`]'s cheap read).
 fn is_version_loaded(
-    pv: &PackageVersion,
+    version: &str,
+    version_normalized: &str,
+    branch_alias: Option<&Value>,
     name: &str,
     constraints: &[Arc<Constraint>],
     accept: &dyn Fn(&str, &str) -> bool,
 ) -> Result<bool> {
-    let mut candidates = vec![pv.version_normalized.clone()];
-    candidates.extend(branch_alias_target(pv));
+    let mut candidates = vec![version_normalized.to_string()];
+    candidates.extend(branch_alias_target_of(version, branch_alias));
     for candidate in candidates {
         // Both candidates are already in `semver::normalize`'s canonical
         // form (`version_normalized` straight from the provider file, or
-        // `branch_alias_target`'s own `normalize_branch` output): wrap
+        // `branch_alias_target_of`'s own `normalize_branch` output): wrap
         // rather than re-run the regex pipeline on a value that would only
         // parse back to itself (#120).
         let normalized = semver::from_normalized(candidate)?;
@@ -1679,27 +2165,28 @@ fn parse_inline_versions(name: &str, inline: &Value) -> Result<Vec<PackageVersio
 /// `data` is a freshly deserialized `Value` from [`get_cached_json`]/
 /// [`get_hash_verified_json`] with no other reference to it anywhere
 /// (every call re-reads and re-parses; #120), so every version entry it
-/// holds is moved into a [`PackageVersion`] via
-/// [`PackageVersion::from_owned_value`] rather than cloned out of a
+/// holds is moved into a [`SourceVersions`] rather than cloned out of a
 /// borrowed `data`.
 ///
 /// The one seam every source's lazy/v1 branch funnels through
-/// (`ComposerSource::fetch_lazy`, `ComposerSource::load_versions`'s
-/// `Provider::Providers` arm) to turn a provider file into
-/// `Vec<PackageVersion>`: `expand_minified` plus one
-/// `PackageVersion::from_owned_value` per entry is real CPU work — a big
-/// provider file (laravel/framework.json's ~1000 versions) runs it
-/// inline on the single-threaded fetch loop, blocking every other
-/// in-flight request behind it. `spawn_blocking` moves it to the runtime's
-/// blocking pool so the loop keeps polling while it runs.
-async fn parse_provider_versions(data: Value, name: &str) -> Result<Vec<PackageVersion>> {
+/// (`ComposerSource::fetch_lazy`, `ComposerSource::load_versions_deferred`'s
+/// `Provider::Providers` arm) to turn a provider file into a
+/// [`SourceVersions`]: a v1, keyed-by-version-label file (`Value::Object`)
+/// stands each entry alone already, so it's converted and wrapped `Ready`
+/// straight away, same cost as before (#176 never touches this shape); a
+/// list (`Value::Array`, minified or not) becomes a [`DeltaChain`] instead —
+/// [`DeltaChain::from_deltas`]'s own key-extraction pass is real CPU work on
+/// a big provider file (laravel/framework.json's ~1000 versions), so this
+/// whole function still runs on the blocking pool (`spawn_blocking`) rather
+/// than inline on the single-threaded fetch loop.
+async fn parse_provider_versions(data: Value, name: &str) -> Result<Vec<SourceVersions>> {
     let name = name.to_string();
     tokio::task::spawn_blocking(move || parse_provider_versions_sync(data, &name))
         .await
         .context("provider parse task panicked")?
 }
 
-fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<PackageVersion>> {
+fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<SourceVersions>> {
     let Some(entry) = data
         .get_mut("packages")
         .and_then(Value::as_object_mut)
@@ -1712,7 +2199,8 @@ fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<Packa
     // inline `packages[name]` entry (`ComposerRepository.php`'s foreach over
     // `$packages['packages']` iterates a PHP array either way, so this split
     // is only needed because JSON objects and arrays aren't interchangeable
-    // in Rust).
+    // in Rust). Never the #176 bottleneck (no minified chain to defer), so
+    // converted eagerly and wrapped `Ready`.
     if let Value::Object(versions) = entry {
         let convert_started = Instant::now();
         let result: Result<Vec<PackageVersion>> = versions
@@ -1720,32 +2208,18 @@ fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<Packa
             .map(PackageVersion::from_owned_value)
             .collect();
         STAGE_CONVERT_NS.fetch_add(elapsed_ns(convert_started.elapsed()), Ordering::Relaxed);
-        if let Ok(versions) = &result {
-            VERSIONS_PRODUCED.fetch_add(versions.len(), Ordering::Relaxed);
-        }
-        return result;
+        let versions = result?;
+        VERSIONS_PRODUCED.fetch_add(versions.len(), Ordering::Relaxed);
+        return Ok(vec![SourceVersions::Ready(versions)]);
     }
     let Value::Array(list) = entry else {
         bail!("{name}: provider entry is not a list");
     };
     let minified = data.get("minified").and_then(Value::as_str) == Some("composer/2.0");
     let expand_started = Instant::now();
-    let expanded = if minified {
-        expand_minified(list)
-    } else {
-        list
-    };
+    let chain = DeltaChain::from_deltas(list, minified)?;
     STAGE_EXPAND_NS.fetch_add(elapsed_ns(expand_started.elapsed()), Ordering::Relaxed);
-    let convert_started = Instant::now();
-    let result: Result<Vec<PackageVersion>> = expanded
-        .into_iter()
-        .map(PackageVersion::from_owned_value)
-        .collect();
-    STAGE_CONVERT_NS.fetch_add(elapsed_ns(convert_started.elapsed()), Ordering::Relaxed);
-    if let Ok(versions) = &result {
-        VERSIONS_PRODUCED.fetch_add(versions.len(), Ordering::Relaxed);
-    }
-    result
+    Ok(vec![SourceVersions::Deferred(chain)])
 }
 
 /// The other big-body CPU still on the fetch loop after `parse_provider_versions`:
@@ -1918,6 +2392,180 @@ mod tests {
         // "__unset" removes a key the first entry had.
         assert!(expanded[1].get("default-branch").is_none());
         assert_eq!(expanded[0]["default-branch"], v(Value::Bool(true)));
+    }
+
+    /// #176: a version [`ClosureWalk::process`] never accepts (so
+    /// [`DeltaChain::expand`] is never called for it) still has to take part
+    /// in the merge chain for whichever later version *is* accepted --
+    /// skipping the clone must not skip the `"__unset"` it carries.
+    #[test]
+    fn delta_chain_applies_skipped_middle_unset_to_later_accepted_version() {
+        let deltas = vec![
+            serde_json::json!({"name": "acme/skip-mid", "version": "1.0.0", "version_normalized": "1.0.0.0", "foo": "bar"}),
+            serde_json::json!({"version": "1.1.0", "version_normalized": "1.1.0.0", "foo": "__unset"}),
+            serde_json::json!({"version": "1.2.0", "version_normalized": "1.2.0.0"}),
+        ];
+        let mut chain = DeltaChain::from_deltas(deltas, true).unwrap();
+        // Index 1 (the one carrying the "__unset") is never expanded on its
+        // own -- only index 2, the one that actually gets accepted.
+        let accepted = chain.expand(2).unwrap();
+        assert!(accepted.raw.get("foo").is_none());
+    }
+
+    /// #176: [`ClosureWalk::process`] rescans a name from its start on every
+    /// widen, so a later, narrower constraint set can accept an *earlier*
+    /// index after a later one was already expanded -- [`DeltaChain::expand`]'s
+    /// own restart-from-0 fallback must still land on the same value full
+    /// expansion would.
+    #[test]
+    fn delta_chain_out_of_order_acceptance_matches_full_expansion() {
+        let deltas = vec![
+            serde_json::json!({"name": "acme/out-of-order", "version": "1.0.0", "version_normalized": "1.0.0.0", "require": {"php": ">=7.0"}}),
+            serde_json::json!({"version": "1.1.0", "version_normalized": "1.1.0.0", "require": {"php": ">=7.2"}}),
+            serde_json::json!({"version": "1.2.0", "version_normalized": "1.2.0.0", "require": "__unset"}),
+            serde_json::json!({"version": "1.3.0", "version_normalized": "1.3.0.0", "extra": {"foo": "bar"}}),
+        ];
+        let reference = expand_minified(deltas.clone());
+        let mut chain = DeltaChain::from_deltas(deltas, true).unwrap();
+        for &i in &[2, 0, 3, 1, 3, 0] {
+            let expanded = chain.expand(i).unwrap();
+            assert_eq!(expanded.raw, reference[i], "index {i}");
+        }
+    }
+
+    /// A dev branch whose `extra` (and its `branch-alias`) is unchanged
+    /// from the version before it carries no `extra` key of its own at all
+    /// -- `MetadataMinifier` omits it the same way it omits any other
+    /// unchanged field, not just via a literal `"__unset"`. `is_version_loaded`
+    /// must still accept it through the inherited alias.
+    #[test]
+    fn delta_chain_accepts_a_dev_branch_through_an_inherited_branch_alias() {
+        let deltas = vec![
+            serde_json::json!({
+                "name": "acme/alias-inherit",
+                "version": "dev-main",
+                "version_normalized": "dev-main",
+                "extra": {"branch-alias": {"dev-main": "2.x-dev", "dev-develop": "3.x-dev"}}
+            }),
+            // No "extra" at all: identical to the delta above, so
+            // `MetadataMinifier` never restates it.
+            serde_json::json!({"version": "dev-develop", "version_normalized": "dev-develop"}),
+        ];
+        let chain = DeltaChain::from_deltas(deltas, true).unwrap();
+        let key = chain.key(1);
+        let constraint = Arc::new(semver::parse_constraint("^3.0").unwrap());
+        assert!(
+            is_version_loaded(
+                &key.version,
+                &key.version_normalized,
+                key.branch_alias.as_ref(),
+                "acme/alias-inherit",
+                std::slice::from_ref(&constraint),
+                &|_, _| true,
+            )
+            .unwrap(),
+            "dev-develop should be accepted through its inherited branch-alias"
+        );
+    }
+
+    /// The other half of the fix: an explicit `"extra": "__unset"` clears
+    /// the running `extra` the same way it clears any other field, so a
+    /// later dev branch that used to share it loses the alias too.
+    #[test]
+    fn delta_chain_unset_extra_clears_an_inherited_branch_alias() {
+        let deltas = vec![
+            serde_json::json!({
+                "name": "acme/alias-cleared",
+                "version": "dev-main",
+                "version_normalized": "dev-main",
+                "extra": {"branch-alias": {"dev-main": "2.x-dev", "dev-develop": "3.x-dev"}}
+            }),
+            serde_json::json!({
+                "version": "dev-develop",
+                "version_normalized": "dev-develop",
+                "extra": "__unset"
+            }),
+        ];
+        let chain = DeltaChain::from_deltas(deltas, true).unwrap();
+        let key = chain.key(1);
+        assert!(key.branch_alias.is_none());
+        let constraint = Arc::new(semver::parse_constraint("^3.0").unwrap());
+        assert!(
+            !is_version_loaded(
+                &key.version,
+                &key.version_normalized,
+                key.branch_alias.as_ref(),
+                "acme/alias-cleared",
+                std::slice::from_ref(&constraint),
+                &|_, _| true,
+            )
+            .unwrap(),
+            "dev-develop must not be accepted once its alias was unset"
+        );
+    }
+
+    /// #176's own byte-identity requirement, checked against every recorded
+    /// Packagist p2 file rather than a hand-written fixture: replaying each
+    /// index through [`DeltaChain::expand`] (in increasing order, the shape
+    /// `ClosureWalk::process` actually drives) must equal
+    /// [`expand_minified`]'s output for every version of every name.
+    #[test]
+    fn delta_chain_expand_matches_expand_minified_on_recorded_fixtures() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/packagist/repo.packagist.org/p2");
+        let mut files = Vec::new();
+        collect_json_files(&root, &mut files);
+        assert!(
+            !files.is_empty(),
+            "no recorded p2 fixtures found under {root:?}"
+        );
+        let mut checked = 0;
+        for path in files {
+            let bytes = fs_err::read(&path).unwrap();
+            let data: Value = serde_json::from_slice(&bytes).unwrap();
+            let Some(packages) = data.get("packages").and_then(Value::as_object) else {
+                continue;
+            };
+            let minified = data.get("minified").and_then(Value::as_str) == Some("composer/2.0");
+            for (name, versions) in packages {
+                let Some(list) = versions.as_array() else {
+                    continue;
+                };
+                if list.is_empty() {
+                    continue;
+                }
+                let reference = if minified {
+                    expand_minified(list.clone())
+                } else {
+                    list.clone()
+                };
+                let mut chain = DeltaChain::from_deltas(list.clone(), minified).unwrap();
+                assert_eq!(chain.len(), reference.len(), "{path:?} {name}: entry count");
+                for (i, expected) in reference.iter().enumerate() {
+                    let expanded = chain.expand(i).unwrap();
+                    assert_eq!(&expanded.raw, expected, "{path:?} {name} index {i}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 1000,
+            "expected thousands of versions checked, got {checked}"
+        );
+    }
+
+    fn collect_json_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_json_files(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "json") {
+                out.push(path);
+            }
+        }
     }
 
     #[test]
