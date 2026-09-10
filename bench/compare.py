@@ -55,7 +55,12 @@ DENOMINATOR_SCENARIO = {
 
 
 def means_from_hyperfine(paths, tool):
-    """Return {scenario: mean_seconds} for `tool`'s commands across the given hyperfine JSON files."""
+    """Return {scenario: median_seconds} for `tool`'s commands across the given hyperfine JSON files.
+
+    The median, not the mean: with five runs on a shared runner one stalled
+    run (307 ms among 40 ms neighbours on fccebef) doubles the mean and
+    fails the gate while the code got faster.
+    """
     means = {}
     for path in paths:
         with open(path) as f:
@@ -64,7 +69,7 @@ def means_from_hyperfine(paths, tool):
             parts = result["command"].split()
             if len(parts) != 2 or parts[0] != tool or parts[1] not in SCENARIOS:
                 continue
-            means[parts[1]] = result["mean"]
+            means[parts[1]] = result["median"]
     return means
 
 
