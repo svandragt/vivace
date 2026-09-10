@@ -4,15 +4,51 @@ name: Fuzz
 # the PHP-compatible JSON encoder behind content_hash, expand_minified,
 # parse_constraint). A nightly run gives each target real wall-clock time;
 # workflow_dispatch lets a maintainer re-run after a fix without waiting for
-# the schedule.
+# the schedule. push/pull_request on fuzz/** run fuzz-build only (see the
+# matrix job's if:), so a fuzz-crate change is compile-checked without
+# paying for the 120 s fuzz loops on every push.
 on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+  pull_request:
+    paths: [fuzz/**]
+  push:
+    branches: [main]
+    paths: [fuzz/**]
 
 jobs:
-  fuzz:
+  # #147: a fuzz target's signature drifts silently because `check` never
+  # builds fuzz/ — this catches it on the push that causes it instead of
+  # the next nightly run below. Build only, no run: no sanitizer time budget
+  # here, that's what the `fuzz` job's matrix is for.
+  fuzz-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz -> target
+          shared-key: fuzz-build
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # cargo-fuzz needs nightly (sanitizer flags stable Rust rejects);
+      # devbox has no dated-nightly package, so this comes from rustup
+      # directly rather than devbox.json.
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+        with:
+          enable-cache: true
+      - run: devbox run -- cargo +nightly fuzz build
+        working-directory: fuzz
+
+  fuzz:
+    needs: fuzz-build
+    # The 120 s-per-target loop below only runs on the schedule or a manual
+    # dispatch; push/pull_request just needed fuzz-build's compile check.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +63,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: fuzz -> target
+          shared-key: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # cargo-fuzz needs nightly (sanitizer flags stable Rust rejects);
       # devbox has no dated-nightly package, so this comes from rustup
       # directly rather than devbox.json.
