@@ -9,6 +9,7 @@
 //! index in [`Pool::packages`], added immediately after it (mirroring the
 //! insertion order above), rather than wrapping a nested object.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -119,13 +120,34 @@ impl Package {
 /// advisory/filter-list pool filters, neither in scope for this stage.
 pub struct Pool {
     packages: Vec<Package>,
+    /// Every name a package can be looked up under (its own name, plus
+    /// every `provide`/`replace` target) -> the ids of packages that could
+    /// match it, in insertion order. `bench/results/profile.md` §8: on
+    /// bench/laravel's 647-package post-optimizer pool, `what_provides`'s
+    /// old full scan-and-filter (below) was 94% of rule generation's own
+    /// time (7,396 calls, 60 ms of 65 ms) — the candidate set for a given
+    /// name is almost always a small fraction of the pool, so building this
+    /// index once (`O(pool size)`) and scanning only its candidates per
+    /// call is the same result for far less work.
+    by_name: HashMap<String, Vec<i32>>,
 }
 
 impl Pool {
     /// `packages` in insertion order; ids are 1-based positions
     /// (`Pool::setPackages`), so `id = index + 1`.
     pub fn new(packages: Vec<Package>) -> Self {
-        Pool { packages }
+        let mut by_name: HashMap<String, Vec<i32>> = HashMap::new();
+        for (index, package) in packages.iter().enumerate() {
+            let id = id_of(index);
+            by_name.entry(package.name.clone()).or_default().push(id);
+            for link in package.provides.iter().chain(package.replaces.iter()) {
+                let ids = by_name.entry(link.target.clone()).or_default();
+                if ids.last() != Some(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        Pool { packages, by_name }
     }
 
     pub fn packages(&self) -> &[Package] {
@@ -159,18 +181,21 @@ impl Pool {
         self.package_by_id(literal.abs())
     }
 
-    /// `Pool::whatProvides`, without the `providerCache` memoisation: this
-    /// stage's pools are small (a handful of packages), so the cache would
-    /// spend more on hashing constraint text than it saves. Add it if a
-    /// large pool's solve time shows otherwise.
+    /// `Pool::whatProvides`, without the `providerCache` memoisation
+    /// (Composer's own cache is keyed on `(name, constraint)` and would
+    /// still redo the constraint match on a miss): `by_name` already
+    /// narrows the scan to the packages that can possibly match `name`, so
+    /// caching by constraint on top would only save re-checking a handful
+    /// of candidates against a constraint this call already has in hand.
     pub fn what_provides(&self, name: &str, constraint: Option<&Constraint>) -> Vec<i32> {
-        let mut matches = Vec::new();
-        for (index, package) in self.packages.iter().enumerate() {
-            if package_matches(package, name, constraint) {
-                matches.push(id_of(index));
-            }
-        }
-        matches
+        let Some(candidates) = self.by_name.get(name) else {
+            return Vec::new();
+        };
+        candidates
+            .iter()
+            .copied()
+            .filter(|&id| package_matches(self.package_by_id(id), name, constraint))
+            .collect()
     }
 }
 

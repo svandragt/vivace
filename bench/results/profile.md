@@ -726,3 +726,139 @@ here (64% of the split) and fixing it helps every run, cold or warm, not
 just a cache hit — a real lever this task didn't attempt (design change,
 flagged per §2.6/§2.7's precedent), and one worth ranking above the cache
 format question #176 opened with.
+
+## 8. Solve phase: pool build, optimiser, two CDCL solves (#181)
+
+Same machine/session as §6/§7, `bench/laravel` copied to scratch with its own
+`XDG_CACHE_HOME`, warmed once online then measured `viv update --no-install
+--offline`, release build, `RUST_LOG=vivace=debug`. Load average at
+measurement time: 1.1–1.8 (idle) for the profiling runs, 4.37/2.91/2.77 for
+the final hyperfine pair below — another measurement may have started
+concurrently; the ratio between the two builds is the number that matters,
+not either absolute mean. `perf`/`cargo flamegraph`: still blocked, same
+`perf_event_paranoid=4`/no `CAP_PERFMON` as §5/§6.3, re-checked for this task
+(`devbox run -- perf record ... sleep 0.2` fails the same way). `valgrind`/
+`heaptrack`: not installed, no host fallback. Sub-stage split instead, via
+this file's own `-v`/`RUST_LOG=vivace=debug` spans (already fine-grained at
+`solver::solve`/`pool_builder::build`'s stage boundaries) plus temporary
+`Instant`/`AtomicU64` probes inside `pool::what_provides` and
+`rule_set_generator`'s `added_by_name` scan, removed after use (not part of
+this diff):
+
+### 8.1 Where the ~94 ms baseline (issue's own figure) actually goes now
+
+Median of 5 runs, before this task's change (#176/#177 already landed):
+
+| Stage | Median |
+|---|---|
+| platform detect (`php` subprocess) | 2 ms |
+| pool build / convert to `Package` | 8 ms |
+| advisory filter (`--offline`, bails fast) | 0 ms |
+| pool optimiser (`pruned the pool before rule generation`) | 24 ms |
+| 1st solve: rule generation | 65 ms |
+| 1st solve: propagate/backjump/sat | 0 ms |
+| 2nd solve (dev-split, pool already 186 packages) | 0 ms |
+| dev-split wrapper (clone/partition) | 1 ms |
+| **Solve-phase total** | **~100 ms** |
+
+Matches the issue's own 94 ms baseline (pool build 9, optimiser 21, two
+solves 62) within measurement noise — #176/#177 (parse/teardown) didn't move
+this phase, as expected; nothing here reads the closure JSON.
+
+### 8.2 Dev-split second solve (issue step 2): already landed, not new work
+
+`solver::resolve` (`src/solver/mod.rs`) already skips the second solve
+outright when `require-dev` is empty (`require_dev_empty` check, `git log`
+shows this landed before this task started, same lineage as #159's dev-split
+work) — nothing to change. What this task added: proof it stays
+byte-identical. Laravel (non-empty `require-dev`): `diff`'d against a
+worktree built from `1934ad5`, identical. `tests/fixtures/monolog`
+(`require-dev`: `psr/container`) and `tests/fixtures/legacy`
+(`require-dev`: `phpunit/phpunit`, which pulls a dev-only transitive closure
+— `sebastian/*`, `phpunit/php-code-coverage`, etc.) are both covered by the
+existing hermetic test suite (`update_reproduces_the_monolog_lock`,
+`update_reproduces_the_legacy_lock`, `tests/update.rs`) — both pass
+unmodified. `tests/fixtures/require-satis` has no `composer.lock` to compare
+against, so it's out of scope per this task's own instruction.
+
+### 8.3 Pool optimiser (issue step 3): measured with a temporary bypass flag, kept as-is
+
+Temporary `VIVACE_SKIP_OPTIMIZER_181` env check around
+`pool_optimizer::optimize` in `pool_builder.rs` (reverted, not part of this
+diff), single run each:
+
+| Fixture | With optimiser | Without | Lock |
+|---|---|---|---|
+| laravel | pool 647/rules 7,707, rule-gen 29 ms, total 211 ms | pool 3,175/rules 34,973, rule-gen 379 ms, total 561 ms | **identical** |
+| monolog | rule-gen 0 ms, total 9 ms | rule-gen 0 ms, total 10 ms | **identical** |
+
+The optimiser still pays for itself decisively on laravel (211 ms vs 561 ms)
+and costs nothing measurable on monolog — consistent with §2.6/§2.7's
+findings, reconfirmed after §8.4's fix below. No change: keeping it wired in
+as `pool_builder::build` already does.
+
+### 8.4 Rule generation and watch lists (issue step 4): kept `Pool::what_provides` index, skipped the `added_by_name` one
+
+**`Pool::what_provides`, the actual hotspot:** a temporary probe (call count
++ cumulative `Instant`) showed 7,396 calls / 60.1 ms of the 1st solve's
+65 ms rule-generation total (94%) went into `what_provides`'s full linear
+scan over the pool (647 packages) per call — exactly the ceiling
+`pool.rs`'s own doc comment named ("Add it if a large pool's solve time
+shows otherwise"). **Kept**: `Pool` now builds a `name -> candidate ids`
+index once in `Pool::new` (own name plus every `provide`/`replace` target,
+insertion order preserved so `what_provides`'s result order — and therefore
+every rule's literal order and the SAT tie-breaks downstream — is
+unchanged), and `what_provides` scans only that name's candidates instead of
+the whole pool. Rule generation dropped from 65 ms to ~29 ms (1st solve,
+laravel); rule/pool counts unchanged (7,707 rules / 647 packages both before
+and after); locks identical (§8.5).
+
+**`rule_set_generator`'s `added_by_name` linear scan** (`add_rules_for_package`'s
+per-name `Vec::iter_mut().find`, same shape as `what_provides`'s old scan):
+measured at 1.8 ms of the post-fix 30 ms rule-generation total (6%) —
+real, but an order of magnitude below `what_provides`, and fixing it without
+breaking rule-emission order (the module's own doc: `added_by_name`'s
+insertion order feeds rule order, which feeds SAT tie-breaks) needs an
+order-preserving map (an extra parallel index, or a new `indexmap`
+dependency) for a ~2 ms return. **Not attempted** — ladder says stop; flagged
+here per this task's "report it, don't start a fourth optimisation"
+instruction. No counting-allocator harness was built for this (task step 4's
+"fine" option): the two `Instant` probes above already located the dominant
+cost without one, and the remaining 29 ms has no single line item anywhere
+near `what_provides`'s old 94% share — it's diffuse (`RuleSet::add`'s
+per-rule dedup-key clone, `VecDeque`/`Vec` growth), not a shape a pre-sizing
+one-liner or arena would meaningfully cut.
+
+### 8.5 Lock identity and before/after
+
+`diff` against a worktree built from `1934ad5` (pre-this-task): laravel and
+monolog offline locks byte-identical, with the optimiser on or off (§8.3),
+before and after the `what_provides` index (§8.4). Full hermetic suite
+(`VIVACE_TEST_NETWORK=1 cargo nextest run`): 713 passed, 6 skipped, including
+both dev-split fixtures (§8.2).
+
+`hyperfine --warmup 2 --runs 20`, laravel, `--offline`, `1934ad5` build vs
+this session's build (the `what_provides` index only — the dev-split skip
+and optimiser were already present in both):
+
+| Build | Mean | σ |
+|---|---|---|
+| `1934ad5` (pre-#181) | 265.0 ms | 5.1 ms |
+| this build | 229.6 ms | 3.7 ms |
+
+**1.15× faster** (35 ms off the wall-clock mean), consistent with the ~35 ms
+rule-generation drop §8.4 measured directly.
+
+**Answering the issue's done-when:** the solve phase itself (platform
+detect + pool build + optimiser + both solves + dev-split wrapper) now runs
+~64 ms median (2 + 8 + 0 + 24 + 29 + 0 + 1), down from the ~100 ms this
+session's own §8.1 measured and the issue's original 94 ms figure, but still
+above the 50 ms target. Why it can't go further without a fifth
+optimisation: the optimiser's 24 ms is not slack (§8.3 — removing it costs
+350 ms more), pool build/platform-detect's 10 ms is fixed per-run setup
+(§6.2's `php` subprocess spawn, unrelated to pool size), and rule
+generation's remaining 29 ms no longer has a single dominant line item
+(§8.4) — every further cut from here is a smaller, more diffuse win than
+this task's own `what_provides` fix, which is exactly the shape this
+section's methodology (measure, only change what the measurement justifies)
+is supposed to stop at.
