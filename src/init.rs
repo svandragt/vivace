@@ -133,6 +133,7 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
                     &project_dir,
                     cache_dir,
                     offline,
+                    std::time::Duration::ZERO,
                 )?,
             };
             links.insert(package_name.clone(), Value::String(constraint));
@@ -183,6 +184,7 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
             false,
             args.no_install,
             false,
+            std::time::Duration::ZERO,
         )?;
         out(&format!("Wrote {}", composer_json_path.display()));
     }

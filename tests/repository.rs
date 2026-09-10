@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use vivace::fetch::Conditional;
@@ -362,6 +363,111 @@ async fn a_304_response_keeps_the_cached_body() {
     let first_versions: Vec<&str> = first.iter().map(|v| v.version.as_str()).collect();
     let second_versions: Vec<&str> = second.iter().map(|v| v.version.as_str()).collect();
     assert_eq!(first_versions, second_versions);
+}
+
+/// #191: `metadata_ttl` is opt-in (`0`, the default, always revalidates,
+/// same as [`a_304_response_keeps_the_cached_body`] above), but a positive
+/// window against an already-warm cache skips the conditional GET
+/// altogether -- a back-to-back `viv update` inside the window makes no
+/// provider-file requests at all, and still returns the same versions.
+#[tokio::test]
+async fn ttl_window_serves_provider_metadata_without_a_request() {
+    let cache = tempfile::tempdir().unwrap();
+    let root = json!({});
+
+    // First process: populates the disk cache.
+    let transport1 = FixtureTransport::new();
+    let repo =
+        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport1, Duration::ZERO)
+            .await
+            .unwrap();
+    let first = repo
+        .load_package("monolog/monolog", DevAcceptance::NonDevOnly)
+        .await
+        .unwrap();
+    assert!(!first.is_empty());
+
+    // Second process, `metadata_ttl` still zero: the provider file is
+    // revalidated regardless, exactly as it always has been.
+    let transport2 = FixtureTransport::new();
+    let repo2 =
+        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport2, Duration::ZERO)
+            .await
+            .unwrap();
+    repo2
+        .load_package("monolog/monolog", DevAcceptance::NonDevOnly)
+        .await
+        .unwrap();
+    assert!(
+        transport2.call_count() > 0,
+        "ttl=0 must still revalidate, same as today"
+    );
+
+    // Third process, a one-hour window: the same provider file is served
+    // straight from disk, no request issued at all.
+    let transport3 = FixtureTransport::new();
+    let repo3 = Repository::from_composer_json_with_ttl(
+        &root,
+        cache.path(),
+        &transport3,
+        Duration::from_secs(3600),
+    )
+    .await
+    .unwrap();
+    let third = repo3
+        .load_package("monolog/monolog", DevAcceptance::NonDevOnly)
+        .await
+        .unwrap();
+    assert_eq!(
+        transport3.call_count(),
+        0,
+        "a ttl window should skip even the conditional GET"
+    );
+
+    let first_versions: Vec<&str> = first.iter().map(|v| v.version.as_str()).collect();
+    let third_versions: Vec<&str> = third.iter().map(|v| v.version.as_str()).collect();
+    assert_eq!(first_versions, third_versions);
+}
+
+/// #191: a 304 confirms the cached provider file is still current, so its
+/// mtime must move forward too -- otherwise a `metadata_ttl` window would
+/// keep counting from whenever the file was last fully downloaded, and a
+/// short ttl could never actually skip a request after the first
+/// revalidation.
+#[tokio::test]
+async fn a_304_response_refreshes_the_cached_provider_files_mtime() {
+    let cache = tempfile::tempdir().unwrap();
+
+    let transport1 = FixtureTransport::new();
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport1)
+        .await
+        .unwrap();
+    repo.load_package("monolog/monolog", DevAcceptance::NonDevOnly)
+        .await
+        .unwrap();
+
+    let cache_path = cache
+        .path()
+        .join("repo")
+        .join("repo.packagist.org")
+        .join("provider-monolog$monolog.json");
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    filetime::set_file_mtime(&cache_path, filetime::FileTime::from_system_time(old)).unwrap();
+
+    let transport2 = FixtureTransport::new();
+    let repo2 = Repository::load("https://repo.packagist.org", cache.path(), &transport2)
+        .await
+        .unwrap();
+    repo2
+        .load_package("monolog/monolog", DevAcceptance::NonDevOnly)
+        .await
+        .unwrap();
+
+    let new_mtime = fs_err::metadata(&cache_path).unwrap().modified().unwrap();
+    assert!(
+        new_mtime > old,
+        "a 304 should bump the cached file's mtime forward"
+    );
 }
 
 #[tokio::test]

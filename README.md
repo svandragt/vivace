@@ -133,6 +133,16 @@ proxies, `installed.*`); the cosmetic differences are listed in
 | No-op | 45.0× (23.0 to 104.4) | 22.8× (2.8 to 111.7) |
 | Update-warm | 1.6× (1.1 to 3.9) | n/a |
 
+A warm update still revalidates every package's metadata with the registry,
+one conditional request each, even when nothing changed. `--metadata-ttl
+<seconds>` on `update`, `add` and `rm` (or `VIV_METADATA_TTL`; the flag wins)
+skips that revalidation for a package whose cached metadata is younger than
+the window, so a second update run shortly after the first makes no metadata
+requests at all. It's off by default (`0`, always revalidate, matching
+Composer), so turn it on only where a slightly stale registry view for a few
+minutes is an acceptable trade for the extra speed. `--offline` always wins
+over a configured window.
+
 ## Everyday commands
 
 ```sh

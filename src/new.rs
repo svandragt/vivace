@@ -209,6 +209,7 @@ fn run_from_package(
                 no_install: args.no_install,
                 no_blocking: false,
                 no_security_blocking: false,
+                metadata_ttl: None,
             },
             Some(&cache_dir),
             offline,

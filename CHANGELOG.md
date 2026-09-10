@@ -5,6 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+- `--metadata-ttl <seconds>` on `update`, `add` and `rm`, or `VIV_METADATA_TTL`: skip revalidating cached package metadata younger than the window, so a second update shortly after the first makes no metadata requests. Off by default ([#191](https://github.com/svandragt/vivace/issues/191))
+
 ### Performance
 - `viv update` serves each repository's `packages.json` from the cache for ten minutes without a request, as Composer does, loads several repositories concurrently, and reads the lock while the repositories load; the setup step before the metadata closure drops from 117 ms to 5 ms ([#190](https://github.com/svandragt/vivace/issues/190))
 - `viv update` asks for security advisories while the metadata closure is still loading, instead of after it; Laravel's warm update drops from 0.75 s to 0.65 s ([#189](https://github.com/svandragt/vivace/issues/189))

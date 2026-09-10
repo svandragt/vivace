@@ -87,6 +87,12 @@ pub struct RequireArgs {
     /// Deprecated alias for `--no-blocking`.
     #[arg(long = "no-security-blocking", hide = true)]
     pub no_security_blocking: bool,
+    /// Seconds a cached `/p2/` provider file may be served without
+    /// revalidating it (#191). `0` (the default) always revalidates,
+    /// matching today's behaviour. Also settable via `VIV_METADATA_TTL`
+    /// (this flag wins); `--offline` always wins over either.
+    #[arg(long)]
+    pub metadata_ttl: Option<u64>,
 }
 
 /// `viv rm` flags.
@@ -134,6 +140,12 @@ pub struct RemoveArgs {
     /// Deprecated alias for `--no-blocking`.
     #[arg(long = "no-security-blocking", hide = true)]
     pub no_security_blocking: bool,
+    /// Seconds a cached `/p2/` provider file may be served without
+    /// revalidating it (#191). `0` (the default) always revalidates,
+    /// matching today's behaviour. Also settable via `VIV_METADATA_TTL`
+    /// (this flag wins); `--offline` always wins over either.
+    #[arg(long)]
+    pub metadata_ttl: Option<u64>,
 }
 
 pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -155,12 +167,13 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
         requested.push((name.to_ascii_lowercase(), constraint.map(str::to_string)));
     }
 
+    let metadata_ttl = crate::update::metadata_ttl(args.metadata_ttl, offline);
     let mut allow_list = Vec::with_capacity(requested.len());
     for (name, constraint) in &requested {
         let constraint = if let Some(c) = constraint {
             c.clone()
         } else {
-            synthesize_constraint(name, &root, &project_dir, cache_dir, offline)?
+            synthesize_constraint(name, &root, &project_dir, cache_dir, offline, metadata_ttl)?
         };
         add_link(&mut root, link_type, name, &constraint)?;
         // `RequireCommand::updateFileCleanly` always removes the same
@@ -198,6 +211,7 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
         args.no_plugins,
         args.no_install,
         args.no_blocking || args.no_security_blocking,
+        metadata_ttl,
     )
 }
 
@@ -251,6 +265,7 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
         args.no_plugins,
         args.no_install,
         args.no_blocking || args.no_security_blocking,
+        crate::update::metadata_ttl(args.metadata_ttl, offline),
     )
 }
 
@@ -276,6 +291,7 @@ pub(crate) fn partial_update(
     no_plugins: bool,
     no_install: bool,
     no_blocking: bool,
+    metadata_ttl: std::time::Duration,
 ) -> Result<()> {
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
@@ -307,7 +323,12 @@ pub(crate) fn partial_update(
     // `https://repo.packagist.org`, and pass `offline` through so a cache
     // miss errors cleanly instead of silently reaching the network.
     let fetcher = crate::update::build_fetcher(project_dir, &root, offline)?;
-    let repo = runtime.block_on(crate::update::build_repository(&root, &cache_dir, &fetcher))?;
+    let repo = runtime.block_on(crate::update::build_repository(
+        &root,
+        &cache_dir,
+        &fetcher,
+        metadata_ttl,
+    ))?;
     let (audit_config, no_blocking) = audit_config_and_no_blocking(&root, no_blocking)?;
     // #182: same per-repository advertised endpoints `update::solve` uses.
     let advisory_endpoints = repo.security_advisory_urls();
@@ -445,6 +466,7 @@ pub(crate) fn synthesize_constraint(
     project_dir: &Path,
     cache_dir: Option<&Path>,
     offline: bool,
+    metadata_ttl: std::time::Duration,
 ) -> Result<String> {
     let cache_dir = match cache_dir {
         Some(dir) => dir.to_path_buf(),
@@ -457,7 +479,12 @@ pub(crate) fn synthesize_constraint(
     // `--offline`, the same fetcher/repository construction `partial_update`
     // uses since #158, instead of always hitting `https://repo.packagist.org`.
     let fetcher = crate::update::build_fetcher(project_dir, root, offline)?;
-    let repo = runtime.block_on(crate::update::build_repository(root, &cache_dir, &fetcher))?;
+    let repo = runtime.block_on(crate::update::build_repository(
+        root,
+        &cache_dir,
+        &fetcher,
+        metadata_ttl,
+    ))?;
     let preferred_stability = preferred_stability(root);
     runtime
         .block_on(version_selector::find_recommended_constraint(
@@ -749,6 +776,7 @@ mod tests {
             no_install: true,
             no_blocking: false,
             no_security_blocking: false,
+            metadata_ttl: None,
         };
         let err = run_require(&args, None, true).unwrap_err();
         assert!(err.to_string().contains("composer.json"), "{err:#}");

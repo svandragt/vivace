@@ -114,6 +114,14 @@ pub struct UpdateArgs {
     /// Deprecated alias for `--no-blocking`.
     #[arg(long = "no-security-blocking", hide = true)]
     pub no_security_blocking: bool,
+    /// Seconds a cached `/p2/` provider file may be served without
+    /// revalidating it (#191): within the window, a back-to-back `update`
+    /// makes no metadata requests at all. `0` (the default) always
+    /// revalidates, matching today's behaviour. Also settable via
+    /// `VIV_METADATA_TTL` (this flag wins); `--offline` always wins over
+    /// either.
+    #[arg(long)]
+    pub metadata_ttl: Option<u64>,
 }
 
 /// `Platform::getBoolEnv('COMPOSER_NO_SECURITY_BLOCKING')`: non-empty and not
@@ -123,6 +131,25 @@ pub struct UpdateArgs {
 pub(crate) fn no_security_blocking_env() -> bool {
     std::env::var("COMPOSER_NO_SECURITY_BLOCKING")
         .is_ok_and(|value| !value.is_empty() && value != "0")
+}
+
+/// #191's `--metadata-ttl`/`VIV_METADATA_TTL` resolved the same
+/// flag-wins-over-env way `no_security_blocking_env` layers under its own
+/// flag: `flag` (already `None` unless the caller passed `--metadata-ttl`)
+/// wins, then the env var, then `0` (always revalidate, today's behaviour).
+/// `--offline` always wins over either -- it already means "never ask
+/// again", stronger than any window.
+pub(crate) fn metadata_ttl(flag: Option<u64>, offline: bool) -> std::time::Duration {
+    if offline {
+        return std::time::Duration::ZERO;
+    }
+    let secs = flag.unwrap_or_else(|| {
+        std::env::var("VIV_METADATA_TTL")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    });
+    std::time::Duration::from_secs(secs)
 }
 
 /// `AdvisoryFilter`'s config/flag half, read the same way `bin_dir` reads
@@ -282,8 +309,15 @@ pub(crate) async fn build_repository<'f>(
     root: &Value,
     cache_dir: &Path,
     fetcher: &'f Fetcher,
+    metadata_ttl: std::time::Duration,
 ) -> Result<Repository<HttpTransport<'f>>> {
-    Repository::from_composer_json(root, cache_dir, HttpTransport { fetcher }).await
+    Repository::from_composer_json_with_ttl(
+        root,
+        cache_dir,
+        HttpTransport { fetcher },
+        metadata_ttl,
+    )
+    .await
 }
 
 async fn solve(
@@ -313,12 +347,13 @@ async fn solve(
     };
     let fetcher = build_fetcher(project_dir, root, offline)?;
     let full_update = args.packages.is_empty();
+    let metadata_ttl = metadata_ttl(args.metadata_ttl, offline);
     // #190: `build_repository`'s `packages.json` fetch is the one network
     // round trip in this span; the audit config parse and (for a full
     // update) the lock read need neither its result nor the network, so run
     // them alongside it instead of serially after.
     let (repo, audit_result, locked_result) = tokio::join!(
-        build_repository(root, &cache_dir, &fetcher),
+        build_repository(root, &cache_dir, &fetcher, metadata_ttl),
         async { audit_config_and_no_blocking(root, args.no_blocking || args.no_security_blocking) },
         async {
             // #90: a warm update's closure is almost always the previous

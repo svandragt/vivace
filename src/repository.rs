@@ -818,6 +818,17 @@ struct ComposerSource {
     /// treated as not providing advisories here.
     security_advisories_api_url: Option<String>,
     cache_dir: PathBuf,
+    /// #191's opt-in freshness window for a `/p2/` provider file: `0`
+    /// (`Duration::ZERO`, the default) means always revalidate, matching
+    /// today's behaviour; otherwise [`ComposerSource::fetch_lazy`] passes it
+    /// as `get_cached_json`'s `max_age`, the same short-circuit
+    /// `packages.json` already gets via `PACKAGES_JSON_MAX_AGE`.
+    metadata_ttl: Duration,
+    /// Count of provider files [`ComposerSource::fetch_lazy`] served inside
+    /// `metadata_ttl` without a request (`CacheOutcome::Fresh`), so
+    /// [`Repository::load_closure_seeded`] can tell the caller a stale
+    /// result is possible.
+    metadata_fresh: AtomicUsize,
 }
 
 impl ComposerSource {
@@ -829,6 +840,7 @@ impl ComposerSource {
         url: &str,
         cache_root: &Path,
         transport: &T,
+        metadata_ttl: Duration,
     ) -> Result<ComposerSource> {
         let configured =
             Url::parse(url).with_context(|| format!("invalid repository URL {url:?}"))?;
@@ -954,6 +966,8 @@ impl ComposerSource {
             available,
             security_advisories_api_url,
             cache_dir,
+            metadata_ttl,
+            metadata_fresh: AtomicUsize::new(0),
         })
     }
 
@@ -1084,8 +1098,18 @@ impl ComposerSource {
         let cache_path = self
             .cache_dir
             .join(format!("provider-{}.json", file_name.replace('/', "$")));
-        requests.fetch_add(1, Ordering::Relaxed);
-        match get_cached_json(transport, &url, &cache_path, None).await?.0 {
+        // #191: `0` (the default) keeps every fetch conditional, same as
+        // before this existed; a configured window skips even that GET while
+        // the cached file's own mtime is within it, same short-circuit
+        // `packages.json` already gets.
+        let max_age = (!self.metadata_ttl.is_zero()).then_some(self.metadata_ttl);
+        let (cached, outcome) = get_cached_json(transport, &url, &cache_path, max_age).await?;
+        if matches!(outcome, CacheOutcome::Fresh) {
+            self.metadata_fresh.fetch_add(1, Ordering::Relaxed);
+        } else {
+            requests.fetch_add(1, Ordering::Relaxed);
+        }
+        match cached {
             CachedJson::NotFound => Ok(Vec::new()),
             CachedJson::Data(data) => parse_provider_versions(data, name).await,
         }
@@ -1113,11 +1137,14 @@ impl Source {
         entry: RepoEntry,
         cache_root: &Path,
         transport: &T,
+        // #191: only a `"composer"` source's `/p2/` provider files honour
+        // this; a VCS source has no such fetch to skip.
+        metadata_ttl: Duration,
     ) -> Result<Source> {
         let kind = match &entry.kind {
-            RepoKind::Composer => {
-                SourceKind::Composer(ComposerSource::load(&entry.url, cache_root, transport).await?)
-            }
+            RepoKind::Composer => SourceKind::Composer(
+                ComposerSource::load(&entry.url, cache_root, transport, metadata_ttl).await?,
+            ),
             RepoKind::Vcs { repo_type } => SourceKind::Vcs(
                 vcs::VcsSource::load(&entry.url, repo_type, cache_root, transport).await?,
             ),
@@ -1155,6 +1182,15 @@ impl Source {
         match &self.kind {
             SourceKind::Composer(source) => source.security_advisories_api_url.as_deref(),
             SourceKind::Vcs(_) => None,
+        }
+    }
+
+    /// Provider files this source served straight from its `metadata_ttl`
+    /// window (#191), no request at all: a VCS source never has one.
+    fn metadata_fresh_count(&self) -> usize {
+        match &self.kind {
+            SourceKind::Composer(source) => source.metadata_fresh.load(Ordering::Relaxed),
+            SourceKind::Vcs(_) => 0,
         }
     }
 
@@ -1519,6 +1555,11 @@ pub struct Repository<T: Transport> {
     /// queries, or a test exercising the same `Repository` twice) still
     /// costs zero transport calls, same as `loaded` always has.
     loaded_lazy: Mutex<HashMap<String, Vec<SourceVersions>>>,
+    /// #191's `--metadata-ttl`/`VIV_METADATA_TTL`, kept only to name it in
+    /// [`Repository::load_closure_seeded`]'s own stderr notice;
+    /// `Duration::ZERO` (every constructor but
+    /// [`Repository::from_composer_json_with_ttl`]) means always revalidate.
+    metadata_ttl: Duration,
     /// Count of `transport.get` calls issued for a provider file (#55):
     /// every one of these is a real request, warm cache or not, for a
     /// `Last-Modified`-revalidated fetch — a warm metadata cache still
@@ -1540,12 +1581,13 @@ impl<T: Transport> Repository<T> {
             filters: RepoFilters::default(),
             kind: RepoKind::Composer,
         };
-        let source = Source::load(entry, cache_root, &transport).await?;
+        let source = Source::load(entry, cache_root, &transport, Duration::ZERO).await?;
         Ok(Repository {
             transport,
             sources: vec![source],
             loaded: Mutex::new(HashMap::new()),
             loaded_lazy: Mutex::new(HashMap::new()),
+            metadata_ttl: Duration::ZERO,
             requests: AtomicUsize::new(0),
         })
     }
@@ -1559,6 +1601,20 @@ impl<T: Transport> Repository<T> {
         cache_root: &Path,
         transport: T,
     ) -> Result<Repository<T>> {
+        Self::from_composer_json_with_ttl(root, cache_root, transport, Duration::ZERO).await
+    }
+
+    /// [`Repository::from_composer_json`], but every `"composer"`-type
+    /// source's `/p2/` provider-file fetch may skip its conditional GET
+    /// entirely within `metadata_ttl` of the cached file's own mtime (#191).
+    /// `Duration::ZERO` (`from_composer_json`'s own default) matches today's
+    /// behaviour of always revalidating.
+    pub async fn from_composer_json_with_ttl(
+        root: &Value,
+        cache_root: &Path,
+        transport: T,
+        metadata_ttl: Duration,
+    ) -> Result<Repository<T>> {
         let entries = parse_repositories(root)?;
         // #190: each source's `packages.json` fetch is otherwise a serial
         // round trip ahead of anything else, so run them concurrently.
@@ -1568,7 +1624,7 @@ impl<T: Transport> Repository<T> {
         let sources = futures::future::try_join_all(
             entries
                 .into_iter()
-                .map(|entry| Source::load(entry, cache_root, &transport)),
+                .map(|entry| Source::load(entry, cache_root, &transport, metadata_ttl)),
         )
         .await?;
         Ok(Repository {
@@ -1576,6 +1632,7 @@ impl<T: Transport> Repository<T> {
             sources,
             loaded: Mutex::new(HashMap::new()),
             loaded_lazy: Mutex::new(HashMap::new()),
+            metadata_ttl,
             requests: AtomicUsize::new(0),
         })
     }
@@ -1585,6 +1642,12 @@ impl<T: Transport> Repository<T> {
     /// map without a request.
     pub fn request_count(&self) -> usize {
         self.requests.load(Ordering::Relaxed)
+    }
+
+    /// Provider files served from `metadata_ttl`'s freshness window so far
+    /// (#191), summed across every `"composer"`-type source.
+    fn metadata_fresh_count(&self) -> usize {
+        self.sources.iter().map(Source::metadata_fresh_count).sum()
     }
 
     /// Every source's own `security-advisories.api-url` that advertised one
@@ -1784,6 +1847,7 @@ impl<T: Transport> Repository<T> {
     ) -> Result<HashMap<String, Vec<PackageVersion>>> {
         let closure_started = Instant::now();
         let requests_before = self.request_count();
+        let metadata_fresh_before = self.metadata_fresh_count();
         let files_before = CACHE_FILES_PARSED.load(Ordering::Relaxed);
         let bytes_before = CACHE_BYTES_PARSED.load(Ordering::Relaxed);
         let read_ns_before = STAGE_READ_NS.load(Ordering::Relaxed);
@@ -1878,15 +1942,27 @@ impl<T: Transport> Repository<T> {
         // (#177): `result` still needs to be returned and dropped normally,
         // it's `states`/`versions_by_name`/`stashed`/`queue` that don't.
         let result = std::mem::take(&mut walk.result);
+        let metadata_fresh = self.metadata_fresh_count() - metadata_fresh_before;
         tracing::debug!(
             packages = result.len(),
             requests = self.request_count() - requests_before,
+            metadata_fresh,
             waves,
             files_parsed = CACHE_FILES_PARSED.load(Ordering::Relaxed) - files_before,
             bytes_parsed = CACHE_BYTES_PARSED.load(Ordering::Relaxed) - bytes_before,
             elapsed_ms = closure_started.elapsed().as_millis(),
             "loaded metadata closure"
         );
+        // #191: a stale result is otherwise silent -- only this closure
+        // itself knows how many files it served from `metadata_ttl`'s
+        // window rather than asking the server.
+        if metadata_fresh > 0 {
+            warn_out(&format!(
+                "Metadata for {metadata_fresh} packages served from the cache \
+                 (fresher than {}s); pass --metadata-ttl 0 to revalidate.",
+                self.metadata_ttl.as_secs()
+            ));
+        }
         tracing::debug!(
             read_ms = (STAGE_READ_NS.load(Ordering::Relaxed) - read_ns_before) / 1_000_000,
             json_parse_ms =
@@ -2379,6 +2455,13 @@ async fn read_cache_file(path: &Path) -> Result<Option<(Value, Option<String>)>>
     }
 }
 
+/// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr`
+/// lint (`update.rs`/`require.rs`'s own `warn_out` do the same).
+fn warn_out(message: &str) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr().lock(), "{message}");
+}
+
 fn write_cache_file(path: &Path, data: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs_err::create_dir_all(parent)?;
@@ -2427,10 +2510,13 @@ const PACKAGES_JSON_MAX_AGE: Duration = Duration::from_secs(600);
 /// transport's "network disabled" error.
 ///
 /// `max_age`, when given, skips even the conditional GET while the cache
-/// file's own mtime is within it (`PACKAGES_JSON_MAX_AGE`'s own doc); every
-/// other caller (the provider-file fetches) passes `None` and always
-/// revalidates, matching `loadRootServerFile`'s other callers that pass no
-/// `$rootMaxAge`.
+/// file's own mtime is within it (`PACKAGES_JSON_MAX_AGE`'s own doc); a
+/// provider-file fetch passes `Some` the same way, but only when #191's
+/// `metadata_ttl` is configured above zero (`ComposerSource::fetch_lazy`),
+/// otherwise `None` and it always revalidates, matching `loadRootServerFile`'s
+/// other callers that pass no `$rootMaxAge`. Either way, a 304 bumps the
+/// cached file's own mtime to now, so a configured window counts from the
+/// last confirmation, not the last full download.
 async fn get_cached_json<T: Transport>(
     transport: &T,
     url: &Url,
@@ -2450,10 +2536,22 @@ async fn get_cached_json<T: Transport>(
     let since = cached.as_ref().and_then(|(_, lm)| lm.as_deref());
     match transport.get(url, since).await? {
         Conditional::NotFound => Ok((CachedJson::NotFound, CacheOutcome::Fetched)),
-        Conditional::NotModified => Ok((
-            CachedJson::Data(cached.context("server sent 304 but nothing is cached")?.0),
-            CacheOutcome::NotModified,
-        )),
+        Conditional::NotModified => {
+            // #191: a 304 confirms the cached body is still current, so the
+            // freshness window (`max_age`, above) should count from *now*,
+            // not from whenever this file was last fully downloaded --
+            // otherwise a `metadata_ttl` shorter than the revalidation
+            // cadence could never actually skip a request. `filetime`
+            // (already a dependency, `store.rs`'s own `touch_pointer` uses
+            // it the same way) rather than a raw `File::set_modified`, since
+            // that needs an open handle this conditional-GET path never has
+            // a reason to take out otherwise.
+            let _ = filetime::set_file_mtime(cache_path, filetime::FileTime::now());
+            Ok((
+                CachedJson::Data(cached.context("server sent 304 but nothing is cached")?.0),
+                CacheOutcome::NotModified,
+            ))
+        }
         Conditional::Fresh {
             body,
             last_modified,

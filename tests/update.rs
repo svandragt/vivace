@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use common::{FixtureTransport, TestContext, fixtures_root};
 use serde_json::Value;
@@ -55,6 +56,38 @@ async fn update_lock(fixture: &Path) -> String {
 
     let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
     let root: Value = serde_json::from_slice(&composer_json).unwrap();
+
+    let result = solver::solve_update(&repo, &root, false, false)
+        .await
+        .unwrap();
+
+    let options = vivace::lock_writer::LockOptions {
+        minimum_stability: result.minimum_stability,
+        stability_flags: &result.stability_flags,
+        prefer_stable: result.prefer_stable,
+        prefer_lowest: result.prefer_lowest,
+        platform_reqs: &result.platform_reqs,
+        platform_dev_reqs: &result.platform_dev_reqs,
+        platform_overrides: &result.platform_overrides,
+        aliases: &result.aliases,
+    };
+    vivace::lock_writer::write(&result.non_dev, Some(&result.dev), &options, &composer_json)
+        .unwrap()
+}
+
+/// Same solve/write as `update_lock`, but against a caller-owned `cache` dir
+/// (so a second call can replay #191's own `metadata_ttl` window against an
+/// already-warm cache) and an explicit ttl instead of `update_lock`'s
+/// hard-coded `Duration::ZERO`.
+async fn update_lock_ttl(fixture: &Path, cache: &Path, metadata_ttl: Duration) -> String {
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
+    let root: Value = serde_json::from_slice(&composer_json).unwrap();
+    let repo = Repository::from_composer_json_with_ttl(&root, cache, &transport, metadata_ttl)
+        .await
+        .unwrap();
 
     let result = solver::solve_update(&repo, &root, false, false)
         .await
@@ -114,6 +147,19 @@ async fn update_reproduces_the_monolog_lock() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
     let got = update_lock(&fixture).await;
     assert_matches_expected(&got, &fixture.join("composer.lock"));
+}
+
+/// #191: a second `viv update` inside `--metadata-ttl`'s window must write
+/// the exact same lock a fully revalidated run would, byte for byte -- the
+/// short-circuit only skips asking the server something already known,
+/// never changes what's known.
+#[tokio::test]
+async fn ttl_run_lock_is_byte_identical_to_a_revalidated_run() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let cache = tempfile::tempdir().unwrap();
+    let revalidated = update_lock_ttl(&fixture, cache.path(), Duration::ZERO).await;
+    let ttl_run = update_lock_ttl(&fixture, cache.path(), Duration::from_secs(3600)).await;
+    assert_eq!(ttl_run, revalidated);
 }
 
 /// A fixture-served `packagist.org/api/security-advisories/` response,
