@@ -713,6 +713,28 @@ fn mkdir_755(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `mkdir_755`, but skips the create+chmod entirely once `path` (or an
+/// ancestor under `dest`) is already known to exist: `create_dir_all` makes
+/// the whole chain in one call, so a sibling file two directories down would
+/// otherwise re-walk and re-chmod every directory above it.
+fn mkdir_755_once(path: &Path, dest: &Path, created: &mut HashSet<PathBuf>) -> Result<()> {
+    if created.contains(path) {
+        return Ok(());
+    }
+    mkdir_755(path)?;
+    let mut ancestor = path;
+    loop {
+        if !created.insert(ancestor.to_path_buf()) || ancestor == dest {
+            break;
+        }
+        ancestor = match ancestor.parent() {
+            Some(parent) => parent,
+            None => break,
+        };
+    }
+    Ok(())
+}
+
 /// Whether a symlink at `link` (already bounded under `dest` by `sanitise`)
 /// pointing at `target` would resolve outside `dest`: an absolute target, or
 /// one whose `..`s (resolved lexically, no filesystem lookup) pop past the
@@ -1054,6 +1076,7 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
     let mut limits = ExtractLimits::new(package, archive_len);
     let mut archive = zip::ZipArchive::new(reader)?;
     let mut pending_symlinks = Vec::new();
+    let mut created_dirs = HashSet::new();
     for index in 0..archive.len() {
         limits.count_entry()?;
         let mut entry = archive.by_index(index)?;
@@ -1062,11 +1085,11 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
             .to_owned();
         let path = dest.join(sanitise(&name)?);
         if entry.is_dir() {
-            mkdir_755(&path)?;
+            mkdir_755_once(&path, dest, &mut created_dirs)?;
             continue;
         }
         if let Some(parent) = path.parent() {
-            mkdir_755(parent)?;
+            mkdir_755_once(parent, dest, &mut created_dirs)?;
         }
         if entry.is_symlink() {
             let mut target = Vec::new();
@@ -1078,13 +1101,26 @@ fn extract_zip<R: std::io::Read + std::io::Seek>(
             pending_symlinks.push((path, target));
             continue;
         }
-        // A repeated entry name would otherwise hit EACCES: the first pass
-        // already chmod'd the file read-only.
-        if path.is_file() {
-            fs_err::remove_file(&path)?;
-        }
         limits.files += 1;
-        let mut file = limits.counted(fs_err::File::create(&path)?);
+        // A repeated entry name would otherwise hit EACCES: the first pass
+        // already chmod'd the file read-only, so a plain create fails.
+        // Detect that with create_new instead of a stat-per-entry, and
+        // retry once after removing the stale file.
+        let opened = fs_err::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        let opened = match opened {
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                fs_err::remove_file(&path)?;
+                fs_err::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+            }
+            other => other,
+        };
+        let mut file = limits.counted(opened?);
         std::io::copy(&mut entry, &mut file)
             .with_context(|| format!("writing zip entry {name}"))?;
         let executable = entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0);
@@ -1428,6 +1464,45 @@ mod tests {
             fs_err::read_to_string(dest.path().join("A.php")).unwrap(),
             "second"
         );
+    }
+
+    #[test]
+    fn nested_dirs_and_a_duplicate_entry_extract_correctly() {
+        // Two files sharing a nested parent, so the same directory chain is
+        // walked twice within one archive (exercises the created-dirs
+        // dedup), plus a duplicate entry name across a second archive into
+        // the same dest, the same repeated-name path
+        // `duplicate_entry_name_uses_the_last_entry` above exercises (the
+        // `zip` writer refuses a repeated name within one archive).
+        // Documents current behaviour and must stay green after the
+        // create-once/create_new change in #193.
+        // A second top-level entry keeps strip_single_top_dir from hoisting.
+        let dest = tempfile::tempdir().unwrap();
+        let first = zip_of(&[
+            ("composer.json", b"{}", None),
+            ("vendor/pkg/src/A.php", b"a", None),
+            ("vendor/pkg/src/B.php", b"b", None),
+        ]);
+        extract_zip("acme/pkg", Cursor::new(&first), first.len() as u64, dest.path()).unwrap();
+        let second = zip_of(&[("vendor/pkg/src/A.php", b"a-again", Some(0o755))]);
+        extract_zip(
+            "acme/pkg",
+            Cursor::new(&second),
+            second.len() as u64,
+            dest.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs_err::read_to_string(dest.path().join("vendor/pkg/src/A.php")).unwrap(),
+            "a-again"
+        );
+        assert_eq!(mode_of(&dest.path().join("vendor/pkg/src/A.php")), 0o555);
+        assert_eq!(
+            fs_err::read_to_string(dest.path().join("vendor/pkg/src/B.php")).unwrap(),
+            "b"
+        );
+        assert_eq!(mode_of(&dest.path().join("vendor/pkg/src/B.php")), 0o444);
+        assert_eq!(mode_of(&dest.path().join("vendor/pkg/src")), 0o755);
     }
 
     #[test]
