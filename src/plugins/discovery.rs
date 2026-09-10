@@ -11,12 +11,11 @@
 //! to treat the discovery as an additional requirement, not just a file to
 //! write, and is out of scope.
 //!
-//! ponytail: the real plugin also appends the generated file to the root
-//! package's autoload `classmap` before the dump, so Composer's own
-//! autoloader can find `GeneratedDiscoveryStrategy` without a `require`.
-//! Wiring that into vivace's autoload generation is a `src/install.rs`
-//! change, not a `src/plugins` one — out of scope here; the file is written,
-//! but nothing yet points the generated autoloader at it.
+//! `preAutoloadDump` also appends the generated file to the root package's
+//! autoload `classmap` once any pin exists, so Composer's own autoloader can
+//! find `GeneratedDiscoveryStrategy` without a `require`; ported via
+//! [`Adapter::extra_classmap`], the same seam `drupal/core-composer-scaffold`
+//! uses for `DrupalInstalled.php`.
 
 use std::path::{Path, PathBuf};
 
@@ -43,6 +42,18 @@ impl Adapter for Discovery {
 
     fn pre_autoload_dump(&self, ctx: &Ctx<'_>, _packages: &[(&Package, PathBuf)]) -> Result<()> {
         apply(ctx.root, ctx.vendor_dir)
+    }
+
+    fn extra_classmap(&self, ctx: &Ctx<'_>, _packages: &[&Package]) -> Result<Vec<String>> {
+        if candidates(ctx.root)?.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![
+            ctx.vendor_dir
+                .join("composer/GeneratedDiscoveryStrategy.php")
+                .to_string_lossy()
+                .into_owned(),
+        ])
     }
 }
 
@@ -74,10 +85,11 @@ const INTERFACE_MAP: &[(&str, &[&str])] = &[
     ),
 ];
 
-pub(super) fn apply(root: &Root, vendor_dir: &Path) -> Result<()> {
-    let path = vendor_dir.join("composer/GeneratedDiscoveryStrategy.php");
+/// `switch` case lines for every pinned interface — shared by [`apply`] (to
+/// write the file) and [`Adapter::extra_classmap`] (to decide whether the
+/// file exists at all, without writing it a second time).
+fn candidates(root: &Root) -> Result<Vec<String>> {
     let pinned = root.extra.get("discovery").and_then(Value::as_object);
-
     let mut entries = Vec::new();
     if let Some(pinned) = pinned {
         for (abstraction, class) in pinned {
@@ -93,6 +105,12 @@ pub(super) fn apply(root: &Root, vendor_dir: &Path) -> Result<()> {
             }
         }
     }
+    Ok(entries)
+}
+
+pub(super) fn apply(root: &Root, vendor_dir: &Path) -> Result<()> {
+    let path = vendor_dir.join("composer/GeneratedDiscoveryStrategy.php");
+    let entries = candidates(root)?;
 
     // No pin resolves to a candidate: Composer deletes a stale file from a
     // previous run rather than leave an empty switch behind.
@@ -101,14 +119,14 @@ pub(super) fn apply(root: &Root, vendor_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let candidates = entries.join("            ");
+    let switch_body = entries.join("            ");
     let code = format!(
         "<?php\n\nnamespace Http\\Discovery\\Strategy;\n\n\
          class GeneratedDiscoveryStrategy implements DiscoveryStrategy\n{{\n\
          \x20\x20\x20\x20public static function getCandidates($type)\n\
          \x20\x20\x20\x20{{\n\
          \x20\x20\x20\x20\x20\x20\x20\x20switch ($type) {{\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{candidates}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20{switch_body}\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20default: return [];\n\
          \x20\x20\x20\x20\x20\x20\x20\x20}}\n\x20\x20\x20\x20}}\n}}\n"
     );
@@ -211,6 +229,42 @@ mod tests {
         assert!(got.contains(
             "case 'Psr\\\\Http\\\\Client\\\\ClientInterface': return [['class' => 'Acme\\\\Client']];"
         ));
+    }
+
+    #[test]
+    fn extra_classmap_is_empty_without_any_pin() {
+        let root = root(&json!({}));
+        let vendor_dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx {
+            root: &root,
+            project_dir: vendor_dir.path(),
+            vendor_dir: vendor_dir.path(),
+        };
+        assert!(Discovery.extra_classmap(&ctx, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn extra_classmap_points_at_the_generated_strategy_once_pinned() {
+        let root = root(&json!({
+            "discovery": {"psr/http-client-implementation": "Acme\\Client"}
+        }));
+        let vendor_dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx {
+            root: &root,
+            project_dir: vendor_dir.path(),
+            vendor_dir: vendor_dir.path(),
+        };
+        let classmap = Discovery.extra_classmap(&ctx, &[]).unwrap();
+        assert_eq!(
+            classmap,
+            vec![
+                vendor_dir
+                    .path()
+                    .join("composer/GeneratedDiscoveryStrategy.php")
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
     }
 
     /// #101's fixture, byte-diffed against real `php-http/discovery` 1.20.0's
