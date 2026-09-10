@@ -894,6 +894,111 @@ async fn unsatisfiable_root_require_matches_composers_message() {
     assert_eq!(format!("{solver_error}"), want);
 }
 
+/// #169: a root require directly on `php`, an impossible constraint, and
+/// `config.platform` pinning the assumed version deterministically (so this
+/// doesn't depend on the host's real `php`, unlike most tests in this file).
+/// `Rule::getPrettyString`'s `-> satisfiable by` used to fire here too, even
+/// though `php[8.3.0]` doesn't satisfy `>=99`; Composer's own wording for a
+/// platform package present at a non-matching version is `-> found
+/// php[8.3.0] but it does not match the constraint.`
+#[tokio::test]
+async fn unsatisfiable_php_constraint_reports_found_not_satisfiable() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let root: Value = serde_json::json!({
+        "name": "vivace/fixture-php-mismatch",
+        "require": { "php": ">=99" },
+        "config": { "platform": { "php": "8.3.0" } }
+    });
+
+    let Err(err) = solver::solve_update(&repo, &root, false, false).await else {
+        panic!("expected an unsatisfiable request to fail")
+    };
+    let solver_error = err
+        .downcast_ref::<vivace::solver::problem::SolverError>()
+        .expect("solve_update's error is a SolverError for an unsatisfiable request");
+
+    let message = format!("{solver_error}");
+    assert!(
+        message.contains(
+            "Root composer.json requires php >=99 -> found php[8.3.0] but it does \
+             not match the constraint."
+        ),
+        "message:\n{message}"
+    );
+}
+
+/// #169: warms `ctx.cache`'s on-disk repository cache from the recorded
+/// fixtures so a real `viv` subprocess can `update --offline` with no
+/// network, the same warm-then-spawn shape `offline_partial_update_context`
+/// uses, minus the partial-update seeding this test doesn't need.
+async fn offline_update_context(composer_json: &Value) -> TestContext {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs_err::write(
+        project.join("composer.json"),
+        serde_json::to_vec_pretty(composer_json).unwrap(),
+    )
+    .unwrap();
+
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", ctx.cache.path(), &transport)
+        .await
+        .unwrap();
+    // `Repository::load` alone only fetches root/provider listings; the
+    // per-package provider files this fixture's require actually touches
+    // only land in the on-disk cache once something asks for them, so run
+    // (and discard the result of) one in-process solve to warm them —
+    // `offline_partial_update_context`'s own comment explains the same
+    // warm-then-spawn shape.
+    let _ = solver::solve_update(&repo, composer_json, false, false).await;
+
+    ctx
+}
+
+/// #169: with no `php` on `PATH` and no `config.platform.php`, `viv update`
+/// used to silently assume `php 8.3.0` with no extensions and go straight to
+/// a resolver error that never says PHP wasn't found. `--no-install` since
+/// this fixture has no store entries to install from; `PATH` set to an
+/// empty temp dir (rather than unset, which could still resolve to the
+/// shell's builtin/hash lookup on some platforms) so no host `php` is found
+/// regardless of the environment running this test.
+#[tokio::test]
+async fn update_warns_once_when_no_php_binary_is_on_path() {
+    // The monolog fixture's own `composer.json` (`require` + `require-dev`,
+    // so this also exercises the dev-split second solve the `Once` guard is
+    // for): every package it touches is already fully recorded, unlike a
+    // real `phpunit/phpunit` range's much larger transitive dependency tree.
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let composer_json: Value =
+        serde_json::from_slice(&fs_err::read(fixture.join("composer.json")).unwrap()).unwrap();
+    let ctx = offline_update_context(&composer_json).await;
+    let empty_path = tempfile::tempdir().unwrap();
+
+    let assert = ctx
+        .viv()
+        .args(["update", "--no-install", "--offline"])
+        .env("PATH", empty_path.path())
+        .assert();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    let want = "Warning: no php binary found on PATH; assuming php 8.3.0 with no extensions. \
+                Set config.platform or install PHP.\n";
+    assert_eq!(
+        stderr.matches(want).count(),
+        1,
+        "want exactly one warning, stderr:\n{stderr}"
+    );
+}
+
 /// #23/#104: a single-file zip, in memory, for pre-populating the store
 /// without ever touching the network. Duplicated from
 /// `tests/install_e2e.rs`'s copy of the same name (private there, and small

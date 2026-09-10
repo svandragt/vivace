@@ -34,7 +34,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
@@ -1272,7 +1272,33 @@ pub(crate) fn cached_platform_packages(
         (Some(cache_dir), Some(php_path)) => cached_probe(cache_dir, &php_path).or_else(run_probe),
         _ => run_probe(),
     };
+    if probe.is_none() && !overrides.contains_key("php") {
+        warn_no_php_once();
+    }
     packages_from_probe(probe.as_ref(), overrides)
+}
+
+/// #169: `viv diagnose` calls [`platform_packages`] directly and wants this
+/// silent (it's the tool for finding out the platform is assumed); only
+/// [`cached_platform_packages`] (the `update`/`install` resolve path) warns.
+/// `Once` rather than a plain check: the dev-split solve
+/// (`pool_builder.rs`'s two `cached_platform_packages` calls) would
+/// otherwise print it twice for one `update`.
+static WARN_NO_PHP: Once = Once::new();
+
+fn warn_no_php_once() {
+    WARN_NO_PHP.call_once(|| {
+        warn_out(
+            "Warning: no php binary found on PATH; assuming php 8.3.0 with no extensions. \
+             Set config.platform or install PHP.",
+        );
+    });
+}
+
+/// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint
+/// (`install.rs`'s own `warn_out` does the same).
+fn warn_out(message: &str) {
+    let _ = writeln!(std::io::stderr().lock(), "{message}");
 }
 
 fn packages_from_probe(

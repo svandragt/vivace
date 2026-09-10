@@ -160,9 +160,8 @@ fn reason_line(pool: &Pool, reason: &Reason) -> String {
                 );
             }
             format!(
-                "Root composer.json requires {package_name} {pretty_constraint} -> satisfiable \
-                 by {}.",
-                package_list(pool, &packages)
+                "Root composer.json requires {package_name} {pretty_constraint} -> {}",
+                satisfiable_or_found_suffix(pool, package_name, pretty_constraint)
             )
         }
         Reason::Fixed { package_index } => {
@@ -209,9 +208,9 @@ fn reason_line(pool: &Pool, reason: &Reason) -> String {
                 )
             } else {
                 format!(
-                    "{} requires {target} {pretty_constraint} -> satisfiable by {}.",
+                    "{} requires {target} {pretty_constraint} -> {}",
                     source.pretty_string(),
-                    package_list(pool, &providers)
+                    satisfiable_or_found_suffix(pool, target, pretty_constraint)
                 )
             }
         }
@@ -237,6 +236,37 @@ fn reason_line(pool: &Pool, reason: &Reason) -> String {
 /// branch has its own prefix shape (a not-found-at-all package gets no
 /// constraint text at all in the message, unlike the other two), so this
 /// isn't a single shared template.
+/// `Rule::getPrettyString`'s `-> satisfiable by ...` tail, shared by
+/// `RootRequire` and `PackageRequires` (both look `target` up in the pool
+/// the same way once their own "nothing at all provides this" case has
+/// already returned). #169: naively calling `what_provides(target, None)`
+/// here — as both callers used to — ignores the constraint entirely, so a
+/// platform package present at a non-matching version (`php ^7.3` against
+/// an assumed `php[8.3.0]`) reported "satisfiable by" even though nothing
+/// satisfies the requirement. A real Composer rule's literals are already
+/// constraint-filtered by the time `getPrettyString` runs (`Rule2Literals`/
+/// `GenericRule` are built from matching providers only); this re-filters
+/// to match, and falls back to `Problem::getMissingPackageReason`'s
+/// platform-specific "found X but it does not match the constraint."
+/// wording when a platform package exists but nothing matches.
+fn satisfiable_or_found_suffix(pool: &Pool, target: &str, pretty_constraint: &str) -> String {
+    let providers = pool.what_provides(target, None);
+    let matching = pretty_constraint_as_constraint(pretty_constraint)
+        .map(|constraint| pool.what_provides(target, Some(&constraint)));
+    match matching {
+        Some(matching) if !matching.is_empty() => {
+            format!("satisfiable by {}.", package_list(pool, &matching))
+        }
+        Some(_) if crate::repository::is_platform_package(target) && !providers.is_empty() => {
+            format!(
+                "found {} but it does not match the constraint.",
+                package_list(pool, &providers)
+            )
+        }
+        _ => format!("satisfiable by {}.", package_list(pool, &providers)),
+    }
+}
+
 fn missing_package_reason(pool: &Pool, package_name: &str, pretty_constraint: &str) -> String {
     if crate::repository::is_platform_package(package_name) {
         return format!(
@@ -282,6 +312,17 @@ fn missing_package_suffix(pool: &Pool, package_name: &str) -> String {
         "found {} but it does not match the constraint.",
         package_list(pool, &any_version)
     )
+}
+
+/// Parses a rule's stored `pretty_constraint` text back into a
+/// [`semver::Constraint`] so [`Pool::what_provides`] can filter by it: reasons
+/// only keep the pretty string (see `Reason`'s own doc comment), not the
+/// `Constraint` object the solver built the rule from. `None` on a parse
+/// failure, which the caller treats as "can't tell, fall back to the
+/// unfiltered list" rather than a hard error — this only ever renders a
+/// diagnostic message.
+fn pretty_constraint_as_constraint(pretty_constraint: &str) -> Option<semver::Constraint> {
+    semver::parse_constraint(pretty_constraint).ok()
 }
 
 /// `Problem::getPackageList`, without the verbose/removed-version-group
