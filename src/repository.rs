@@ -195,12 +195,11 @@ impl PackageVersion {
             .and_then(Value::as_str)
             .filter(|v| *v != "9999999-dev")
             .map(str::to_string);
-        let version_normalized = match version_normalized {
-            Some(v) => v,
-            None => {
-                VERSION_NORMALIZE_CALLS.fetch_add(1, Ordering::Relaxed);
-                crate::version::normalize(&version)?
-            }
+        let version_normalized = if let Some(v) = version_normalized {
+            v
+        } else {
+            VERSION_NORMALIZE_CALLS.fetch_add(1, Ordering::Relaxed);
+            crate::version::normalize(&version)?
         };
         let require = map_field(obj, "require");
         let require_dev = map_field(obj, "require-dev");
@@ -1720,10 +1719,7 @@ fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<Packa
             .into_values()
             .map(PackageVersion::from_owned_value)
             .collect();
-        STAGE_CONVERT_NS.fetch_add(
-            convert_started.elapsed().as_nanos() as u64,
-            Ordering::Relaxed,
-        );
+        STAGE_CONVERT_NS.fetch_add(elapsed_ns(convert_started.elapsed()), Ordering::Relaxed);
         if let Ok(versions) = &result {
             VERSIONS_PRODUCED.fetch_add(versions.len(), Ordering::Relaxed);
         }
@@ -1739,19 +1735,13 @@ fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<Packa
     } else {
         list
     };
-    STAGE_EXPAND_NS.fetch_add(
-        expand_started.elapsed().as_nanos() as u64,
-        Ordering::Relaxed,
-    );
+    STAGE_EXPAND_NS.fetch_add(elapsed_ns(expand_started.elapsed()), Ordering::Relaxed);
     let convert_started = Instant::now();
     let result: Result<Vec<PackageVersion>> = expanded
         .into_iter()
         .map(PackageVersion::from_owned_value)
         .collect();
-    STAGE_CONVERT_NS.fetch_add(
-        convert_started.elapsed().as_nanos() as u64,
-        Ordering::Relaxed,
-    );
+    STAGE_CONVERT_NS.fetch_add(elapsed_ns(convert_started.elapsed()), Ordering::Relaxed);
     if let Ok(versions) = &result {
         VERSIONS_PRODUCED.fetch_add(versions.len(), Ordering::Relaxed);
     }
@@ -1778,13 +1768,13 @@ async fn parse_json_blocking(bytes: Vec<u8>, context: String) -> Result<Value> {
     if bytes.len() <= INLINE_PARSE_MAX_BYTES {
         let started = Instant::now();
         let parsed = serde_json::from_slice(&bytes);
-        STAGE_JSON_PARSE_NS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        STAGE_JSON_PARSE_NS.fetch_add(elapsed_ns(started.elapsed()), Ordering::Relaxed);
         return parsed.with_context(|| context);
     }
     tokio::task::spawn_blocking(move || {
         let started = Instant::now();
         let parsed = serde_json::from_slice::<Value>(&bytes);
-        STAGE_JSON_PARSE_NS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        STAGE_JSON_PARSE_NS.fetch_add(elapsed_ns(started.elapsed()), Ordering::Relaxed);
         parsed
     })
     .await
@@ -1810,6 +1800,15 @@ static STAGE_CONVERT_NS: AtomicU64 = AtomicU64::new(0);
 static VERSIONS_PRODUCED: AtomicUsize = AtomicUsize::new(0);
 static VERSION_NORMALIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
 
+/// `Instant::elapsed().as_nanos()` is a `u128`; every `STAGE_*_NS`
+/// accumulator is a `u64` (the width `AtomicU64::fetch_add` needs).
+/// Saturating instead of truncating: an `Instant::elapsed()` would need to
+/// exceed ~584 years to overflow `u64` nanoseconds, so this is a debug
+/// timing metric never actually clipped in practice.
+fn elapsed_ns(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+}
+
 /// Reads a cache file written by [`write_cache_file`]: the raw provider
 /// JSON with a `last-modified` key merged in, mirroring Composer's own
 /// `Cache` format for this file (`ComposerRepository.php:1793-1797`) so the
@@ -1817,7 +1816,7 @@ static VERSION_NORMALIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
 async fn read_cache_file(path: &Path) -> Result<Option<(Value, Option<String>)>> {
     let read_started = Instant::now();
     let read = fs_err::read(path);
-    STAGE_READ_NS.fetch_add(read_started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    STAGE_READ_NS.fetch_add(elapsed_ns(read_started.elapsed()), Ordering::Relaxed);
     match read {
         Ok(bytes) => {
             CACHE_FILES_PARSED.fetch_add(1, Ordering::Relaxed);
