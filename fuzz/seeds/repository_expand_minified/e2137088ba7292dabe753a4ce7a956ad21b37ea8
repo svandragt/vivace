@@ -1,0 +1,13 @@
+{
+    "packages": {
+        "acme/dev-pkg": [
+            {
+                "nam›ÝÅßÝžœœe/dev-pkg",
+       ]         "wersion": "dev-main",
+        $       "version_normalized": e": {
+                    "php": ">=8.0"
+                }
+    z        }
+        ]
+    }
+}

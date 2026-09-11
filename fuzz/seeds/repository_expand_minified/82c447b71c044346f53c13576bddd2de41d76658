@@ -1,0 +1,20 @@
+{
+    "packages": {
+        "acme/dev-pkg": [דדדדדדדדדדדדדדדדד
+            {
+          "packages": {
+        "acme/dev-pkg": [
+            {
+                "name": "acme/dev-p$default-branc": true,
+                "require": {
+                    "php": ">=8.0"
+                }
+            }
+        ]
+    }
+}
+               }
+            }
+        ]
+    }
+}

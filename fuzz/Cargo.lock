@@ -2004,11 +2004,11 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "arbitrary",
- "futures",
  "libfuzzer-sys",
  "reqwest",
  "serde_json",
  "tempfile",
+ "tokio",
  "vivace",
 ]
 

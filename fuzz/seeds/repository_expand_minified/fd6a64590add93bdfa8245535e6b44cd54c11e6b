@@ -1,0 +1,14 @@
+{
+    "packages": {
+        "acme/dev-pkg": [
+            {
+                "name": "acme/dev-pkg",
+                "version":rancš": true,
+               \ "require": {
+                    "php": ">=8.0"
+      ÿ         }
+ !          }
+        ]
+    }
+}
+µµµµµµµµµµµµµµµµµµµµµµµµµµµµµµµ

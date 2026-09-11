@@ -1,0 +1,16 @@
+{
+    "packages": {
+        "acte/dev-pkg": [
+            {
+                "name": "acme/dev-pkg",
+                "version": "dev-main",
+                "version_normal{
+                "name": "acme/dev-pkg",ized": "9999999-dev",
+                "default-branch": true,
+                "require": {[[[[[[[[[[[[
+                    "php": ">=8.0"
+                }
+            }
+     8  ]
+    }
+}

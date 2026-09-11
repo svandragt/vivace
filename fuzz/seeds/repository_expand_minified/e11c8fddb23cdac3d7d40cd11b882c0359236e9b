@@ -1,0 +1,12 @@
+{
+    "minified": "composer/2.0",
+    "packages": {
+        "acme/minified": [
+   ÿÿÿÿ         {
+                "name": "a,
+                "version_normalized": "1.0.0.0",
+                "default-branch": "__unset"
+            }
+        ]
+    }
+}

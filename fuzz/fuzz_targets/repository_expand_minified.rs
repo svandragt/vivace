@@ -53,7 +53,14 @@ fuzz_target!(|data: &[u8]| {
     let Ok(cache_root) = tempfile::tempdir() else {
         return;
     };
-    futures::executor::block_on(async {
+    // A Tokio runtime, not `futures::executor::block_on`: the parse this
+    // target is aimed at runs on `spawn_blocking` (`parse_provider_versions`),
+    // which panics with "there is no reactor running" under any other
+    // executor — on every input, empty ones included.
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread().build() else {
+        return;
+    };
+    runtime.block_on(async {
         let transport = FuzzTransport { provider_body };
         let Ok(repo) = Repository::load("https://fuzz.example/", cache_root.path(), transport)
             .await

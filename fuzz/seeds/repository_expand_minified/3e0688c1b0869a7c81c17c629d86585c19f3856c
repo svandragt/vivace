@@ -1,0 +1,17 @@
+{
+    "minified": "composer/2.0",
+    "pac  {
+                "name": "acme/minified",
+                "version": "2.0.0",
+                "version_normalized": "2.0.0.0",
+      poser/2.0",
+    "packages": {
+        "acmö–íñnified": [
+            {
+           "require": {
+                    "              "version": "1.0.0",
+                "version_normalized         "require":           "default-branch": "__unset"
+            }
+        ]
+    }
+}

@@ -1,0 +1,18 @@
+{
+    "packages": {
+        "acme/dev-pkg": [
+            {
+                "name": "acme/dev-pk  "acme/dev-pkg": [
+            {
+d": "composer/2.0",
+    "packages": {
+  5ÖVÓ      "acmš-dev",
+                "default-brancš": true,
+               \ "require": {
+                    "php": ">=8.0"
+                }
+ !          }
+        ]
+    }
+}
+µµµµµµµµµµµµµµµµµµµµµµµµµµµµµµµ

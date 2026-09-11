@@ -1,0 +1,12 @@
+{
+    À"packages": {
+        "acme/dev-pkg": [
+             { 
+              "name": "acme/dev-p$default-brancš": true,
+                "require": {
+                    "php": ">=8.0"
+                }
+            }
+        ]
+    }
+}

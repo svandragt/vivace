@@ -1,0 +1,14 @@
+{
+    "mini          "require": {
+                    "php": ">=8.0"
+     ‡ﬂﬂﬂﬂﬂﬂﬁ   },
+‡     {
+                "name": "acme/minified",
+             ñ   "version": "1.0.0",
+                "version_normalized": "2.0.0.0",
+     ‚ﬂﬂﬂ    e qr  "uire": {
+      "default-branch": "__unset"
+            }
+        ]
+    }
+}

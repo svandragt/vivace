@@ -1,0 +1,16 @@
+{
+    "mееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееееinified": "composer/2.0",
+    "packages": {
+        "acme/minified": [
+            {
+                "name": "acme/minified",
+                "vџџџџџџџџ "2.0.0",
+                "version_normalized": "2.0.0.0",
+                "require": {
+        :         "1.0.0",
+                "version_normalized": "1.0.0.0",
+         м      "default-branch": "__unset"
+            }
+        ]
+    }
+}

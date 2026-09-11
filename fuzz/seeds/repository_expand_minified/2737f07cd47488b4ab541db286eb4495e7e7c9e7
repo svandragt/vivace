@@ -1,0 +1,13 @@
+{
+    "minified": "composer/2.0",
+    "packages": {
+       "version_normalized": "2.0.0.0",
+                "require": {
+                    "php": "ÂÂÇÑÏÝõÕ               },
+                "default-branch": tru      "version": "1.0.0",
+                "version_normalized": "1.0.0.0",
+                "default-branch": "__unset"
+            }
+        ]
+    }
+}

@@ -1,0 +1,15 @@
+{
+    "minified": "composer
+      ‘      {
+                          "require": {
+                    "php": ">=8.0"
+     ‡ﬂﬂﬂﬂﬂﬂﬁ   },
+‡     {
+                "name": $acme/minified",
+                "version": "2.0.0",
+           
+      "default-branch": "__unset"
+            }
+        ]
+    }
+}

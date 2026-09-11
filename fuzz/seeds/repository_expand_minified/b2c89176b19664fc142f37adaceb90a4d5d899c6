@@ -1,0 +1,18 @@
+{
+    "packages": {
+        "acme/dev-pkg": [
+            {
+                "name": "acme/dev-pkg",
+                "version": "dev-main",
+        $       "version_normalized": "9999999-dev",
+                "def            "php": "quire": {
+  }
+      ault-brancš": true,
+               \ "require": {
+                    "php": ">=8.0"
+                }
+ !          }
+        ]
+    }
+}
+µµµµµµµµµµµµµµµµµµµµµµµµµµµµµµµ

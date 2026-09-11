@@ -1,0 +1,14 @@
+{
+    "packages": {
+        "acme/dev-pkg": [ããããããããããããããããã
+            {
+                "name": "acme/dev-pkg",
+                "version": "d       {
+                "name": "acme/minified",
+                "version": "2.0.0",
+                "version_normalized": "2.0.0.0",
+                "require": {
+                    "            }
+        ]
+    }
+}

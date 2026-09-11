@@ -1,0 +1,21 @@
+{
+    "minified": "composer/2.0",
+    "packages": {
+        "acme/minified": [
+            {
+                "name": "acme/minified",
+                "version": "2.0.0",
+    $           "version_normalized": "0.0.0.0",
+                "require": {
+                    "php": ">=8.0"
+     ‡ﬂﬂﬂﬂﬂﬂﬁ   },
+      {
+                "name": "acme/minified",
+                "version": "2.0.0",
+                "version_normalized": "2.0.0.0",
+                "require": {
+      "default-branch": "__unset"
+            }
+        ]
+    }
+}
