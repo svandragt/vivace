@@ -45,7 +45,11 @@ jobs:
       - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2.87.11
         with:
           tool: cargo-fuzz
-      - run: cargo +nightly fuzz build
+      # `--target` is explicit because cargo-fuzz defaults to the triple it
+      # was itself built for, and the installed binary is musl-linked: left
+      # alone it builds the targets for musl, where the sanitizer refuses to
+      # link against a static libc.
+      - run: cargo +nightly fuzz build --target x86_64-unknown-linux-gnu
         working-directory: fuzz
 
   fuzz:
@@ -85,7 +89,8 @@ jobs:
       # appends `fuzz/corpus/<target>` itself and creates it, so the run
       # still has somewhere to grow a corpus.
       - run: |
-          cargo +nightly fuzz run ${{ matrix.target }} -- \
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu \
+            ${{ matrix.target }} -- \
             -max_total_time=120 \
             "seeds/${{ matrix.target }}"
         working-directory: fuzz
