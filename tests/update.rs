@@ -1192,6 +1192,43 @@ async fn update_warns_once_when_no_php_binary_is_on_path() {
     );
 }
 
+/// #185: `ClosureWalk::discover` accumulates a constraint *set* per name and
+/// re-scans `versions_by_name` — the full, unfiltered fetch — every time that
+/// set grows, so a version rejected under one requirer's constraint is still
+/// there for the next requirer to accept. Nothing filters a name's versions
+/// down to the first constraint seen for it, and this is the shape that
+/// proves why not.
+///
+/// `b/y` 1.1.0 is accepted first (newest), which discovers `a/x ^1.0` — the
+/// first constraint `a/x` ever sees. `b/y` 1.0.0 is accepted next and widens
+/// that set with `a/x ^2.0`. `c/z` then pins the solve to `b/y` 1.0.0, so the
+/// lock must land on `a/x` 2.0.0 — a version `^1.0` excludes. Filter at parse
+/// time (#176's deferred expansion is where that would be tempting) and
+/// `a/x` 2.0.0 never reaches the pool, leaving the solve unsatisfiable.
+#[tokio::test]
+async fn a_later_requirer_widening_a_name_reaches_versions_the_first_constraint_excluded() {
+    let composer_json = serde_json::json!({
+        "name": "root/root",
+        "require": {"b/y": "^1.0", "c/z": "^1.0"},
+    });
+    let ctx = offline_update_context(&composer_json).await;
+
+    ctx.viv()
+        .args(["update", "--no-install", "--offline"])
+        .assert()
+        .success();
+
+    let locked = common::locked_by_name(&ctx.project.path().join("composer.lock"));
+    for (name, version) in [("a/x", "2.0.0"), ("b/y", "1.0.0"), ("c/z", "1.0.0")] {
+        assert_eq!(
+            locked[name]["version"].as_str(),
+            Some(version),
+            "{name}: {:?}",
+            locked.get(name)
+        );
+    }
+}
+
 /// #23/#104: a single-file zip, in memory, for pre-populating the store
 /// without ever touching the network. Duplicated from
 /// `tests/install_e2e.rs`'s copy of the same name (private there, and small
