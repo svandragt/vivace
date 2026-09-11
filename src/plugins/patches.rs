@@ -44,6 +44,10 @@ impl Adapter for Patches {
         "2.0.0"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/composer-patches"
+    }
+
     fn state_fingerprint(&self, root: &Root, project_dir: &Path) -> Result<Option<String>> {
         fingerprint(root, project_dir).map(Some)
     }

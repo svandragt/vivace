@@ -35,29 +35,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Maps a plugin package name to its fixture directory under
-          # tests/fixtures/plugins/ (docs/plugin-strategy.md's own adapter
-          # list): symfony/runtime shares the drupal fixture
-          # (src/plugins/symfony_runtime.rs), and composer/installers plus
-          # the wordpress-core-installer pair have no fixture of their own
-          # there (theirs lives at tests/fixtures/wordpress instead).
-          fixture_dir() {
-            case "$1" in
-              dealerdirect/phpcodesniffer-composer-installer) echo "phpcs" ;;
-              phpstan/extension-installer) echo "phpstan" ;;
-              tbachert/spi) echo "spi" ;;
-              cweagans/composer-patches) echo "composer-patches" ;;
-              php-http/discovery) echo "discovery" ;;
-              yiisoft/yii2-composer) echo "yii2" ;;
-              craftcms/plugin-installer) echo "craft" ;;
-              ffraenz/private-composer-installer) echo "private-installer" ;;
-              codeception/c3) echo "c3" ;;
-              drupal/core-composer-scaffold) echo "drupal" ;;
-              symfony/runtime) echo "drupal" ;;
-              *) echo "" ;;
-            esac
-          }
-
           # Newest non-dev, non-prerelease version from a p2 metadata
           # response. Some packages mix "v"-prefixed and bare tags across
           # their history (php-http/discovery is one), which sorts wrongly
@@ -83,16 +60,13 @@ jobs:
 
           table="| Plugin | Ported version | Latest | Fixture |\n|---|---|---|---|\n"
           behind=0
-          while IFS=$'\t' read -r name version; do
+          while IFS=$'\t' read -r name version fixture; do
             [ -n "$name" ] || continue
             json=$(curl -sf "https://repo.packagist.org/p2/${name}.json") \
               || { echo "::warning::${name}: Packagist metadata fetch failed, skipping" >&2; continue; }
             latest=$(printf '%s' "$json" | latest_stable_version "$name")
             if is_behind "$version" "$latest"; then
               behind=1
-              dir=$(fixture_dir "$name")
-              fixture="tests/fixtures/plugins/${dir}"
-              [ -n "$dir" ] && [ -d "$fixture" ] || fixture="none"
               table="${table}| ${name} | ${version} | ${latest} | ${fixture} |\n"
             fi
           done < <(devbox run -- ./target/release/viv diagnose --adapters)

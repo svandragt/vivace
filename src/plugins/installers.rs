@@ -21,6 +21,10 @@ impl Adapter for Installers {
         "v2.3.0"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/wordpress"
+    }
+
     fn install_dir(&self, root: &Root, package: &Package) -> Option<String> {
         installer_path(root, package)
     }

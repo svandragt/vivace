@@ -32,6 +32,10 @@ impl Adapter for Phpstan {
         "1.4.3"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/phpstan"
+    }
+
     fn post_install(&self, ctx: &Ctx<'_>, bin_packages: &[(&Package, PathBuf)]) -> Result<()> {
         apply(ctx.root, bin_packages)
     }

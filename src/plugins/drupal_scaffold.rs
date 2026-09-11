@@ -62,6 +62,10 @@ impl Adapter for DrupalScaffold {
         "11.4.6"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/drupal"
+    }
+
     fn post_link(
         &self,
         ctx: &Ctx<'_>,

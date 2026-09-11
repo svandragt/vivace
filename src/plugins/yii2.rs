@@ -50,6 +50,10 @@ impl Adapter for Yii2 {
         "2.0.11"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/yii2"
+    }
+
     fn pre_autoload_dump(&self, ctx: &Ctx<'_>, packages: &[(&Package, PathBuf)]) -> Result<()> {
         apply(ctx.vendor_dir, packages)
     }

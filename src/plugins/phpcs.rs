@@ -39,6 +39,10 @@ impl Adapter for Phpcs {
         "v1.2.1"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/phpcs"
+    }
+
     fn post_install(&self, ctx: &Ctx<'_>, bin_packages: &[(&Package, PathBuf)]) -> Result<()> {
         apply(ctx.root, bin_packages)
     }

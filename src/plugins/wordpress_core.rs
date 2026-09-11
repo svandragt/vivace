@@ -25,6 +25,10 @@ impl Adapter for WordpressCore {
         "2.0.0"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/wordpress"
+    }
+
     fn install_dir(&self, root: &Root, package: &Package) -> Option<String> {
         (package.r#type == "wordpress-core").then(|| wordpress_install_dir(root, package))
     }

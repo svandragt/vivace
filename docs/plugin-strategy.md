@@ -114,7 +114,8 @@ pinned version, still proves the exact output it emits, whatever the plugin
 has shipped since. `.github/workflows/adapter-drift.yml` checks every
 adapter's pin against Packagist weekly and files or updates one issue naming
 whichever have fallen behind, so a lag is a tracked, visible decision rather
-than a silent one.
+than a silent one. Each row also names the fixture to re-check. That comes
+from the adapter itself (`Adapter::fixture`), so it can't drift from the code.
 
 The fallback stays refusal, never a guess: if re-porting an adapter to a
 newer version would ever mean guessing at behaviour a fixture doesn't cover,

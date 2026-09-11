@@ -53,6 +53,10 @@ impl Adapter for C3 {
         "2.9.0"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/c3"
+    }
+
     fn pre_autoload_dump(&self, ctx: &Ctx<'_>, packages: &[(&Package, PathBuf)]) -> Result<()> {
         apply(ctx.project_dir, packages)
     }

@@ -69,8 +69,9 @@ fn project_with_a_plugin_reports_its_decision_and_never_leaks_a_token() {
 }
 
 /// The hidden `--adapters` flag (#127 part 3's drift workflow,
-/// `.github/workflows/adapter-drift.yml`): one `<name>\t<version>` line per
-/// plugin name in `NATIVE_ADAPTERS` registration order, and nothing else.
+/// `.github/workflows/adapter-drift.yml`): one `<name>\t<version>\t<fixture>`
+/// line per plugin name in `NATIVE_ADAPTERS` registration order, and nothing
+/// else.
 #[test]
 fn diagnose_adapters_prints_every_native_adapter_and_nothing_else() {
     let ctx = TestContext::new();
@@ -83,10 +84,18 @@ fn diagnose_adapters_prints_every_native_adapter_and_nothing_else() {
     let names: Vec<&str> = stdout
         .lines()
         .map(|line| {
-            let (name, version) = line
-                .split_once('\t')
-                .unwrap_or_else(|| panic!("not a name\\tversion line: {line}"));
+            let mut fields = line.splitn(3, '\t');
+            let name = fields
+                .next()
+                .unwrap_or_else(|| panic!("not a name\\tversion\\tfixture line: {line}"));
+            let version = fields
+                .next()
+                .unwrap_or_else(|| panic!("not a name\\tversion\\tfixture line: {line}"));
+            let fixture = fields
+                .next()
+                .unwrap_or_else(|| panic!("not a name\\tversion\\tfixture line: {line}"));
             assert!(!version.is_empty(), "{line}");
+            assert!(!fixture.is_empty(), "{line}");
             name
         })
         .collect();

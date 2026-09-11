@@ -238,13 +238,17 @@ fn diagnose_plugins(lock: &Lock, root: &Root) {
     }
 }
 
-/// `viv diagnose --adapters`: `<plugin name>\t<upstream version>`, one line
-/// per name (the `WordPress` core installer pair has two), in
+/// `viv diagnose --adapters`: `<plugin name>\t<upstream version>\t<fixture>`,
+/// one line per name (the `WordPress` core installer pair has two), in
 /// `NATIVE_ADAPTERS` registration order, nothing else on stdout.
 fn diagnose_adapters() {
     for adapter in plugins::all_adapters() {
         for name in adapter.plugin_names() {
-            out(&format!("{name}\t{}", adapter.upstream_version()));
+            out(&format!(
+                "{name}\t{}\t{}",
+                adapter.upstream_version(),
+                adapter.fixture()
+            ));
         }
     }
 }

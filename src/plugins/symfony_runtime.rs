@@ -34,6 +34,10 @@ impl Adapter for SymfonyRuntime {
         "v7.4.18"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/drupal"
+    }
+
     fn post_autoload_dump(&self, ctx: &Ctx<'_>) -> Result<()> {
         apply(ctx.root, ctx.project_dir, ctx.vendor_dir)
     }

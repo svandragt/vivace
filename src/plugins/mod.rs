@@ -105,6 +105,12 @@ pub(crate) trait Adapter {
     /// adapter's own fixture `composer.lock`. Read by `viv diagnose
     /// --adapters` (#127 part 3's drift workflow).
     fn upstream_version(&self) -> &'static str;
+    /// Repo-relative fixture directory whose `expected/` output proves this
+    /// port — the test to re-check if the pin is ever moved forward
+    /// (`docs/plugin-strategy.md#upstream-drift`). Read by `viv diagnose
+    /// --adapters` (#127 part 3's drift workflow); required, so a new adapter
+    /// can't land without naming the fixture that proves it.
+    fn fixture(&self) -> &'static str;
 
     /// Install-path mapping (`composer/installers`, the `WordPress` core
     /// installer pair).
@@ -454,6 +460,19 @@ mod tests {
             .adapters
             .iter()
             .any(|adapter| adapter.plugin_names().contains(&name))
+    }
+
+    #[test]
+    fn every_adapter_names_a_fixture_directory_that_exists() {
+        for adapter in all_adapters() {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(adapter.fixture());
+            assert!(
+                dir.is_dir(),
+                "{}: fixture {:?} is not a directory",
+                adapter.plugin_names()[0],
+                dir
+            );
+        }
     }
 
     #[test]

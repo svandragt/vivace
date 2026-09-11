@@ -42,6 +42,10 @@ impl Adapter for Craft {
         "1.6.0"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/craft"
+    }
+
     fn pre_autoload_dump(&self, ctx: &Ctx<'_>, packages: &[(&Package, PathBuf)]) -> Result<()> {
         apply(ctx.project_dir, ctx.vendor_dir, packages)
     }

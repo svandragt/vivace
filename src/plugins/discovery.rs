@@ -40,6 +40,10 @@ impl Adapter for Discovery {
         "1.20.0"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/discovery"
+    }
+
     fn pre_autoload_dump(&self, ctx: &Ctx<'_>, _packages: &[(&Package, PathBuf)]) -> Result<()> {
         apply(ctx.root, ctx.vendor_dir)
     }

@@ -41,6 +41,10 @@ impl Adapter for Spi {
         "v1.0.5"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/spi"
+    }
+
     fn pre_autoload_dump(&self, ctx: &Ctx<'_>, packages: &[(&Package, PathBuf)]) -> Result<()> {
         apply(ctx.root, ctx.vendor_dir, packages)
     }

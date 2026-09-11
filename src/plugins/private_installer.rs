@@ -60,6 +60,10 @@ impl Adapter for PrivateInstaller {
         "5.0.1"
     }
 
+    fn fixture(&self) -> &'static str {
+        "tests/fixtures/plugins/private-installer"
+    }
+
     fn fetch_env(&self, root: &Root, project_dir: &Path) -> Option<Env> {
         Some(Env::load(root, project_dir))
     }
