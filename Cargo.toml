@@ -5,6 +5,17 @@ edition = "2024"
 rust-version = "1.91"
 description = "Fast composer install from composer.lock"
 license = "MIT"
+repository = "https://github.com/svandragt/vivace"
+readme = "README.md"
+keywords = ["composer", "php", "package-manager", "dependencies"]
+categories = ["command-line-utilities", "development-tools"]
+# An allowlist, not an exclude: the published crate is the binary's own
+# sources and nothing else. `tests/fixtures` (9.6M), `bench` (62M) and
+# `compat` (78M) would otherwise dominate the tarball. The `include_str!`s
+# that reach into `tests/fixtures` all sit in `#[cfg(test)]` blocks, which a
+# consumer never compiles; `src/autoload/templates` and `src/spdx-licenses.json`
+# are inside `src` and ship with it.
+include = ["/src/**", "/README.md", "/LICENSE"]
 
 [[bin]]
 name = "viv"
