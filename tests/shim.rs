@@ -65,8 +65,99 @@ fn install_with_supported_flags_calls_viv() {
         .stdout("viv\ninstall\n--no-dev\n--no-progress\n");
 }
 
+/// `--working-dir=<dir>` (the `=` form) through `translate`: same in-place
+/// rewrite `translate_with_packages` does for `update` above. viv rejects a
+/// bare `--working-dir` outright, so a regression here would turn a working
+/// `composer install --working-dir=x` into a hard failure.
 #[test]
-fn update_delegates_to_real_composer() {
+fn install_working_dir_equals_form_rewrites_to_dash_d() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["install", "--working-dir=/some/dir"])
+        .assert()
+        .success()
+        .stdout("viv\ninstall\n-d=/some/dir\n");
+}
+
+/// `--working-dir <dir>` (space-separated) through `translate`: unlike
+/// `translate_with_packages`, `translate` has no `!arg.starts_with('-')`
+/// positional passthrough (`install` takes no package positionals), so the
+/// bare `/some/dir` that follows hits `classify` on its own and comes back
+/// `Unknown`, falling the whole invocation through to the real Composer.
+/// Pinned here so that asymmetry with the `update`/`add`/`rm` path (which
+/// does keep it as `-d`'s value) doesn't silently change.
+#[test]
+fn install_working_dir_space_form_delegates_to_real_composer() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["install", "--working-dir", "/some/dir"])
+        .assert()
+        .success()
+        .stdout("composer\ninstall\n--working-dir\n/some/dir\n");
+}
+
+#[test]
+fn dump_autoload_with_supported_flag_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["dump-autoload", "-o"])
+        .assert()
+        .success()
+        .stdout("viv\ndump-autoload\n-o\n");
+}
+
+#[test]
+fn normalize_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .arg("normalize")
+        .assert()
+        .success()
+        .stdout("viv\nnormalize\n");
+}
+
+#[test]
+fn create_project_with_unknown_flag_delegates_to_real_composer() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["create-project", "acme/app", "--stability", "dev"])
+        .assert()
+        .success()
+        .stdout("composer\ncreate-project\nacme/app\n--stability\ndev\n");
+}
+
+#[test]
+fn update_calls_viv() {
     let _guard = SHIM_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -78,7 +169,166 @@ fn update_delegates_to_real_composer() {
         .arg("update")
         .assert()
         .success()
-        .stdout("composer\nupdate\n");
+        .stdout("viv\nupdate\n");
+}
+
+/// Partial-update package positionals and `-w`/`-W` (#186's own examples)
+/// pass straight through to `viv update`.
+#[test]
+fn update_with_packages_and_dependency_flags_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["update", "acme/pkg", "-w"])
+        .assert()
+        .success()
+        .stdout("viv\nupdate\nacme/pkg\n-w\n");
+}
+
+/// `--working-dir=<dir>` (the `=` form): `translate_with_packages` rewrites
+/// the whole arg in place, same as `translate` does for `install` below.
+#[test]
+fn update_working_dir_equals_form_rewrites_to_dash_d() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["update", "--working-dir=/some/dir"])
+        .assert()
+        .success()
+        .stdout("viv\nupdate\n-d=/some/dir\n");
+}
+
+/// `--working-dir <dir>` (space-separated): the flag becomes `-d`, and the
+/// following bare `/some/dir` must still arrive as `-d`'s value rather than
+/// take the `!arg.starts_with('-')` early-continue meant for package
+/// positionals.
+#[test]
+fn update_working_dir_space_form_keeps_the_path_as_its_value() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["update", "--working-dir", "/some/dir"])
+        .assert()
+        .success()
+        .stdout("viv\nupdate\n-d\n/some/dir\n");
+}
+
+/// `-vv`/`-vvv` both collapse to `-v`, viv's only verbosity level.
+#[test]
+fn update_extra_verbose_flags_collapse_to_single_v() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["update", "-vv"])
+        .assert()
+        .success()
+        .stdout("viv\nupdate\n-v\n");
+
+    shim_in(dir.path())
+        .args(["update", "-vvv"])
+        .assert()
+        .success()
+        .stdout("viv\nupdate\n-v\n");
+}
+
+#[test]
+fn update_with_unknown_flag_delegates_to_real_composer() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["update", "--root-reqs"])
+        .assert()
+        .success()
+        .stdout("composer\nupdate\n--root-reqs\n");
+}
+
+#[test]
+fn require_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["require", "acme/pkg", "--dev"])
+        .assert()
+        .success()
+        .stdout("viv\nadd\nacme/pkg\n--dev\n");
+}
+
+#[test]
+fn require_with_unknown_flag_delegates_to_real_composer() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["require", "acme/pkg", "--fixed"])
+        .assert()
+        .success()
+        .stdout("composer\nrequire\nacme/pkg\n--fixed\n");
+}
+
+#[test]
+fn remove_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["remove", "acme/pkg"])
+        .assert()
+        .success()
+        .stdout("viv\nrm\nacme/pkg\n");
+}
+
+#[test]
+fn remove_with_unknown_flag_delegates_to_real_composer() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["remove", "acme/pkg", "--unused"])
+        .assert()
+        .success()
+        .stdout("composer\nremove\nacme/pkg\n--unused\n");
 }
 
 #[test]
@@ -103,12 +353,12 @@ fn missing_real_composer_exits_with_message() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempdir().unwrap();
-    // No fake `composer` on PATH: only `viv` is present, so `update` (which
-    // the shim never handles) has nowhere to delegate to.
+    // No fake `composer` on PATH: only `viv` is present, so `self-update`
+    // (which the shim never handles) has nowhere to delegate to.
     fake_bin(dir.path(), "viv");
 
     shim_in(dir.path())
-        .arg("update")
+        .arg("self-update")
         .assert()
         .failure()
         .code(1)

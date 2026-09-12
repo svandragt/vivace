@@ -118,6 +118,128 @@ fn translate_create_project(args: &[String]) -> Option<Vec<String>> {
     Some(out)
 }
 
+/// Flags accepted for `update`, mapped onto `viv update`'s own set
+/// (`UpdateArgs`). `--with`/`--root-reqs`/`--prefer-source`/`--no-suggest`
+/// have no viv equivalent at all and aren't listed, so they fall through as
+/// `Unknown` via the wildcard, same reasoning as `classify_create_project`.
+fn classify_update(arg: &str) -> Flag {
+    match arg {
+        "--no-dev"
+        | "--dry-run"
+        | "--lock"
+        | "--prefer-lowest"
+        | "--prefer-stable"
+        | "--minimal-changes"
+        | "-w"
+        | "--with-dependencies"
+        | "-W"
+        | "--with-all-dependencies"
+        | "--no-scripts"
+        | "--no-plugins"
+        | "--no-install"
+        | "--no-blocking"
+        | "--no-security-blocking"
+        | "-d"
+        | "--working-dir"
+        | "-v"
+        | "-vv"
+        | "-vvv" => Flag::Keep,
+        "--no-interaction" | "-n" | "--prefer-dist" => Flag::Drop,
+        "--ignore-platform-reqs" | "--ignore-platform-req" | "-q" | "--quiet" | "--no-progress" => {
+            Flag::DropNoted("viv has no equivalent of {flag}, ignoring it")
+        }
+        _ => Flag::Unknown,
+    }
+}
+
+/// Flags accepted for `require`, mapped onto `viv add`'s own set
+/// (`RequireArgs`).
+fn classify_require(arg: &str) -> Flag {
+    match arg {
+        "--dev"
+        | "--no-update"
+        | "--prefer-lowest"
+        | "--prefer-stable"
+        | "--sort-packages"
+        | "--no-scripts"
+        | "--no-plugins"
+        | "--no-install"
+        | "--no-blocking"
+        | "--no-security-blocking"
+        | "-d"
+        | "--working-dir"
+        | "-v"
+        | "-vv"
+        | "-vvv" => Flag::Keep,
+        "--no-interaction" | "-n" | "--prefer-dist" => Flag::Drop,
+        "--ignore-platform-reqs" | "--ignore-platform-req" | "-q" | "--quiet" | "--no-progress" => {
+            Flag::DropNoted("viv has no equivalent of {flag}, ignoring it")
+        }
+        _ => Flag::Unknown,
+    }
+}
+
+/// Flags accepted for `remove`, mapped onto `viv rm`'s own set (`RemoveArgs`,
+/// a strict subset of `RequireArgs`: no `--prefer-lowest`/`--prefer-stable`/
+/// `--sort-packages`, since removing doesn't pick a version).
+fn classify_remove(arg: &str) -> Flag {
+    match arg {
+        "--dev"
+        | "--no-update"
+        | "--no-scripts"
+        | "--no-plugins"
+        | "--no-install"
+        | "--no-blocking"
+        | "--no-security-blocking"
+        | "-d"
+        | "--working-dir"
+        | "-v"
+        | "-vv"
+        | "-vvv" => Flag::Keep,
+        "--no-interaction" | "-n" => Flag::Drop,
+        "--ignore-platform-reqs" | "--ignore-platform-req" | "-q" | "--quiet" | "--no-progress" => {
+            Flag::DropNoted("viv has no equivalent of {flag}, ignoring it")
+        }
+        _ => Flag::Unknown,
+    }
+}
+
+/// Translate `update`/`add`/`rm` args: package-name positionals (partial
+/// update's own package list, `add`/`rm`'s required list) pass through
+/// unchanged, same as `translate_create_project`'s positionals; flags go
+/// through the given `classify` and, on `Flag::Keep`, the same
+/// `--working-dir`-to-`-d`/`-vv`+`-vvv`-to-`-v` rewrite `translate` does.
+fn translate_with_packages(args: &[String], classify: fn(&str) -> Flag) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for arg in args {
+        if !arg.starts_with('-') {
+            out.push(arg.clone());
+            continue;
+        }
+        let flag = arg.split('=').next().unwrap_or(arg);
+        match classify(flag) {
+            Flag::Keep => {
+                out.push(if flag == "--working-dir" {
+                    arg.replacen("--working-dir", "-d", 1)
+                } else if flag == "-vv" || flag == "-vvv" {
+                    "-v".to_string()
+                } else {
+                    arg.clone()
+                });
+            }
+            Flag::Drop => {}
+            Flag::DropNoted(msg) => {
+                err_out(&format!(
+                    "composer (viv shim): {}",
+                    msg.replace("{flag}", flag)
+                ));
+            }
+            Flag::Unknown => return None,
+        }
+    }
+    Some(out)
+}
+
 fn viv_path() -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
@@ -216,6 +338,9 @@ fn main() -> ExitCode {
         "dump-autoload" | "dumpautoload" => "dump-autoload",
         "normalize" => "normalize",
         "create-project" => "new",
+        "update" => "update",
+        "require" => "add",
+        "remove" => "rm",
         _ => "",
     };
 
@@ -231,6 +356,18 @@ fn main() -> ExitCode {
     if viv_command == "new" {
         return match translate_create_project(rest) {
             Some(translated) => exec_viv(&[vec!["new".to_string()], translated].concat()),
+            None => exec_real_composer(&args),
+        };
+    }
+    let packages_classifier: Option<fn(&str) -> Flag> = match viv_command {
+        "update" => Some(classify_update),
+        "add" => Some(classify_require),
+        "rm" => Some(classify_remove),
+        _ => None,
+    };
+    if let Some(classify) = packages_classifier {
+        return match translate_with_packages(rest, classify) {
+            Some(translated) => exec_viv(&[vec![viv_command.to_string()], translated].concat()),
             None => exec_real_composer(&args),
         };
     }
