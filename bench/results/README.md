@@ -81,6 +81,42 @@ scenario.
 go down or stay within tolerance of the old one; a rise is a regression to
 explain in the release notes, not a new floor.
 
+### Baseline is the median of at least ten runs, not one (#183)
+
+A baseline taken from a single run sits wherever that one measurement
+happened to land, not at the scenario's true centre. Laravel's
+`update-offline` baseline was 0.169 from one run, but the last twelve CI
+runs of unchanged code centred on a median of 0.180 — the gate was failing
+on runner noise, not on a regression, because the baseline itself was at
+the edge of the distribution rather than its middle.
+
+`bench/compare.py --merge-runs <run-dir>...` regenerates a project's
+baseline entry as the per-scenario MEDIAN across several runs instead of
+one. Each `<run-dir>` is a downloaded `bench-results` artifact directory:
+the fixed files `bench/run.sh`/`ci.yml` write (`viv.json`,
+`viv-update.json`, `viv-update-offline.json`, `composer.json`,
+`composer-update.json`) at the top level for the default `monolog` project,
+or under `<run-dir>/<project>/` for any other project (e.g. `laravel`).
+For each run, `--merge-runs` computes the same ratios `--write-baseline`
+would for that run alone, then writes the median across all runs as
+`--project`'s baseline entry, leaving other projects' entries untouched.
+
+To regenerate: download the `bench-results` artifact from at least ten
+recent CI runs on `main` into sibling directories (one per run), then run
+once per project:
+
+```sh
+python3 bench/compare.py --merge-runs run-<sha1> run-<sha2> ... \
+    --project monolog --baseline bench/results/baseline.json
+python3 bench/compare.py --merge-runs run-<sha1> run-<sha2> ... \
+    --project laravel --baseline bench/results/baseline.json
+```
+
+Commit the regenerated `baseline.json`. Tolerance (15%) and the 5 ms
+absolute slack are unchanged: the evidence behind #183 showed both are
+correctly sized once the baseline sits at the distribution's centre rather
+than its edge, so only the baseline needed to move, not the gate's width.
+
 ## Local mirror (#165, widened)
 
 `bench/mirror.sh <project-dir> <mirror-dir>` records a project once: every

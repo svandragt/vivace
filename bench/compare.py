@@ -3,6 +3,7 @@
 
 Usage:
     bench/compare.py <hyperfine-json>... --baseline bench/results/baseline.json [--tolerance 0.15] [--write-baseline]
+    bench/compare.py --merge-runs <run-dir>... --project <name> --baseline bench/results/baseline.json
     bench/compare.py --self-test
 
 GitHub runners vary 30-45% run to run on identical code (Laravel warm: 64 ms
@@ -26,12 +27,32 @@ revalidations of every metadata file), so their variance is not ours (see
 bench/results/README.md). A scenario whose composer denominator is missing
 from the input is skipped, not failed. With --write-baseline, writes the
 measured ratios as the new baseline instead of comparing.
+
+--write-baseline captures one run, and one run is exactly the problem #183
+found: Laravel's no-op measured 11, 19 and 52 ms across three runs of
+identical code, so whichever run happens to get committed sits at the edge
+of the distribution rather than its centre. --merge-runs instead takes
+several runs' worth of bench-results directories (the fixed file names
+`bench/run.sh` writes: viv.json, viv-update.json, viv-update-offline.json,
+composer.json, composer-update.json, at the top level for the default
+project or under `<run-dir>/<project>/` for any other), computes each run's
+ratios the same way --write-baseline does, and writes the per-scenario
+MEDIAN across runs as the baseline -- see bench/results/README.md for how
+to regenerate it from downloaded CI artifacts.
 """
 import argparse
 import json
+import statistics
 import sys
+from pathlib import Path
 
 TOLERANCE_DEFAULT = 0.15
+DEFAULT_PROJECT = "monolog"
+# Fixed names `bench/run.sh`/ci.yml write per run; --merge-runs looks for
+# these under each run directory (or `<run-dir>/<project>/` for a
+# non-default project) rather than taking file paths on the command line,
+# since a merge spans many runs at once.
+RUN_FILES = ("viv.json", "viv-update.json", "viv-update-offline.json", "composer.json", "composer-update.json")
 # A ratio beyond tolerance still passes if what it costs in this run's actual
 # seconds is under 5 ms: viv_mean - baseline_ratio * composer_mean, the gap
 # between what happened and what the baseline ratio predicted for this run's
@@ -71,6 +92,35 @@ def means_from_hyperfine(paths, tool):
                 continue
             means[parts[1]] = result["median"]
     return means
+
+
+def ratios_for_run(paths):
+    """Return {scenario: ratio} for one run's hyperfine JSON paths, the same
+    computation --write-baseline uses for a single run."""
+    viv_means = means_from_hyperfine(paths, "viv")
+    composer_means = means_from_hyperfine(paths, "composer")
+    ratios = {}
+    for scenario in SCENARIOS:
+        viv_mean = viv_means.get(scenario)
+        composer_mean = composer_means.get(DENOMINATOR_SCENARIO[scenario])
+        if viv_mean is not None and composer_mean:
+            ratios[scenario] = viv_mean / composer_mean
+    return ratios
+
+
+def median_ratios(runs):
+    """Return {scenario: median_ratio} across several runs' {scenario: ratio} dicts.
+
+    A scenario missing from a run (a crashed job, a not-yet-added scenario)
+    is left out of that scenario's sample rather than crashing the merge or
+    counting as a zero -- a zero would drag the median toward "free" instead
+    of just working off fewer runs.
+    """
+    by_scenario = {}
+    for ratios in runs:
+        for scenario, ratio in ratios.items():
+            by_scenario.setdefault(scenario, []).append(ratio)
+    return {scenario: statistics.median(values) for scenario, values in by_scenario.items()}
 
 
 def compare(viv_means, composer_means, baseline, tolerance):
@@ -116,14 +166,40 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("json_paths", nargs="*")
     parser.add_argument("--baseline", default="bench/results/baseline.json")
-    parser.add_argument("--project", default="monolog", help="baseline key (default: monolog)")
+    parser.add_argument("--project", default=DEFAULT_PROJECT, help=f"baseline key (default: {DEFAULT_PROJECT})")
     parser.add_argument("--tolerance", type=float, default=TOLERANCE_DEFAULT)
     parser.add_argument("--write-baseline", action="store_true")
+    parser.add_argument(
+        "--merge-runs",
+        nargs="+",
+        metavar="RUN_DIR",
+        help="bench-results run directories to merge into --project's baseline "
+        "entry as the per-scenario median across runs",
+    )
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
     if args.self_test:
         return self_test()
+
+    if args.merge_runs:
+        base_dirs = [
+            Path(run_dir) if args.project == DEFAULT_PROJECT else Path(run_dir) / args.project
+            for run_dir in args.merge_runs
+        ]
+        runs = [ratios_for_run([d / name for name in RUN_FILES if (d / name).exists()]) for d in base_dirs]
+        merged = median_ratios(runs)
+        with open(args.baseline) as f:
+            all_baselines = json.load(f)
+        all_baselines.setdefault(args.project, {}).update(merged)
+        with open(args.baseline, "w") as f:
+            json.dump(all_baselines, f, indent=2, sort_keys=True)
+            f.write("\n")
+        print(
+            f"bench/compare.py: wrote median-of-{len(args.merge_runs)}-runs baseline "
+            f"for {args.project} to {args.baseline}"
+        )
+        return 0
 
     if not args.json_paths:
         parser.error("no hyperfine JSON paths given")
@@ -257,6 +333,28 @@ def self_test():
     ok, rows = compare({"warm": 5.0}, {"warm": 1.0}, {}, 0.15)
     assert ok, "missing baseline entries must skip, not fail"
     assert rows[0][5] == "skip"
+
+    # --merge-runs: the median is taken per scenario, independently of the
+    # other scenarios in the same run.
+    merged = median_ratios(
+        [
+            {"warm": 0.10, "noop": 0.20},
+            {"warm": 0.11, "noop": 0.22},
+            {"warm": 0.12, "noop": 0.24},
+        ]
+    )
+    assert merged == {"warm": 0.11, "noop": 0.22}
+
+    # An odd outlier run doesn't drag the merged value far, the way #183's
+    # single-run baseline did.
+    merged = median_ratios([{"noop": 0.10}, {"noop": 0.11}, {"noop": 0.50}])
+    assert merged["noop"] == 0.11, "one outlier run must not move the median much"
+
+    # A scenario missing from one run's set is left out of that scenario's
+    # sample, not crashed on or counted as a zero.
+    merged = median_ratios([{"warm": 0.10, "noop": 0.20}, {"warm": 0.12}, {"warm": 0.14, "noop": 0.24}])
+    assert merged["warm"] == 0.12
+    assert merged["noop"] == 0.22, "a run missing a scenario must not pull its median toward zero"
 
     print("bench/compare.py: self-test ok")
     return 0
