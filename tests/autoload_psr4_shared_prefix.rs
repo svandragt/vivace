@@ -1,0 +1,141 @@
+//! Regression for #188: two packages (`psr/http-message`, `psr/http-factory`)
+//! declare the same PSR-4 prefix, and `psr/http-factory` requires
+//! `psr/http-message`. Byte-for-byte against Composer 2.10's own output,
+//! same pattern as `autoload_monolog.rs`, but the fixture adds `psr/log` and
+//! `monolog/monolog` around the shared-prefix pair so the mid-collection
+//! case (not just the two sharing packages) is covered too.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+use vivace::autoload::generator::{Input, Package, RootPackage, generate};
+use vivace::lock::{read_lock, read_root};
+
+fn fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/psr4-shared-prefix")
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// The fixture's `vendor/` is gitignored and only populated locally by
+/// `make fixtures` (needs devbox composer), so skip instead of panicking
+/// when it's missing, e.g. on a fresh CI checkout.
+#[allow(clippy::print_stderr, reason = "test skip notice, not app logging")]
+fn fixture_vendor_missing() -> bool {
+    if fixture()
+        .join("vendor/composer/installed.json")
+        .try_exists()
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    eprintln!(
+        "skipping: run `make fixtures` (needs devbox composer) to populate tests/fixtures/psr4-shared-prefix/vendor"
+    );
+    true
+}
+
+#[test]
+fn shared_psr4_prefix_matches_composer_order() {
+    if fixture_vendor_missing() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().canonicalize().unwrap();
+    for name in ["composer.json", "composer.lock"] {
+        fs::copy(fixture().join(name), project.join(name)).unwrap();
+    }
+    for dir in ["vendor/monolog", "vendor/psr"] {
+        copy_tree(&fixture().join(dir), &project.join(dir));
+    }
+    let vendor_dir = project.join("vendor");
+
+    let root = read_root(&project.join("composer.json")).unwrap();
+    let lock = read_lock(&project.join("composer.lock")).unwrap();
+    let keys = |map: &serde_json::Map<String, Value>| map.keys().cloned().collect::<Vec<_>>();
+
+    let input = Input {
+        root: RootPackage {
+            name: root.name.clone().unwrap(),
+            autoload: root.autoload.clone().unwrap_or(Value::Null),
+            autoload_dev: root.autoload_dev.clone().unwrap_or(Value::Null),
+            target_dir: None,
+            requires: keys(&root.require),
+            include_path: Vec::new(),
+        },
+        packages: lock
+            .packages(true)
+            .map(|p| Package {
+                name: p.name.clone(),
+                autoload: p.autoload.clone().unwrap_or(Value::Null),
+                requires: keys(&p.require),
+                replaces: keys(&p.replace),
+                provides: keys(&p.provide),
+                target_dir: p.target_dir.clone(),
+                install_path: (p.r#type != "metapackage").then(|| vendor_dir.join(&p.name)),
+                is_dev: p.dev,
+                include_path: Vec::new(),
+                archive_dir: None,
+            })
+            .collect(),
+        dev_mode: true,
+        scan_psr: false,
+        suffix: root.config.autoloader_suffix.clone().unwrap(),
+        vendor_dir: vendor_dir.clone(),
+        base_dir: project.clone(),
+        platform_check: true,
+        prepend_autoloader: root.config.prepend_autoloader,
+        classmap_authoritative: false,
+        apcu_prefix: None,
+        use_include_path: false,
+    };
+    generate(&input).unwrap();
+
+    let expected = fixture().join("expected");
+    let mut mismatches = Vec::new();
+    for name in [
+        "autoload.php",
+        "composer/autoload_namespaces.php",
+        "composer/autoload_psr4.php",
+        "composer/autoload_classmap.php",
+        "composer/autoload_static.php",
+        "composer/autoload_real.php",
+        "composer/ClassLoader.php",
+        "composer/InstalledVersions.php",
+        "composer/LICENSE",
+    ] {
+        let want = fs::read(expected.join(name)).unwrap();
+        let got = fs::read(vendor_dir.join(name)).unwrap_or_default();
+        if want != got {
+            mismatches.push(name);
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "files differing from Composer: {mismatches:?}"
+    );
+
+    // The actual #188 regression: the shared `Psr\Http\Message\` prefix, in
+    // Composer's own order (dependent before its dependency, since neither
+    // is the root and both are reverse-sorted alongside psr/log and
+    // monolog/monolog rather than being the whole collection).
+    let psr4 = fs::read_to_string(vendor_dir.join("composer/autoload_psr4.php")).unwrap();
+    let message_pos = psr4.find("/psr/http-message/src").unwrap();
+    let factory_pos = psr4.find("/psr/http-factory/src").unwrap();
+    assert!(
+        factory_pos < message_pos,
+        "expected psr/http-factory before psr/http-message, matching Composer: {psr4}"
+    );
+}

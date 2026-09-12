@@ -77,6 +77,9 @@ fixtures:
 	devbox run -- composer -d tests/fixtures/legacy install --no-dev
 	cp tests/fixtures/legacy/vendor/autoload.php tests/fixtures/legacy/expected/no-dev/
 	cp tests/fixtures/legacy/vendor/composer/*.php tests/fixtures/legacy/vendor/composer/installed.json tests/fixtures/legacy/vendor/composer/LICENSE tests/fixtures/legacy/expected/no-dev/composer/
+	devbox run -- composer -d tests/fixtures/psr4-shared-prefix install
+	cp tests/fixtures/psr4-shared-prefix/vendor/autoload.php tests/fixtures/psr4-shared-prefix/expected/
+	cp tests/fixtures/psr4-shared-prefix/vendor/composer/*.php tests/fixtures/psr4-shared-prefix/vendor/composer/installed.json tests/fixtures/psr4-shared-prefix/vendor/composer/LICENSE tests/fixtures/psr4-shared-prefix/expected/composer/
 
 fmt:
 	devbox run -- cargo fmt

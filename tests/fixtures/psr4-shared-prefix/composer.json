@@ -1,0 +1,14 @@
+{
+    "name": "vivace/fixture-psr4-shared-prefix",
+    "license": "proprietary",
+    "type": "project",
+    "require": {
+        "monolog/monolog": "^3.0",
+        "psr/log": "^3.0",
+        "psr/http-message": "^1.0",
+        "psr/http-factory": "^1.0"
+    },
+    "config": {
+        "autoloader-suffix": "VivaceFixturePsr4SharedPrefix"
+    }
+}
