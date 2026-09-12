@@ -74,6 +74,17 @@ fi
 composer_install_flags=(--no-scripts --no-plugins --no-interaction)
 composer_update_flags=(--no-scripts --no-plugins --no-interaction --ignore-platform-reqs)
 
+# COMPAT_LOCKS=1 (#180): also resolve each pinned project's composer.json
+# with both tools and diff the two composer.lock files, instead of only
+# byte-diffing vendor/ from a lock Composer generated. Neither flag list
+# ignores platform requirements: this mode is only meaningful run inside
+# devbox anyway (this script's own top comment already requires that for
+# php/composer to resolve at all), so both tools see the same real PHP and
+# extensions, matching what a user's own install would see.
+compat_locks=${COMPAT_LOCKS:-0}
+lock_compare_composer_flags=(--no-install --no-scripts --no-plugins --no-interaction)
+lock_compare_viv_flags=(--no-install --no-plugins)
+
 results_dir=${COMPAT_RESULTS_DIR:-$root/compat/results}
 logs_dir="$results_dir/$label-logs"
 mkdir -p "$results_dir" "$logs_dir"
@@ -434,6 +445,265 @@ run_pinned() {
   done < <(parse_corpus)
 }
 
+# --- lock compare (#180, COMPAT_LOCKS=1) ------------------------------------
+
+# Writes $2/$3 (result/details) for $1 (a project name) to the lock-compare
+# table: three columns, not five, since there's no dev/no-dev split and no
+# viv time worth reporting for a resolve-only run.
+emit_lock_row() {
+  local details=$3
+  details=${details//\|/\\|}
+  details=${details//$'\n'/<br>}
+  echo "| $1 | $2 | $details |" >> "$report"
+}
+
+# Serves $1 (a directory) over 127.0.0.1 with miniserve, the same way
+# bench/run.sh serves a mirror; echoes "pid port" once bound, or nothing
+# (with a message on stderr) if it never binds.
+serve_dir() {
+  local dir=$1 log=$2 pid port="" i=0
+  miniserve --port 0 --interfaces 127.0.0.1 "$dir" > "$log" 2>&1 &
+  pid=$!
+  while [ -z "$port" ] && [ "$i" -lt 50 ]; do
+    port=$(grep -oE 'Bound to [0-9.]+:[0-9]+' "$log" 2>/dev/null | grep -oE '[0-9]+$' | head -1)
+    [ -n "$port" ] || { sleep 0.1; i=$((i + 1)); }
+  done
+  if [ -z "$port" ]; then
+    kill "$pid" > /dev/null 2>&1 || true
+    echo "compat: server on $dir did not start, see $log" >&2
+    return 1
+  fi
+  echo "$pid $port"
+}
+
+# A stdlib stand-in for miniserve (which is GET-only): replays $1's bytes as
+# `application/json` for any request, GET or POST, ignoring the request
+# body — Composer and viv both POST the same full package-name list either
+# way (audit.rs's own fetch_advisories_from doc), so replaying one recorded
+# response is exactly what a real advertising repository would also do for
+# this lock's names. Echoes "pid port" once bound, same shape as serve_dir.
+serve_advisories() {
+  local body=$1 log=$2 py pid port="" i=0
+  py=$(mktemp)
+  cat > "$py" <<'PY'
+import http.server
+import socketserver
+import sys
+
+with open(sys.argv[1], "rb") as f:
+    body = f.read()
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def _reply(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        self._reply()
+
+    do_GET = _reply
+
+    def log_message(self, *args):
+        pass
+
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+
+with Server(("127.0.0.1", 0), Handler) as httpd:
+    print(f"Bound to 127.0.0.1:{httpd.server_address[1]}", flush=True)
+    httpd.serve_forever()
+PY
+  python3 "$py" "$body" > "$log" 2>&1 &
+  pid=$!
+  while [ -z "$port" ] && [ "$i" -lt 50 ]; do
+    port=$(grep -oE 'Bound to [0-9.]+:[0-9]+' "$log" 2>/dev/null | grep -oE '[0-9]+$' | head -1)
+    [ -n "$port" ] || { sleep 0.1; i=$((i + 1)); }
+  done
+  # Only removed once python3 has either read it (to start) or failed doing
+  # so: deleting it right after backgrounding the process raced its own
+  # open() and made every run report "No such file or directory" (#180).
+  rm -f "$py"
+  if [ -z "$port" ]; then
+    kill "$pid" > /dev/null 2>&1 || true
+    echo "compat: advisories server for $body did not start, see $log" >&2
+    return 1
+  fi
+  echo "$pid $port"
+}
+
+# Points $1 (a composer.json copy) at the served mirror alone: the one
+# composer-type repository plus Packagist disabled, secure-http off since
+# the mirror is deliberately plain HTTP on 127.0.0.1 — same shape as
+# bench/run.sh's own rewrite_py, minus the composer.lock half, since a lock
+# compare's `update` never reads an existing lock's dist URLs. Regenerated
+# per project/call rather than once for the whole sweep, so it's never left
+# behind under COMPAT_LOCKS=1's own scratch-free temp files.
+lock_compare_point_at_mirror() {
+  local py
+  py=$(mktemp)
+  cat > "$py" <<'PY'
+import json
+import sys
+
+path, url = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    cj = json.load(f)
+cj["repositories"] = [{"type": "composer", "url": url}, {"packagist.org": False}]
+cj.setdefault("config", {})["secure-http"] = False
+with open(path, "w") as f:
+    json.dump(cj, f, indent=4)
+PY
+  python3 "$py" "$1" "$2"
+  rm -f "$py"
+}
+
+# Stops $1/$2 (a serve_dir/serve_advisories pid, or "" if never started).
+# Not a RETURN trap: that fires on *every* function return for the rest of
+# the script, not just this one's, and would reference these two locals
+# after they've gone out of scope the moment anything else returns (#180).
+stop_lock_servers() {
+  [ -z "$1" ] || kill "$1" > /dev/null 2>&1 || true
+  [ -z "$2" ] || kill "$2" > /dev/null 2>&1 || true
+}
+
+# One project: mirrors $2 (its checkout, already installed by run_pinned,
+# lock included) via bench/mirror.sh, serves the recording plus its
+# advisories response (if any), resolves the same composer.json with both
+# tools against it, and diffs the two resulting composer.lock files
+# after folding _readme/plugin-api-version (#180). A fresh cache_dir per
+# project, not the shared install-mode one: two projects' mirrors can end up
+# on the same 127.0.0.1 port once the OS recycles it, and a cache keyed on
+# that URL must never answer project B with project A's cached metadata.
+lock_compare_one() {
+  local name=$1 srcdir=$2 safe workdir mirror_dir served
+  safe=$(echo "$name" | tr '/' '_')
+  workdir="$scratch/locks/$safe"
+  rm -rf "$workdir"
+  mkdir -p "$workdir"
+
+  if [ ! -f "$srcdir/composer.json" ]; then
+    emit_lock_row "$name" "skipped" "no checkout (see pinned corpus table)"
+    return
+  fi
+  if [ ! -f "$srcdir/composer.lock" ]; then
+    emit_lock_row "$name" "skipped" "no composer.lock to seed the mirror recording"
+    return
+  fi
+
+  log "recording metadata mirror for $name (lock compare, #180)"
+  mirror_dir="$workdir/mirror"
+  local mirror_out
+  if ! mirror_out=$("$root/bench/mirror.sh" "$srcdir" "$mirror_dir" 2>&1); then
+    save_log "$mirror_out" "$name-lock-mirror"
+    emit_lock_row "$name" "skipped" "mirror recording failed: $(last_lines "$mirror_out")"
+    return
+  fi
+
+  served="$workdir/served"
+  mkdir -p "$served"
+  cp -a "$mirror_dir"/. "$served"/
+
+  local mirror_pid="" adv_pid=""
+
+  local mirror_started mirror_port
+  if ! mirror_started=$(serve_dir "$served" "$logs_dir/$safe-lock-mirror-server.log"); then
+    emit_lock_row "$name" "skipped" "$mirror_started"
+    return
+  fi
+  mirror_pid=${mirror_started% *}
+  mirror_port=${mirror_started#* }
+  find "$served/p2" -name '*.json' -exec sed -i "s/__PORT__/$mirror_port/g" {} +
+
+  if [ -f "$served/advisories.json" ]; then
+    local adv_started adv_port
+    if adv_started=$(serve_advisories "$served/advisories.json" "$logs_dir/$safe-lock-advisories-server.log"); then
+      adv_pid=${adv_started% *}
+      adv_port=${adv_started#* }
+      jq --arg url "http://127.0.0.1:$adv_port/security-advisories" \
+        '. + {"security-advisories": {"api-url": $url}}' "$served/packages.json" \
+        > "$served/packages.json.tmp" && mv "$served/packages.json.tmp" "$served/packages.json"
+    else
+      log "$name: advisories server failed to start, resolving without recorded advisory data"
+    fi
+  fi
+
+  local mirror_url="http://127.0.0.1:$mirror_port"
+  local composer_dir="$workdir/composer" viv_dir="$workdir/viv"
+  mkdir -p "$composer_dir" "$viv_dir"
+  cp "$srcdir/composer.json" "$composer_dir/composer.json"
+  cp "$srcdir/composer.json" "$viv_dir/composer.json"
+  lock_compare_point_at_mirror "$composer_dir/composer.json" "$mirror_url"
+  lock_compare_point_at_mirror "$viv_dir/composer.json" "$mirror_url"
+
+  local lock_cache_dir="$scratch/cache-locks/$safe"
+  rm -rf "$lock_cache_dir"
+  mkdir -p "$lock_cache_dir"
+
+  local composer_out composer_rc=0
+  composer_out=$(composer -d "$composer_dir" update "${lock_compare_composer_flags[@]}" 2>&1) || composer_rc=$?
+  if [ ! -f "$composer_dir/composer.lock" ]; then
+    save_log "$composer_out" "$name-lock-composer"
+    stop_lock_servers "$mirror_pid" "$adv_pid"
+    emit_lock_row "$name" "skipped" "composer update failed: $(last_lines "$composer_out")"
+    return
+  fi
+  local note=""
+  # A default `update` also runs Composer's post-update audit step, which can
+  # exit non-zero on a real advisory match even though the lock it just
+  # wrote is fine; the lock is what this mode diffs, so that alone isn't a
+  # skip, just a note (#180 doesn't ask for --no-audit, and skipping it would
+  # mean this mode never sees the resolver reacting to an advisory match).
+  [ "$composer_rc" -eq 0 ] || note="composer exited $composer_rc (lock still written, likely an audit finding); "
+
+  local viv_out
+  if ! viv_out=$(XDG_CACHE_HOME="$lock_cache_dir" "$viv" update "${lock_compare_viv_flags[@]}" \
+      --cache-dir "$lock_cache_dir" -d "$viv_dir" 2>&1); then
+    save_log "$viv_out" "$name-lock-viv"
+    stop_lock_servers "$mirror_pid" "$adv_pid"
+    emit_lock_row "$name" "viv error" "${note}$(tail -5 <<< "$viv_out")"
+    return
+  fi
+  stop_lock_servers "$mirror_pid" "$adv_pid"
+
+  local diff_out
+  diff_out=$(diff -u \
+    <(jq 'del(._readme, .["plugin-api-version"])' "$composer_dir/composer.lock") \
+    <(jq 'del(._readme, .["plugin-api-version"])' "$viv_dir/composer.lock") 2>&1) || true
+  if [ -z "$diff_out" ]; then
+    emit_lock_row "$name" "identical" "${note}same resolution; compared through jq, so lock formatting is not what this proves (tests/ covers that byte for byte)"
+  else
+    failures=1
+    emit_lock_row "$name" "differs" "${note}$(head -10 <<< "$diff_out")"
+  fi
+}
+
+# Re-walks the pinned corpus, reusing each project's checkout from
+# run_pinned above (skipping one entirely if that pass never produced a
+# composer.json for it) rather than cloning/creating it a second time.
+run_lock_compare() {
+  [ "$compat_locks" = "1" ] || return 0
+  echo "" >> "$report"
+  echo "## Lock compare (\`COMPAT_LOCKS=1\`, #180)" >> "$report"
+  echo "\`composer update ${lock_compare_composer_flags[*]}\` versus \`viv update ${lock_compare_viv_flags[*]}\`, both against a \`bench/mirror.sh\` recording of the pinned checkout's own resolved packages (dists aren't needed for \`--no-install\`, but the same recording carries the \`security-advisories\` response too). Run inside devbox so both tools see the same PHP/extensions, rather than passing \`--ignore-platform-reqs\` to either." >> "$report"
+  {
+    echo "| Project | Result | Details |"
+    echo "|---|---|---|"
+  } >> "$report"
+  local name repo commit version path safe srcdir
+  while IFS="|" read -r name repo commit version path; do
+    wanted "$name" || continue
+    safe=$(echo "$name" | tr '/' '_')
+    srcdir="$scratch/src/$safe"
+    lock_compare_one "$name" "$srcdir"
+  done < <(parse_corpus)
+}
+
 # --- random sample -----------------------------------------------------------
 
 run_random() {
@@ -498,10 +768,14 @@ run_random() {
   echo "A project whose enabled plugins are all native adapters or known-inert (#124) drops \`--no-plugins\` on both sides instead, noted \`plugins: native\` in Details; any other enabled plugin keeps \`--no-plugins\` and is noted \`plugins: refused <names>\`."
   echo "A project whose platform requirements aren't met is reported as \`skipped: platform\`, not a failure."
   echo "Cloned checkouts keep their \`.git\` before installing, so Composer's root-version guess from the checkout state (branch/tag/commit) matches a real user's install (#125); \`path\`-based entries still have \`.git\` stripped, since a local checkout's git state isn't reproducible. The vendor diff excludes \`.git\` metadata on both sides regardless."
+  if [ "$compat_locks" = "1" ]; then
+    echo "\`COMPAT_LOCKS=1\`: the pinned corpus also gets a lock-compare pass (#180), described in its own section below."
+  fi
   echo ""
 } >> "$report"
 
 run_pinned
+run_lock_compare
 run_random
 
 {

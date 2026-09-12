@@ -28,6 +28,7 @@ make fixtures                      # regenerate the monolog fixture's expected C
 make fuzz                          # cargo-fuzz, 30s per target (#44); nightly toolchain required
 make coverage                      # cargo-llvm-cov via nextest, per-file report, no threshold (#45)
 make compat                        # release build + compat/run.sh, byte-diffs vendor/ against Composer
+#   COMPAT_LOCKS=1 make compat       # ...and compares the lock viv resolves against Composer's (#180)
 make compat-refresh                # rewrite compat/corpus.toml's repo pins to their current heads
 ```
 
@@ -134,8 +135,12 @@ check locally against the committed baseline.
    caveat has shipped in two releases.
 2. Run the bench gate (`make bench-check`) and update the README numbers
    table.
-3. Run the compat sweep (`make compat`) and commit
-   `compat/results/<tag>.md`.
+3. Run the compat sweep with the lock compare on
+   (`COMPAT_LOCKS=1 make compat`) and commit `compat/results/<tag>.md`. Cite
+   both counts in the release notes: how many projects install byte-identical
+   `vendor/`, and how many resolve the same lock. The second catches a
+   resolver divergence the install table cannot see, because that table
+   installs from a lock Composer wrote (#180).
 4. Add a `JOURNAL.md` entry.
 5. Bump `Cargo.toml`'s version, tag, and push (`release.yml` publishes it as
    a pre-release with the changelog's issue list as a placeholder body).

@@ -436,3 +436,39 @@ PY
 
 python3 "$index_py" "$mirror"
 python3 "$rewrite_py" "$mirror"
+
+# Records the security-advisories response for this lock's packages (#180),
+# so a lock-compare run sees the same advisory data Composer and viv would
+# each fetch live, instead of the two tools silently agreeing on "none"
+# because the mirror doesn't advertise the endpoint at all. Composer's own
+# SecurityAdvisoryPoolFilter asks every advertising repository the same
+# full package-constraint map and merges the responses (this file's
+# fetch_advisories_from doc says the same); every corpus project so far
+# advertises at most one, so only the first repository found with an
+# `api-url` is recorded.
+record_advisories() {
+  [ -f "$lock" ] || return 0
+  [ -f "$mirror/advisories.json" ] && return 0
+  i=0
+  api_url=""
+  while [ "$i" -lt "$repo_count" ]; do
+    api_url=$(jq -r '.["security-advisories"]["api-url"] // empty' "$workdir/root-$i.json" 2>/dev/null || true)
+    [ -n "$api_url" ] && break
+    i=$((i + 1))
+  done
+  [ -n "$api_url" ] || return 0
+  set --
+  while IFS= read -r pkg_name; do
+    [ -n "$pkg_name" ] || continue
+    set -- "$@" --data-urlencode "packages[]=$pkg_name"
+  done <<EOF
+$(jq -r '[(.packages // [])[], (."packages-dev" // [])[] | .name] | unique | .[]' "$lock")
+EOF
+  if curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 "$@" -o "$mirror/advisories.json.tmp" "$api_url"; then
+    mv "$mirror/advisories.json.tmp" "$mirror/advisories.json"
+  else
+    rm -f "$mirror/advisories.json.tmp"
+    echo "mirror.sh: could not record advisories from $api_url; lock-compare will run without advisory data" >&2
+  fi
+}
+record_advisories

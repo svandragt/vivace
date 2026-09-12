@@ -46,6 +46,7 @@ Useful environment variables:
 | `COMPAT_AUTH_FILE` | (unset) | Path to an `auth.json` to copy into the scratch `COMPOSER_HOME`, for corpus entries behind a private registry |
 | `COMPAT_SKIP_PLUGINS` | (unset) | Set to `1` to skip a project whose lock requires a Composer plugin instead of running it (see below) |
 | `COMPAT_SKIP_VCS` | (unset) | Set to `1` to skip a project whose `composer.json` declares a `path` or `vcs` repository (#13) instead of running it anyway |
+| `COMPAT_LOCKS` | (unset) | Set to `1` to also resolve every pinned project's `composer.json` with both tools and byte-diff the two `composer.lock` files (#180); see below |
 
 The report's header prints the Composer flags used
 (`--no-scripts --no-plugins --no-interaction` for `install`, plus
@@ -99,6 +100,37 @@ The random sample's candidate list (`popular.json` plus `list.json`) is
 cached at `compat/results/<label>.sample.json` on first fetch and reused on
 a later run with the same label, so a label always samples from the same
 candidates.
+
+## Lock compare (`COMPAT_LOCKS=1`)
+
+The install comparison above only ever byte-diffs `vendor/` from a lock
+Composer generated; it never checks whether `viv update` would have
+resolved that lock itself. `COMPAT_LOCKS=1` adds a second table that does:
+for every pinned project, it resolves the same `composer.json` with
+`composer update --no-install --no-scripts --no-plugins` and `viv update
+--no-install --no-plugins`, then byte-diffs the two `composer.lock` files
+(#180).
+
+Both tools resolve against a `bench/mirror.sh` recording of the project's
+own already-resolved packages, served over `127.0.0.1`, so neither sees
+live Packagist — including the `security-advisories` response, replayed
+from a recording by a small stdlib HTTP server since Composer's default
+`update` also audits the resolved lock. Neither tool gets
+`--ignore-platform-reqs`; the sweep already has to run inside devbox for
+`composer`/`php` to resolve at all, so both tools already see the same
+real PHP and extensions.
+
+A project's lock is one of:
+
+- **identical** — the two locks match once `_readme` and
+  `plugin-api-version` are dropped from both (Composer always writes its own
+  version banner into `_readme`, and the two tools' plugin API versions can
+  legitimately differ).
+- **differs** — a real difference; the first ten diff lines are listed.
+- **skipped** — no checkout, no `composer.lock` to seed the mirror
+  recording from, the mirror recording failed, or `composer update` itself
+  failed to write a lock.
+- **viv error** — `viv update` itself exited non-zero.
 
 ## Replaying a seed
 
