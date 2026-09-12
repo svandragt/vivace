@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::{Map, Value};
 
-use super::classmap::{ClassName, ScanKey, Sidecar, scan_paths};
+use super::classmap::{ClassMap, ClassName, ScanKey, Sidecar, scan_paths};
 use super::php::{Key, Php, export_bytes, export_static, export_str, loader_properties};
 use super::sort::sort_packages;
 
@@ -250,10 +250,20 @@ pub fn generate(input: &Input) -> Result<Generated> {
         setup_elapsed: std::time::Duration::ZERO,
         cache_write_elapsed: std::time::Duration::ZERO,
     };
-    let scan_started = std::time::Instant::now();
-    for dir in &autoloads.classmap {
-        scanner.scan(dir, None)?;
-    }
+    // Every classmap/PSR directory is gathered into one ordered task list
+    // before any of it is scanned (#198): `Scanner::scan_all` fans the
+    // filesystem walk out across threads, but the list's order is what the
+    // fold back into `scanner.map` follows, so building it up front keeps
+    // that order identical to this loop nest's, whatever order the threads
+    // themselves finish in.
+    let mut tasks: Vec<ScanTask> = autoloads
+        .classmap
+        .iter()
+        .map(|dir| ScanTask {
+            dir: dir.clone(),
+            psr: None,
+        })
+        .collect();
     if scan_psr {
         // Grouped by namespace, PSR-4 rules before PSR-0 within a namespace,
         // namespaces in reverse order (longest prefixes first).
@@ -277,11 +287,16 @@ pub fn generate(input: &Input) -> Result<Generated> {
                     if !is_dir {
                         continue;
                     }
-                    scanner.scan(&dir, Some((namespace, kind)))?;
+                    tasks.push(ScanTask {
+                        dir,
+                        psr: Some(((*namespace).to_string(), (*kind).to_string())),
+                    });
                 }
             }
         }
     }
+    let scan_started = std::time::Instant::now();
+    scanner.scan_all(&tasks)?;
     tracing::debug!(
         cache_hits = scanner.cache_hits,
         cache_misses = scanner.cache_misses,
@@ -751,6 +766,39 @@ fn strings(value: &Value) -> Vec<String> {
     }
 }
 
+/// One classmap or PSR directory queued for a scan: `dir` as written for a
+/// classmap entry (relative to the project) or, for a PSR rule, already an
+/// absolute normalised directory; `psr` is `(namespace, "psr-4"|"psr-0")`.
+/// Built up front by [`generate`] so [`Scanner::scan_all`] gets every
+/// directory in the exact order the old serial loop would have scanned them
+/// in.
+struct ScanTask {
+    dir: String,
+    psr: Option<(String, String)>,
+}
+
+/// A [`ScanTask`] once its cache has been checked: either the sidecar
+/// already had the answer, or the directory still needs [`scan_paths`] to
+/// walk it — the part `Scanner::scan_all` fans out across threads (#198).
+enum ScanOutcome {
+    Hit(ClassMap),
+    Miss,
+}
+
+/// A [`ScanTask`] after `Scanner::scan_all`'s sequential setup pass: the
+/// pieces its (possibly parallel) walk and its always-sequential fold each
+/// need, computed once so neither has to re-derive them.
+struct PreparedScan {
+    abs_dir: String,
+    psr: Option<(String, String)>,
+    /// The sidecar path plus this scan's cache key; `None` for a directory
+    /// with no store archive to key a cache on (root package, path/git
+    /// source, or one the store had no pointer for).
+    cache: Option<(PathBuf, ScanKey)>,
+    exclusion: Option<Regex>,
+    outcome: ScanOutcome,
+}
+
 /// Class map scanning across all rules with Composer's "avoid duplicate
 /// scans": a file that already yielded classes is not scanned again, so a
 /// broader rule cannot report the same file as ambiguous with itself.
@@ -834,144 +882,266 @@ impl ArchiveIndex {
 }
 
 impl Scanner<'_> {
-    /// `dir` is a classmap entry as written (relative to the project) or, for
-    /// PSR rules, an absolute normalised directory.
-    fn scan(&mut self, dir: &str, psr: Option<(&str, &str)>) -> Result<()> {
-        let setup_started = std::time::Instant::now();
-        let abs_dir = normalize_path(&if is_absolute(dir) {
-            dir.to_string()
-        } else {
-            format!("{}/{dir}", self.base)
-        });
-
-        let mut excluded: Vec<String> = self.excluded.to_vec();
-        // A PSR directory containing the vendor dir must not pull vendor
-        // classes into the root's namespace scan.
-        if psr.is_some() && self.vendor.contains(&format!("{abs_dir}/")) {
-            excluded.push(regex::escape(&format!("{}/", self.vendor)));
-        }
-        let exclusion = build_exclusion_regex(&abs_dir, &excluded, &mut self.regex_cache)?;
-
-        // Only a directory hardlinked from the store (never the root
-        // package, a path/git-source install, or one the store had no
-        // pointer for) has an archive to key a cache on.
-        let cache = self
-            .archives
-            .locate(&abs_dir)
-            .map(|(archive_dir, subpath)| {
-                let key = ScanKey {
-                    subpath,
-                    exclude: exclusion.as_ref().map(|r| r.as_str().to_string()),
-                    psr: psr.map(|(ns, kind)| (ns.to_string(), kind.to_string())),
-                };
-                (crate::store::archive_classmap_sidecar(archive_dir), key)
+    /// Run every queued [`ScanTask`] and fold the results into `self.map` in
+    /// task order (#198). Setup (the exclusion regex, the sidecar cache
+    /// lookup) touches `self` and stays a plain sequential pass; only the
+    /// cache misses' [`scan_paths`] walk — independent per directory, and
+    /// the dominant cost once the sidecar cache doesn't already have the
+    /// answer — fans out across threads capped at the core count, the same
+    /// `std::thread::scope` shape #193 used for archive extraction. The
+    /// fold that follows runs last, over the tasks in their original order:
+    /// which directory wins a duplicate class, and which file gets flagged
+    /// ambiguous, comes out exactly as the old one-`scan()`-per-directory
+    /// loop left it, whatever order the threads finished the walk in.
+    fn scan_all(&mut self, tasks: &[ScanTask]) -> Result<()> {
+        let mut prepared: Vec<PreparedScan> = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let psr = task
+                .psr
+                .as_ref()
+                .map(|(ns, kind)| (ns.as_str(), kind.as_str()));
+            let setup_started = std::time::Instant::now();
+            let abs_dir = normalize_path(&if is_absolute(&task.dir) {
+                task.dir.clone()
+            } else {
+                format!("{}/{}", self.base, task.dir)
             });
-        self.setup_elapsed += setup_started.elapsed();
-        let read_started = std::time::Instant::now();
-        // The sidecar itself is read (and parsed) at most once per archive
-        // per install, however many distinct keys that archive is scanned
-        // under — a `HashMap` entry, not a file read, on every key after
-        // the first (#77).
-        let cached = cache.as_ref().and_then(|(sidecar, key)| {
-            self.sidecars
-                .entry(sidecar.clone())
-                .or_insert_with(|| Sidecar::read(sidecar))
-                .get(key, Path::new(&abs_dir))
-        });
-        self.cache_read_elapsed += read_started.elapsed();
-        let found = if let Some(found) = cached {
-            self.cache_hits += 1;
-            found
-        } else {
-            self.cache_misses += 1;
-            let scan_started = std::time::Instant::now();
-            let found = scan_paths(Path::new(&abs_dir), exclusion.as_ref())?;
-            self.scan_paths_elapsed += scan_started.elapsed();
-            if let Some((sidecar, key)) = &cache {
-                // Best-effort: a failed write (read-only cache, permissions)
-                // must not fail the install that triggered it, only cost it
-                // a cache miss next time. Merges into whatever this archive's
-                // sidecar already held instead of overwriting it, so a
-                // different key already cached for the same archive doesn't
-                // get evicted (#77).
-                let write_started = std::time::Instant::now();
-                let _ = self
-                    .sidecars
+
+            let mut excluded: Vec<String> = self.excluded.to_vec();
+            // A PSR directory containing the vendor dir must not pull vendor
+            // classes into the root's namespace scan.
+            if psr.is_some() && self.vendor.contains(&format!("{abs_dir}/")) {
+                excluded.push(regex::escape(&format!("{}/", self.vendor)));
+            }
+            let exclusion = build_exclusion_regex(&abs_dir, &excluded, &mut self.regex_cache)?;
+
+            // Only a directory hardlinked from the store (never the root
+            // package, a path/git-source install, or one the store had no
+            // pointer for) has an archive to key a cache on.
+            let cache = self
+                .archives
+                .locate(&abs_dir)
+                .map(|(archive_dir, subpath)| {
+                    let key = ScanKey {
+                        subpath,
+                        exclude: exclusion.as_ref().map(|r| r.as_str().to_string()),
+                        psr: task.psr.clone(),
+                    };
+                    (crate::store::archive_classmap_sidecar(archive_dir), key)
+                });
+            self.setup_elapsed += setup_started.elapsed();
+
+            let read_started = std::time::Instant::now();
+            // The sidecar itself is read (and parsed) at most once per
+            // archive per install, however many distinct keys that archive
+            // is scanned under — a `HashMap` entry, not a file read, on
+            // every key after the first (#77).
+            let cached = cache.as_ref().and_then(|(sidecar, key)| {
+                self.sidecars
                     .entry(sidecar.clone())
                     .or_insert_with(|| Sidecar::read(sidecar))
-                    .insert_and_write(sidecar, key, Path::new(&abs_dir), &found);
-                self.cache_write_elapsed += write_started.elapsed();
+                    .get(key, Path::new(&abs_dir))
+            });
+            self.cache_read_elapsed += read_started.elapsed();
+
+            let outcome = if let Some(found) = cached {
+                self.cache_hits += 1;
+                ScanOutcome::Hit(found)
+            } else {
+                self.cache_misses += 1;
+                ScanOutcome::Miss
+            };
+            prepared.push(PreparedScan {
+                abs_dir,
+                psr: task.psr.clone(),
+                cache,
+                exclusion,
+                outcome,
+            });
+        }
+
+        let miss_indices: Vec<usize> = prepared
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| matches!(p.outcome, ScanOutcome::Miss))
+            .map(|(index, _)| index)
+            .collect();
+        // ponytail: stride scheduling (`worker`, `worker + workers`, ...) is
+        // a fixed partition decided before any walk starts, so one worker
+        // that draws the single largest directory in the batch sets the
+        // floor for the whole parallel phase on its own — measured on
+        // bench/laravel, where `laravel/framework` dominates, this is worth
+        // roughly 1.4x rather than anywhere near the core count. Upgrade to
+        // work-stealing (a shared `AtomicUsize` next-index, as
+        // `install::link_archives` already does) or size-ordered scheduling
+        // (largest directories dispatched first) if a profile ever shows
+        // that tail actually dominating a real workload.
+        let mut scanned: HashMap<usize, ClassMap> = if miss_indices.is_empty() {
+            HashMap::new()
+        } else {
+            let workers = std::thread::available_parallelism()
+                .map_or(1, std::num::NonZero::get)
+                .min(miss_indices.len());
+            // Tripped by the first directory that fails to walk, so the
+            // other workers stop picking up new misses instead of grinding
+            // through every remaining one.
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            let scan_started = std::time::Instant::now();
+            let mut results: Vec<(usize, Result<ClassMap>)> = std::thread::scope(|scope| {
+                (0..workers)
+                    .map(|worker| {
+                        let miss_indices = &miss_indices;
+                        let prepared = &prepared;
+                        let stop = &stop;
+                        scope.spawn(move || -> Vec<(usize, Result<ClassMap>)> {
+                            let mut out = Vec::new();
+                            let mut i = worker;
+                            while i < miss_indices.len() {
+                                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                                    break;
+                                }
+                                let index = miss_indices[i];
+                                let scan = &prepared[index];
+                                let found =
+                                    scan_paths(Path::new(&scan.abs_dir), scan.exclusion.as_ref());
+                                if found.is_err() {
+                                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                out.push((index, found));
+                                i += workers;
+                            }
+                            out
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .flat_map(|handle| handle.join().expect("classmap scan worker thread panicked"))
+                    .collect()
+            });
+            self.scan_paths_elapsed += scan_started.elapsed();
+
+            // `stop` can trip once a high-index worker fails while a
+            // lower-index one, not yet scheduled onto a core, is still
+            // sitting at its very first position and never gets to fill it
+            // in — so a *missing* index is not necessarily the earliest
+            // failure, and the fold below cannot tell "skipped because of
+            // stop" from "not reached yet" apart just by what's absent.
+            // Bail out here instead, picking the lowest-index error
+            // directly out of `results`, before the fold ever runs: that
+            // matches what the old serial loop's first `?` would have
+            // returned, and once this returns, every miss index the fold
+            // sees is guaranteed present and `Ok`.
+            results.sort_by_key(|(index, _)| *index);
+            if let Some(failed) = results.iter().position(|(_, result)| result.is_err()) {
+                let (_, result) = results.swap_remove(failed);
+                return Err(result.expect_err("position() only matches an Err result"));
             }
-            found
+            results
+                .into_iter()
+                .map(|(index, result)| (index, result.expect("errors were returned above")))
+                .collect()
         };
 
-        let merge_started = std::time::Instant::now();
-        let mut per_file: BTreeMap<PathBuf, Vec<ClassName>> = BTreeMap::new();
-        for (class, path) in &found.map {
-            per_file
-                .entry(path.clone())
-                .or_default()
-                .push(class.clone());
-        }
-        for (class, _, other) in &found.ambiguous {
-            per_file
-                .entry(other.clone())
-                .or_default()
-                .push(class.clone());
-        }
-
-        for (file, classes) in per_file {
-            // `scan_paths` already canonicalized this file to dedupe
-            // symlinked duplicates; reuse it instead of doing so again.
-            let real = found
-                .canonical
-                .get(&file)
-                .cloned()
-                .unwrap_or_else(|| file.clone());
-            if self.scanned.contains(&real) {
-                continue;
-            }
-            let file_path = normalize_path(&path_str(&file));
-            let classes = match psr {
-                Some((namespace, kind)) => {
-                    let (valid, rejected) =
-                        filter_by_namespace(&classes, &file_path, namespace, kind, &abs_dir);
-                    if valid.is_empty() {
-                        if !file_path.starts_with(self.vendor) {
-                            let short = |p: &str| {
-                                p.strip_prefix(self.base)
-                                    .map_or_else(|| p.to_string(), |r| format!(".{r}"))
-                            };
-                            for class in rejected {
-                                self.warnings.push(format!(
-                                    "Class {} located in {} does not comply with {kind} autoloading standard (rule: {namespace} => {}). Skipping.",
-                                    lossy(&class),
-                                    short(&file_path),
-                                    short(&abs_dir)
-                                ));
-                            }
-                        }
-                        continue;
+        for (index, scan) in prepared.into_iter().enumerate() {
+            let found = match scan.outcome {
+                ScanOutcome::Hit(found) => found,
+                ScanOutcome::Miss => {
+                    let found = scanned
+                        .remove(&index)
+                        .expect("every miss index was scanned and any error already returned");
+                    if let Some((sidecar, key)) = &scan.cache {
+                        // Best-effort: a failed write (read-only cache,
+                        // permissions) must not fail the install that
+                        // triggered it, only cost it a cache miss next time.
+                        // Merges into whatever this archive's sidecar
+                        // already held instead of overwriting it, so a
+                        // different key already cached for the same archive
+                        // doesn't get evicted (#77).
+                        let write_started = std::time::Instant::now();
+                        let _ = self
+                            .sidecars
+                            .entry(sidecar.clone())
+                            .or_insert_with(|| Sidecar::read(sidecar))
+                            .insert_and_write(sidecar, key, Path::new(&scan.abs_dir), &found);
+                        self.cache_write_elapsed += write_started.elapsed();
                     }
-                    valid
+                    found
                 }
-                None => classes,
             };
-            self.scanned.insert(real);
-            for class in classes {
-                match self.map.get(&class) {
-                    None => {
-                        self.map.insert(class, file_path.clone());
+            let psr = scan
+                .psr
+                .as_ref()
+                .map(|(ns, kind)| (ns.as_str(), kind.as_str()));
+            let abs_dir = &scan.abs_dir;
+
+            let merge_started = std::time::Instant::now();
+            let mut per_file: BTreeMap<PathBuf, Vec<ClassName>> = BTreeMap::new();
+            for (class, path) in &found.map {
+                per_file
+                    .entry(path.clone())
+                    .or_default()
+                    .push(class.clone());
+            }
+            for (class, _, other) in &found.ambiguous {
+                per_file
+                    .entry(other.clone())
+                    .or_default()
+                    .push(class.clone());
+            }
+
+            for (file, classes) in per_file {
+                // `scan_paths` already canonicalized this file to dedupe
+                // symlinked duplicates; reuse it instead of doing so again.
+                let real = found
+                    .canonical
+                    .get(&file)
+                    .cloned()
+                    .unwrap_or_else(|| file.clone());
+                if self.scanned.contains(&real) {
+                    continue;
+                }
+                let file_path = normalize_path(&path_str(&file));
+                let classes = match psr {
+                    Some((namespace, kind)) => {
+                        let (valid, rejected) =
+                            filter_by_namespace(&classes, &file_path, namespace, kind, abs_dir);
+                        if valid.is_empty() {
+                            if !file_path.starts_with(self.vendor) {
+                                let short = |p: &str| {
+                                    p.strip_prefix(self.base)
+                                        .map_or_else(|| p.to_string(), |r| format!(".{r}"))
+                                };
+                                for class in rejected {
+                                    self.warnings.push(format!(
+                                        "Class {} located in {} does not comply with {kind} autoloading standard (rule: {namespace} => {}). Skipping.",
+                                        lossy(&class),
+                                        short(&file_path),
+                                        short(abs_dir)
+                                    ));
+                                }
+                            }
+                            continue;
+                        }
+                        valid
                     }
-                    Some(existing) if *existing != file_path => self.warnings.push(format!(
-                        "Warning: Ambiguous class resolution, \"{}\" was found in both \"{existing}\" and \"{file_path}\", the first will be used.",
-                        lossy(&class)
-                    )),
-                    Some(_) => {}
+                    None => classes,
+                };
+                self.scanned.insert(real);
+                for class in classes {
+                    match self.map.get(&class) {
+                        None => {
+                            self.map.insert(class, file_path.clone());
+                        }
+                        Some(existing) if *existing != file_path => self.warnings.push(format!(
+                            "Warning: Ambiguous class resolution, \"{}\" was found in both \"{existing}\" and \"{file_path}\", the first will be used.",
+                            lossy(&class)
+                        )),
+                        Some(_) => {}
+                    }
                 }
             }
+            self.merge_elapsed += merge_started.elapsed();
         }
-        self.merge_elapsed += merge_started.elapsed();
         Ok(())
     }
 }
@@ -1730,5 +1900,70 @@ mod tests {
     fn strips_root_target_dir_prefix() {
         assert_eq!(strip_target_dir("Main/Foo/src", "Main/Foo/"), "src");
         assert_eq!(strip_target_dir("lib", "Main/Foo/"), "lib");
+    }
+
+    fn empty_scanner<'a>(base: &'a str, vendor: &'a str) -> Scanner<'a> {
+        Scanner {
+            base,
+            vendor,
+            excluded: &[],
+            archives: ArchiveIndex {
+                entries: Vec::new(),
+            },
+            map: BTreeMap::new(),
+            scanned: HashSet::new(),
+            warnings: Vec::new(),
+            regex_cache: HashMap::new(),
+            sidecars: HashMap::new(),
+            cache_hits: 0,
+            cache_misses: 0,
+            scan_paths_elapsed: std::time::Duration::ZERO,
+            cache_read_elapsed: std::time::Duration::ZERO,
+            merge_elapsed: std::time::Duration::ZERO,
+            setup_elapsed: std::time::Duration::ZERO,
+            cache_write_elapsed: std::time::Duration::ZERO,
+        }
+    }
+
+    /// #198: with no store archive backing any of these directories,
+    /// `ArchiveIndex::locate` never matches, so every task below is a cache
+    /// miss and `scan_all` fans every one of them out across its thread
+    /// pool. One directory does not exist, so its `scan_paths` call errors;
+    /// the rest are real, empty directories that scan cleanly. More tasks
+    /// than the machine has cores gives the pool's `stop` short-circuit
+    /// room to skip a later index on some other worker before that worker
+    /// ever reaches it — the exact scheduling `scan_all`'s fold used to
+    /// assume away and panic on (`.expect("every miss index was scanned
+    /// exactly once")`). Which indices actually get skipped is scheduling-
+    /// dependent and not asserted directly; what matters, and is asserted,
+    /// is that the call still returns the error instead of panicking.
+    #[test]
+    fn scan_all_returns_an_error_instead_of_panicking_when_a_directory_is_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path().to_string_lossy().into_owned();
+        let vendor = format!("{base}/vendor");
+
+        let mut tasks = Vec::new();
+        for i in 0..64 {
+            let sub = format!("ok-{i}");
+            std::fs::create_dir(dir.path().join(&sub)).expect("create ok dir");
+            tasks.push(ScanTask {
+                dir: format!("{base}/{sub}"),
+                psr: None,
+            });
+        }
+        tasks.push(ScanTask {
+            dir: format!("{base}/does-not-exist"),
+            psr: None,
+        });
+
+        let mut scanner = empty_scanner(&base, &vendor);
+        let error = scanner
+            .scan_all(&tasks)
+            .expect_err("a missing directory should error, not panic");
+        assert!(
+            error.to_string().contains("Could not scan for classes"),
+            "unexpected error: {error}"
+        );
     }
 }
