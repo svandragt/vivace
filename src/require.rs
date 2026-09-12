@@ -339,6 +339,9 @@ pub(crate) fn partial_update(
         audit: &audit_config,
         no_blocking,
         prefetched: None,
+        // #197: same knob and cache dir `update::solve` already resolves.
+        cache_dir: Some(&cache_dir),
+        metadata_ttl,
     });
 
     // A brand new `composer.json` (no lock yet) cannot do a partial update

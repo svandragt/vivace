@@ -378,6 +378,10 @@ async fn solve(
         audit: &audit_config,
         no_blocking,
         prefetched: None,
+        // #197: same knob and cache dir #191 already resolved above, so a
+        // second warm update inside the window skips this POST too.
+        cache_dir: Some(&cache_dir),
+        metadata_ttl,
     });
 
     if full_update {

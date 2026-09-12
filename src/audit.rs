@@ -23,6 +23,7 @@ use clap::{Args, ValueEnum};
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::fetch::Fetcher;
 use crate::lock::{AbandonedPolicy, AuditIgnore, Config, read_lock};
@@ -162,7 +163,18 @@ pub async fn audit<T: AdvisoriesTransport>(
         }
     }
 
-    let response = fetch_advisories_from(transport, endpoints, &names).await?;
+    // #197: `viv audit` answers "am I affected right now", so it always
+    // posts -- passing `Duration::ZERO` (rather than reusing whatever cache
+    // dir the caller has) skips the on-disk cache outright, the same way a
+    // `--metadata-ttl` of 0 always revalidates a `/p2/` provider file.
+    let response = fetch_advisories_from(
+        transport,
+        endpoints,
+        &names,
+        None,
+        std::time::Duration::ZERO,
+    )
+    .await?;
     let (advisories, ignored_advisories) = process_advisories(
         packages,
         &response,
@@ -237,18 +249,6 @@ impl AdvisoriesTransport for HttpTransport<'_> {
     }
 }
 
-/// `pub(crate)`: `solver::pool_builder`'s update/require pool filter (#175)
-/// posts through this same function, so an offline run or an auth failure
-/// fails the exact same way `viv audit`'s own POST does.
-pub(crate) async fn fetch_advisories<T: AdvisoriesTransport>(
-    transport: &T,
-    url: &Url,
-    names: &[String],
-) -> Result<AdvisoriesResponse> {
-    let body = transport.post_advisories(url, names).await?;
-    serde_json::from_value(body).context("parsing security-advisories response")
-}
-
 /// Every `endpoints` entry (one repository's own advertised `api-url`,
 /// #182) asked with the *same*, un-narrowed `names` list, then merged into
 /// one response (`RepositorySet::getSecurityAdvisoriesForConstraints`'s
@@ -261,10 +261,18 @@ pub(crate) async fn fetch_advisories<T: AdvisoriesTransport>(
 /// call). An empty `endpoints` makes no request at all and returns an empty
 /// response, matching `viv audit`'s and the pool filter's own
 /// no-repository-advertises behaviour.
+///
+/// `cache_dir`/`ttl` are #197's opt-in freshness window, the same
+/// `--metadata-ttl` knob #191 gave `/p2/` provider files: `ttl` above zero
+/// serves a still-fresh cached response for an endpoint+names pair without
+/// a request at all. `viv audit` always passes `Duration::ZERO` here (its
+/// own call site), so this is a no-op for it regardless of `cache_dir`.
 pub(crate) async fn fetch_advisories_from<T: AdvisoriesTransport>(
     transport: &T,
     endpoints: &[String],
     names: &[String],
+    cache_dir: Option<&Path>,
+    ttl: std::time::Duration,
 ) -> Result<AdvisoriesResponse> {
     let mut merged = AdvisoriesResponse {
         advisories: HashMap::new(),
@@ -272,12 +280,93 @@ pub(crate) async fn fetch_advisories_from<T: AdvisoriesTransport>(
     for endpoint in endpoints {
         let url = Url::parse(endpoint)
             .with_context(|| format!("{endpoint:?}: invalid security-advisories api-url"))?;
-        let response = fetch_advisories(transport, &url, names).await?;
+        let response = fetch_advisories_cached(transport, &url, names, cache_dir, ttl).await?;
         for (name, mut list) in response.advisories {
             merged.advisories.entry(name).or_default().append(&mut list);
         }
     }
     Ok(merged)
+}
+
+/// One endpoint's response, served from `<cache_dir>/security-advisories/`
+/// while a cached entry for this `url`+`names` pair is younger than `ttl`
+/// (`ttl` zero, the default and `viv audit`'s own always-zero, skips the
+/// cache outright rather than reading a fresh-but-empty window) --
+/// `get_cached_json`'s own `max_age` mtime check (`repository.rs`, #191)
+/// does the same thing for a `/p2/` provider file. A cache miss, an
+/// unreadable file, or a body that fails to parse all just fall through to
+/// the request: a corrupt advisory cache is never a reason to fail an
+/// update. Caching the response afterwards is best-effort for the same
+/// reason -- a write failure doesn't undo a request that already succeeded.
+///
+/// A cache miss still posts through the same `transport`
+/// `solver::pool_builder`'s update/require pool filter (#175) and `viv
+/// audit` share, so an offline run or an auth failure fails the exact same
+/// way either caller's own POST always did.
+async fn fetch_advisories_cached<T: AdvisoriesTransport>(
+    transport: &T,
+    url: &Url,
+    names: &[String],
+    cache_dir: Option<&Path>,
+    ttl: std::time::Duration,
+) -> Result<AdvisoriesResponse> {
+    let cache_path = if ttl.is_zero() {
+        None
+    } else {
+        cache_dir.map(|dir| advisories_cache_path(dir, url, names))
+    };
+
+    if let Some(path) = &cache_path
+        && let Some(response) = read_fresh_advisories_cache(path, ttl)
+    {
+        return Ok(response);
+    }
+
+    let body = transport.post_advisories(url, names).await?;
+    if let Some(path) = &cache_path {
+        let _ = write_advisories_cache(path, &body);
+    }
+    serde_json::from_value(body).context("parsing security-advisories response")
+}
+
+/// Cache key: `url` plus the sorted, deduplicated `names` list, sha256-hashed
+/// into a filename under `<cache_dir>/security-advisories/` -- the same
+/// digest-to-filename idiom `repository.rs`'s own content-addressed provider
+/// cache uses (`store::hex`), so two different package sets against the same
+/// endpoint never read each other's entry.
+fn advisories_cache_path(cache_dir: &Path, url: &Url, names: &[String]) -> PathBuf {
+    let mut sorted = names.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut hasher = Sha256::new();
+    hasher.update(url.as_str().as_bytes());
+    hasher.update(b"\n");
+    hasher.update(sorted.join(",").as_bytes());
+    cache_dir
+        .join("security-advisories")
+        .join(crate::store::hex(hasher.finalize()))
+}
+
+fn read_fresh_advisories_cache(
+    path: &Path,
+    ttl: std::time::Duration,
+) -> Option<AdvisoriesResponse> {
+    let modified = fs_err::metadata(path).ok()?.modified().ok()?;
+    let age = std::time::SystemTime::now().duration_since(modified).ok()?;
+    if age > ttl {
+        return None;
+    }
+    let bytes = fs_err::read(path).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    serde_json::from_value(value).ok()
+}
+
+fn write_advisories_cache(path: &Path, body: &Value) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs_err::create_dir_all(parent)?;
+    }
+    fs_err::write(path, serde_json::to_vec(body)?)?;
+    Ok(())
 }
 
 /// `SecurityAdvisoryPoolFilter::getMatchingAdvisories`, minus the caller's
@@ -919,7 +1008,167 @@ fn warn_out(message: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+
+    /// Counts every POST, so a test can assert a cache hit skipped one
+    /// entirely (`tests/update.rs`'s own `AdvisoriesFixture` does the same
+    /// at the integration level).
+    struct CountingAdvisories {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingAdvisories {
+        fn new() -> Self {
+            CountingAdvisories {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl AdvisoriesTransport for CountingAdvisories {
+        #[allow(
+            clippy::unused_async_trait_impl,
+            reason = "the fixture answers synchronously; the trait is async for production"
+        )]
+        async fn post_advisories(&self, _url: &Url, _packages: &[String]) -> Result<Value> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(serde_json::json!({"advisories": {}}))
+        }
+    }
+
+    fn test_url() -> Url {
+        Url::parse("https://example.test/api/security-advisories/").unwrap()
+    }
+
+    /// #197's headline requirement: a second call within `ttl` for the same
+    /// endpoint+names reads the cache instead of posting again.
+    #[tokio::test]
+    async fn fetch_advisories_cached_serves_a_fresh_entry_without_a_request() {
+        let cache = tempfile::tempdir().unwrap();
+        let transport = CountingAdvisories::new();
+        let names = vec!["vendor/pkg".to_string()];
+        let ttl = Duration::from_secs(3600);
+
+        fetch_advisories_cached(&transport, &test_url(), &names, Some(cache.path()), ttl)
+            .await
+            .unwrap();
+        assert_eq!(transport.calls(), 1);
+
+        fetch_advisories_cached(&transport, &test_url(), &names, Some(cache.path()), ttl)
+            .await
+            .unwrap();
+        assert_eq!(transport.calls(), 1, "second call inside ttl must not post");
+    }
+
+    /// #197's default: `ttl` zero must behave exactly like today, a request
+    /// every time, even with a cache dir available and a prior entry on
+    /// disk from some other call.
+    #[tokio::test]
+    async fn fetch_advisories_cached_ttl_zero_always_requests() {
+        let cache = tempfile::tempdir().unwrap();
+        let transport = CountingAdvisories::new();
+        let names = vec!["vendor/pkg".to_string()];
+
+        fetch_advisories_cached(
+            &transport,
+            &test_url(),
+            &names,
+            Some(cache.path()),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        fetch_advisories_cached(
+            &transport,
+            &test_url(),
+            &names,
+            Some(cache.path()),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert_eq!(transport.calls(), 2);
+    }
+
+    /// Cache key: endpoint plus the sorted, deduplicated package-name list --
+    /// a different package set against the same endpoint must never read
+    /// another set's entry.
+    #[tokio::test]
+    async fn fetch_advisories_cached_keys_on_endpoint_and_sorted_names() {
+        let cache = tempfile::tempdir().unwrap();
+        let transport = CountingAdvisories::new();
+        let ttl = Duration::from_secs(3600);
+
+        fetch_advisories_cached(
+            &transport,
+            &test_url(),
+            &["vendor/a".to_string()],
+            Some(cache.path()),
+            ttl,
+        )
+        .await
+        .unwrap();
+        fetch_advisories_cached(
+            &transport,
+            &test_url(),
+            &["vendor/b".to_string()],
+            Some(cache.path()),
+            ttl,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport.calls(),
+            2,
+            "a different name list must not share a cache entry"
+        );
+
+        // Sorting/deduplication makes the key order-independent: the same
+        // two names, reversed and doubled, still hit the first entry above.
+        fetch_advisories_cached(
+            &transport,
+            &test_url(),
+            &["vendor/a".to_string(), "vendor/a".to_string()],
+            Some(cache.path()),
+            ttl,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            transport.calls(),
+            2,
+            "same sorted names must reuse the cached entry"
+        );
+    }
+
+    /// A cache miss, an unreadable file, or a body that fails to parse all
+    /// just fall back to the request -- a corrupt advisory cache must never
+    /// fail an update.
+    #[tokio::test]
+    async fn fetch_advisories_cached_falls_back_when_the_cache_file_is_corrupt() {
+        let cache = tempfile::tempdir().unwrap();
+        let transport = CountingAdvisories::new();
+        let names = vec!["vendor/pkg".to_string()];
+        let ttl = Duration::from_secs(3600);
+        let path = advisories_cache_path(cache.path(), &test_url(), &names);
+        fs_err::create_dir_all(path.parent().unwrap()).unwrap();
+        fs_err::write(&path, b"not json").unwrap();
+
+        fetch_advisories_cached(&transport, &test_url(), &names, Some(cache.path()), ttl)
+            .await
+            .unwrap();
+        assert_eq!(
+            transport.calls(),
+            1,
+            "a corrupt cache entry must fall back to the request"
+        );
+    }
 
     #[test]
     fn render_advisory_table_matches_composers_column_widths() {

@@ -96,6 +96,18 @@ pub struct AdvisoryFilter<'a, A: AdvisoriesTransport> {
     /// names, #90's same seed). `filter_advisories` only fetches the pool's
     /// names that aren't in `.0`, which is normally none of them.
     pub prefetched: Option<(HashSet<String>, AdvisoriesResponse)>,
+    /// #197: the same cache dir `build_partial_seeded`'s own `cache_dir`
+    /// argument names, for `audit::fetch_advisories_from`'s on-disk
+    /// advisories cache. `None` (a fresh solve with nowhere to cache, or a
+    /// caller that never had one) just means every request below still
+    /// goes to the network, same as `metadata_ttl` zero already would.
+    pub cache_dir: Option<&'a Path>,
+    /// #197: `crate::update::metadata_ttl`'s resolved freshness window --
+    /// `update`/`require` pass their own configured value through here;
+    /// `viv audit` never builds a filter with this above zero, since its own
+    /// call to `fetch_advisories_from` (`audit.rs`) passes `Duration::ZERO`
+    /// directly instead.
+    pub metadata_ttl: std::time::Duration,
 }
 
 /// `SecurityAdvisoryPoolFilter::filter`'s BC-audit-config path: drops a
@@ -162,7 +174,14 @@ async fn filter_advisories<A: AdvisoriesTransport>(
 
     let remainder_response =
         if filter.audit.block_insecure && !filter.endpoints.is_empty() && !remainder.is_empty() {
-            match audit::fetch_advisories_from(filter.transport, filter.endpoints, &remainder).await
+            match audit::fetch_advisories_from(
+                filter.transport,
+                filter.endpoints,
+                &remainder,
+                filter.cache_dir,
+                filter.metadata_ttl,
+            )
+            .await
             {
                 Ok(response) => Some(response),
                 Err(err) => {
@@ -544,7 +563,13 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
             let filter = advisories
                 .as_ref()
                 .expect("prefetch_names is only set from an existing advisories filter");
-            audit::fetch_advisories_from(filter.transport, filter.endpoints, seed)
+            audit::fetch_advisories_from(
+                filter.transport,
+                filter.endpoints,
+                seed,
+                filter.cache_dir,
+                filter.metadata_ttl,
+            )
         })
         .into();
 
@@ -1284,6 +1309,8 @@ mod tests {
             audit: &audit,
             no_blocking: false,
             prefetched: None,
+            cache_dir: None,
+            metadata_ttl: std::time::Duration::ZERO,
         };
 
         let kept = filter_advisories(packages, 0, &filter).await.unwrap();
@@ -1314,6 +1341,8 @@ mod tests {
             audit: &audit,
             no_blocking: false,
             prefetched: None,
+            cache_dir: None,
+            metadata_ttl: std::time::Duration::ZERO,
         };
 
         let kept = filter_advisories(packages, 0, &filter).await.unwrap();
@@ -1364,6 +1393,8 @@ mod tests {
             audit: &audit,
             no_blocking: false,
             prefetched: Some((covering_both, empty_advisories_response())),
+            cache_dir: None,
+            metadata_ttl: std::time::Duration::ZERO,
         };
         let packages = vec![
             package("vendor/a", "1.0.0", false),
@@ -1385,6 +1416,8 @@ mod tests {
             audit: &audit,
             no_blocking: false,
             prefetched: Some((covering_one, empty_advisories_response())),
+            cache_dir: None,
+            metadata_ttl: std::time::Duration::ZERO,
         };
         let packages = vec![
             package("vendor/a", "1.0.0", false),

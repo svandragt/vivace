@@ -164,9 +164,12 @@ async fn ttl_run_lock_is_byte_identical_to_a_revalidated_run() {
 
 /// A fixture-served `packagist.org/api/security-advisories/` response,
 /// the same `AdvisoriesTransport` seam `tests/audit.rs`'s own
-/// `FixtureTransport` uses.
+/// `FixtureTransport` uses. `calls` counts every POST, #197's own tests
+/// below assert on it directly (`tests/audit.rs`'s `FixtureTransport` does
+/// the same for `viv audit`'s own always-network test).
 struct AdvisoriesFixture {
     body: Value,
+    calls: std::sync::Mutex<usize>,
 }
 
 impl AdvisoriesFixture {
@@ -178,7 +181,12 @@ impl AdvisoriesFixture {
         .unwrap();
         AdvisoriesFixture {
             body: serde_json::from_str(&body).unwrap(),
+            calls: std::sync::Mutex::new(0),
         }
+    }
+
+    fn calls(&self) -> usize {
+        *self.calls.lock().unwrap()
     }
 }
 
@@ -193,6 +201,7 @@ impl vivace::audit::AdvisoriesTransport for AdvisoriesFixture {
         _url: &reqwest::Url,
         _packages: &[String],
     ) -> anyhow::Result<Value> {
+        *self.calls.lock().unwrap() += 1;
         Ok(self.body.clone())
     }
 }
@@ -234,6 +243,8 @@ async fn resolved_monolog_version(no_blocking: bool, ignore: vivace::lock::Audit
         audit: &audit,
         no_blocking,
         prefetched: None,
+        cache_dir: None,
+        metadata_ttl: Duration::ZERO,
     };
     let result = solver::solve_update_seeded(
         &repo,
@@ -284,6 +295,139 @@ async fn update_ignored_advisory_id_picks_the_covered_version() {
     )
     .await;
     assert_eq!(version, "3.11.0");
+}
+
+/// #197: same solve `resolved_monolog_version` drives, but against a
+/// caller-owned cache dir and an explicit `metadata_ttl`, so a second call
+/// can replay it and prove the advisories POST was skipped.
+async fn solve_security_advisory_fixture(
+    cache: &Path,
+    metadata_ttl: Duration,
+    advisories_transport: &AdvisoriesFixture,
+) {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/security-advisory");
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache, &transport)
+        .await
+        .unwrap();
+    let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
+    let root: Value = serde_json::from_slice(&composer_json).unwrap();
+
+    let audit = vivace::lock::AuditConfig::default();
+    let endpoints = advertised_endpoints();
+    let filter = vivace::solver::pool_builder::AdvisoryFilter {
+        transport: advisories_transport,
+        endpoints: &endpoints,
+        audit: &audit,
+        no_blocking: false,
+        prefetched: None,
+        cache_dir: Some(cache),
+        metadata_ttl,
+    };
+    solver::solve_update_seeded(
+        &repo,
+        &root,
+        false,
+        false,
+        &[],
+        HashMap::new(),
+        Some(filter),
+        Some(cache),
+    )
+    .await
+    .unwrap();
+}
+
+/// #197: a second warm `viv update` inside `--metadata-ttl`'s window must
+/// make zero requests of any kind, not just skip the `/p2/` closure #191
+/// already covered -- the advisories POST is the one this issue closes.
+#[tokio::test]
+async fn second_warm_update_inside_the_window_makes_no_advisory_request() {
+    let cache = tempfile::tempdir().unwrap();
+    let advisories_transport = AdvisoriesFixture::load();
+    let ttl = Duration::from_secs(3600);
+
+    solve_security_advisory_fixture(cache.path(), ttl, &advisories_transport).await;
+    assert_eq!(advisories_transport.calls(), 1, "first update always posts");
+
+    solve_security_advisory_fixture(cache.path(), ttl, &advisories_transport).await;
+    assert_eq!(
+        advisories_transport.calls(),
+        1,
+        "second update inside the window must reuse the cached response"
+    );
+}
+
+/// #197's default: `--metadata-ttl` unset (`Duration::ZERO`) must keep
+/// today's behaviour byte for byte -- a request every time, never served
+/// from whatever the previous run happened to leave on disk.
+#[tokio::test]
+async fn default_ttl_zero_still_requests_the_advisories_every_time() {
+    let cache = tempfile::tempdir().unwrap();
+    let advisories_transport = AdvisoriesFixture::load();
+
+    solve_security_advisory_fixture(cache.path(), Duration::ZERO, &advisories_transport).await;
+    assert_eq!(advisories_transport.calls(), 1);
+
+    solve_security_advisory_fixture(cache.path(), Duration::ZERO, &advisories_transport).await;
+    assert_eq!(
+        advisories_transport.calls(),
+        2,
+        "ttl 0 is always-revalidate, matching today's behaviour"
+    );
+}
+
+/// #197's own load-bearing test: `viv audit` answers "am I affected right
+/// now", so it must always POST, even when the update path has just warmed
+/// the on-disk advisories cache for this exact endpoint and package list
+/// with a huge `--metadata-ttl` -- serving that answer from a cached feed
+/// would be wrong regardless of how fresh it is.
+#[tokio::test]
+async fn audit_still_requests_even_with_a_warm_advisories_cache_and_a_large_ttl() {
+    let cache = tempfile::tempdir().unwrap();
+    let advisories_transport = AdvisoriesFixture::load();
+
+    // Warm the update path's own on-disk cache first, same transport.
+    solve_security_advisory_fixture(
+        cache.path(),
+        Duration::from_hours(24),
+        &advisories_transport,
+    )
+    .await;
+    assert_eq!(advisories_transport.calls(), 1, "the update warm-up posts");
+
+    let packages = vec![vivace::audit::AuditPackage {
+        name: "monolog/monolog".to_string(),
+        version: "3.11.0".to_string(),
+        abandoned: None,
+    }];
+    let config = vivace::lock::Config::default();
+    let endpoints = advertised_endpoints();
+    let audit_args = vivace::audit::AuditArgs {
+        no_dev: false,
+        format: vivace::audit::Format::Plain,
+        locked: true,
+        abandoned: None,
+        ignore_severity: Vec::new(),
+        project_dir: PathBuf::from("."),
+    };
+    vivace::audit::audit(
+        &audit_args,
+        &packages,
+        &config,
+        &endpoints,
+        &advisories_transport,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        advisories_transport.calls(),
+        2,
+        "viv audit must always POST, never reuse the update path's warm cache"
+    );
 }
 
 /// #182: serves the shared Packagist fixture's own `packages.json`
@@ -361,6 +505,8 @@ async fn update_makes_no_advisory_request_when_no_repository_advertises() {
         audit: &audit,
         no_blocking: false,
         prefetched: None,
+        cache_dir: None,
+        metadata_ttl: Duration::ZERO,
     };
     let result = solver::solve_update_seeded(
         &repo,
@@ -451,6 +597,8 @@ async fn update_does_not_panic_when_the_advisory_filter_drops_an_aliased_version
         audit: &audit,
         no_blocking: false,
         prefetched: None,
+        cache_dir: None,
+        metadata_ttl: Duration::ZERO,
     };
     let result = solver::solve_update_seeded(
         &repo,
