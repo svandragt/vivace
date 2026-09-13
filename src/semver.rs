@@ -44,7 +44,19 @@ pub fn normalize(version: &str) -> Result<NormalizedVersion> {
 }
 
 /// A parsed version constraint (`VersionParser::parseConstraints`).
-pub struct Constraint(Box<dyn semver_php::Constraint>);
+/// `compiled` (#208): the same numeric-interval fast path
+/// [`CompiledConstraint`] gives `pool_optimizer.rs`, built lazily on first
+/// use instead of by a caller-side wrapper — `repository::test_candidate`'s
+/// hot walk has no natural "compile once up front" point the way
+/// `pool_optimizer::optimize` does (constraints arrive one at a time as
+/// `ClosureWalk::discover` widens a name's set), but every distinct
+/// constraint *text* is already a single shared `Arc<Constraint>` via
+/// `solver::ConstraintCache`, so caching on `self` still compiles each one
+/// exactly once.
+pub struct Constraint {
+    inner: Box<dyn semver_php::Constraint>,
+    compiled: std::sync::OnceLock<CompiledConstraint>,
+}
 
 impl Constraint {
     /// Whether `version` satisfies this constraint (`Semver::satisfies`:
@@ -59,13 +71,24 @@ impl Constraint {
     /// keep one.
     pub(crate) fn matches_str(&self, version: &str) -> bool {
         let point = SingleConstraint::new(Operator::Eq, version);
-        self.0.matches(&point)
+        self.inner.matches(&point)
+    }
+
+    /// The [`CompiledConstraint`] fast path, compiled on first call and
+    /// reused after: `None` for a branch [`VersionKey`], same contract as
+    /// [`CompiledConstraint::matches`] itself — the caller falls back to
+    /// [`Constraint::matches_str`]/[`Constraint::matches`] for that case,
+    /// same as `pool_optimizer.rs` already does.
+    pub(crate) fn matches_key(&self, key: &VersionKey) -> Option<bool> {
+        self.compiled
+            .get_or_init(|| CompiledConstraint::compile(self))
+            .matches(key)
     }
 }
 
 impl std::fmt::Display for Constraint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.inner)
     }
 }
 
@@ -73,7 +96,10 @@ impl std::fmt::Display for Constraint {
 pub fn parse_constraint(spec: &str) -> Result<Constraint> {
     reject_non_ascii(spec)?;
     VersionParser::parse_constraints(spec)
-        .map(Constraint)
+        .map(|inner| Constraint {
+            inner,
+            compiled: std::sync::OnceLock::new(),
+        })
         .with_context(|| format!("parsing version constraint {spec:?}"))
 }
 
@@ -108,12 +134,12 @@ pub fn stability(version: &str) -> &'static str {
 
 /// Whether `candidate` is a subset of `constraint` (`Intervals::isSubsetOf`).
 pub fn is_subset_of(candidate: &Constraint, constraint: &Constraint) -> bool {
-    semver_php::Intervals::new().is_subset_of(candidate.0.as_ref(), constraint.0.as_ref())
+    semver_php::Intervals::new().is_subset_of(candidate.inner.as_ref(), constraint.inner.as_ref())
 }
 
 /// Whether two constraints overlap at all (`Intervals::haveIntersections`).
 pub fn have_intersections(a: &Constraint, b: &Constraint) -> bool {
-    semver_php::Intervals::new().have_intersections(a.0.as_ref(), b.0.as_ref())
+    semver_php::Intervals::new().have_intersections(a.inner.as_ref(), b.inner.as_ref())
 }
 
 /// `VersionParser::normalizeBranch`: `v1.x` / `2.0.*` -> `9999999`-filled
@@ -378,9 +404,18 @@ impl Eq for VersionKey {}
 /// as opposed to a numeric version that merely carries a `-dev` suffix
 /// (`1.0.0.0-dev`, `9999999.9999999.9999999.9999999-dev`).
 pub fn parse_version_key(version: &NormalizedVersion) -> VersionKey {
-    let s = version.as_str();
-    let parts = parse_parts(s);
-    if s.starts_with("dev-") {
+    parse_version_key_str(version.as_str())
+}
+
+/// [`parse_version_key`], but against a bare already-normalized string —
+/// `repository::test_candidate`'s hot path (#208) tests a candidate that's
+/// already in `version_normalized`/`normalize_branch` form and has no
+/// [`NormalizedVersion`] to hand (building one would mean re-running
+/// `crate::version::normalize`'s regex passes purely to wrap a string this
+/// already is).
+pub(crate) fn parse_version_key_str(candidate: &str) -> VersionKey {
+    let parts = parse_parts(candidate);
+    if candidate.starts_with("dev-") {
         VersionKey(VersionKeyRepr::Branch(parts))
     } else {
         VersionKey(VersionKeyRepr::Numeric(parts))
@@ -415,7 +450,7 @@ impl CompiledConstraint {
     /// canonicalisation) into a flat set of non-overlapping numeric
     /// intervals, so this doesn't need its own AND/OR tree walker.
     pub fn compile(constraint: &Constraint) -> CompiledConstraint {
-        let result = semver_php::Intervals::new().get(constraint.0.as_ref());
+        let result = semver_php::Intervals::new().get(constraint.inner.as_ref());
         let numeric = result
             .numeric
             .into_iter()

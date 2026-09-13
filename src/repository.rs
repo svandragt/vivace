@@ -2320,7 +2320,22 @@ fn test_candidate(
     if !accept(name, semver::stability(candidate)) {
         return Ok(false);
     }
-    Ok(constraints.iter().any(|c| c.matches_str(candidate)))
+    // #208: the `CompiledConstraint` fast path `pool_optimizer.rs` already
+    // uses for pool packages — numeric-interval comparisons, no allocation,
+    // no dynamic dispatch — compiled once per distinct constraint and
+    // cached on it (`Constraint::matches_key`). Falls back to the exact
+    // `matches_str` only for a dev-branch key, same contract as
+    // `CompiledConstraint::matches` itself. Measured on `bench/laravel`
+    // (warm, three runs each): closure 139-147 ms before, 118-122 ms after —
+    // the ~27 ms `constraints.iter().any(matches_str)` was costing dropped
+    // to ~4-5 ms, the rest already accounted for by `SingleConstraint`
+    // reallocation and tree-walk dynamic dispatch (`Constraint::matches`
+    // costs ~775 ns/call in isolation, #76's own bench).
+    let key = semver::parse_version_key_str(candidate);
+    Ok(constraints.iter().any(|c| {
+        c.matches_key(&key)
+            .unwrap_or_else(|| c.matches_str(candidate))
+    }))
 }
 
 /// `ArrayLoader::getBranchAlias`: `extra.branch-alias` names, for a `dev-*`
