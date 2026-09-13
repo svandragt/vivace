@@ -767,6 +767,7 @@ run_random() {
   echo "Composer update flags, used only to generate a missing lock: \`${composer_update_flags[*]}\`."
   echo "A project whose enabled plugins are all native adapters or known-inert (#124) drops \`--no-plugins\` on both sides instead, noted \`plugins: native\` in Details; any other enabled plugin keeps \`--no-plugins\` and is noted \`plugins: refused <names>\`."
   echo "A project whose platform requirements aren't met is reported as \`skipped: platform\`, not a failure."
+  echo "The \`viv time\` column measures correctness runs, not benchmarks, and the two modes are not comparable: both share one store for the whole sweep and \`dev\` runs first, so \`no-dev\` installs a subset of archives \`dev\` has already fetched and is always the warm number. Read each column against the same column in another sweep, never against the row above or below it (#199). Real timings are in \`bench/results/\`."
   echo "Cloned checkouts keep their \`.git\` before installing, so Composer's root-version guess from the checkout state (branch/tag/commit) matches a real user's install (#125); \`path\`-based entries still have \`.git\` stripped, since a local checkout's git state isn't reproducible. The vendor diff excludes \`.git\` metadata on both sides regardless."
   if [ "$compat_locks" = "1" ]; then
     echo "\`COMPAT_LOCKS=1\`: the pinned corpus also gets a lock-compare pass (#180), described in its own section below."
