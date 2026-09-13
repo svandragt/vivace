@@ -468,26 +468,9 @@ impl DeltaChain {
     /// it, and pays the one deep clone this type exists to avoid only for
     /// `index` itself.
     ///
-    /// #210 measured this call directly (temporary `Instant`/`AtomicU64`
-    /// probes wrapping every call site, removed after use): ~12.3 us/call
-    /// on `bench/laravel` (3092 accepted versions, ~38 ms total), splitting
-    /// as ~9.5 us in this replay loop (dominated by the `map.clone()` a few
-    /// lines down -- one full clone of the merged object per call, paid
-    /// whether or not a later widen ever needs the saved state) and ~2.6 us
-    /// in [`DeltaChain::finalize`]'s `PackageVersion::from_owned_value`
-    /// (`STAGE_CONVERT_NS`, correctly isolated already). Confirms the
-    /// memoisation actually holds: 2978-2980 of 3093 calls per run continue
-    /// an existing replay, and of the ~114 that don't, ~108 are simply the
-    /// first call for each of the 108 fetched names (nothing to continue
-    /// from yet) -- genuine "widen accepted an earlier index" restarts are
-    /// only ~5-7 calls, not the whole-chain replay this design was built to
-    /// avoid. `expand_ms` in the `#176` stage-split log below is *not* a
-    /// clean read on this cost, though: it shares `STAGE_EXPAND_NS` with
-    /// [`parse_provider_versions_sync`]'s `DeltaChain::from_deltas` call,
-    /// whose key-extraction pass runs once per fetched name over every raw
-    /// delta (accepted or not) -- a fixed, unrelated setup cost now split
-    /// into its own `from_deltas_ms`/`from_deltas_calls` fields so the two
-    /// no longer get added together under one label.
+    /// Costs ~12.3 us/call, ~9.5 us of it the `map.clone()` below:
+    /// measured and attributed in #210, which records why that clone
+    /// is not worth removing at the closure's current size.
     fn expand(&mut self, index: usize) -> Result<PackageVersion> {
         if !self.minified {
             let expand_started = Instant::now();
@@ -2544,11 +2527,8 @@ static STAGE_EXPAND_NS: AtomicU64 = AtomicU64::new(0);
 static STAGE_CONVERT_NS: AtomicU64 = AtomicU64::new(0);
 static VERSIONS_PRODUCED: AtomicUsize = AtomicUsize::new(0);
 static VERSION_NORMALIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
-// #210: `DeltaChain::from_deltas`'s key-extraction pass over *every* raw
-// delta (`parse_provider_versions_sync`, once per fetched name) also fed
-// `STAGE_EXPAND_NS`, silently conflating a fixed per-name setup cost with
-// `DeltaChain::expand`'s own per-accepted-index replay in the `#176` stage
-// log below -- split out so `expand_ms` there means only the replay again.
+// Split out of `STAGE_EXPAND_NS` in #210: this fixed per-name setup pass was
+// being added to `expand`'s per-index replay under one label, inflating it.
 static FROM_DELTAS_NS: AtomicU64 = AtomicU64::new(0);
 static FROM_DELTAS_CALLS: AtomicUsize = AtomicUsize::new(0);
 
