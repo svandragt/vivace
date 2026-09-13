@@ -188,6 +188,38 @@ one locked dist per package, not every version Packagist could offer:
   working around here. `run.sh` skips riff's `update-warm` under
   `BENCH_MIRROR` with the usual skip-note on stderr.
 
+### Mirror recording, and the persistent cache (#170)
+
+`bench/mirror.sh`'s primary recording path is `composer install --no-scripts
+--no-plugins --no-autoloader`, run once per project with `COMPOSER_HOME`
+pointed at a cache inside the mirror directory (`<mirror>/.composer-cache`):
+Composer fetches every dist concurrently and keeps it under
+`cache/files/<vendor>/<name>/<sha1-of-url>.zip` (the exact bytes the lock's
+`shasum` covers) plus v2 provider metadata under
+`cache/repo/*/provider-<vendor>~<name>.json`; `mirror.sh` only lays those out
+as the mirror's own `dists/`/`p2/` shape, rewrites URLs and writes
+`packages.json`, the same as before. A v1 (`providers-url`/
+`provider-includes`) repository isn't fetched by that async path, so the
+older per-repository walk (Packagist plus each `"composer"`-type repository)
+still runs as a fallback for whatever's still missing afterwards. Both steps
+are skipped outright once every locked dist is already recorded, so a
+complete mirror costs no network at all on a rerun, not even Packagist's own
+root `packages.json`.
+
+`bench/corpus.sh` keeps this mirror, and a version-only entry's generated
+`composer.lock`, under a persistent cache instead of the run's own scratch
+directory: `${XDG_CACHE_HOME:-$HOME/.cache}/vivace-bench` by default
+(`BENCH_CACHE` overrides it), one `mirror/<project>-<commit-or-version>/`
+directory per pinned project, holding `dists/`, `p2/`, `packages.json`,
+`advisories.json` and (for a version-only entry) `generated-composer.lock`.
+Only genuinely per-run scratch — checkouts, `bench/run.sh`'s own work dir —
+stays under `BENCH_CORPUS_WORK`. To force a full re-recording (a corpus.toml
+pin changed and the old entry is no longer wanted, or the cache is just
+suspected stale), delete the one project's directory under
+`$BENCH_CACHE/mirror/`, or `rm -rf "$BENCH_CACHE"` (default
+`~/.cache/vivace-bench`) to clear everything; this is a separate directory
+from `~/.cache/vivace`, viv's own real store, and never touches it.
+
 ## Corpus
 
 The same four scenarios run across the pinned public projects

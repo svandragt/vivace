@@ -17,6 +17,14 @@
 # hyperfine resolve. Env: BENCH_RUNS (default 3, forwarded to bench/run.sh),
 # BENCH_CORPUS_WORK (scratch dir, default a removed-on-exit mktemp),
 # COMPAT_CORPUS (corpus.toml path), VIV/RIFF (binaries under test).
+#
+# #170: each project's mirror (BENCH_MIRROR=1) and, for a version-only entry,
+# its generated composer.lock live under BENCH_CACHE (default
+# ${XDG_CACHE_HOME:-$HOME/.cache}/vivace-bench), keyed by project name and
+# pinned commit/version, so a second run reuses both instead of paying
+# setup again. BENCH_CORPUS_WORK stays genuinely per-run scratch (checkouts,
+# bench/run.sh's own work dir); see bench/results/README.md for how to
+# clear the cache.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -26,6 +34,9 @@ riff_bin=${RIFF:-riff}
 runs=${BENCH_RUNS:-3}
 only=${1:-}
 report=${BENCH_CORPUS_REPORT:-$root/bench/results/corpus.md}
+cache_root=${BENCH_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/vivace-bench}
+mirror_root="$cache_root/mirror"
+mkdir -p "$mirror_root"
 
 if [ -n "${BENCH_CORPUS_WORK:-}" ]; then
   work=$BENCH_CORPUS_WORK
@@ -107,8 +118,12 @@ flush_footnotes() {
 # a time, see bench/corpus.sh's brief).
 run_entry() {
   local name=$1 repo=$2 commit=$3 version=$4
-  local safe srcdir
+  local safe srcdir key
   safe=$(tr '/' '_' <<< "$name")
+  # #170: keys this project's persistent mirror/lock cache by pin, so a
+  # commit or version bump in corpus.toml starts a fresh cache entry rather
+  # than reusing a stale one.
+  key=$(tr '/' '_' <<< "${commit:-$version}")
   srcdir="$work/src/$safe"
   rm -rf "$srcdir"
   footnotes=()
@@ -133,18 +148,29 @@ run_entry() {
   fi
 
   if [ ! -f "$srcdir/composer.lock" ]; then
-    log "generating lock for $name"
-    local lock_out
-    if ! lock_out=$(composer -d "$srcdir" update --no-install --no-scripts --no-plugins \
-        --ignore-platform-reqs 2>&1); then
-      footnotes+=("$name: composer update (lock) failed: $(last_line "$lock_out")")
-      flush_footnotes
-      rm -rf "$srcdir"
-      return
+    # #170: a version-only entry's lock is fully determined by its pin, so
+    # it's cached next to the mirror and generated once per pin rather than
+    # once per run.
+    local cached_lock="$mirror_root/$safe-$key/generated-composer.lock"
+    if [ -f "$cached_lock" ]; then
+      log "reusing cached generated lock for $name"
+      cp "$cached_lock" "$srcdir/composer.lock"
+    else
+      log "generating lock for $name"
+      local lock_out
+      if ! lock_out=$(composer -d "$srcdir" update --no-install --no-scripts --no-plugins \
+          --ignore-platform-reqs 2>&1); then
+        footnotes+=("$name: composer update (lock) failed: $(last_line "$lock_out")")
+        flush_footnotes
+        rm -rf "$srcdir"
+        return
+      fi
+      mkdir -p "$(dirname "$cached_lock")"
+      cp "$srcdir/composer.lock" "$cached_lock"
     fi
   fi
 
-  bench_project "$name" "$srcdir"
+  bench_project "$name" "$srcdir" "$key"
   flush_footnotes
   rm -rf "$srcdir"
 }
@@ -152,7 +178,7 @@ run_entry() {
 # Runs bench/run.sh for one project against composer/riff/viv, then appends
 # one report row per tool.
 bench_project() {
-  local name=$1 srcdir=$2
+  local name=$1 srcdir=$2 key=$3
   local safe out packages run_out tool
   safe=$(tr '/' '_' <<< "$name")
   packages=$(jq -r '((.packages // []) | length) + ((."packages-dev" // []) | length)' \
@@ -170,10 +196,12 @@ bench_project() {
 
   # BENCH_MIRROR=1 (#165, widened): record this project's dists and p2
   # metadata once, and forward the recording to bench/run.sh so cold and
-  # update-warm run against it instead of the real network.
+  # update-warm run against it instead of the real network. #170: the
+  # mirror lives under the persistent cache, keyed by pin, not $work, so a
+  # later run reuses it instead of recording again.
   local mirror_dir=""
   if [ "${BENCH_MIRROR:-}" = "1" ]; then
-    mirror_dir="$work/mirror/$safe"
+    mirror_dir="$mirror_root/$safe-$key"
     log "recording mirror for $name"
     "$root/bench/mirror.sh" "$srcdir" "$mirror_dir"
   fi

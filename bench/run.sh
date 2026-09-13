@@ -48,6 +48,10 @@ if [ -n "$mirror" ]; then
   mirror=$(cd "$mirror" && pwd)
   served="$work/mirror-served"; rm -rf "$served"; mkdir -p "$served"
   cp -a "$mirror"/. "$served"/
+  # #170: .composer-cache is mirror.sh's own COMPOSER_HOME, not part of what
+  # gets served; dropping it here keeps this copy (and the server it feeds)
+  # to the dists/p2/packages.json/advisories.json a request could ever hit.
+  rm -rf "$served/.composer-cache"
   server_log="$out/mirror-server.log"; : >"$server_log"
   # miniserve, not python's http.server: http.server is HTTP/1.0 by default
   # (a fresh TCP connection and thread per dist) and even with

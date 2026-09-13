@@ -8,26 +8,42 @@
 #
 # Usage: bench/mirror.sh <project-dir> <mirror-dir>
 #
-# #171: metadata is recorded from every repository the project's
-# composer.json names, not just Packagist. For each locked package (plus
-# everything in require/require-dev), Packagist is tried first (unless
-# disabled with a `{"packagist.org": false}` repositories entry), then each
-# `"composer"`-type repository in the order composer.json lists them,
-# stopping at the first that has the package. A v2 repository (`metadata-url`)
-# is recorded as-is. A v1 repository (`providers-url`/`provider-includes`,
-# e.g. asset-packagist.org) has its provider listing walked once per
-# repository to find the package's hash, and the resulting per-package
-# `packages` object is written straight into the mirror's own p2 shape — see
-# `src/repository.rs`'s `parse_provider_versions_sync`, which accepts that
-# same version-keyed shape.
+# #170: the primary recording path is `composer install --no-scripts
+# --no-plugins --no-autoloader` run once against the project's own lock,
+# with COMPOSER_HOME pointed at a cache inside the mirror directory.
+# Composer fetches every dist concurrently and keeps it under
+# `cache/files/<vendor>/<name>/<sha1-of-url>.zip` — the exact bytes the
+# lock's `shasum` covers — plus v2 provider metadata under
+# `cache/repo/*/provider-<vendor>~<name>[~dev].json`; this script only lays
+# those out as `dists/<vendor>/<name>/<dist-key>.zip` and
+# `p2/<vendor>/<name>[~dev].json`. Skipped entirely once every locked dist is
+# already recorded, so a rerun does no network at all, not even Composer's
+# own. A project's own store of extracted trees (viv's `~/.cache/vivace`)
+# can't substitute here: it holds extracted files, and a re-zipped tree
+# fails the shasum check.
 #
-# Idempotent: an already-recorded dist or p2 file is left alone, and the
-# rewrite step always derives the URL from the package name and dist
+# #171: whatever `composer install` doesn't cover (a v1
+# `providers-url`/`provider-includes` repository, e.g. asset-packagist.org —
+# Composer's async v2 path above doesn't fetch those — or a require/
+# require-dev package the lock alone didn't need) falls back to recording
+# metadata directly, from every repository the project's composer.json
+# names: Packagist first (unless disabled with a `{"packagist.org": false}`
+# entry), then each `"composer"`-type repository in listed order, stopping
+# at the first that has the package. A v1 repository has its provider
+# listing walked once to find the package's hash, and the resulting
+# per-package `packages` object is written straight into the mirror's own p2
+# shape — see `src/repository.rs`'s `parse_provider_versions_sync`, which
+# accepts that same version-keyed shape. This fallback (and its own dist
+# fetch) only runs at all when the mirror isn't already complete, so it
+# never reintroduces network use on a rerun.
+#
+# Idempotent throughout: an already-recorded dist or p2 file is left alone,
+# and the rewrite step always derives the URL from the package name and dist
 # reference (never from whatever is already on disk), so rerunning a
 # complete mirror does nothing.
 #
-# Run inside devbox (`devbox run -- bench/mirror.sh ...`) so curl/jq/python3
-# resolve.
+# Run inside devbox (`devbox run -- bench/mirror.sh ...`) so
+# composer/curl/jq/python3 resolve.
 set -eu
 proj=$(cd "$1" && pwd); shift
 mirror=$1; shift
@@ -88,7 +104,8 @@ rewrite_py=$(mktemp)
 v1_listing_py=$(mktemp)
 listing_py=$(mktemp)
 missing_py=$(mktemp)
-trap 'rm -rf "$workdir"; rm -f "$index_py" "$rewrite_py" "$v1_listing_py" "$listing_py" "$missing_py"' EXIT
+harvest_py=$(mktemp)
+trap 'rm -rf "$workdir"; rm -f "$index_py" "$rewrite_py" "$v1_listing_py" "$listing_py" "$missing_py" "$harvest_py"' EXIT
 
 cat > "$v1_listing_py" <<'PY'
 # Walks a v1 repository's provider-includes tree breadth-first
@@ -183,27 +200,6 @@ add_repo() {
   fi
 }
 
-packagist_disabled=false
-composer_repos_file="$workdir/composer-repos.txt"
-: > "$composer_repos_file"
-if [ -f "$proj/composer.json" ]; then
-  packagist_disabled=$(jq -r '
-    (.repositories // []) | if type == "array"
-      then any(.[]; type == "object" and has("packagist.org") and .["packagist.org"] == false)
-      else false
-    end' "$proj/composer.json")
-  jq -r '(.repositories // []) | if type == "array"
-    then .[] | select(.type == "composer") | .url
-    else empty
-  end' "$proj/composer.json" > "$composer_repos_file"
-fi
-
-[ "$packagist_disabled" = "true" ] || add_repo "https://repo.packagist.org"
-while IFS= read -r url; do
-  [ -n "$url" ] || continue
-  add_repo "$url"
-done < "$composer_repos_file"
-
 record_p2() {
   name=$1
   case $name in */*) ;; *) return 0 ;; esac # skip php/ext-* virtual packages
@@ -285,12 +281,6 @@ for key in ("packages", "packages-dev"):
             continue
         print(f"{pkg['name']}\t{url}\t{dist_key(url, dist.get('reference') or '')}")
 PY
-python3 "$listing_py" "$lock" |
-while IFS="$(printf '\t')" read -r name url key; do
-  [ -n "$name" ] || continue
-  record_dist "$name" "$url" "$key"
-  record_p2 "$name"
-done
 
 cat > "$missing_py" <<'PY'
 # Asserts every locked dist landed under dists/ (#173): a miss here fails
@@ -329,15 +319,140 @@ if missing:
         print(f"mirror.sh: missing dist: {m}", file=sys.stderr)
     sys.exit(1)
 PY
-python3 "$missing_py" "$mirror" "$lock"
 
-if [ -f "$proj/composer.json" ]; then
-  jq -r '((.require // {}) + (."require-dev" // {})) | keys[]' "$proj/composer.json" |
-  while IFS= read -r name; do
+# #170: the whole block below — Composer's own fetch, the multi-repository
+# fallback, and the require/require-dev p2 sweep — only runs when the
+# mirror doesn't already have every locked dist; a complete mirror hits no
+# network at all, not even Packagist's root packages.json.
+if [ -f "$lock" ] && ! python3 "$missing_py" "$mirror" "$lock" >/dev/null 2>&1; then
+  # COMPOSER_HOME lives inside the mirror directory itself (not $workdir),
+  # so a from-cache `composer install` (no dist/p2 gaps to fill) needs no
+  # network either, even before harvest_py's own dists/p2 check does.
+  compose_home="$mirror/.composer-cache"
+  mkdir -p "$compose_home"
+  compose_log="$workdir/compose-install.log"
+  if COMPOSER_HOME="$compose_home" composer install -d "$proj" \
+      --no-scripts --no-plugins --no-autoloader --no-interaction \
+      --ignore-platform-reqs >"$compose_log" 2>&1; then
+    cat > "$harvest_py" <<'PY'
+# Lays out whatever `composer install` (COMPOSER_HOME=$compose_home, run
+# just above) already fetched into the mirror's own dists/ and p2/ shape —
+# see the file header's #170 note for the two cache layouts read here.
+# Only fills gaps (an existing dists/ or p2/ file is left alone), so this is
+# safe to run again over a partially-recorded mirror.
+import hashlib
+import json
+import os
+import shutil
+import sys
+
+
+def dist_key(url, reference):
+    # Must match bench/run.sh's dist_key.
+    if reference:
+        return reference
+    return hashlib.sha1(url.encode()).hexdigest()
+
+
+mirror, lock_path, compose_home = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(lock_path) as f:
+    lock = json.load(f)
+
+for section in ("packages", "packages-dev"):
+    for pkg in lock.get(section, []):
+        dist = pkg.get("dist") or {}
+        url = dist.get("url") or ""
+        if not url:
+            continue
+        vendor, name = pkg["name"].split("/", 1)
+        dest = os.path.join(mirror, "dists", vendor, name, f"{dist_key(url, dist.get('reference') or '')}.zip")
+        if os.path.isfile(dest):
+            continue
+        # Composer's own FileDownloader cache key: sha1 of the exact dist
+        # URL it fetched (Composer\Downloader\FileDownloader::download's
+        # $cacheKeyGenerator), not the lock-reference key dist_key() above
+        # gives our own layout; extension is always "zip" in this corpus.
+        src = os.path.join(compose_home, "cache", "files", vendor, name, f"{hashlib.sha1(url.encode()).hexdigest()}.zip")
+        if os.path.isfile(src):
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(src, dest)
+
+# ComposerRepository::startCachedAsyncDownload (the v2/metadata-url path
+# every plain `composer install` exercises to verify the lock) names its
+# provider cache file "provider-<vendor>~<name>.json" ("...~dev.json" for
+# the dev-branch file) under cache/repo/<sanitized-repo-url>/ — walk every
+# repo host's cache dir, not just Packagist's, since a project's own
+# "composer"-type v2 repositories land there the same way.
+repo_cache = os.path.join(compose_home, "cache", "repo")
+for root, _dirs, files in os.walk(repo_cache):
+    for fname in files:
+        if not (fname.startswith("provider-") and fname.endswith(".json")):
+            continue
+        rest = fname[len("provider-"):-len(".json")]
+        suffix = ""
+        if rest.endswith("~dev"):
+            rest, suffix = rest[: -len("~dev")], "~dev"
+        if "~" not in rest:
+            continue
+        vendor, name = rest.split("~", 1)
+        dest = os.path.join(mirror, "p2", vendor, f"{name}{suffix}.json")
+        if os.path.isfile(dest):
+            continue
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(os.path.join(root, fname), dest)
+PY
+    python3 "$harvest_py" "$mirror" "$lock" "$compose_home"
+  else
+    echo "mirror.sh: composer install (#170's dist/p2 cache) failed, falling back to per-file fetch:" >&2
+    tail -20 "$compose_log" >&2
+  fi
+  # composer install's own vendor/ tree served no purpose beyond warming
+  # the cache above; bench/run.sh always copies from $proj and strips
+  # vendor/ itself, but there's no reason to carry the weight until then.
+  rm -rf "$proj/vendor"
+
+  # #171 fallback: fills whatever composer install's cache didn't cover —
+  # a v1 (providers-url/provider-includes) repository's packages (the async
+  # path above never fetches those), or a require/require-dev package the
+  # lock alone didn't need.
+  packagist_disabled=false
+  composer_repos_file="$workdir/composer-repos.txt"
+  : > "$composer_repos_file"
+  if [ -f "$proj/composer.json" ]; then
+    packagist_disabled=$(jq -r '
+      (.repositories // []) | if type == "array"
+        then any(.[]; type == "object" and has("packagist.org") and .["packagist.org"] == false)
+        else false
+      end' "$proj/composer.json")
+    jq -r '(.repositories // []) | if type == "array"
+      then .[] | select(.type == "composer") | .url
+      else empty
+    end' "$proj/composer.json" > "$composer_repos_file"
+  fi
+
+  [ "$packagist_disabled" = "true" ] || add_repo "https://repo.packagist.org"
+  while IFS= read -r url; do
+    [ -n "$url" ] || continue
+    add_repo "$url"
+  done < "$composer_repos_file"
+
+  python3 "$listing_py" "$lock" |
+  while IFS="$(printf '\t')" read -r name url key; do
     [ -n "$name" ] || continue
+    record_dist "$name" "$url" "$key"
     record_p2 "$name"
   done
+
+  if [ -f "$proj/composer.json" ]; then
+    jq -r '((.require // {}) + (."require-dev" // {})) | keys[]' "$proj/composer.json" |
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      record_p2 "$name"
+    done
+  fi
 fi
+
+python3 "$missing_py" "$mirror" "$lock"
 
 cat > "$index_py" <<'PY'
 # Rebuilds packages.json's available-packages list from whatever p2 files
