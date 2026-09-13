@@ -467,6 +467,27 @@ impl DeltaChain {
     /// key), continuing from the last replay when `index` is at or after
     /// it, and pays the one deep clone this type exists to avoid only for
     /// `index` itself.
+    ///
+    /// #210 measured this call directly (temporary `Instant`/`AtomicU64`
+    /// probes wrapping every call site, removed after use): ~12.3 us/call
+    /// on `bench/laravel` (3092 accepted versions, ~38 ms total), splitting
+    /// as ~9.5 us in this replay loop (dominated by the `map.clone()` a few
+    /// lines down -- one full clone of the merged object per call, paid
+    /// whether or not a later widen ever needs the saved state) and ~2.6 us
+    /// in [`DeltaChain::finalize`]'s `PackageVersion::from_owned_value`
+    /// (`STAGE_CONVERT_NS`, correctly isolated already). Confirms the
+    /// memoisation actually holds: 2978-2980 of 3093 calls per run continue
+    /// an existing replay, and of the ~114 that don't, ~108 are simply the
+    /// first call for each of the 108 fetched names (nothing to continue
+    /// from yet) -- genuine "widen accepted an earlier index" restarts are
+    /// only ~5-7 calls, not the whole-chain replay this design was built to
+    /// avoid. `expand_ms` in the `#176` stage-split log below is *not* a
+    /// clean read on this cost, though: it shares `STAGE_EXPAND_NS` with
+    /// [`parse_provider_versions_sync`]'s `DeltaChain::from_deltas` call,
+    /// whose key-extraction pass runs once per fetched name over every raw
+    /// delta (accepted or not) -- a fixed, unrelated setup cost now split
+    /// into its own `from_deltas_ms`/`from_deltas_calls` fields so the two
+    /// no longer get added together under one label.
     fn expand(&mut self, index: usize) -> Result<PackageVersion> {
         if !self.minified {
             let expand_started = Instant::now();
@@ -1923,6 +1944,8 @@ impl<T: Transport> Repository<T> {
         let convert_ns_before = STAGE_CONVERT_NS.load(Ordering::Relaxed);
         let versions_before = VERSIONS_PRODUCED.load(Ordering::Relaxed);
         let normalize_calls_before = VERSION_NORMALIZE_CALLS.load(Ordering::Relaxed);
+        let from_deltas_ns_before = FROM_DELTAS_NS.load(Ordering::Relaxed);
+        let from_deltas_calls_before = FROM_DELTAS_CALLS.load(Ordering::Relaxed);
 
         let mut walk = ClosureWalk {
             skip,
@@ -2035,6 +2058,12 @@ impl<T: Transport> Repository<T> {
             json_parse_ms =
                 (STAGE_JSON_PARSE_NS.load(Ordering::Relaxed) - json_parse_ns_before) / 1_000_000,
             expand_ms = (STAGE_EXPAND_NS.load(Ordering::Relaxed) - expand_ns_before) / 1_000_000,
+            // #210: the portion of `expand_ms` that isn't `chain.expand`
+            // itself -- see `DeltaChain::expand`'s own doc comment.
+            from_deltas_ms =
+                (FROM_DELTAS_NS.load(Ordering::Relaxed) - from_deltas_ns_before) / 1_000_000,
+            from_deltas_calls =
+                FROM_DELTAS_CALLS.load(Ordering::Relaxed) - from_deltas_calls_before,
             convert_ms = (STAGE_CONVERT_NS.load(Ordering::Relaxed) - convert_ns_before) / 1_000_000,
             versions_produced = VERSIONS_PRODUCED.load(Ordering::Relaxed) - versions_before,
             normalize_calls =
@@ -2457,9 +2486,10 @@ fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<Sourc
         bail!("{name}: provider entry is not a list");
     };
     let minified = data.get("minified").and_then(Value::as_str) == Some("composer/2.0");
-    let expand_started = Instant::now();
+    let from_deltas_started = Instant::now();
     let chain = DeltaChain::from_deltas(list, minified)?;
-    STAGE_EXPAND_NS.fetch_add(elapsed_ns(expand_started.elapsed()), Ordering::Relaxed);
+    FROM_DELTAS_NS.fetch_add(elapsed_ns(from_deltas_started.elapsed()), Ordering::Relaxed);
+    FROM_DELTAS_CALLS.fetch_add(1, Ordering::Relaxed);
     Ok(vec![SourceVersions::Deferred(chain)])
 }
 
@@ -2514,6 +2544,13 @@ static STAGE_EXPAND_NS: AtomicU64 = AtomicU64::new(0);
 static STAGE_CONVERT_NS: AtomicU64 = AtomicU64::new(0);
 static VERSIONS_PRODUCED: AtomicUsize = AtomicUsize::new(0);
 static VERSION_NORMALIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+// #210: `DeltaChain::from_deltas`'s key-extraction pass over *every* raw
+// delta (`parse_provider_versions_sync`, once per fetched name) also fed
+// `STAGE_EXPAND_NS`, silently conflating a fixed per-name setup cost with
+// `DeltaChain::expand`'s own per-accepted-index replay in the `#176` stage
+// log below -- split out so `expand_ms` there means only the replay again.
+static FROM_DELTAS_NS: AtomicU64 = AtomicU64::new(0);
+static FROM_DELTAS_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 /// `Instant::elapsed().as_nanos()` is a `u128`; every `STAGE_*_NS`
 /// accumulator is a `u64` (the width `AtomicU64::fetch_add` needs).
