@@ -37,7 +37,7 @@ check:
 	devbox run -- env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
 bench:
-	devbox run -- bench/run.sh bench/laravel composer riff viv
+	scripts/keep-awake.sh "bench: laravel" devbox run -- bench/run.sh bench/laravel composer riff viv
 
 bench-check:
 	devbox run -- bench/run.sh tests/fixtures/monolog composer viv
@@ -46,7 +46,7 @@ bench-check:
 # #106: same cold/warm/noop/update-warm scenarios as `bench`, across the
 # whole pinned compat corpus (compat/corpus.toml) instead of just Laravel.
 bench-corpus:
-	devbox run -- bench/corpus.sh
+	scripts/keep-awake.sh "bench: corpus" devbox run -- bench/corpus.sh
 
 # Flamegraphs for #54/#55 (bench/results/profile.md). Needs `perf` access
 # (`perf_event_paranoid <= 2` or `CAP_PERFMON`); errors with a message
@@ -95,7 +95,7 @@ record-wpackagist:
 
 compat:
 	devbox run -- cargo build --release
-	devbox run -- compat/run.sh
+	scripts/keep-awake.sh "compat sweep" devbox run -- compat/run.sh
 
 compat-refresh:
 	devbox run -- compat/refresh.sh
@@ -117,7 +117,7 @@ fuzz:
 # in, not a number to chase.
 coverage:
 	mkdir -p target/coverage
-	devbox run -- cargo llvm-cov nextest --no-fail-fast --lcov --output-path target/coverage/lcov.info
+	scripts/keep-awake.sh "coverage" devbox run -- cargo llvm-cov nextest --no-fail-fast --lcov --output-path target/coverage/lcov.info
 	devbox run -- cargo llvm-cov report --summary-only
 
 # make changelog MILESTONE="0.6 adoption: client projects and update speed" VERSION=0.6.0
