@@ -316,6 +316,17 @@ after the bytes arrive: unpacking, linking and generating, with no store to
 draw on. Keeping the network out is what makes the number repeatable, and
 it is also what the number leaves out.
 
+Against riff rather than Composer, a first install is the one scenario viv
+loses, and it is a deliberate trade rather than a defect. viv extracts each
+archive into the content-addressed store and then hardlinks the store into
+`vendor/`; riff extracts each dist straight into `vendor/`. On a store miss
+viv therefore makes about 4200 extra `link(2)` calls on a 57-package
+project, which ext4 serialises through its journal — measured flat from one
+worker to eight, so no amount of parallelism recovers them. That buys every
+later install: warm 48.4 ms against riff's 99.4 ms, no-op 31.6 ms against
+40.3 ms. Do not re-open the hunt for a one-pass first install; #209 has the
+measurements that close it.
+
 Recommendation: **informational, not gated.** `bench/compare.py` requires a
 `baseline.json` entry built from the median of at least ten runs (#183)
 before a scenario's ratio is trustworthy enough to fail a build on; this
