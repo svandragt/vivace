@@ -26,7 +26,7 @@ impl NormalizedVersion {
 /// only ever sits mid-char in UTF-8) can panic instead of erroring. Reject
 /// it up front with Composer's own `VersionParser` wording rather than
 /// delegating into that crash.
-fn reject_non_ascii(constraint: &str) -> Result<()> {
+pub(crate) fn reject_non_ascii(constraint: &str) -> Result<()> {
     if constraint.is_ascii() {
         return Ok(());
     }
@@ -43,20 +43,6 @@ pub fn normalize(version: &str) -> Result<NormalizedVersion> {
     Ok(NormalizedVersion(crate::version::normalize(version)?))
 }
 
-/// Wraps a string the caller already knows is in `normalize`'s canonical
-/// form (Packagist's own `version_normalized` field, or
-/// `crate::version::normalize_branch`'s output), skipping `normalize`'s
-/// regex passes entirely — ~300 ns/call measured down to ~10 ns/call (#120:
-/// `ClosureWalk::process` re-normalising an already-normalized
-/// `version_normalized` on every rescan of every version, over every
-/// package in a closure, was part of that walk's synchronous CPU). Still
-/// runs the ASCII guard: an untrusted repository could ship a bogus value
-/// here.
-pub(crate) fn from_normalized(version: String) -> Result<NormalizedVersion> {
-    reject_non_ascii(&version)?;
-    Ok(NormalizedVersion(version))
-}
-
 /// A parsed version constraint (`VersionParser::parseConstraints`).
 pub struct Constraint(Box<dyn semver_php::Constraint>);
 
@@ -64,7 +50,15 @@ impl Constraint {
     /// Whether `version` satisfies this constraint (`Semver::satisfies`:
     /// the version becomes a single `==` constraint, matched against self).
     pub fn matches(&self, version: &NormalizedVersion) -> bool {
-        let point = SingleConstraint::new(Operator::Eq, version.as_str());
+        self.matches_str(version.as_str())
+    }
+
+    /// [`Constraint::matches`], but against a bare already-normalized
+    /// string instead of a [`NormalizedVersion`] — `repository::is_version_loaded`'s
+    /// hot path (#196) tests candidates without ever needing to own or
+    /// keep one.
+    pub(crate) fn matches_str(&self, version: &str) -> bool {
+        let point = SingleConstraint::new(Operator::Eq, version);
         self.0.matches(&point)
     }
 }

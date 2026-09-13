@@ -2289,23 +2289,38 @@ fn is_version_loaded(
     constraints: &[Arc<Constraint>],
     accept: &dyn Fn(&str, &str) -> bool,
 ) -> Result<bool> {
-    let mut candidates = vec![version_normalized.to_string()];
-    candidates.extend(branch_alias_target_of(version, branch_alias));
-    for candidate in candidates {
-        // Both candidates are already in `semver::normalize`'s canonical
-        // form (`version_normalized` straight from the provider file, or
-        // `branch_alias_target_of`'s own `normalize_branch` output): wrap
-        // rather than re-run the regex pipeline on a value that would only
-        // parse back to itself (#120).
-        let normalized = semver::from_normalized(candidate)?;
-        if !accept(name, semver::stability(normalized.as_str())) {
-            continue;
-        }
-        if constraints.iter().any(|c| c.matches(&normalized)) {
-            return Ok(true);
-        }
+    // Primary candidate first, alias second, same as the `Vec` this used to
+    // build: `version_normalized` is the common case and already borrowed
+    // from the provider file, so testing it straight avoids allocating a
+    // `String` (and a `Vec` to hold it) purely to own a value this function
+    // never keeps (#196: ~27-30k of each per warm update).
+    if test_candidate(version_normalized, name, constraints, accept)? {
+        return Ok(true);
     }
-    Ok(false)
+    match branch_alias_target_of(version, branch_alias) {
+        Some(alias) => test_candidate(&alias, name, constraints, accept),
+        None => Ok(false),
+    }
+}
+
+/// Stability- and constraint-tests one candidate version string already in
+/// `semver::normalize`'s canonical form (`version_normalized` straight from
+/// the provider file, or `branch_alias_target_of`'s own `normalize_branch`
+/// output): skips `normalize`'s regex passes entirely, same as the
+/// `NormalizedVersion` wrapper this replaced used to (#120), but without
+/// even wrapping the string first — this is a pure test, so there's nothing
+/// to keep afterwards (#196).
+fn test_candidate(
+    candidate: &str,
+    name: &str,
+    constraints: &[Arc<Constraint>],
+    accept: &dyn Fn(&str, &str) -> bool,
+) -> Result<bool> {
+    semver::reject_non_ascii(candidate)?;
+    if !accept(name, semver::stability(candidate)) {
+        return Ok(false);
+    }
+    Ok(constraints.iter().any(|c| c.matches_str(candidate)))
 }
 
 /// `ArrayLoader::getBranchAlias`: `extra.branch-alias` names, for a `dev-*`
