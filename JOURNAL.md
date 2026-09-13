@@ -907,3 +907,41 @@ stopped and said so. A fixture for that shape is parked.
 **Priority.** Speed, then what the maintainer hits, then reasons to
 choose viv over Composer. Compatibility is the floor, not the pitch.
 Adapters wait until a project the maintainer runs needs one.
+
+## 2026-09-13: 0.10.0, and four tickets that were wrong
+
+**The pattern.** Nine issues went into 0.10 and four of them described
+a symptom correctly and a cause incorrectly. The adapter-drift column
+named the wrong row, not the wrong directory. The constraint-widening
+test as specified would have passed whether or not the bug existed,
+because the example narrowed rather than widened. The fuzz workflow's
+exit 127 was a missing libstdc++ under devbox, with the corpus problem
+it named sitting one layer further down, and two more failures behind
+that. The PSR-4 ordering report had viv's output and Composer's the
+wrong way round — editing to the ticket would have turned correct code
+into a regression, frozen in a byte-for-byte fixture. Reproducing first
+is not diligence, it is the only thing that distinguishes a fix from a
+confident wrong one.
+
+**Where the time went.** The metadata closure spends 80 ms of 143 in a
+walk that cannot overlap anything, not in the JSON parse everyone
+assumed. Forcing every file onto the blocking pool burned 40 percent
+more CPU for identical wall-clock. The classmap scan was genuinely
+serial and genuinely parallelisable, and still only bought 1.4x,
+because one directory in the batch is large enough to set the floor
+alone. Two speed tickets, one real win, one redirected.
+
+**The sweep grew a second table.** Every release until now proved viv
+installs what Composer installs, from a lock Composer wrote. It never
+proved viv's resolver reaches that lock. It does now, on all ten pinned
+projects — and the first run of it failed two of them because the
+harness gave Composer `--no-scripts` and viv nothing, which looked
+exactly like a resolver divergence until the flag lists were read side
+by side.
+
+**What it cost.** A bench gate that failed one run in three was a
+baseline taken from a single run, sitting at the edge of its own
+distribution rather than the middle. The machine suspended mid-sweep
+because the inhibitor holding sleep off was recreated per turn, so it
+covered the seconds of thinking and lapsed through the half hour of
+work. Both were measurement problems wearing the costume of a bug.
