@@ -101,9 +101,6 @@ jobs:
           cd dist
           sha256sum vivace-*.tar.gz *.deb > SHA256SUMS
           version=$(echo "$TAG" | sed 's/^v//')
-          ../scripts/brew-formula.sh "$version" SHA256SUMS > vivace.rb
-          # Formula is ready to copy into the svandragt/homebrew-tap repository;
-          # creating and maintaining that tap is out of scope for this workflow.
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # Match the milestone whose title starts with the tag's major.minor,
             # e.g. v0.6.0 -> "0.6 ...". Falls back to auto-generated notes if
@@ -118,7 +115,7 @@ jobs:
               gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --generate-notes
             fi
           fi
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber vivace-*.tar.gz *.deb SHA256SUMS vivace.rb
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber vivace-*.tar.gz *.deb SHA256SUMS
 
   # #166: `cargo binstall vivace` reads the crate's own
   # `[package.metadata.binstall]` off crates.io to find the release tarball,

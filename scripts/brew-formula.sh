@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Unwired until 1.0 (#187): Homebrew, like crates.io (#166), is gated on a
+# 1.0 release, so release.yml no longer calls this and no release attaches a
+# formula. Kept because the generation logic is still correct — re-add the
+# call and the `vivace.rb` upload to release.yml's release job at 1.0.
 # Prints a Homebrew formula for a vivace release, reading tarball checksums
 # from a release's SHA256SUMS file. Ready to copy into a tap repository.
 # Usage: scripts/brew-formula.sh <version> <sha256sums-file>
