@@ -12,21 +12,23 @@ chases runner noise, not regressions. Instead each checked scenario is graded
 as `ratio = viv_mean / composer_mean` for the same scenario, measured in the
 same job on the same runner in the same minute: the runner's speed cancels
 out of the ratio even though it doesn't cancel out of either mean alone.
-Composer has no `update-offline` scenario, so that ratio uses composer's
-`update-warm` mean as the denominator instead -- it only needs to be a stable
-same-runner, same-minute number, not the same scenario.
 
-Fails (exit 1) when `viv`'s warm, noop or update-offline ratio regresses past
+Fails (exit 1) when `viv`'s warm or noop ratio regresses past
 baseline_ratio * (1 + tolerance) AND the absolute cost of that regression is
 at least 5 ms (viv_mean - baseline_ratio * composer_mean) -- differences
 under 5 ms are never a failure, even past tolerance, because a fast scenario
 (a 4 ms noop) can swing well past a relative tolerance on a runner-clock
-wobble too small to matter in real seconds. Cold and update-warm are
-informational only: both wait on the network (downloads, and 304
-revalidations of every metadata file), so their variance is not ours (see
-bench/results/README.md). A scenario whose composer denominator is missing
-from the input is skipped, not failed. With --write-baseline, writes the
-measured ratios as the new baseline instead of comparing.
+wobble too small to matter in real seconds. Cold, update-warm and
+update-offline are informational only: cold and update-warm wait on the
+network (downloads, and 304 revalidations of every metadata file), so their
+variance is not ours; update-offline has no comparable Composer scenario, so
+its ratio borrows composer's update-warm mean as a denominator that isn't
+doing comparable work, which re-imports that same network variance into a
+number that's supposed to be ours alone (#204, see bench/results/README.md
+for the measured spread that settled this). A scenario whose composer
+denominator is missing from the input is skipped, not failed. With
+--write-baseline, writes the measured ratios as the new baseline instead of
+comparing.
 
 --write-baseline captures one run, and one run is exactly the problem #183
 found: Laravel's no-op measured 11, 19 and 52 ms across three runs of
@@ -61,11 +63,18 @@ RUN_FILES = ("viv.json", "viv-update.json", "viv-update-offline.json", "composer
 # absolute terms.
 ABSOLUTE_SLACK_S = 0.005
 SCENARIOS = ("cold", "warm", "noop", "update-warm", "update-offline")
-CHECKED_SCENARIOS = ("warm", "noop", "update-offline")
+# update-offline is deliberately not checked (#204): its ratio borrows
+# composer's update-warm mean as a denominator, and that mean carries
+# hundreds of 304 round trips of GitHub network variance that has nothing to
+# do with viv's own offline solver time -- 12+ CI runs showed that ratio
+# swinging twice as wide as viv's own absolute update-offline time. It stays
+# in SCENARIOS (and in the informational table/baseline) so its ratio is
+# still visible, just never gates.
+CHECKED_SCENARIOS = ("warm", "noop")
 # Which composer scenario stands in the denominator for each viv scenario.
 # update-offline has no composer equivalent, so it borrows update-warm (same
-# runner, same minute; the denominator only has to be stable, not identical
-# in kind).
+# runner, same minute) purely for the informational row -- it is not
+# checked, see CHECKED_SCENARIOS above.
 DENOMINATOR_SCENARIO = {
     "cold": "cold",
     "warm": "warm",
@@ -286,7 +295,9 @@ def self_test():
     statuses = {r[0]: r[5] for r in rows}
     assert statuses["noop"] == "FAIL"
 
-    # Skip when the composer denominator is missing.
+    # Skip when the composer denominator is missing, for a checked scenario.
+    # update-offline is informational, so a missing denominator there is
+    # just "info" with no ratio, not a skip.
     ok, rows = compare(
         {"warm": 0.7, "update-offline": 0.4},
         {},
@@ -296,7 +307,7 @@ def self_test():
     assert ok, "missing composer denominator must skip, not fail"
     statuses = {r[0]: r[5] for r in rows}
     assert statuses["warm"] == "skip"
-    assert statuses["update-offline"] == "skip"
+    assert statuses["update-offline"] == "info"
 
     # A runner twice as slow on both tools passes unchanged: the ratio cancels.
     ok, rows = compare(
@@ -307,20 +318,23 @@ def self_test():
     )
     assert ok, "a runner twice as slow on both tools must not regress the ratio"
 
-    # update-offline borrows composer's update-warm mean as its denominator.
+    # update-offline (#204) is never gated, even on a ratio that would fail
+    # any other checked scenario many times over: its ratio borrows
+    # composer's update-warm mean, which carries network variance that isn't
+    # viv's own, so it stays informational rather than failing the build.
     ok, rows = compare(
-        {"update-offline": 0.42},
-        {"update-warm": 1.0},
+        {"warm": 0.5, "noop": 0.1, "update-offline": 4.0},
+        {"warm": 1.0, "noop": 1.0, "update-warm": 1.0},
         baseline,
         0.15,
     )
-    assert ok
+    assert ok, "update-offline must never fail the gate"
     statuses = {r[0]: r[5] for r in rows}
-    assert statuses["update-offline"] == "ok"
+    assert statuses["update-offline"] == "info", "update-offline must be informational only"
 
-    # Cold and update-warm are informational only, never gated.
+    # Cold, update-warm and update-offline are informational only, never gated.
     ok, rows = compare(
-        {"warm": 0.5, "noop": 0.1, "cold": 5.0, "update-warm": 6.0},
+        {"warm": 0.5, "noop": 0.1, "cold": 5.0, "update-warm": 6.0, "update-offline": 0.42},
         {"warm": 1.0, "noop": 1.0, "cold": 1.0, "update-warm": 1.0},
         baseline,
         0.15,
@@ -328,6 +342,7 @@ def self_test():
     statuses = {r[0]: r[5] for r in rows}
     assert statuses["cold"] == "info", "cold must be informational only"
     assert statuses["update-warm"] == "info", "update-warm must be informational only"
+    assert statuses["update-offline"] == "info", "update-offline must be informational only"
 
     # Missing baseline entry must skip, not fail.
     ok, rows = compare({"warm": 5.0}, {"warm": 1.0}, {}, 0.15)

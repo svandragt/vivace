@@ -65,15 +65,10 @@ well past a relative tolerance on a runner-clock wobble too small to matter.
 `update-offline` (#165) runs `viv update --offline --no-install` against the
 same warm metadata cache as `update-warm`, but `--offline` reads the cache
 only and makes no revalidation requests at all, so it measures parsing the
-closure and running the solver with no network in the loop. That isolation
-is exactly what makes it gated, unlike `update-warm`: `update-warm`'s time
-still includes hundreds of 304 round trips, so a run-to-run swing there could
-be GitHub, not a regression in `viv` (#159); `update-offline`'s variance is
-ours alone, the same reasoning that gates `warm` and `noop`. Composer has no
-offline update flag, so `update-offline`'s ratio uses composer's
-`update-warm` mean as its denominator instead: same runner, same minute, so
-it's still a stable number to divide by, even though it isn't the same
-scenario.
+closure and running the solver with no network in the loop: that isolation
+means its own variance is ours alone, the same reasoning that gates `warm`
+and `noop`. But it's informational only, not gated — see "`update-offline`'s
+ratio was gated on the wrong yardstick" below (#204) for why.
 
 `baseline.json` never updates itself: every release downloads the CI run's
 `baseline-candidate` artifact and commits it as the new `baseline.json` (see
@@ -116,6 +111,66 @@ Commit the regenerated `baseline.json`. Tolerance (15%) and the 5 ms
 absolute slack are unchanged: the evidence behind #183 showed both are
 correctly sized once the baseline sits at the distribution's centre rather
 than its edge, so only the baseline needed to move, not the gate's width.
+
+### `update-offline`'s ratio was gated on the wrong yardstick (#204)
+
+`update-offline`'s ratio divided viv's own mean by composer's `update-warm`
+mean, because Composer has no offline-update scenario to divide by instead.
+That denominator still waits on hundreds of 304 revalidations, so it carries
+GitHub's network variance into a scenario that is supposed to measure viv's
+own solver time alone.
+
+Downloading the `bench-results` artifact from 14 recent successful CI runs on
+`main` and computing each candidate yardstick's spread across them (median,
+and min/max as a percentage of the median) settled it:
+
+| Project | Yardstick | Median | Min | Max | Spread |
+|---|---|---|---|---|---|
+| monolog | viv's absolute `update-offline` time | 21.7 ms | 14.2 ms | 23.7 ms | −34%/+9% |
+| monolog | ratio vs. composer `update-warm` (old design) | 0.0161 | 0.0109 | 0.0181 | −32%/+13% |
+| monolog | ratio vs. viv's own `warm` | 1.70 | 1.58 | 2.89 | −7%/+70% |
+| monolog | ratio vs. viv's own `noop` | 4.39 | 3.92 | 7.43 | −11%/+69% |
+| laravel | viv's absolute `update-offline` time | 394 ms | 291 ms | 417 ms | −26%/+6% |
+| laravel | ratio vs. composer `update-warm` (old design) | 0.180 | 0.104 | 0.195 | −42%/+9% |
+| laravel | ratio vs. viv's own `warm` | 4.50 | 4.22 | 6.21 | −6%/+38% |
+| laravel | ratio vs. viv's own `noop` | 38.9 | 7.70 | 45.7 | −80%/+17% |
+
+Two of the three options the issue named are ruled out by this table, not by
+taste:
+
+- **A same-run viv scenario as the denominator** (`warm` or `noop`) is
+  *worse* than the design it would replace, not better. `warm` and `noop`
+  are themselves a few milliseconds and noisy in relative terms, so dividing
+  by them amplifies noise instead of cancelling it — both ratios swing
+  wider than the ratio they'd replace, and far wider than viv's own absolute
+  time.
+- **An absolute-time gate**, sized from the measured spread, is the most
+  stable yardstick on this data (viv's own `update-offline` time has the
+  narrowest spread of the four in every row above) — but `baseline.json`
+  currently stores a *ratio* for `update-offline`, and switching what that
+  stored number means requires recapturing it as an absolute mean. That
+  recapture is out of scope for this change (only `bench/compare.py` and
+  this file are touched here); doing it against the current, ratio-shaped
+  baseline would fail every run in the table above, since the numbers aren't
+  in the same units.
+
+That leaves the third option: `update-offline` is now informational only,
+like `update-warm` already is (`CHECKED_SCENARIOS` in `bench/compare.py` no
+longer includes it). Its ratio and viv's own absolute time still print in
+the table every run, so a real regression stays visible to a human, but it
+no longer fails the build on a Composer network wobble that was never viv's
+to own. Re-running `bench/compare.py` for all 14 downloaded runs against the
+currently committed `baseline.json` gives the same pass/fail result before
+and after this change on every run (one of the 14, laravel on a run with a
+`noop` regression, fails both before and after — unrelated to this change).
+
+Cost of this choice: `update-offline` no longer gates a real regression in
+viv's own offline solver time until a future change recaptures
+`baseline.json`'s entry as an absolute mean (the same `--merge-runs`
+mechanism #183 added already computes a median across runs; it would need a
+second, absolute-time code path for scenarios like this one). Track that
+follow-up before treating `update-offline`'s current baseline entry as
+meaningful again.
 
 ## Local mirror (#165, widened)
 
@@ -219,6 +274,58 @@ suspected stale), delete the one project's directory under
 `$BENCH_CACHE/mirror/`, or `rm -rf "$BENCH_CACHE"` (default
 `~/.cache/vivace-bench`) to clear everything; this is a separate directory
 from `~/.cache/vivace`, viv's own real store, and never touches it.
+
+## First run (#202)
+
+Every number above starts from a warm store: `cold` empties the cache but
+still measures a machine that has installed this project before, because
+the mirror recording that backs it was made once and reused. A new user's
+actual first install is different — nothing to hardlink from, nothing
+cached — and nobody had measured it.
+
+`bench/run.sh` adds a `first-run` scenario, alongside `cold`/`warm`/`noop`,
+for `composer` and `viv` only. It refuses to run at all without
+`BENCH_MIRROR` set (no real network allowed for this one), and empties the
+same scratch `cache_for()` directory `cold` already uses before every timed
+run — `$BENCH_WORK/xdg-cache/vivace` for viv, `$BENCH_WORK/composer-home/cache`
+for Composer, never `~/.cache/vivace` or `~/.cache/composer`.
+
+Measured against the persistent mirrors two corpus projects already have
+under `~/.cache/vivace-bench/mirror/` (#170), 3 runs each, same machine as
+the table above:
+
+| Project | Packages | Composer first-run | viv first-run | viv vs Composer |
+|---|---|---|---|---|
+| slimphp/Slim-Skeleton | 57 | 0.961 s | 0.158 s | 6.1x faster |
+| yiisoft/yii2-app-basic | 93 | 1.231 s | 0.244 s | 5.0x faster |
+
+viv wins both, by roughly the same margin as `cold` on this machine — not
+the loss the issue's "hardlink store has nothing to share" reasoning
+predicted. That reasoning still holds structurally (link time genuinely
+drops to zero download-and-extract advantage here); it just isn't enough to
+flip the result on these two, comparatively small corpus projects. A wider
+or slower-disk corpus project could still show a different balance.
+
+Read this margin narrowly. The mirror serves over `127.0.0.1`, so there is
+no latency to hide and no round trip to overlap, and fetching every dist
+concurrently — which is what Composer does and where it is strongest — buys
+almost nothing against a local socket. A real first install over the
+internet is the one case where that concurrency pays, so do not quote this
+figure as what a new user sees. What it does measure honestly is everything
+after the bytes arrive: unpacking, linking and generating, with no store to
+draw on. Keeping the network out is what makes the number repeatable, and
+it is also what the number leaves out.
+
+Recommendation: **informational, not gated.** `bench/compare.py` requires a
+`baseline.json` entry built from the median of at least ten runs (#183)
+before a scenario's ratio is trustworthy enough to fail a build on; this
+scenario has none yet. It also shares `update-warm`'s reason for staying
+ungated even once it does: the timed command is a real concurrent
+download-and-extract pipeline (many small files, many sockets, even
+against a local mirror), which is inherently noisier run to run than a
+pure-CPU scenario like `warm`/`noop`/`update-offline` — exactly the
+distinction the CI bench gate section above draws. Once ten-plus CI runs
+exist, revisit with `--merge-runs` the same way `update-offline` did.
 
 ## Corpus
 
