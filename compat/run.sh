@@ -83,7 +83,7 @@ composer_update_flags=(--no-scripts --no-plugins --no-interaction --ignore-platf
 # extensions, matching what a user's own install would see.
 compat_locks=${COMPAT_LOCKS:-0}
 lock_compare_composer_flags=(--no-install --no-scripts --no-plugins --no-interaction)
-lock_compare_viv_flags=(--no-install --no-plugins)
+lock_compare_viv_flags=(--no-install --no-scripts --no-plugins)
 
 results_dir=${COMPAT_RESULTS_DIR:-$root/compat/results}
 logs_dir="$results_dir/$label-logs"
