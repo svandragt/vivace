@@ -755,6 +755,26 @@ mod tests {
     }
 
     #[test]
+    fn platform_check_no_requirement_skips_without_error() {
+        // A lock with no php/ext-* requirement anywhere (just an ordinary
+        // package link) must still produce `None`, same as Composer's own
+        // `getPlatformCheck` writing nothing when there is nothing to check.
+        let empty = Map::new();
+        let require = links(&[("some/lib", "^1.0")]);
+        let input = PlatformInput {
+            name: "a/a",
+            dev: false,
+            require: &require,
+            provide: &empty,
+            replace: &empty,
+        };
+        assert_eq!(
+            platform_check(&[input], PlatformCheck::All, &IgnorePlatform::None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn platform_check_lower_bound_shapes() {
         let empty = Map::new();
         let check = |constraint: &str| -> Option<String> {
