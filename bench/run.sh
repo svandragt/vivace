@@ -4,12 +4,15 @@
 # Scenarios: cold (no cache, no vendor), warm (cache kept, no vendor), noop (vendor present);
 # plus update-warm (#55): resolve composer.json against a warm metadata cache
 # (composer/viv always, riff only when it's on PATH — no presto, it has no
-# update command).
+# update command); plus first-run (#202, composer/viv only): a genuine first
+# install — empty store, dists fetched from BENCH_MIRROR — required rather
+# than optional, so it never reports a number with the real network's
+# variance baked in.
 #
 # BENCH_MIRROR=<mirror-dir> (#165, widened): serve a mirror recorded by
 # bench/mirror.sh over 127.0.0.1 for the whole run, and point every
 # scenario's composer.json/composer.lock at it, so cold and update-warm hit
-# no real network.
+# no real network. first-run needs this set; it skips itself otherwise.
 #
 # Run inside devbox (`devbox run -- bench/run.sh bench/laravel`) so php/composer/hyperfine resolve.
 set -eu
@@ -169,6 +172,38 @@ for tool in $tools; do
     rm -f "$out/$tool.json"
     failed="$failed $tool"
     [ "$failed_rc" -eq 0 ] && failed_rc=$rc
+  fi
+done
+
+# first-run (#202): a new user's actual first install — fetch every dist,
+# then extract and link — as opposed to cold above, whose store is only
+# emptied, not its network source pinned; cold runs against the real
+# registry unless the caller happens to also pass BENCH_MIRROR. This
+# scenario refuses to run at all without a mirror, so it never reports a
+# number with the real network's variance baked in. The store it empties is
+# the same scratch cache_for() dir cold already uses under $work, never the
+# user's real ~/.cache/vivace or ~/.cache/composer.
+for tool in $tools; do
+  case $tool in
+    composer|viv) ;;
+    *) continue ;;
+  esac
+  if [ -z "$mirror" ]; then
+    echo "run.sh: $tool first-run skipped, no BENCH_MIRROR (no real network allowed for this scenario)" >&2
+    continue
+  fi
+  dir="$work/$tool-first-run"; rm -rf "$dir"; mkdir -p "$dir"
+  cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"
+  log="$out/$tool-first-run.log"; : >"$log"
+  cmd="cd $dir && cp $json_src/composer.json $lock_src/composer.lock . && export $(env_for "$tool") && $(cmd_for "$tool") >>$log 2>&1"
+  cache=$(cache_for "$tool")
+  if ! hyperfine --warmup 0 --runs "$runs" --export-json "$out/$tool-first-run.json" \
+    --command-name "$tool first-run" --prepare "rm -rf $dir/vendor $cache" "$cmd"; then
+    echo "run.sh: $tool first-run failed:" >&2
+    tail -20 "$log" >&2
+    rm -f "$out/$tool-first-run.json"
+    failed="$failed $tool"
+    [ "$failed_rc" -eq 0 ] && failed_rc=1
   fi
 done
 
