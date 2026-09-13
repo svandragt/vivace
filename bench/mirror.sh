@@ -241,9 +241,34 @@ record_p2() {
             # directly; flattened to a plain list here anyway so every
             # recorded p2 file — v1 or v2 sourced — has the one shape the
             # rewrite step below already assumes.
-            jq -c --arg n "$name" \
-              '{packages: {($n): ((.packages // {})[$n] | if type == "object" then [.[]] else . end)}}' \
-              "$cache" > "$p2_path"
+            #
+            # #216: index_py always advertises metadata-url (v2/
+            # Provider::Lazy) in the replayed packages.json, never
+            # providers-url, so a v1 source's own habit of listing dev
+            # branches inline (asset-packagist.org, e.g. bower-asset/
+            # yii2-pjax's dev-master) must still come out split into a
+            # `<name>.json`/`<name>~dev.json` pair the way a real v2
+            # repository would serve it: fetch_lazy (src/repository.rs)
+            # always requests both when a constraint wants dev, and an
+            # unrecorded `~dev` file has no cache entry at all offline
+            # (get_cached_json's `since` is `None`), which is a hard
+            # "Network disabled" error rather than the confirmed-absent
+            # 404 a real v2 repository with no dev branch would have left
+            # revalidatable.
+            versions=$(jq -c --arg n "$name" \
+              '(.packages // {})[$n] | if type == "object" then [.[]] else . end' \
+              "$cache")
+            printf '%s' "$versions" |
+              jq -c --arg n "$name" \
+                '{packages: {($n): [.[] | select((.version // "") | startswith("dev-") | not)]}}' \
+                > "$p2_path"
+            dev_versions=$(printf '%s' "$versions" |
+              jq -c '[.[] | select((.version // "") | startswith("dev-"))]')
+            if [ "$dev_versions" != "[]" ]; then
+              printf '%s' "$dev_versions" |
+                jq -c --arg n "$name" '{packages: {($n): .}}' \
+                > "$mirror/p2/$vendor/$pkg~dev.json"
+            fi
             return 0
           fi
         fi

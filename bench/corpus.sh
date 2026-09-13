@@ -187,7 +187,7 @@ bench_project() {
   rm -rf "$out" "$work/bench"
   mkdir -p "$out"
 
-  local skip_tools skip_update run_tools
+  local skip_tools skip_update skip_offline run_tools
   skips_for "$name"
   run_tools="composer riff viv"
   for tool in $skip_tools; do
@@ -242,6 +242,23 @@ bench_project() {
           footnotes+=("$name/$tool: $(redact <<< "$reason")")
           ;;
       esac
+    elif [ "$tool" = "viv" ] && [ -z "$(mean_for "$out/$tool-update-offline.json" "$tool update-offline")" ]; then
+      # update-offline has no column of its own in the table above (#165
+      # added it as a viv-only, informational-only number, see
+      # bench/compare.py), so a mirror that can't serve it — #216 — used to
+      # leave no trace at all here: cold and update-warm both had numbers,
+      # so nothing above footnoted it, and bench/run.sh's own non-zero exit
+      # (it does fail on this, see its own trailing `if [ -n "$failed" ]`)
+      # only ever reached a log line, never this report or its exit code.
+      case " $skip_offline " in
+        *" $tool "*) : ;; # already footnoted by skips_for
+        *)
+          local reason
+          reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
+          [ -n "$reason" ] || reason=$(last_line "$run_out")
+          footnotes+=("$name/$tool: $(redact <<< "$reason")")
+          ;;
+      esac
     fi
   done
 
@@ -253,13 +270,15 @@ skips=${BENCH_SKIPS:-$root/bench/skips.txt}
 
 # Known-failure skips (bench/skips.txt): matches on tool+version+project, so
 # a newer release is retried automatically. Sets $skip_tools (space-
-# separated tools to drop from bench/run.sh's tool list) and $skip_update
-# (forwarded as BENCH_SKIP_UPDATE) for one project, and appends a footnote
-# per skip.
+# separated tools to drop from bench/run.sh's tool list), $skip_update
+# (forwarded as BENCH_SKIP_UPDATE) and $skip_offline (checked below, viv's
+# update-offline has no BENCH_ flag of its own to forward to) for one
+# project, and appends a footnote per skip.
 skips_for() {
   local name=$1
   skip_tools=""
   skip_update=""
+  skip_offline=""
   [ -f "$skips" ] || return 0
   local tool ver proj scenario tool_ver
   while read -r tool ver proj scenario; do
@@ -275,6 +294,10 @@ skips_for() {
         ;;
       update-warm)
         skip_update="$skip_update $tool"
+        footnotes+=("$name/$tool: skipped, known failure at $tool $ver (bench/skips.txt)")
+        ;;
+      update-offline)
+        skip_offline="$skip_offline $tool"
         footnotes+=("$name/$tool: skipped, known failure at $tool $ver (bench/skips.txt)")
         ;;
     esac
