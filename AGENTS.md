@@ -160,9 +160,23 @@ check locally against the committed baseline.
 2. Triage the milestones with the `triage-milestones` skill
    (`.claude/skills/triage-milestones/`): prune the current one to its
    theme and seed the next.
-3. Refresh the bench baseline: download the `baseline-candidate` artifact
-   from the release commit's CI run (`gh run download <run-id> --name
-   baseline-candidate --dir /tmp/baseline`) and commit its `baseline-candidate.json`
-   as `bench/results/baseline.json`. A scenario's new baseline may only go
-   down or stay within tolerance of the old one; a rise is a regression to
-   explain in the release notes, not a new floor.
+3. Refresh the bench baseline from at least ten runs, not from one (#183).
+   Download the `bench-results` artifact from ten or more recent CI runs on
+   `main` into sibling directories, then take the per-scenario median:
+
+   ```sh
+   python3 bench/compare.py --merge-runs run-<sha1> run-<sha2> ... \
+       --project monolog --baseline bench/results/baseline.json
+   python3 bench/compare.py --merge-runs run-<sha1> run-<sha2> ... \
+       --project laravel --baseline bench/results/baseline.json
+   ```
+
+   Do not commit a single run's `baseline-candidate.json`: one run lands
+   wherever it lands, so a baseline taken from it sits at the edge of the
+   distribution and the gate then fails on noise. The candidate each CI run
+   uploads is for inspecting one run, not for becoming the baseline.
+
+   A scenario's new median may only go down or stay within tolerance of the
+   old one; a rise is a regression to explain in the release notes, not a new
+   floor. Compare against the previous median, not against a single run,
+   before calling anything a rise.
