@@ -979,9 +979,18 @@ impl Scanner<'_> {
         let mut scanned: HashMap<usize, ClassMap> = if miss_indices.is_empty() {
             HashMap::new()
         } else {
-            let workers = std::thread::available_parallelism()
-                .map_or(1, std::num::NonZero::get)
-                .min(miss_indices.len());
+            // `VIV_TEST_SCAN_WORKERS` (test-only, never documented for users)
+            // pins the worker count so a test can compare one worker against
+            // many without depending on the machine's own core count (#200):
+            // production never sets it, same shape as `VIV_TEST_NOW`.
+            let workers = std::env::var("VIV_TEST_SCAN_WORKERS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| {
+                    std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+                })
+                .min(miss_indices.len())
+                .max(1);
             // Tripped by the first directory that fails to walk, so the
             // other workers stop picking up new misses instead of grinding
             // through every remaining one.

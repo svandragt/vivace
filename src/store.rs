@@ -1233,10 +1233,19 @@ fn extract_zip_parallel(
     dest: &Path,
     limits: &ExtractLimits<'_>,
 ) -> Result<Vec<(PathBuf, String)>> {
-    let n = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(8)
-        .min(entry_count / PARALLEL_EXTRACT_THRESHOLD)
+    // `VIV_TEST_EXTRACT_WORKERS` (test-only, never documented for users) pins
+    // `n` so a test can compare one worker against many without depending on
+    // the machine's own core count (#200): production never sets it, so this
+    // only ever overrides in-process, same shape as `VIV_TEST_NOW`.
+    let n = std::env::var("VIV_TEST_EXTRACT_WORKERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map_or(1, std::num::NonZero::get)
+                .min(8)
+                .min(entry_count / PARALLEL_EXTRACT_THRESHOLD)
+        })
         .max(1);
     let stop = AtomicBool::new(false);
     let per_thread: Vec<Result<Vec<(usize, PathBuf, String)>>> = std::thread::scope(|scope| {
@@ -2178,12 +2187,10 @@ mod tests {
         files
     }
 
-    /// #193: a ~5,000-entry archive (above `PARALLEL_EXTRACT_THRESHOLD`)
-    /// extracted across threads produces exactly the same tree — same
-    /// files, contents and modes, same symlink — as forcing the threshold
-    /// to `usize::MAX` extracts on one thread.
-    #[test]
-    fn parallel_extraction_matches_single_threaded_extraction() {
+    /// Shared by the parallel-extraction tests below: a ~5,000-entry archive
+    /// (above `PARALLEL_EXTRACT_THRESHOLD`), one file in every 200 marked
+    /// executable, plus a symlink.
+    fn sample_zip_with_5_000_entries() -> Vec<u8> {
         let names: Vec<String> = (0..5_000)
             .map(|i| format!("d{}/f{i}.txt", i % 50))
             .collect();
@@ -2199,7 +2206,16 @@ mod tests {
         writer
             .add_symlink("link", "d0/f0.txt", SimpleFileOptions::default())
             .unwrap();
-        let zip_bytes = writer.finish().unwrap().into_inner();
+        writer.finish().unwrap().into_inner()
+    }
+
+    /// #193: a ~5,000-entry archive (above `PARALLEL_EXTRACT_THRESHOLD`)
+    /// extracted across threads produces exactly the same tree — same
+    /// files, contents and modes, same symlink — as forcing the threshold
+    /// to `usize::MAX` extracts on one thread.
+    #[test]
+    fn parallel_extraction_matches_single_threaded_extraction() {
+        let zip_bytes = sample_zip_with_5_000_entries();
 
         let parallel = tempfile::tempdir().unwrap();
         extract_zip_with_threshold(
@@ -2225,6 +2241,42 @@ mod tests {
             full_tree_snapshot(parallel.path()),
             full_tree_snapshot(sequential.path())
         );
+    }
+
+    /// #200: the same archive extracted with `VIV_TEST_EXTRACT_WORKERS`
+    /// pinned to 1 and then to 6 produces the same tree either way —
+    /// `extract_zip_parallel` sorts every entry back into archive order
+    /// before applying it, so the result must not depend on how many
+    /// threads happened to share the work.
+    #[test]
+    #[allow(
+        unsafe_code,
+        reason = "nextest gives this test its own process; no other thread touches env vars"
+    )]
+    fn extraction_output_is_invariant_to_worker_count() {
+        let zip_bytes = sample_zip_with_5_000_entries();
+        let mut snapshots = Vec::new();
+        for workers in ["1", "6"] {
+            // SAFETY: single-threaded within this test process at this point.
+            unsafe {
+                std::env::set_var("VIV_TEST_EXTRACT_WORKERS", workers);
+            }
+            let dest = tempfile::tempdir().unwrap();
+            extract_zip_with_threshold(
+                "acme/pkg",
+                Cursor::new(&zip_bytes),
+                zip_bytes.len() as u64,
+                dest.path(),
+                PARALLEL_EXTRACT_THRESHOLD,
+            )
+            .unwrap();
+            snapshots.push(full_tree_snapshot(dest.path()));
+        }
+        // SAFETY: see above.
+        unsafe {
+            std::env::remove_var("VIV_TEST_EXTRACT_WORKERS");
+        }
+        assert_eq!(snapshots[0], snapshots[1]);
     }
 
     /// #193: the inflated-size cap is a shared `ExtractLimits` (atomics, not

@@ -1747,3 +1747,38 @@ fn classmap_keeps_non_utf8_class_name_byte() {
         "expected {expected_static_line:?} in {static_file:?}"
     );
 }
+
+/// #200: `Scanner::scan_all` fans its directory walk across threads (#198),
+/// then folds the results back in original task order, so a duplicate class
+/// always resolves to the same winner no matter how many workers ran the
+/// walk. `override_vendors_autoloading_case` is picked over the four
+/// real-package fixtures (monolog, wordpress, legacy, psr4-shared-prefix)
+/// because those only ever share a PSR-4 *prefix* — real published packages
+/// never redeclare the same class, so nothing in them could ever show a
+/// fold-order regression. This case does: root's own `lib/A/B/C.php`
+/// deliberately shadows `a/a`'s `lib/A/B/C.php`, the two together with `a/a`'s
+/// `src/`+`classmap/` and `b/b`'s `src/` giving `scan_all` six directories to
+/// spread across workers instead of one.
+/// `VIV_TEST_SCAN_WORKERS` (test-only, read once by `scan_all`) pins the
+/// worker count so 1 and 8 are compared without depending on this machine's
+/// core count; `run()` already byte-compares every generated file against
+/// Composer's own recorded golden, so a mismatch at either worker count
+/// fails here.
+#[test]
+#[allow(
+    unsafe_code,
+    reason = "nextest gives this test its own process; no other thread touches env vars"
+)]
+fn classmap_fold_is_invariant_to_scan_worker_count() {
+    for workers in ["1", "8"] {
+        // SAFETY: single-threaded within this test process at this point.
+        unsafe {
+            std::env::set_var("VIV_TEST_SCAN_WORKERS", workers);
+        }
+        run(&override_vendors_autoloading_case());
+    }
+    // SAFETY: see above.
+    unsafe {
+        std::env::remove_var("VIV_TEST_SCAN_WORKERS");
+    }
+}
