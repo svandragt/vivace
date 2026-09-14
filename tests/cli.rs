@@ -53,6 +53,36 @@ fn install_without_a_lock_fails() {
     viv_snapshot!(ctx, cmd);
 }
 
+/// #236: a clap usage error (a bad flag, here) must not exit `2`, which
+/// `docs/stability.md` reserves for a genuine resolver failure.
+#[test]
+fn install_bogus_flag_is_a_usage_error_not_exit_two() {
+    let ctx = TestContext::new();
+    let mut cmd = ctx.viv();
+    cmd.args(["install", "--bogus-flag"]);
+    viv_snapshot!(ctx, cmd);
+}
+
+/// #236: the other half of the pin — a genuine resolver failure still
+/// exits `2`. `"packagist.org": false` with no other repository configured
+/// makes `acme/nonexistent` unresolvable with no network involved.
+#[test]
+fn update_unresolvable_requirement_exits_two() {
+    let ctx = TestContext::new();
+    fs::write(
+        ctx.project.path().join("composer.json"),
+        r#"{
+            "name": "acme/demo",
+            "require": { "acme/nonexistent": "^1.0" },
+            "repositories": { "packagist.org": false }
+        }"#,
+    )
+    .unwrap();
+    let mut cmd = ctx.viv();
+    cmd.arg("update");
+    viv_snapshot!(ctx, cmd);
+}
+
 #[test]
 fn install_dry_run_lists_the_plan() {
     let ctx = TestContext::new();
