@@ -71,6 +71,21 @@ fn warnings_only_exit_zero_unless_strict() {
     assert_matches_composer("warnings", &["--strict"], "strict", 1);
 }
 
+/// #233: a manifest missing both `name` and `description` fails Composer's
+/// publish check (schema-required, not any hand-written check) and exits 2;
+/// `--no-check-publish` suppresses it back down to the license warning and
+/// exit 0.
+#[test]
+fn missing_required_publish_fields_exit_two_unless_no_check_publish() {
+    assert_matches_composer("publish-errors", &[], "plain", 2);
+    assert_matches_composer(
+        "publish-errors",
+        &["--no-check-publish"],
+        "no-check-publish",
+        0,
+    );
+}
+
 /// A bad name and an unparseable constraint on an installed dependency,
 /// found via `--with-dependencies`: exit 2 regardless of `--strict` (errors
 /// always exit non-zero).

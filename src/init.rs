@@ -161,7 +161,12 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
         no_check_all: false,
         check_lock: false,
         no_check_lock: false,
-        no_check_publish: false,
+        // `InitCommand::execute` validates its own output with
+        // `JsonFile::LAX_SCHEMA` only, never the publish (`STRICT_SCHEMA`)
+        // pass — a bare `composer init` writes no `description` and still
+        // succeeds. `no_check_publish` is the closest this port's shared
+        // `validate::run` has to that distinction (#233).
+        no_check_publish: true,
         with_dependencies: false,
         strict: false,
     })?;
