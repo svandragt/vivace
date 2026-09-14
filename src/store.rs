@@ -1336,6 +1336,17 @@ mod tests {
 
     use super::*;
 
+    /// #217: `VIV_MAX_INFLATED_BYTES` is process-wide state. Under plain
+    /// `cargo test --lib` (unlike nextest, which gives each test its own
+    /// process) every test in this file shares one process, so two tests
+    /// setting/reading/unsetting the same env var race: one test's
+    /// `remove_var` can land between another's `set_var` and its read,
+    /// silently restoring the default limit mid-assertion. Serialising the
+    /// two tests that touch this var closes the race outright, rather than
+    /// relying on a wall-clock or memory margin that only holds when the
+    /// machine is quiet.
+    static MAX_INFLATED_BYTES_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn package(name: &str, reference: &str) -> Package {
         let mut package: Package = serde_json::from_value(json!({
             "name": name,
@@ -2102,14 +2113,14 @@ mod tests {
     #[test]
     #[allow(
         unsafe_code,
-        reason = "nextest gives this test its own process; no other thread touches env vars"
+        reason = "MAX_INFLATED_BYTES_ENV excludes the other test touching this var"
     )]
     fn zip_bomb_trips_the_inflated_size_cap() {
+        // #217: held across the set/act/unset window, see MAX_INFLATED_BYTES_ENV.
+        let _guard = MAX_INFLATED_BYTES_ENV.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path()).unwrap();
-        // env var only touched by this one test (nextest gives it
-        // its own process), so no guard against concurrent mutation needed.
-        // SAFETY: single-threaded within this test process at this point.
+        // SAFETY: MAX_INFLATED_BYTES_ENV excludes the other test touching this var.
         unsafe {
             std::env::set_var("VIV_MAX_INFLATED_BYTES", "1024");
         }
@@ -2286,12 +2297,14 @@ mod tests {
     #[test]
     #[allow(
         unsafe_code,
-        reason = "nextest gives this test its own process; no other thread touches env vars"
+        reason = "MAX_INFLATED_BYTES_ENV excludes the other test touching this var"
     )]
     fn limits_ceiling_trips_across_threads_on_a_large_archive() {
+        // #217: held across the set/act/unset window, see MAX_INFLATED_BYTES_ENV.
+        let _guard = MAX_INFLATED_BYTES_ENV.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path()).unwrap();
-        // SAFETY: single-threaded within this test process at this point.
+        // SAFETY: MAX_INFLATED_BYTES_ENV excludes the other test touching this var.
         unsafe {
             std::env::set_var("VIV_MAX_INFLATED_BYTES", "50000");
         }
