@@ -38,6 +38,7 @@ mod discovery;
 mod drupal_scaffold;
 mod installers;
 mod patches;
+mod pest;
 mod phpcs;
 mod phpstan;
 pub mod private_installer;
@@ -190,6 +191,7 @@ enum AdapterId {
     C3,
     DrupalScaffold,
     SymfonyRuntime,
+    Pest,
 }
 
 const NATIVE_ADAPTERS: &[AdapterId] = &[
@@ -206,6 +208,7 @@ const NATIVE_ADAPTERS: &[AdapterId] = &[
     AdapterId::C3,
     AdapterId::DrupalScaffold,
     AdapterId::SymfonyRuntime,
+    AdapterId::Pest,
 ];
 
 /// Every registered adapter, in `NATIVE_ADAPTERS` order, regardless of what
@@ -230,6 +233,7 @@ fn make_adapter(id: AdapterId) -> Box<dyn Adapter> {
         AdapterId::C3 => Box::new(c3::C3),
         AdapterId::DrupalScaffold => Box::new(drupal_scaffold::DrupalScaffold),
         AdapterId::SymfonyRuntime => Box::new(symfony_runtime::SymfonyRuntime),
+        AdapterId::Pest => Box::new(pest::Pest),
     }
 }
 

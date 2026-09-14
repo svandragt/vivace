@@ -1,0 +1,12 @@
+{
+    "name": "acme/pest-plugin-b",
+    "type": "library",
+    "extra": {
+        "pest": {
+            "plugins": ["Acme\\PestPluginB\\Plugin", "Acme\\PestPluginB\\OtherPlugin"]
+        }
+    },
+    "autoload": {
+        "psr-4": {"Acme\\PestPluginB\\": "src/"}
+    }
+}

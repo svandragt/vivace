@@ -1,0 +1,7 @@
+[
+    "Acme\\PestPluginA\\Plugin",
+    "Acme\/Slash\/Test",
+    "Acme\\PestPluginB\\Plugin",
+    "Acme\\PestPluginB\\OtherPlugin",
+    "Acme\\Root\\RootPlugin"
+]

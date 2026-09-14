@@ -117,6 +117,7 @@ fn diagnose_adapters_prints_every_native_adapter_and_nothing_else() {
             "codeception/c3",
             "drupal/core-composer-scaffold",
             "symfony/runtime",
+            "pestphp/pest-plugin",
         ]
     );
 }

@@ -1,0 +1,33 @@
+{
+    "name": "vivace/fixture-pest",
+    "license": "proprietary",
+    "type": "project",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/plugin-a",
+            "options": {"versions": {"acme/pest-plugin-a": "1.0.0"}}
+        },
+        {
+            "type": "path",
+            "url": "packages/plugin-b",
+            "options": {"versions": {"acme/pest-plugin-b": "1.0.0"}}
+        }
+    ],
+    "require": {
+        "pestphp/pest-plugin": "^5.0",
+        "acme/pest-plugin-a": "1.0.0",
+        "acme/pest-plugin-b": "1.0.0"
+    },
+    "extra": {
+        "pest": {
+            "plugins": ["Acme\\Root\\RootPlugin"]
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable"
+}

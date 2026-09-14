@@ -1,0 +1,12 @@
+{
+    "name": "acme/pest-plugin-a",
+    "type": "library",
+    "extra": {
+        "pest": {
+            "plugins": ["Acme\\PestPluginA\\Plugin", "Acme/Slash/Test"]
+        }
+    },
+    "autoload": {
+        "psr-4": {"Acme\\PestPluginA\\": "src/"}
+    }
+}
