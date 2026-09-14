@@ -90,7 +90,12 @@ fn translate(args: &[String]) -> Option<Vec<String>> {
                     msg.replace("{flag}", flag)
                 ));
             }
-            Flag::Unknown => return None,
+            Flag::Unknown => {
+                err_out(&format!(
+                    "composer (viv shim): `{flag}` not understood, running the real Composer"
+                ));
+                return None;
+            }
         }
     }
     Some(out)
@@ -141,7 +146,12 @@ fn translate_create_project(args: &[String]) -> Option<Vec<String>> {
                     msg.replace("{flag}", flag)
                 ));
             }
-            Flag::Unknown => return None,
+            Flag::Unknown => {
+                err_out(&format!(
+                    "composer (viv shim): `{flag}` not understood, running the real Composer"
+                ));
+                return None;
+            }
         }
     }
     Some(out)
@@ -273,7 +283,12 @@ fn translate_with_packages(args: &[String], classify: fn(&str) -> Flag) -> Optio
                     msg.replace("{flag}", flag)
                 ));
             }
-            Flag::Unknown => return None,
+            Flag::Unknown => {
+                err_out(&format!(
+                    "composer (viv shim): `{flag}` not understood, running the real Composer"
+                ));
+                return None;
+            }
         }
     }
     Some(out)
@@ -322,6 +337,23 @@ fn real_composer() -> Option<PathBuf> {
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint.
 fn err_out(message: &str) {
     let _ = writeln!(std::io::stderr().lock(), "{message}");
+}
+
+/// An argument the shim doesn't understand normally falls back to the real
+/// Composer with just the stderr note above. `VIV_SHIM_STRICT=1` turns that
+/// fallback into a hard error instead, for a CI job that migrated to viv and
+/// wants to know if a gap silently reopened the door back to Composer. The
+/// published image (#213) doesn't need this set: it ships with no real
+/// Composer to fall back to, so `exec_real_composer` below already hard-errors
+/// there regardless.
+fn fallback_to_real_composer(args: &[String]) -> ExitCode {
+    if std::env::var_os("VIV_SHIM_STRICT").is_some() {
+        err_out(
+            "composer (viv shim): VIV_SHIM_STRICT is set, refusing to fall back to the real Composer",
+        );
+        return ExitCode::from(1);
+    }
+    exec_real_composer(args)
 }
 
 /// `exec`s the real Composer with `args`. Only returns (with a failure code)
@@ -395,7 +427,7 @@ fn main() -> ExitCode {
     if viv_command == "new" {
         return match translate_create_project(rest) {
             Some(translated) => exec_viv(&[vec!["new".to_string()], translated].concat()),
-            None => exec_real_composer(&args),
+            None => fallback_to_real_composer(&args),
         };
     }
     let packages_classifier: Option<fn(&str) -> Flag> = match viv_command {
@@ -407,12 +439,12 @@ fn main() -> ExitCode {
     if let Some(classify) = packages_classifier {
         return match translate_with_packages(rest, classify) {
             Some(translated) => exec_viv(&[vec![viv_command.to_string()], translated].concat()),
-            None => exec_real_composer(&args),
+            None => fallback_to_real_composer(&args),
         };
     }
 
     match translate(rest) {
         Some(translated) => exec_viv(&[vec![viv_command.to_string()], translated].concat()),
-        None => exec_real_composer(&args),
+        None => fallback_to_real_composer(&args),
     }
 }

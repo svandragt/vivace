@@ -383,6 +383,54 @@ fn install_with_unknown_flag_delegates_to_real_composer() {
         .stdout("composer\ninstall\n--unknown-flag\n");
 }
 
+/// #230: the fallback used to be silent, so a migrated CI job kept paying
+/// for Composer with nothing to say so. `--no-cache` (not `--unknown-flag`
+/// above) on purpose: #228 survived because every test used a spelling the
+/// author had in mind, so this one is a real Composer flag `classify` never
+/// lists, not one invented for the test.
+#[test]
+fn install_with_unknown_flag_names_it_on_stderr() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["install", "--no-cache"])
+        .assert()
+        .success()
+        .stdout("composer\ninstall\n--no-cache\n")
+        .stderr(predicates::str::contains(
+            "`--no-cache` not understood, running the real Composer",
+        ));
+}
+
+/// `VIV_SHIM_STRICT=1` turns the same fallback into a hard error instead of
+/// quietly running the real Composer.
+#[test]
+fn install_with_unknown_flag_and_strict_env_fails_instead_of_falling_back() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .env("VIV_SHIM_STRICT", "1")
+        .args(["install", "--no-cache"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout("")
+        .stderr(predicates::str::contains(
+            "`--no-cache` not understood, running the real Composer",
+        ))
+        .stderr(predicates::str::contains("VIV_SHIM_STRICT is set"));
+}
+
 #[test]
 fn missing_real_composer_exits_with_message() {
     let _guard = SHIM_LOCK
