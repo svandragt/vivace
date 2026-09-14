@@ -1,0 +1,10 @@
+---
+source: tests/cli.rs
+expression: snapshot
+---
+success: true
+exit_code: 0
+----- stdout -----
+
+----- stderr -----
+not/installed is not required in your composer.json and has not been removed

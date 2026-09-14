@@ -434,6 +434,50 @@ fn update_lock_accepts_install_only_flags() {
     viv_snapshot!(ctx, cmd);
 }
 
+/// #241: a typo'd or already-gone package name must say so rather than
+/// silently doing nothing, and the untouched `composer.json` is the other
+/// half of "nothing happened" — no normalize rewrite either.
+#[test]
+fn rm_names_a_package_that_is_not_required() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    for name in ["composer.json", "composer.lock"] {
+        fs::copy(fixture().join(name), project.join(name)).unwrap();
+    }
+    let before = fs::read_to_string(project.join("composer.json")).unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["rm", "not/installed", "--no-update"]);
+    viv_snapshot!(ctx, cmd);
+
+    let after = fs::read_to_string(project.join("composer.json")).unwrap();
+    assert_eq!(
+        after, before,
+        "composer.json must stay untouched on a no-op"
+    );
+}
+
+/// The ordinary case #241 contrasts with: a package that *is* required
+/// still gets removed and normalized, with no "not required" message.
+#[test]
+fn rm_removes_a_required_package() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    for name in ["composer.json", "composer.lock"] {
+        fs::copy(fixture().join(name), project.join(name)).unwrap();
+    }
+
+    let mut cmd = ctx.viv();
+    cmd.args(["rm", "psr/log", "--no-update"]);
+    viv_snapshot!(ctx, cmd);
+
+    let after = fs::read_to_string(project.join("composer.json")).unwrap();
+    assert!(
+        !after.contains("psr/log"),
+        "psr/log should be removed:\n{after}"
+    );
+}
+
 #[test]
 fn require_and_remove_are_aliases_for_add_and_rm() {
     let help = String::from_utf8(

@@ -229,8 +229,22 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
     let mut allow_list = Vec::with_capacity(args.packages.len());
     for name in &args.packages {
         let name = name.to_ascii_lowercase();
-        remove_sub_node(&mut root, link_type, &name);
-        allow_list.push(name);
+        if remove_sub_node(&mut root, link_type, &name) {
+            allow_list.push(name);
+        } else {
+            // Composer's own wording (`RemoveCommand::execute`), naming the
+            // fact viv already knows so a typo doesn't look like a
+            // successful removal (#241).
+            warn_out(&format!(
+                "{name} is not required in your composer.json and has not been removed"
+            ));
+        }
+    }
+    if allow_list.is_empty() {
+        // Nothing was actually removed: leave composer.json untouched
+        // rather than rewrite it into its own normalised form, so a no-op
+        // stays a no-op in git too (#241).
+        return Ok(());
     }
     // `JsonConfigSource::removeLink` always follows `removeSubNode` with
     // this, dropping `require`/`require-dev` entirely once its last
@@ -667,18 +681,21 @@ fn add_link(root: &mut Value, link_type: &str, package: &str, constraint: &str) 
 
 /// `JsonManipulator::removeSubNode`, `main_node` always `require`/
 /// `require-dev` here. A no-op if `main_node` is absent or doesn't hold
-/// `package` (case-insensitively).
-fn remove_sub_node(root: &mut Value, main_node: &str, package: &str) {
+/// `package` (case-insensitively). Returns whether anything was actually
+/// removed, so `run_remove` can tell a real removal from a typo (#241).
+fn remove_sub_node(root: &mut Value, main_node: &str, package: &str) -> bool {
     let Some(Value::Object(links)) = root.get_mut(main_node) else {
-        return;
+        return false;
     };
-    if let Some(existing_key) = links
+    let Some(existing_key) = links
         .keys()
         .find(|k| k.eq_ignore_ascii_case(package))
         .cloned()
-    {
-        links.remove(&existing_key);
-    }
+    else {
+        return false;
+    };
+    links.remove(&existing_key);
+    true
 }
 
 /// `JsonManipulator::removeMainKeyIfEmpty`: drop `key` from the root object
