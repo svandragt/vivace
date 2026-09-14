@@ -25,6 +25,19 @@
 //! (the `--no-blocking`/`audit.ignore` remedy) is viv's own text, since viv
 //! has no `policy.advisories.*` config for Composer's own closing sentence
 //! to port.
+//!
+//! #152's root-conflict branch (`missing_package_suffix`'s
+//! `root_conflict_suffix` call) has no golden here at all: it needs a
+//! package name the root itself requires *and* a sibling that needs a
+//! wider constraint on that same name, and viv's closure walk resolves a
+//! root-level name's candidates from whatever constraints are known at
+//! that name's own first fetch — a root require's own fetch always starts
+//! before a transitive one can contribute a wider constraint for the same
+//! name, so no fixture reaches a pool state root-conflict actually needs.
+//! Same "solver explores fewer candidates than libsolv" gap #62 already
+//! names for dedup, just for a different reason. Tested directly against
+//! the function instead, in `src/solver/problem.rs`'s own `#[cfg(test)]`
+//! module.
 
 mod common;
 
