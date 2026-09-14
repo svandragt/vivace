@@ -185,6 +185,8 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
             false,
             args.no_install,
             false,
+            &[],
+            false,
             std::time::Duration::ZERO,
         )?;
         out(&format!("Wrote {}", composer_json_path.display()));

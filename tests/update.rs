@@ -1503,6 +1503,45 @@ async fn update_chains_into_install() {
     );
 }
 
+/// #231: `--ignore-platform-reqs` now reaches `update`'s chained install,
+/// same as `install`'s own flag (#214) — monolog/monolog's real `require:
+/// php >=8.1` (`tests/fixtures/packagist`) would otherwise land in
+/// `vendor/composer/platform_check.php`. This only proves the flag reaches
+/// the autoload write: the solve itself is unaffected (`UpdateArgs`'s own
+/// doc comment on the field), so this fixture never needs a PHP version the
+/// solve would reject in the first place.
+#[tokio::test]
+async fn update_ignore_platform_reqs_writes_no_platform_check() {
+    let default_ctx = offline_partial_update_context().await;
+    default_ctx
+        .viv()
+        .args(["update", "psr/log", "--offline"])
+        .assert()
+        .success();
+    assert!(
+        default_ctx
+            .project
+            .path()
+            .join("vendor/composer/platform_check.php")
+            .exists(),
+        "the fixture's own monolog/monolog require: php >=8.1 should still write \
+         platform_check.php without the flag, or this test proves nothing"
+    );
+
+    let ctx = offline_partial_update_context().await;
+    let project = ctx.project.path();
+
+    ctx.viv()
+        .args(["update", "psr/log", "--offline", "--ignore-platform-reqs"])
+        .assert()
+        .success();
+
+    assert!(
+        !project.join("vendor/composer/platform_check.php").exists(),
+        "platform_check.php should not be written when every platform requirement is ignored"
+    );
+}
+
 /// `viv update` never rewrites `composer.json`: only commands that edit it
 /// (`add`/`rm`/`init`) normalize it (`docs/stability.md`). A deliberately
 /// unnormalized `require` (reverse key order, so the normalizer's

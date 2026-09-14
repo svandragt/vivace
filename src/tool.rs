@@ -140,6 +140,8 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             // `InstallArgs`; without this, `update::run`'s own new chaining
             // (#104) would install twice.
             no_install: true,
+            ignore_platform_reqs: false,
+            ignore_platform_req: Vec::new(),
             no_blocking: false,
             no_security_blocking: false,
             metadata_ttl: None,

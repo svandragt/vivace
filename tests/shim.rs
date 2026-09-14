@@ -288,6 +288,31 @@ fn update_extra_verbose_flags_collapse_to_single_v() {
         .stdout("viv\nupdate\n-v\n");
 }
 
+/// #231: `update` now has its own `--ignore-platform-reqs`, so the shim
+/// keeps it (and prints no "viv has no equivalent" note) instead of
+/// dropping it the way #214 left `update`/`add`/`rm` alone.
+#[test]
+fn update_ignore_platform_reqs_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    let assert = shim_in(dir.path())
+        .args([
+            "update",
+            "--ignore-platform-reqs",
+            "--ignore-platform-req=ext-foo",
+        ])
+        .assert()
+        .success()
+        .stdout("viv\nupdate\n--ignore-platform-reqs\n--ignore-platform-req=ext-foo\n");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(!stderr.contains("has no equivalent"), "stderr: {stderr}");
+}
+
 #[test]
 fn update_with_unknown_flag_delegates_to_real_composer() {
     let _guard = SHIM_LOCK
@@ -320,6 +345,25 @@ fn require_calls_viv() {
         .stdout("viv\nadd\nacme/pkg\n--dev\n");
 }
 
+/// #231: same fix as `update`'s own, for `require`.
+#[test]
+fn require_ignore_platform_req_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    let assert = shim_in(dir.path())
+        .args(["require", "acme/pkg", "--ignore-platform-req", "ext-foo"])
+        .assert()
+        .success()
+        .stdout("viv\nadd\nacme/pkg\n--ignore-platform-req\next-foo\n");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(!stderr.contains("has no equivalent"), "stderr: {stderr}");
+}
+
 #[test]
 fn require_with_unknown_flag_delegates_to_real_composer() {
     let _guard = SHIM_LOCK
@@ -350,6 +394,25 @@ fn remove_calls_viv() {
         .assert()
         .success()
         .stdout("viv\nrm\nacme/pkg\n");
+}
+
+/// #231: same fix as `update`'s own, for `remove`.
+#[test]
+fn remove_ignore_platform_reqs_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    let assert = shim_in(dir.path())
+        .args(["remove", "acme/pkg", "--ignore-platform-reqs"])
+        .assert()
+        .success()
+        .stdout("viv\nrm\nacme/pkg\n--ignore-platform-reqs\n");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(!stderr.contains("has no equivalent"), "stderr: {stderr}");
 }
 
 #[test]

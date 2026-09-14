@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+- `--ignore-platform-reqs` and `--ignore-platform-req=<name>` on `update`, `require` and `remove`, and the `composer` shim passes both through instead of dropping them, same as `install`/`dump-autoload` already did. On all three, the flag only affects the chained install's autoload write (whether `vendor/composer/platform_check.php` gets written); the solve itself still only offers versions the detected platform satisfies, since `--ignore-platform-req(s)` has no port in `src/solver/solver.rs` yet ([#231](https://github.com/svandragt/vivace/issues/231))
 
 ## [0.12.0] - 2026-09-14
 ### Added
