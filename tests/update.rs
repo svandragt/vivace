@@ -1602,6 +1602,61 @@ async fn update_does_not_normalize_composer_json() {
     );
 }
 
+/// #205: `config.bump-after-update` raises `monolog/monolog`'s requirement
+/// to a caret on the version this update actually locked, and the lock's
+/// `content-hash` must describe `composer.json` *after* that rewrite --
+/// the issue's own repro, offline against the recorded fixture corpus
+/// (`tests/fixtures/packagist/`, monolog tops out at 3.11.0 there).
+/// `is_fresh` catches the ordering bug directly: hashing before the
+/// rewrite leaves a lock that describes a `composer.json` no longer on
+/// disk.
+#[tokio::test]
+async fn update_bump_after_update_rewrites_composer_json_before_hashing() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    let composer_json_path = project.join("composer.json");
+    fs_err::write(
+        &composer_json_path,
+        br#"{"require": {"monolog/monolog": "^3.0"}, "config": {"bump-after-update": true}}"#,
+    )
+    .unwrap();
+
+    // Warm the real cache from the fixture cassette (same pattern as
+    // `offline_partial_update_context`), so the `--offline` run below has
+    // provider data to resolve against instead of a network.
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", ctx.cache.path(), &transport)
+        .await
+        .unwrap();
+    let root: Value = serde_json::from_slice(&fs_err::read(&composer_json_path).unwrap()).unwrap();
+    solver::solve_update(&repo, &root, false, false)
+        .await
+        .unwrap();
+
+    ctx.viv()
+        .args([
+            "update",
+            "--no-install",
+            "--no-scripts",
+            "--no-plugins",
+            "--offline",
+        ])
+        .assert()
+        .success();
+
+    let on_disk_composer_json = fs_err::read(&composer_json_path).unwrap();
+    let bumped: Value = serde_json::from_slice(&on_disk_composer_json).unwrap();
+    assert_eq!(bumped["require"]["monolog/monolog"], "^3.11");
+
+    let lock = vivace::lock::read_lock(&project.join("composer.lock")).unwrap();
+    assert!(
+        vivace::lock::is_fresh(&lock, &on_disk_composer_json).unwrap(),
+        "content-hash must cover composer.json as bumped, not as it stood before the resolve"
+    );
+}
+
 /// #104: `--no-install` is today's `viv update` behaviour, kept as an
 /// explicit opt-out now that installing is the default.
 #[tokio::test]

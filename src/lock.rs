@@ -1076,6 +1076,13 @@ pub struct LockOperations {
     /// sorted together by name (`array_merge($uninstalls,
     /// $installsUpdates)` over two separately-`usort`ed arrays).
     pub lines: Vec<String>,
+    /// Lowercased names an `InstallOperation`/`UpdateOperation` touched
+    /// this diff (everything `install_count`+`update_count` counts, never
+    /// a removal): `bump-after-update` (#205) only bumps a root
+    /// requirement whose package is in this same
+    /// `$lockTransaction->getOperations()` set (`UpdateCommand::execute`),
+    /// not everything currently locked.
+    pub changed_names: Vec<String>,
 }
 
 impl LockOperations {
@@ -1122,16 +1129,19 @@ pub fn diff_lock_operations(
     let mut installs_updates: Vec<(String, String)> = Vec::new();
     let mut install_count = 0;
     let mut update_count = 0;
+    let mut changed_names: Vec<String> = Vec::new();
 
     for package in non_dev.iter().chain(dev.iter()) {
         let key = package.name.to_ascii_lowercase();
         if let Some(old) = remaining_old.remove(key.as_str()) {
             if let Some(line) = update_operation_line(old, package)? {
                 update_count += 1;
+                changed_names.push(key.clone());
                 installs_updates.push((key, line));
             }
         } else {
             install_count += 1;
+            changed_names.push(key.clone());
             installs_updates.push((
                 key,
                 format!("Locking {} ({})", package.name, package.pretty_version),
@@ -1161,6 +1171,7 @@ pub fn diff_lock_operations(
         update_count,
         removal_count,
         lines,
+        changed_names,
     })
 }
 
