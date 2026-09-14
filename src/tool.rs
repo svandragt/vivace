@@ -155,6 +155,8 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             classmap_authoritative: false,
             apcu_autoloader: false,
             apcu_autoloader_prefix: None,
+            ignore_platform_reqs: false,
+            ignore_platform_req: Vec::new(),
             no_scripts: false,
             // `install` never touches `composer.json` any more (#95); this
             // flag is a no-op kept only for old invocations, so leave it

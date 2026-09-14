@@ -85,6 +85,15 @@ pub struct InstallArgs {
     /// (`config.apcu-autoloader-prefix`); implies `--apcu-autoloader`.
     #[arg(long = "apcu-autoloader-prefix", value_name = "PREFIX")]
     pub apcu_autoloader_prefix: Option<String>,
+    /// Skip every platform (`php`/`ext-*`) requirement check, same as
+    /// Composer's flag of the same name; wins over `--ignore-platform-req`
+    /// below when both are given
+    /// (`PlatformRequirementFilterFactory::fromBoolOrList`).
+    #[arg(long)]
+    pub ignore_platform_reqs: bool,
+    /// Skip one named platform requirement (`*` glob, repeatable).
+    #[arg(long, value_name = "REQ")]
+    pub ignore_platform_req: Vec<String>,
     /// Skip `pre-install-cmd`/`post-install-cmd`/`post-autoload-dump` and
     /// every other root `scripts` listener.
     #[arg(long)]
@@ -135,6 +144,15 @@ pub struct DumpAutoloadArgs {
     /// (`config.apcu-autoloader-prefix`); implies `--apcu-autoloader`.
     #[arg(long = "apcu-autoloader-prefix", value_name = "PREFIX")]
     pub apcu_autoloader_prefix: Option<String>,
+    /// Skip every platform (`php`/`ext-*`) requirement check, same as
+    /// Composer's flag of the same name; wins over `--ignore-platform-req`
+    /// below when both are given
+    /// (`PlatformRequirementFilterFactory::fromBoolOrList`).
+    #[arg(long)]
+    pub ignore_platform_reqs: bool,
+    /// Skip one named platform requirement (`*` glob, repeatable).
+    #[arg(long, value_name = "REQ")]
+    pub ignore_platform_req: Vec<String>,
     /// Skip `pre-autoload-dump`/`post-autoload-dump` and every other root
     /// `scripts` listener.
     #[arg(long)]
@@ -184,6 +202,20 @@ struct AutoloadFlags {
     classmap_authoritative: bool,
     apcu_autoloader: bool,
     apcu_autoloader_prefix: Option<String>,
+    ignore_platform: IgnorePlatform,
+}
+
+/// Composer's `--ignore-platform-reqs` wins over any `--ignore-platform-req`
+/// entries when both are given
+/// (`PlatformRequirementFilterFactory::fromBoolOrList`).
+fn ignore_platform(all: bool, req: &[String]) -> IgnorePlatform {
+    if all {
+        IgnorePlatform::All
+    } else if req.is_empty() {
+        IgnorePlatform::None
+    } else {
+        IgnorePlatform::List(req.to_vec())
+    }
 }
 
 impl From<&InstallArgs> for AutoloadFlags {
@@ -193,6 +225,7 @@ impl From<&InstallArgs> for AutoloadFlags {
             classmap_authoritative: args.classmap_authoritative,
             apcu_autoloader: args.apcu_autoloader,
             apcu_autoloader_prefix: args.apcu_autoloader_prefix.clone(),
+            ignore_platform: ignore_platform(args.ignore_platform_reqs, &args.ignore_platform_req),
         }
     }
 }
@@ -204,6 +237,7 @@ impl From<&DumpAutoloadArgs> for AutoloadFlags {
             classmap_authoritative: args.classmap_authoritative,
             apcu_autoloader: args.apcu_autoloader,
             apcu_autoloader_prefix: args.apcu_autoloader_prefix.clone(),
+            ignore_platform: ignore_platform(args.ignore_platform_reqs, &args.ignore_platform_req),
         }
     }
 }
@@ -976,7 +1010,7 @@ fn write_autoload(
     let platform_body = platform_check(
         &platform_inputs,
         root.config.platform_check,
-        &IgnorePlatform::None,
+        &flags.ignore_platform,
     )?;
 
     let keys = |map: &Map<String, Value>| map.keys().cloned().collect::<Vec<String>>();

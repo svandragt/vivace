@@ -1,0 +1,34 @@
+{
+    "name": "vivace/fixture-path",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/hello",
+            "options": {
+                "versions": {
+                    "acme/hello": "1.0.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "packages/testkit",
+            "options": {
+                "versions": {
+                    "acme/testkit": "1.0.0"
+                }
+            }
+        }
+    ],
+    "require": {
+        "acme/hello": "1.0.0",
+        "php": ">=7.4",
+        "php-64bit": "*"
+    },
+    "require-dev": {
+        "acme/testkit": "1.0.0"
+    },
+    "config": {
+        "secure-http": true
+    }
+}

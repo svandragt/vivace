@@ -226,6 +226,8 @@ fn run_from_package(
                 classmap_authoritative: false,
                 apcu_autoloader: false,
                 apcu_autoloader_prefix: None,
+                ignore_platform_reqs: false,
+                ignore_platform_req: Vec::new(),
                 no_scripts: args.no_scripts,
                 no_normalize: false,
                 no_plugins: false,

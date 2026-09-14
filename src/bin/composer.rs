@@ -30,13 +30,13 @@ fn classify(arg: &str) -> Flag {
         | "--apcu-autoloader"
         | "-d"
         | "--working-dir"
+        | "--ignore-platform-reqs"
+        | "--ignore-platform-req"
         | "-v"
         | "-vv"
         | "-vvv" => Flag::Keep,
         "--no-plugins" | "--no-interaction" | "-n" | "--prefer-dist" => Flag::Drop,
-        "--ignore-platform-reqs" | "--ignore-platform-req" | "-q" | "--quiet" => {
-            Flag::DropNoted("viv has no equivalent of {flag}, ignoring it")
-        }
+        "-q" | "--quiet" => Flag::DropNoted("viv has no equivalent of {flag}, ignoring it"),
         _ => Flag::Unknown,
     }
 }
