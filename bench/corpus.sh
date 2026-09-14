@@ -242,7 +242,13 @@ bench_project() {
           footnotes+=("$name/$tool: $(redact <<< "$reason")")
           ;;
       esac
-    elif [ "$tool" = "viv" ] && [ -z "$(mean_for "$out/$tool-update-offline.json" "$tool update-offline")" ]; then
+    elif [ "${BENCH_MIRROR:-}" = "1" ] && [ "$tool" = "viv" ] \
+        && [ -z "$(mean_for "$out/$tool-update-offline.json" "$tool update-offline")" ]; then
+      # Only with BENCH_MIRROR=1: without a recorded mirror there is no
+      # offline source to read, so a missing cell is the run's shape rather
+      # than a fault, and failing on it makes a mirrorless corpus run
+      # impossible.
+      #
       # update-offline has no column of its own in the table above (#165
       # added it as a viv-only, informational-only number, see
       # bench/compare.py), so a mirror that can't serve it — #216 — used to

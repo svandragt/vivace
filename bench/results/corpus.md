@@ -315,3 +315,116 @@ viv 0.9.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 run
 laravel/laravel was rerun alone because its first pass was contended; run
 with viv 0.9.0 from a local mirror; the update column now contains no
 advisory request (#182).
+
+## 2026-09-14T07:23:30Z
+
+Run without `BENCH_MIRROR=1`, so every tool fetched over the real network and no cell here is comparable with a mirrored run: the absolutes are four to five times the mirrored ones for Composer as well as viv. The two `failed: viv` footnotes are artefacts of the same thing — with no mirror there is no offline source for `update-offline` to read. Superseded by the mirrored run below; kept because deleting a measurement is worse than labelling it.
+
+viv 0.11.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 runs each.
+
+| Project | Packages | Tool | Cold | Warm | No-op | Update-warm |
+|---|---|---|---|---|---|---|
+| laravel/laravel | 109 | composer | 8.039 | 1.520 | 0.876 | 1.830 |
+| laravel/laravel | 109 | riff | 2.108 | 0.441 | 0.376 | n/a |
+| laravel/laravel | 109 | viv | 2.424 | 0.071 | 0.007 | 0.952 |
+
+- laravel/laravel/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| symfony/demo | 153 | composer | 9.682 | 1.290 | 0.477 | 1.703 |
+| symfony/demo | 153 | riff | 2.594 | 0.244 | 0.268 | 0.748 |
+| symfony/demo | 153 | viv | 2.694 | 0.049 | 0.008 | 0.919 |
+| drupal/recommended-project | 68 | composer | 9.014 | 2.015 | 0.413 | 2.512 |
+| drupal/recommended-project | 68 | riff | 5.040 | 1.301 | 1.330 | n/a |
+| drupal/recommended-project | 68 | viv | 3.457 | 0.306 | 0.006 | 1.810 |
+
+- drupal/recommended-project/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+- drupal/recommended-project/viv: run.sh: failed: viv
+| roots/bedrock | 73 | composer | 42.635 | 1.507 | 0.558 | 2.271 |
+| roots/bedrock | 73 | riff | 3.238 | 0.445 | 0.222 | n/a |
+| roots/bedrock | 73 | viv | 3.523 | 0.062 | 0.006 | 0.671 |
+
+- roots/bedrock/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| composer/composer | 36 | composer | 5.415 | 0.817 | 0.682 | 0.650 |
+| composer/composer | 36 | riff | 1.237 | 0.215 | 0.215 | 0.245 |
+| composer/composer | 36 | viv | 1.717 | 0.012 | 0.004 | 0.278 |
+| phpunit/phpunit | 26 | composer | 4.771 | 0.864 | 0.502 | 0.622 |
+| phpunit/phpunit | 26 | riff | 9.378 | 8.707 | 0.281 | n/a |
+| phpunit/phpunit | 26 | viv | 1.034 | 0.049 | 0.004 | 0.271 |
+
+- phpunit/phpunit/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| slimphp/Slim-Skeleton | 57 | composer | 5.829 | 1.043 | 0.458 | 0.761 |
+| slimphp/Slim-Skeleton | 57 | riff | 1.617 | 0.210 | 0.210 | n/a |
+| slimphp/Slim-Skeleton | 57 | viv | 1.863 | 0.039 | 0.005 | 0.288 |
+
+- slimphp/Slim-Skeleton/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| yiisoft/yii2-app-basic | 93 | composer | 9.450 | 1.217 | 0.491 | 3.918 |
+| yiisoft/yii2-app-basic | 93 | riff | n/a | n/a | n/a | n/a |
+| yiisoft/yii2-app-basic | 93 | viv | 2.862 | 0.039 | 0.006 | 1.050 |
+
+- yiisoft/yii2-app-basic/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| statamic/statamic | 160 | composer | 11.229 | 2.115 | 1.138 | 2.491 |
+| statamic/statamic | 160 | riff | 3.558 | 0.765 | 0.622 | n/a |
+| statamic/statamic | 160 | viv | 3.264 | 0.124 | 0.008 | 1.396 |
+
+- statamic/statamic/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| craftcms/craft | 118 | composer | 9.218 | 1.816 | 1.050 | 2.084 |
+| craftcms/craft | 118 | riff | 3.348 | 0.744 | 0.432 | 0.529 |
+| craftcms/craft | 118 | viv | 4.167 | 0.126 | 0.007 | 0.908 |
+
+- craftcms/craft/viv: run.sh: failed: viv
+
+## 2026-09-14T07:41:06Z
+
+viv 0.11.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 runs each, from a local mirror.
+
+| Project | Packages | Tool | Cold | Warm | No-op | Update-warm |
+|---|---|---|---|---|---|---|
+| laravel/laravel | 109 | composer | 1.582 | 1.228 | 0.560 | 0.359 |
+| laravel/laravel | 109 | riff | 0.387 | 0.340 | 0.282 | n/a |
+| laravel/laravel | 109 | viv | 0.291 | 0.073 | 0.007 | 0.230 |
+
+- laravel/laravel/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| symfony/demo | 153 | composer | 1.572 | 0.996 | 0.184 | 0.566 |
+| symfony/demo | 153 | riff | 0.209 | 0.142 | 0.052 | n/a |
+| symfony/demo | 153 | viv | 0.194 | 0.048 | 0.009 | 0.389 |
+
+- symfony/demo/riff: run.sh: riff update-warm skipped, known mirror-mode failure (304 race, see bench/results/README.md)
+| drupal/recommended-project | 68 | composer | 1.958 | 1.733 | 0.116 | 0.296 |
+| drupal/recommended-project | 68 | riff | 0.716 | 0.664 | 0.017 | n/a |
+| drupal/recommended-project | 68 | viv | 0.715 | 0.301 | 0.006 | 0.183 |
+
+- drupal/recommended-project/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| roots/bedrock | 73 | composer | 3.261 | 6.554 | 0.268 | 0.357 |
+| roots/bedrock | 73 | riff | 0.423 | 0.350 | 0.110 | n/a |
+| roots/bedrock | 73 | viv | 0.417 | 0.063 | 0.005 | 0.168 |
+
+- roots/bedrock/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| composer/composer | 36 | composer | 0.656 | 0.517 | 0.106 | 0.146 |
+| composer/composer | 36 | riff | 0.087 | 0.047 | 0.010 | n/a |
+| composer/composer | 36 | viv | 0.060 | 0.012 | 0.004 | 0.060 |
+
+- composer/composer/riff: run.sh: riff update-warm skipped, known mirror-mode failure (304 race, see bench/results/README.md)
+| phpunit/phpunit | 26 | composer | 0.705 | 0.569 | 0.212 | 0.113 |
+| phpunit/phpunit | 26 | riff | 9.158 | 7.222 | 0.064 | n/a |
+| phpunit/phpunit | 26 | viv | 0.072 | 0.049 | 0.004 | 0.027 |
+
+- phpunit/phpunit/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| slimphp/Slim-Skeleton | 57 | composer | 0.965 | 0.749 | 0.145 | 0.145 |
+| slimphp/Slim-Skeleton | 57 | riff | 0.135 | 0.086 | 0.028 | n/a |
+| slimphp/Slim-Skeleton | 57 | viv | 0.150 | 0.040 | 0.005 | 0.084 |
+
+- slimphp/Slim-Skeleton/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| yiisoft/yii2-app-basic | 93 | composer | 1.224 | 0.873 | 0.197 | 0.480 |
+| yiisoft/yii2-app-basic | 93 | riff | n/a | n/a | n/a | n/a |
+| yiisoft/yii2-app-basic | 93 | viv | 0.223 | 0.040 | 0.006 | 0.307 |
+
+- yiisoft/yii2-app-basic/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| statamic/statamic | 160 | composer | 2.405 | 1.841 | 0.844 | 0.504 |
+| statamic/statamic | 160 | riff | 0.712 | 0.627 | 0.469 | n/a |
+| statamic/statamic | 160 | viv | 0.496 | 0.125 | 0.009 | 0.371 |
+
+- statamic/statamic/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| craftcms/craft | 118 | composer | 1.978 | 1.551 | 0.767 | 0.484 |
+| craftcms/craft | 118 | riff | 0.905 | 0.562 | 0.340 | n/a |
+| craftcms/craft | 118 | viv | 0.501 | 0.129 | 0.007 | 0.348 |
+
+- craftcms/craft/riff: run.sh: riff update-warm skipped, known mirror-mode failure (304 race, see bench/results/README.md)

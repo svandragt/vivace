@@ -110,9 +110,9 @@ jobs:
               --jq "[.[] | select(.title | startswith(\"$minor\"))][0].title")
             if [ -n "$milestone" ]; then
               ../scripts/changelog.sh "$milestone" "$version" >notes.md
-              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --notes-file notes.md
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
             else
-              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --generate-notes
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes
             fi
           fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber vivace-*.tar.gz *.deb SHA256SUMS

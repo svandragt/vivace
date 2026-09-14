@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.11.0] - 2026-09-14
+### Changed
+- Releases are no longer marked as pre-releases on GitHub, so `releases/latest` answers and a scripted install or Dockerfile can resolve the current version without pinning one by hand ([#212](https://github.com/svandragt/vivace/issues/212))
+
+### Performance
+- `viv update` matches a version against a compiled constraint instead of walking a boxed tree, and stops allocating per test: constraint matching falls from about 27 ms across 33,000 calls to 4 to 5 ms, and Laravel's warm metadata closure from about 143 ms to 114 to 120 ms ([#208](https://github.com/svandragt/vivace/issues/208))
+
+### Tooling
+- The bench corpus mirror records a v1 repository's dev branches as the `<name>~dev.json` file a v2 repository would serve, so `update --offline` measures `yiisoft/yii2-app-basic` instead of failing on it; a scenario the mirror cannot serve now fails the bench run rather than passing with a missing cell ([#216](https://github.com/svandragt/vivace/issues/216))
+- The `update` stage log reports `expand_ms` as the delta replay alone, with `from_deltas_ms` beside it; the two were previously added together under one label, inflating `expand_ms` by about a quarter ([#210](https://github.com/svandragt/vivace/issues/210))
+
+## [0.10.0] - 2026-09-13
 ### Fixed
 - A v1 repository such as wpackagist rotating a provider file's hash no longer fails an update: viv reloads the repository's `packages.json` and retries once, as Composer does
 
@@ -219,3 +232,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [0.7.0]: https://github.com/svandragt/vivace/releases/tag/v0.7.0
 [0.8.0]: https://github.com/svandragt/vivace/releases/tag/v0.8.0
 [0.9.0]: https://github.com/svandragt/vivace/releases/tag/v0.9.0
+[0.10.0]: https://github.com/svandragt/vivace/releases/tag/v0.10.0
+[0.11.0]: https://github.com/svandragt/vivace/releases/tag/v0.11.0

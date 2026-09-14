@@ -945,3 +945,42 @@ distribution rather than the middle. The machine suspended mid-sweep
 because the inhibitor holding sleep off was recreated per turn, so it
 covered the seconds of thinking and lapsed through the half hour of
 work. Both were measurement problems wearing the costume of a bug.
+
+## 2026-09-14: milestone 0.11 closed, and a release that is mostly a flag
+
+**What 0.11 actually contained.** Almost nothing, by the time it was
+tagged. The milestone closed seventeen issues, but the tag for 0.10.0
+was cut in the middle of it, so the parallel classmap walk, the cached
+advisories feed and the re-centred bench baseline all shipped in 0.10.0
+and were closed into 0.11 afterwards. Of the fourteen commits after the
+tag, exactly one changes anything a user can observe: matching a version
+against a compiled constraint rather than walking a boxed tree, which
+took constraint matching from about 27 ms across 33,000 calls to 4 or 5
+ms. A milestone is a bucket for attention, not a manifest of a release,
+and reading it as the second produces release notes that claim work the
+release does not contain.
+
+**The headline is a two-word deletion.** `release.yml` passed
+`--prerelease` on every `gh release create`, so ten releases existed and
+`releases/latest` returned 404 to all of them. Every consumer that wanted
+a binary — a CI step, a Dockerfile build stage — had to pin a version by
+hand or reimplement "latest". 0.11.0 is the first release without the
+flag, which matters more to anyone adopting viv than the speedup does.
+
+**Three investigations, two of which found nothing.** `platform_check`
+was reported to compile ten regexes even when a lock has no platform
+requirement; it does not, the branches already guard it, and the early
+return added to exploit the premise measured 6.7 ms against 6.6 ms. The
+second diagnosis, that the shared `semver.rs` parser has no regexes and
+should absorb the duplicate, was also wrong: it is a facade over
+`semver-php`, which carries its own ten. `chain.expand`'s 38 ms split
+into 9.5 us of map clone and 2.6 us of conversion per call, with the
+memoisation doing exactly what it claimed, and nothing worth cutting
+against a closure that cannot reach its target from this slice alone.
+Two issues closed having produced a test and a paragraph each.
+
+**The counter was lying.** `expand_ms` shared its accumulator with
+`DeltaChain::from_deltas`, a fixed per-name setup pass, inflating it by
+about a quarter. Three issues reasoned from that number before anyone
+measured the call directly. A stage counter that aggregates two stages
+is worse than no counter, because it is trusted.
