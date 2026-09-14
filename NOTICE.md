@@ -25,7 +25,7 @@ derivative work, which is why viv as a whole is GPL rather than MIT. Their
 | [ffraenz/private-composer-installer](https://github.com/ffraenz/private-composer-installer) | MIT | 5.0.1 | `src/plugins/private_installer.rs` |
 | [pestphp/pest-plugin](https://github.com/pestphp/pest-plugin) | MIT | v5.0.0 | `src/plugins/pest.rs` |
 | [php-http/discovery](https://github.com/php-http/discovery) | MIT | 1.20.0 | `src/plugins/discovery.rs` |
-| [PHPCSStandards/composer-installer](https://github.com/PHPCSStandards/composer-installer) | MIT | v1.2.1 | `src/plugins/phpcs.rs` |
+| [dealerdirect/phpcodesniffer-composer-installer](https://github.com/PHPCSStandards/composer-installer) | MIT | v1.2.1 | `src/plugins/phpcs.rs` |
 | [phpstan/extension-installer](https://github.com/phpstan/extension-installer) | MIT | 1.4.3 | `src/plugins/phpstan.rs` |
 | [symfony/runtime](https://github.com/symfony/runtime) | MIT | v8.1.0 | `src/plugins/symfony_runtime.rs` |
 
