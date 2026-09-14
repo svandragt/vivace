@@ -839,11 +839,25 @@ pub(crate) fn content_hash_from_value(content: &Value) -> String {
 /// object is left untouched; the caller sorts before calling this.
 fn php_json_encode(value: &Value) -> String {
     let mut out = String::new();
-    write_php_json(value, &mut out);
+    write_php_json(value, None, &mut out);
     out
 }
 
-fn write_php_json(value: &Value, out: &mut String) {
+/// PHP's `json_encode($value, JSON_PRETTY_PRINT)`: same escaping as
+/// [`php_json_encode`], plus a four-space indent and `[]`/`{}` collapsed onto
+/// one line for an empty array/object. Used by `pest.rs` for
+/// `vendor/pest-plugins.json`; `composer.lock` itself doesn't go through
+/// here (see `lock_writer.rs`'s own comment on why).
+pub(crate) fn php_json_encode_pretty(value: &Value) -> String {
+    let mut out = String::new();
+    write_php_json(value, Some(0), &mut out);
+    out
+}
+
+/// Shared by both [`php_json_encode`] and [`php_json_encode_pretty`]:
+/// `indent` is `None` for the compact form, `Some(current_depth * 4)` for
+/// the pretty one.
+fn write_php_json(value: &Value, indent: Option<usize>, out: &mut String) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -851,25 +865,48 @@ fn write_php_json(value: &Value, out: &mut String) {
         // PHP's `serialize_precision = -1` produces (e.g. `1.0`), so reuse it.
         Value::Number(n) => out.push_str(&n.to_string()),
         Value::String(s) => write_php_json_string(s, out),
+        Value::Array(items) if items.is_empty() => out.push_str("[]"),
         Value::Array(items) => {
+            let child_indent = indent.map(|i| i + 4);
             out.push('[');
             for (i, item) in items.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                write_php_json(item, out);
+                if let Some(i) = child_indent {
+                    out.push('\n');
+                    out.push_str(&" ".repeat(i));
+                }
+                write_php_json(item, child_indent, out);
+            }
+            if let Some(i) = indent {
+                out.push('\n');
+                out.push_str(&" ".repeat(i));
             }
             out.push(']');
         }
+        Value::Object(map) if map.is_empty() => out.push_str("{}"),
         Value::Object(map) => {
+            let child_indent = indent.map(|i| i + 4);
             out.push('{');
             for (i, (key, item)) in map.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
+                if let Some(i) = child_indent {
+                    out.push('\n');
+                    out.push_str(&" ".repeat(i));
+                }
                 write_php_json_string(key, out);
                 out.push(':');
-                write_php_json(item, out);
+                if indent.is_some() {
+                    out.push(' ');
+                }
+                write_php_json(item, child_indent, out);
+            }
+            if let Some(i) = indent {
+                out.push('\n');
+                out.push_str(&" ".repeat(i));
             }
             out.push('}');
         }
@@ -1154,7 +1191,7 @@ fn update_operation_line(old: &Value, new: &ResolvedPackage) -> Result<Option<St
 mod tests {
     use super::{
         InstallPreference, PlatformCheck, PreferredInstall, glob_match, is_dev_version, is_fresh,
-        missing_requirements, preferred_install_at, read_lock, read_root,
+        missing_requirements, php_json_encode, preferred_install_at, read_lock, read_root,
     };
     use serde_json::Value;
     use std::io::Write as _;
@@ -1552,6 +1589,22 @@ mod tests {
             err.to_string(),
             "acme/svnlib: no dist entry and no git source (svn/hg/fossil sources are not \
              supported; viv installs zip/tar dists, path repositories and git sources)"
+        );
+    }
+
+    /// Pins `php_json_encode`'s compact form (the `content_hash` hot path)
+    /// independently of `pest.rs`'s pretty variant: `/` escaped, a
+    /// surrogate-pair character above `U+FFFF`, and a control character.
+    #[test]
+    fn php_json_encode_escapes_slash_surrogate_pair_and_control_chars() {
+        let value = serde_json::json!({
+            "path": "a/b",
+            "emoji": "\u{1F600}",
+            "ctrl": "\u{1}",
+        });
+        assert_eq!(
+            php_json_encode(&value),
+            r#"{"path":"a\/b","emoji":"\ud83d\ude00","ctrl":"\u0001"}"#
         );
     }
 

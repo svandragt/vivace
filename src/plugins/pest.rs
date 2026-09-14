@@ -21,13 +21,13 @@
 //! `getCapabilities()`'s `composer pest:dump-plugins` command provider isn't
 //! ported: viv never runs arbitrary Composer commands.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde_json::Value;
 
 use super::{Adapter, Ctx};
-use crate::lock::{Package, Root};
+use crate::lock::{Package, Root, php_json_encode_pretty};
 
 const PACKAGE_NAME: &str = "pestphp/pest-plugin";
 
@@ -53,11 +53,12 @@ impl Adapter for Pest {
 
 /// `DumpCommand::execute`: a plain `array_merge` (list concatenation, no
 /// de-duplication) of every package's `extra.pest.plugins`, root last.
-pub(super) fn apply(
-    root: &Root,
-    vendor_dir: &std::path::Path,
-    packages: &[(&Package, PathBuf)],
-) -> Result<()> {
+///
+/// Written via [`php_json_encode_pretty`] (PHP's `JSON_PRETTY_PRINT`) with no
+/// trailing newline: Composer writes this file with a plain
+/// `file_put_contents`, unlike `composer.lock`/`installed.json`'s own
+/// writers, which append one.
+fn apply(root: &Root, vendor_dir: &Path, packages: &[(&Package, PathBuf)]) -> Result<()> {
     let mut plugins: Vec<Value> = Vec::new();
     for (package, _) in packages {
         plugins.extend(pest_plugins(package.raw.pointer("/extra/pest/plugins")));
@@ -66,7 +67,7 @@ pub(super) fn apply(
 
     fs_err::write(
         vendor_dir.join("pest-plugins.json"),
-        pretty_json(&Value::Array(plugins)),
+        php_json_encode_pretty(&Value::Array(plugins)),
     )?;
     Ok(())
 }
@@ -74,88 +75,6 @@ pub(super) fn apply(
 /// `$extra['pest']['plugins'] ?? []`.
 fn pest_plugins(value: Option<&Value>) -> Vec<Value> {
     value.and_then(Value::as_array).cloned().unwrap_or_default()
-}
-
-/// PHP's `json_encode($value, JSON_PRETTY_PRINT)`: four-space indent, `/`
-/// escaped as `\/`, non-ASCII escaped as `\uXXXX` (UTF-16 code units,
-/// surrogate pairs above `U+FFFF`) — the opposite of `serde_json`'s own
-/// pretty-printer, which never escapes either. No trailing newline: Composer
-/// writes this file with a plain `file_put_contents`, unlike `composer.lock`/
-/// `installed.json`'s own writers.
-fn pretty_json(value: &Value) -> String {
-    let mut out = String::new();
-    write_pretty(value, 0, &mut out);
-    out
-}
-
-fn write_pretty(value: &Value, indent: usize, out: &mut String) {
-    match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => out.push_str(&n.to_string()),
-        Value::String(s) => write_json_string(s, out),
-        Value::Array(items) if items.is_empty() => out.push_str("[]"),
-        Value::Array(items) => {
-            let child_indent = indent + 4;
-            out.push_str("[\n");
-            for (i, item) in items.iter().enumerate() {
-                out.push_str(&" ".repeat(child_indent));
-                write_pretty(item, child_indent, out);
-                if i + 1 < items.len() {
-                    out.push(',');
-                }
-                out.push('\n');
-            }
-            out.push_str(&" ".repeat(indent));
-            out.push(']');
-        }
-        Value::Object(map) if map.is_empty() => out.push_str("{}"),
-        Value::Object(map) => {
-            let child_indent = indent + 4;
-            out.push_str("{\n");
-            for (i, (key, item)) in map.iter().enumerate() {
-                out.push_str(&" ".repeat(child_indent));
-                write_json_string(key, out);
-                out.push_str(": ");
-                write_pretty(item, child_indent, out);
-                if i + 1 < map.len() {
-                    out.push(',');
-                }
-                out.push('\n');
-            }
-            out.push_str(&" ".repeat(indent));
-            out.push('}');
-        }
-    }
-}
-
-fn write_json_string(s: &str, out: &mut String) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '/' => out.push_str("\\/"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                use std::fmt::Write as _;
-                write!(out, "\\u{:04x}", c as u32).expect("write! to String never fails");
-            }
-            c if c.is_ascii() => out.push(c),
-            c => {
-                let mut units = [0u16; 2];
-                for unit in c.encode_utf16(&mut units) {
-                    use std::fmt::Write as _;
-                    write!(out, "\\u{unit:04x}").expect("write! to String never fails");
-                }
-            }
-        }
-    }
-    out.push('"');
 }
 
 #[cfg(test)]
@@ -182,10 +101,9 @@ mod tests {
     }
 
     #[test]
-    fn write_json_string_escapes_forward_slash() {
-        let mut out = String::new();
-        write_json_string("Acme/Slash/Test", &mut out);
-        assert_eq!(out, r#""Acme\/Slash\/Test""#);
+    fn php_json_encode_pretty_escapes_forward_slash() {
+        let got = php_json_encode_pretty(&json!("Acme/Slash/Test"));
+        assert_eq!(got, r#""Acme\/Slash\/Test""#);
     }
 
     /// #131's fixture, byte-diffed against real `pestphp/pest-plugin`
