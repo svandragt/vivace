@@ -94,8 +94,9 @@ pub fn run(args: &AuditArgs, cache_dir: Option<&Path>, offline: bool) -> Result<
     if packages.is_empty() {
         let has_requires = !root.require.is_empty() || (dev && !root.require_dev.is_empty());
         if has_requires {
+            // stderr, free to reword — should name viv, not Composer (#239).
             warn_out(
-                "No installed packages found. Please run \"composer install\" before running \
+                "No installed packages found. Please run \"viv install\" before running \
                  \"audit\" or pass \"--locked\" to audit the lock file.",
             );
             return Ok(STATUS_FAILED);
