@@ -105,3 +105,59 @@ fn missing_file_exits_three() {
         "missing.json not found.\n"
     );
 }
+
+/// #234: `viv validate -d <dir>` behaves as `cd <dir> && viv validate`,
+/// run from an unrelated cwd so a bug that resolved paths from the current
+/// directory instead of `-d` would still pass in-fixture-dir tests.
+#[test]
+fn project_dir_behaves_like_cd_into_it() {
+    let cwd = tempfile::tempdir().unwrap();
+    let output = Command::new(cargo_bin("viv"))
+        .current_dir(cwd.path())
+        .args(["validate", "-d"])
+        .arg(fixture("valid"))
+        .output()
+        .expect("failed to run viv");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        expected("valid", "plain.out")
+    );
+}
+
+/// #234: `--project-dir` also drives the lock-freshness check, not just
+/// which `composer.json` gets read.
+#[test]
+fn project_dir_checks_that_directory_own_lock_freshness() {
+    let cwd = tempfile::tempdir().unwrap();
+    let output = Command::new(cargo_bin("viv"))
+        .current_dir(cwd.path())
+        .args(["validate", "-d"])
+        .arg(fixture("stale-lock"))
+        .output()
+        .expect("failed to run viv");
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        expected("stale-lock", "plain.out")
+    );
+}
+
+/// #234: a `FILE` positional and `--project-dir` together are ambiguous
+/// about which lock is meant, so it's an error rather than one silently
+/// winning.
+#[test]
+fn project_dir_combined_with_file_is_an_error() {
+    let output = Command::new(cargo_bin("viv"))
+        .args(["validate", "-d"])
+        .arg(fixture("valid"))
+        .arg(fixture("valid").join("composer.json"))
+        .output()
+        .expect("failed to run viv");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("cannot combine a FILE argument"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

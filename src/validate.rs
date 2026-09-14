@@ -32,7 +32,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use serde_json::Value;
 
@@ -48,8 +48,16 @@ use crate::semver;
 #[derive(Args, Debug, Clone)]
 pub struct ValidateArgs {
     /// Path to the `composer.json` file to validate (default: `composer.json`
-    /// in the current directory).
+    /// in the current directory). Combining this with `--project-dir` is an
+    /// error: a `FILE` picks the manifest, `--project-dir` picks the
+    /// directory `FILE` and `composer.lock` both default from, and giving
+    /// both leaves it ambiguous which lock the freshness check should read.
     pub file: Option<PathBuf>,
+    /// Run as though invoked from this directory (#234): `composer.json`,
+    /// `composer.lock` and (with `--with-dependencies`) `vendor/` all
+    /// resolve from here instead of the current directory.
+    #[arg(short = 'd', long = "project-dir", default_value = ".")]
+    pub project_dir: PathBuf,
     /// Skip the unbound-version-constraint warning.
     #[arg(long = "no-check-all")]
     pub no_check_all: bool,
@@ -90,15 +98,30 @@ struct Validated {
 
 /// Run `viv validate`, returning the process exit code.
 pub fn run(args: &ValidateArgs) -> Result<u8> {
+    let has_project_dir = args.project_dir != Path::new(".");
+    if args.file.is_some() && has_project_dir {
+        bail!(
+            "cannot combine a FILE argument with --project-dir: which composer.lock is meant is \
+             ambiguous; pass one or the other"
+        );
+    }
+
     // `Factory::getComposerFile()`'s own default: `getenv('COMPOSER') ?:
     // './composer.json'` (env override not supported here, no fixture needs
     // it), printed verbatim in every message so the leading `./` matters.
+    // Kept relative even under `--project-dir`, matching what `cd <dir> &&
+    // viv validate` would itself print.
     let file = args
         .file
         .clone()
         .unwrap_or_else(|| PathBuf::from("./composer.json"));
+    let read_path = if has_project_dir {
+        args.project_dir.join(&file)
+    } else {
+        file.clone()
+    };
 
-    let Ok(bytes) = fs_err::read(&file) else {
+    let Ok(bytes) = fs_err::read(&read_path) else {
         err_out(&format!("{} not found.", file.display()));
         return Ok(EXIT_UNREADABLE);
     };
@@ -111,11 +134,15 @@ pub fn run(args: &ValidateArgs) -> Result<u8> {
     let mut result = validate_manifest(&manifest, check_all);
 
     let check_publish = !args.no_check_publish;
-    let project_dir = file
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let (check_lock, lock_errors) = lock_check(args, project_dir, &bytes)?;
+    let project_dir = if has_project_dir {
+        args.project_dir.clone()
+    } else {
+        file.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    };
+    let (check_lock, lock_errors) = lock_check(args, &project_dir, &bytes)?;
 
     let name = file.display().to_string();
     output_result(
@@ -130,7 +157,7 @@ pub fn run(args: &ValidateArgs) -> Result<u8> {
 
     if args.with_dependencies {
         exit_code = exit_code.max(validate_dependencies(
-            project_dir,
+            &project_dir,
             check_all,
             args,
             check_publish,
