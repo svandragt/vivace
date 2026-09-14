@@ -63,7 +63,10 @@ project/mode combination is one of:
   many were dropped. `vendor/yiisoft/extensions.php` and
   `vendor/craftcms/plugins.php` are compared as sorted lines, because the
   real plugins write entries as each archive finishes extracting and two
-  Composer runs on one lock disagree on the order.
+  Composer runs on one lock disagree on the order. A project with a refused
+  plugin (see below) reads **identical (no-plugins)** instead: both sides ran
+  with `--no-plugins`, so the row can't speak to a plugin-enabled install
+  (#225).
 - **differs** — the trees diverge; the first ten differing paths are listed.
 - **skipped** — a known-unsupported feature, an unmet platform requirement,
   or a Composer command that failed, not a failure: a `path`/`vcs` repository

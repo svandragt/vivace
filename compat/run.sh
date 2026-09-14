@@ -6,23 +6,47 @@
 # php/composer resolve.
 set -euo pipefail
 
+# Result-column label for a row whose Details note is $1 (#225). A refused
+# plugin means both sides ran with --no-plugins, so "identical" alone would
+# read as "matches a default install" when the row can't prove that.
+identical_label() {
+  local note=$1
+  if [[ $note == *"plugins: refused"* ]]; then
+    echo "identical (no-plugins)"
+  else
+    echo "identical"
+  fi
+}
+
 # Two temp files differing only by their directory prefix must compare equal
-# after the prefix-fold sed below (#150). Run with COMPAT_SELFTEST=1.
+# after the prefix-fold sed below (#150), and a refused-plugin note must
+# qualify the identical label (#225). Run with COMPAT_SELFTEST=1.
 selftest() {
-  local dir_a dir_b
+  local dir_a dir_b ok=1
   dir_a=$(mktemp -d) dir_b=$(mktemp -d)
   mkdir -p "$dir_a/vendor/pkg" "$dir_b/vendor/pkg"
   echo "install_path => '$dir_a/vendor/pkg',$'\n'other => 1" > "$dir_a/vendor/pkg/f.php"
   echo "install_path => '$dir_b/vendor/pkg',$'\n'other => 1" > "$dir_b/vendor/pkg/f.php"
-  if diff -q <(fold_prefix "$dir_a" "$dir_b" "$dir_a/vendor/pkg/f.php") "$dir_b/vendor/pkg/f.php" >/dev/null 2>&1; then
-    echo "compat: selftest ok" >&2
-    rm -rf "$dir_a" "$dir_b"
-    exit 0
-  else
-    echo "compat: selftest FAILED" >&2
-    rm -rf "$dir_a" "$dir_b"
-    exit 1
+  if ! diff -q <(fold_prefix "$dir_a" "$dir_b" "$dir_a/vendor/pkg/f.php") "$dir_b/vendor/pkg/f.php" >/dev/null 2>&1; then
+    echo "compat: selftest FAILED (fold_prefix)" >&2
+    ok=0
   fi
+  rm -rf "$dir_a" "$dir_b"
+
+  [ "$(identical_label "plugins: refused symfony/flex")" = "identical (no-plugins)" ] || {
+    echo "compat: selftest FAILED (identical_label didn't qualify a refused plugin)" >&2
+    ok=0
+  }
+  [ "$(identical_label "plugins: native")" = "identical" ] || {
+    echo "compat: selftest FAILED (identical_label qualified a native plugin)" >&2
+    ok=0
+  }
+
+  if [ "$ok" = "1" ]; then
+    echo "compat: selftest ok" >&2
+    exit 0
+  fi
+  exit 1
 }
 
 # Rewrites $3 (a file under $1, the composer_dir) with $1 folded to $2 (the
@@ -236,6 +260,8 @@ run_mode() {
   mode_flag=""
   [ "$mode" = "no-dev" ] && mode_flag="--no-dev"
   [ -n "$note" ] && prefix="$note; "
+  local identical
+  identical=$(identical_label "$note")
   # Every enabled plugin is native/inert (#124): run both sides with
   # plugins on for this project only, instead of the default --no-plugins.
   local install_flags=("${composer_install_flags[@]}") viv_plugin_flag=(--no-plugins)
@@ -297,7 +323,7 @@ run_mode() {
 
   local diff_out
   if diff_out=$(diff -rq --exclude=.vivace-state --exclude=.git "$composer_dir/$vendor_dir" "$viv_dir/$vendor_dir" 2>&1); then
-    emit_row "$name" "$mode" "identical" "${viv_ms}ms" "${prefix}composer ${composer_ms}ms"
+    emit_row "$name" "$mode" "$identical" "${viv_ms}ms" "${prefix}composer ${composer_ms}ms"
     return
   fi
 
@@ -333,7 +359,7 @@ run_mode() {
   done <<< "$diff_out"
 
   if [ -z "$real_diff" ]; then
-    emit_row "$name" "$mode" "identical" "${viv_ms}ms" "${prefix}composer ${composer_ms}ms; path-only differences normalised: $normalised"
+    emit_row "$name" "$mode" "$identical" "${viv_ms}ms" "${prefix}composer ${composer_ms}ms; path-only differences normalised: $normalised"
   else
     failures=1
     emit_row "$name" "$mode" "differs" "${viv_ms}ms" "${prefix}$(head -10 <<< "$real_diff")"
