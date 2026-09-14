@@ -1,3 +1,7 @@
 [profile.default]
 slow-timeout = { period = "30s", terminate-after = 4 }
 fail-fast = false
+# install_e2e tests each spawn a `viv` process and extract archives, so a
+# test thread is a whole install, not a thread; an uncapped thread-per-core
+# count multiplies badly when several worktrees run `make check` at once (#219).
+test-threads = 8
