@@ -1037,3 +1037,26 @@ warm, noop, monolog's update-offline — rose by at most 10.3%, inside the
 gate's 15% tolerance. At three to five milliseconds a run, that ratio moves
 on scheduler noise rather than on work viv does, which is the reason the
 baseline is a median of fourteen runs and not one.
+
+**The sweep caught what the fixture could not.** #131 was closed on a green
+`make check` and a fixture byte-diffed against real Composer, and it was
+still wrong twice. Ordering: `getCanonicalPackages()` returns the local
+repository's order, which is install order — `installed.json` is a
+by-name-sorted view written from that repository, not the order itself — so
+`roots/bedrock` got `pestphp/pest`'s nineteen entries ahead of the three
+sibling packages Composer emits first. Presence: `pestphp/pest` is a dev
+dependency, so `--no-dev` never installs the plugin and Composer writes no
+`pest-plugins.json`; viv wrote an empty one.
+
+Both were already solved in this repo. `super::in_install_order` exists for
+the first and is what craft and yii2 use, with a doc comment recording the
+same bug costing 54 lines of `vendor/yiisoft/extensions.php`. `phpcs.rs`
+ports `MESSAGE_NOT_INSTALLED` for the second. A new adapter written from
+upstream source alone walks past both.
+
+The fixture could not have caught either: its three packages happen to
+install in lock order, and it has no dev-only package. A fixture proves the
+shape you thought to build into it. `roots/bedrock` was in the corpus the
+whole time — the sweep just is not run per change, only before a release.
+Twice in one evening a test existed and proved nothing: the phpcs golden
+file nothing read, and this.
