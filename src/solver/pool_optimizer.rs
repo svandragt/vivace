@@ -172,6 +172,11 @@ pub fn optimize(
         &mut to_remove,
     );
 
+    // Copied before `into_packages` consumes `pool` (#238, #152): this pass
+    // only prunes redundant *accepted* versions, so whatever `pool_builder`
+    // already excluded (and recorded here for `problem.rs`'s diagnostics)
+    // is still accurate on the rebuilt pool below.
+    let removed = pool.removed().to_vec();
     let owned = pool.into_packages();
     let mut kept = Vec::with_capacity(owned.len());
     let mut remap: HashMap<usize, usize> = HashMap::with_capacity(owned.len());
@@ -194,7 +199,7 @@ pub fn optimize(
     let fixed = request.fixed.iter().map(|index| remap[index]).collect();
 
     Ok(Optimized {
-        pool: Pool::new(kept),
+        pool: Pool::new(kept).with_removed(removed),
         fixed,
     })
 }

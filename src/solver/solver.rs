@@ -106,7 +106,7 @@ pub fn solve(
     );
 
     if !solver.problems.is_empty() {
-        return Err(SolverError::from_problems(&solver.problems, pool));
+        return Err(SolverError::from_problems(&solver.problems, pool, request));
     }
 
     let mut installed: Vec<i32> = solver

@@ -12,14 +12,42 @@
 //! `src/solver/problem.rs`'s `#[cfg(test)]` module instead of here — see
 //! `conflict_dedup_matches_composer`'s doc comment for why a live solve
 //! rarely reaches it.
+//!
+//! #238's own golden below isn't a live-Composer capture the same way:
+//! reproducing it against real Composer needs a repository that also
+//! serves `security-advisories.api-url`, which this corpus's
+//! `FixtureTransport` doesn't run a real `composer update` against. Its
+//! `want` text is instead derived the same way the port itself was: the
+//! sentence up to "affected by security advisories (...)" is
+//! `Problem::getMissingPackageReason`'s own wording, verified against the
+//! real capture `compat/results/v0.12.0.md` already has for that branch
+//! (`reconnico/swark`'s `symfony/http-client` case). Everything after that
+//! (the `--no-blocking`/`audit.ignore` remedy) is viv's own text, since viv
+//! has no `policy.advisories.*` config for Composer's own closing sentence
+//! to port.
+//!
+//! #152's root-conflict branch (`missing_package_suffix`'s
+//! `root_conflict_suffix` call) has no golden here at all: it needs a
+//! package name the root itself requires *and* a sibling that needs a
+//! wider constraint on that same name, and viv's closure walk resolves a
+//! root-level name's candidates from whatever constraints are known at
+//! that name's own first fetch — a root require's own fetch always starts
+//! before a transitive one can contribute a wider constraint for the same
+//! name, so no fixture reaches a pool state root-conflict actually needs.
+//! Same "solver explores fewer candidates than libsolv" gap #62 already
+//! names for dedup, just for a different reason. Tested directly against
+//! the function instead, in `src/solver/problem.rs`'s own `#[cfg(test)]`
+//! module.
 
 mod common;
 
 use std::path::Path;
+use std::time::Duration;
 
 use common::FixtureTransport;
 use serde_json::Value;
 use vivace::repository::Repository;
+use vivace::solver::pool_builder::AdvisoryFilter;
 use vivace::solver::{self, problem::SolverError};
 
 #[tokio::test]
@@ -120,5 +148,101 @@ async fn conflict_dedup_matches_composer() {
                 satisfiable by acme/core[1.0.0, 2.0.0].\n    - Root composer.json requires \
                 acme/plugin 1.0.0 -> satisfiable by acme/plugin[1.0.0].\n    - \
                 acme/core[1.0.0, 2.0.0] conflict with acme/plugin 1.0.0.\n";
+    assert_eq!(format!("{solver_error}"), want);
+}
+
+/// A fixture-served `security-advisories.api-url` response, the same
+/// `AdvisoriesTransport` seam `tests/update.rs`'s own `AdvisoriesFixture`
+/// uses; `tests/fixtures/solver-problems/packages.json` advertises exactly
+/// this one endpoint.
+struct AdvisoriesFixture(Value);
+
+impl vivace::audit::AdvisoriesTransport for AdvisoriesFixture {
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "the fixture reads an in-memory body synchronously; the trait is async for \
+                  production (tests/update.rs's own AdvisoriesFixture does the same)"
+    )]
+    async fn post_advisories(
+        &self,
+        _url: &reqwest::Url,
+        _packages: &[String],
+    ) -> anyhow::Result<Value> {
+        Ok(self.0.clone())
+    }
+}
+
+fn advertised_endpoints() -> Vec<String> {
+    vec!["https://packagist.org/api/security-advisories/".to_string()]
+}
+
+/// #238: every version matching a root require is advisory-blocked, so the
+/// package disappears from the pool entirely — `Problem::pretty_string`'s
+/// single-reason fast path used to read that as "never existed" and print
+/// the typo suggestion this issue is about.
+#[tokio::test]
+async fn advisory_blocked_root_require_names_the_advisory_and_no_blocking() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport {
+        root: Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/solver-problems"),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let root: Value = serde_json::json!({
+        "name": "vivace/fixture-advisory",
+        "require": { "acme/vuln": "6.5.0" }
+    });
+
+    let advisories = AdvisoriesFixture(serde_json::json!({
+        "advisories": {
+            "acme/vuln": [{
+                "advisoryId": "PKSA-test-0003",
+                "packageName": "acme/vuln",
+                "affectedVersions": ">=6.5.0,<6.5.1",
+                "title": "fixture advisory covering acme/vuln 6.5.0",
+                "cve": null,
+                "link": null,
+                "reportedAt": "2024-01-01 00:00:00",
+            }],
+        },
+    }));
+    let endpoints = advertised_endpoints();
+    let filter = AdvisoryFilter {
+        transport: &advisories,
+        endpoints: &endpoints,
+        audit: &vivace::lock::AuditConfig::default(),
+        no_blocking: false,
+        prefetched: None,
+        cache_dir: None,
+        metadata_ttl: Duration::ZERO,
+    };
+
+    let Err(err) = solver::solve_update_seeded(
+        &repo,
+        &root,
+        false,
+        false,
+        &[],
+        std::collections::HashMap::new(),
+        Some(filter),
+        None,
+    )
+    .await
+    else {
+        panic!("expected an advisory-blocked request to fail")
+    };
+    let solver_error = err
+        .downcast_ref::<SolverError>()
+        .expect("solve_update_seeded's error is a SolverError for an unsatisfiable request");
+
+    let want = "Your requirements could not be resolved to an installable set of packages.\n\n  \
+                Problem 1\n    - Root composer.json requires acme/vuln 6.5.0, found \
+                acme/vuln[6.5.0] but these were not loaded, because they are affected by \
+                security advisories (\"PKSA-test-0003\"). Go to \
+                https://packagist.org/security-advisories/ to find advisory details. Require a \
+                patched version to clear this, or override with --no-blocking (or add the \
+                advisory to \"audit.ignore\") to install it anyway.\n";
     assert_eq!(format!("{solver_error}"), want);
 }
