@@ -54,13 +54,26 @@ impl Adapter for Pest {
 /// `DumpCommand::execute`: a plain `array_merge` (list concatenation, no
 /// de-duplication) of every package's `extra.pest.plugins`, root last.
 ///
+/// `getCanonicalPackages()` hands the plugin the *local repository's* order,
+/// which is Composer's install order — `installed.json` is a by-name-sorted
+/// view written from it, not the order itself. Reading the lock in file order
+/// put `pestphp/pest`'s nineteen entries ahead of the three sibling plugin
+/// packages on a `roots/bedrock` install, where Composer emits them last.
+///
 /// Written via [`php_json_encode_pretty`] (PHP's `JSON_PRETTY_PRINT`) with no
 /// trailing newline: Composer writes this file with a plain
 /// `file_put_contents`, unlike `composer.lock`/`installed.json`'s own
 /// writers, which append one.
 fn apply(root: &Root, vendor_dir: &Path, packages: &[(&Package, PathBuf)]) -> Result<()> {
+    // The plugin only runs when it is itself installed, so a `--no-dev`
+    // install of a project that only needs pest for tests writes no file at
+    // all — Composer's `vendor/` has none to compare against.
+    if !packages.iter().any(|(p, _)| p.name == PACKAGE_NAME) {
+        return Ok(());
+    }
+
     let mut plugins: Vec<Value> = Vec::new();
-    for (package, _) in packages {
+    for (package, _) in super::in_install_order(packages) {
         plugins.extend(pest_plugins(package.raw.pointer("/extra/pest/plugins")));
     }
     plugins.extend(pest_plugins(root.extra.pointer("/pest/plugins")));
@@ -91,13 +104,16 @@ mod tests {
     }
 
     #[test]
-    fn apply_is_a_no_op_list_when_nothing_declares_pest_plugins() {
-        let root = root(&json!({}));
+    /// A `--no-dev` install of a project that only needs pest for tests
+    /// leaves the plugin uninstalled, so it never runs and Composer's
+    /// `vendor/` holds no `pest-plugins.json` to compare against. Writing an
+    /// empty one made `roots/bedrock` differ in the sweep.
+    fn apply_writes_nothing_when_the_plugin_itself_is_not_installed() {
+        let root = root(&json!({"pest": {"plugins": ["Acme\\Root\\RootPlugin"]}}));
         let vendor_dir = tempfile::tempdir().unwrap();
         let packages: Vec<(&Package, PathBuf)> = Vec::new();
         apply(&root, vendor_dir.path(), &packages).unwrap();
-        let got = fs_err::read_to_string(vendor_dir.path().join("pest-plugins.json")).unwrap();
-        assert_eq!(got, "[]");
+        assert!(!vendor_dir.path().join("pest-plugins.json").exists());
     }
 
     #[test]
