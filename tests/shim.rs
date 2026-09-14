@@ -9,6 +9,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt as _;
 use tempfile::tempdir;
 use vivace::lock::Package;
 use vivace::store::Store;
@@ -402,9 +403,8 @@ fn install_with_unknown_flag_names_it_on_stderr() {
         .assert()
         .success()
         .stdout("composer\ninstall\n--no-cache\n")
-        .stderr(predicates::str::contains(
-            "`--no-cache` not understood, running the real Composer",
-        ));
+        .stderr(predicates::str::contains("`--no-cache` not understood"))
+        .stderr(predicates::str::contains("running the real Composer"));
 }
 
 /// `VIV_SHIM_STRICT=1` turns the same fallback into a hard error instead of
@@ -425,10 +425,9 @@ fn install_with_unknown_flag_and_strict_env_fails_instead_of_falling_back() {
         .failure()
         .code(1)
         .stdout("")
-        .stderr(predicates::str::contains(
-            "`--no-cache` not understood, running the real Composer",
-        ))
-        .stderr(predicates::str::contains("VIV_SHIM_STRICT is set"));
+        .stderr(predicates::str::contains("`--no-cache` not understood"))
+        .stderr(predicates::str::contains("VIV_SHIM_STRICT is set"))
+        .stderr(predicates::str::contains("running the real Composer").not());
 }
 
 #[test]

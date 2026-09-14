@@ -91,9 +91,7 @@ fn translate(args: &[String]) -> Option<Vec<String>> {
                 ));
             }
             Flag::Unknown => {
-                err_out(&format!(
-                    "composer (viv shim): `{flag}` not understood, running the real Composer"
-                ));
+                note_unknown_flag(flag);
                 return None;
             }
         }
@@ -147,9 +145,7 @@ fn translate_create_project(args: &[String]) -> Option<Vec<String>> {
                 ));
             }
             Flag::Unknown => {
-                err_out(&format!(
-                    "composer (viv shim): `{flag}` not understood, running the real Composer"
-                ));
+                note_unknown_flag(flag);
                 return None;
             }
         }
@@ -284,9 +280,7 @@ fn translate_with_packages(args: &[String], classify: fn(&str) -> Flag) -> Optio
                 ));
             }
             Flag::Unknown => {
-                err_out(&format!(
-                    "composer (viv shim): `{flag}` not understood, running the real Composer"
-                ));
+                note_unknown_flag(flag);
                 return None;
             }
         }
@@ -339,6 +333,13 @@ fn err_out(message: &str) {
     let _ = writeln!(std::io::stderr().lock(), "{message}");
 }
 
+/// Names the argument that ended a translation. Says only what was observed:
+/// whether that means running the real Composer or refusing to is
+/// [`fallback_to_real_composer`]'s call, and it says so itself.
+fn note_unknown_flag(flag: &str) {
+    err_out(&format!("composer (viv shim): `{flag}` not understood"));
+}
+
 /// An argument the shim doesn't understand normally falls back to the real
 /// Composer with just the stderr note above. `VIV_SHIM_STRICT=1` turns that
 /// fallback into a hard error instead, for a CI job that migrated to viv and
@@ -353,6 +354,7 @@ fn fallback_to_real_composer(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(1);
     }
+    err_out("composer (viv shim): running the real Composer");
     exec_real_composer(args)
 }
 
