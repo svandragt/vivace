@@ -6,6 +6,12 @@ name: Adapter drift
 # naming every adapter that has fallen behind, and the fixture that would
 # need re-verifying if it were ported forward
 # (`docs/plugin-strategy.md#upstream-drift`).
+#
+# #245: it also checks each adapter's Packagist licence against the
+# "Ported plugins" table in `NOTICE.md`. Unlike a version lag, a licence
+# mismatch — upstream relicensed, or a new port landed with no NOTICE.md
+# row at all — is a potential distribution problem, not a tracked backlog
+# item, so it fails the job rather than filing an issue.
 
 on:
   schedule:
@@ -29,7 +35,7 @@ jobs:
         with:
           enable-cache: true
       - run: devbox run -- cargo build --release
-      - name: Compare every adapter's ported version with Packagist
+      - name: Compare every adapter's ported version and licence with Packagist
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -58,8 +64,31 @@ jobs:
               && [ "$(printf '%s\n%s\n' "$recorded" "$latest" | sort -V | tail -1)" != "$recorded" ]
           }
 
+          # The licence NOTICE.md's "Ported plugins" table records for a
+          # Packagist name, with the `**GPL-2.0-or-later**` bold markers the
+          # three GPL rows use stripped. Empty (and a non-zero exit) when the
+          # name has no row at all — the case a new port would land in if
+          # nobody added one.
+          notice_licence() {
+            awk -F'|' -v name="$1" '
+              /^\| \[/ {
+                link=$2
+                gsub(/^[ \t]*\[/, "", link); sub(/\]\(.*/, "", link)
+                if (link == name) {
+                  lic=$3
+                  gsub(/^[ \t]*\*{0,2}/, "", lic); gsub(/\*{0,2}[ \t]*$/, "", lic)
+                  print lic
+                  found=1
+                }
+              }
+              END { if (!found) exit 1 }
+            ' NOTICE.md
+          }
+
           table="| Plugin | Ported version | Latest | Fixture |\n|---|---|---|---|\n"
           behind=0
+          licence_table="| Plugin | NOTICE.md licence | Packagist licence |\n|---|---|---|\n"
+          licence_problem=0
           while IFS=$'\t' read -r name version fixture; do
             [ -n "$name" ] || continue
             json=$(curl -sf "https://repo.packagist.org/p2/${name}.json") \
@@ -68,6 +97,22 @@ jobs:
             if is_behind "$version" "$latest"; then
               behind=1
               table="${table}| ${name} | ${version} | ${latest} | ${fixture} |\n"
+            fi
+
+            if recorded=$(notice_licence "$name"); then
+              # The array's own first entry, not `$latest`: some packages
+              # (drupal/core-composer-scaffold is one) carry a null licence
+              # on their stable releases in Packagist's mirror and only set
+              # it on the newest entry, dev or not.
+              packagist_licence=$(printf '%s' "$json" \
+                | jq -r --arg name "$name" '(.packages[$name][0].license // []) | join(", ")')
+              if [ "$packagist_licence" != "$recorded" ]; then
+                licence_problem=1
+                licence_table="${licence_table}| ${name} | ${recorded} | ${packagist_licence:-(none)} |\n"
+              fi
+            else
+              licence_problem=1
+              licence_table="${licence_table}| ${name} | (no NOTICE.md row) | — |\n"
             fi
           done < <(devbox run -- ./target/release/viv diagnose --adapters)
 
@@ -92,4 +137,15 @@ jobs:
           elif [ -n "$issue_number" ]; then
             gh issue close "$issue_number" --repo "$GITHUB_REPOSITORY" \
               --comment "No native adapter is behind upstream as of this run: $run_url"
+          fi
+
+          # A licence mismatch is not a lag to track — it's either NOTICE.md
+          # going stale against a relicense, or a GPL (or otherwise
+          # incompatible) port that shipped without a NOTICE.md row. Both
+          # need a human before the next release, so this fails the run
+          # instead of filing an issue like the version check above.
+          if [ "$licence_problem" = "1" ]; then
+            echo "::error::One or more ported plugins' licences don't match NOTICE.md — see the job log."
+            printf '%b' "$licence_table"
+            exit 1
           fi
