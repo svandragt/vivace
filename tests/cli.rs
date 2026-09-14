@@ -251,6 +251,49 @@ fn cache_clean_removes_a_platform_bucket() {
     assert!(!ctx.cache.path().exists());
 }
 
+/// #240: `viv cache clean` also removes a cache holding only the `repo-v0`
+/// metadata bucket (`viv update --no-install` writes that and nothing
+/// else) — the update-then-clean path the allow-list previously refused.
+#[test]
+fn cache_clean_removes_a_repo_bucket() {
+    let ctx = TestContext::new();
+    fs::create_dir_all(ctx.cache.path().join("repo-v0/packagist.org")).unwrap();
+    fs::write(
+        ctx.cache.path().join("repo-v0/packagist.org/packages.json"),
+        "{}",
+    )
+    .unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["cache", "clean"]);
+    viv_snapshot!(ctx, cmd);
+    assert!(!ctx.cache.path().exists());
+}
+
+/// #240: `viv cache prune` must not treat `repo-v0` as a stale bucket —
+/// it's the repository metadata cache that makes a warm `update` fast, not
+/// leftovers from an older viv.
+#[test]
+fn cache_prune_leaves_the_repo_bucket_alone() {
+    let ctx = TestContext::new();
+    fs::create_dir_all(ctx.cache.path().join("repo-v0/packagist.org")).unwrap();
+    fs::write(
+        ctx.cache.path().join("repo-v0/packagist.org/packages.json"),
+        "{}",
+    )
+    .unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["cache", "prune"]);
+    viv_snapshot!(ctx, cmd);
+    assert!(
+        ctx.cache
+            .path()
+            .join("repo-v0/packagist.org/packages.json")
+            .exists()
+    );
+}
+
 /// #36: a directory that isn't a vivace cache is left alone.
 #[test]
 fn cache_clean_refuses_a_directory_with_foreign_content() {

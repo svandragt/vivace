@@ -448,7 +448,7 @@ async fn a_304_response_refreshes_the_cached_provider_files_mtime() {
 
     let cache_path = cache
         .path()
-        .join("repo")
+        .join("repo-v0")
         .join("repo.packagist.org")
         .join("provider-monolog$monolog.json");
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
@@ -614,7 +614,7 @@ async fn v1_provider_hash_rotation_forces_a_root_reload() {
     // is within `PACKAGES_JSON_MAX_AGE`, so it's served straight off disk --
     // no request at all -- still naming the now-gone `hash_before`.
     let cache = tempfile::tempdir().unwrap();
-    let repo_cache_dir = cache.path().join("repo").join("v1-rotation");
+    let repo_cache_dir = cache.path().join("repo-v0").join("v1-rotation");
     fs_err::create_dir_all(&repo_cache_dir).unwrap();
     let cached_root = format!(
         r#"{{"providers-url":"/p/%package%$%hash%.json","provider-includes":{{"p/providers$%hash%.json":{{"sha256":"{hash_before}"}}}},"last-modified":"{FIXED_LAST_MODIFIED}"}}"#

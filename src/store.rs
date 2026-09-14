@@ -12,6 +12,10 @@
 //! - `.lock` carries a process-lifetime shared advisory lock so `prune` (which
 //!   takes it exclusively) never deletes under a running install.
 //!
+//! `tools-v0`, `platform-v0`, `repo-v0` and `vcs-v0` are other modules' buckets
+//! under the same root; `KNOWN_BUCKETS` is the full, single list `prune` and
+//! the foreign-cache guard both read.
+//!
 //! Bump a bucket suffix when its format changes; `prune` removes everything
 //! that is not a current bucket.
 
@@ -36,7 +40,29 @@ pub(crate) const TOOLS_BUCKET: &str = "tools-v0";
 /// `platform-v0/<sha256 of the interpreter's identity>.json`, see
 /// `solver::platform`.
 pub(crate) const PLATFORM_BUCKET: &str = "platform-v0";
+/// Repository metadata (`packages.json` and its includes), cached under
+/// `repo-v0/<repo-host>/`; see `repository::ComposerSource::load`.
+pub(crate) const REPO_BUCKET: &str = "repo-v0";
+/// Mirrored git checkouts for a VCS-sourced package, under
+/// `vcs-v0/<slugified url>/`; see `vcs::GitDriver::load`.
+pub(crate) const VCS_BUCKET: &str = "vcs-v0";
 const LOCK_FILE: &str = ".lock";
+
+/// Every current bucket name, shared by `prune` (what a stale-bucket sweep
+/// keeps) and `unexpected_entries`/`looks_like_cache` (what a foreign-cache
+/// guard accepts) — #240 was two bugs from one list missing an entry:
+/// `cache prune` deleted a bucket viv itself writes, and `cache clean`
+/// refused a cache holding only that bucket. One list, one place to add a
+/// bucket when it's introduced.
+const KNOWN_BUCKETS: &[&str] = &[
+    ARCHIVE_BUCKET,
+    DISTS_BUCKET,
+    TOOLS_BUCKET,
+    PLATFORM_BUCKET,
+    REPO_BUCKET,
+    VCS_BUCKET,
+    LOCK_FILE,
+];
 
 /// An opened store. Dropping it releases the shared lock.
 #[derive(Debug)]
@@ -328,16 +354,7 @@ impl Store {
         for entry in fs_err::read_dir(&self.root)? {
             let entry = entry?;
             let name = entry.file_name();
-            if [
-                ARCHIVE_BUCKET,
-                DISTS_BUCKET,
-                TOOLS_BUCKET,
-                PLATFORM_BUCKET,
-                LOCK_FILE,
-            ]
-            .iter()
-            .any(|keep| name == *keep)
-            {
+            if KNOWN_BUCKETS.iter().any(|keep| name == *keep) {
                 continue;
             }
             report.add(&entry.path())?;
@@ -471,16 +488,7 @@ impl Store {
         }
         for entry in fs_err::read_dir(dir)? {
             let name = entry?.file_name();
-            if ![
-                ARCHIVE_BUCKET,
-                DISTS_BUCKET,
-                TOOLS_BUCKET,
-                PLATFORM_BUCKET,
-                LOCK_FILE,
-            ]
-            .iter()
-            .any(|keep| name == *keep)
-            {
+            if !KNOWN_BUCKETS.iter().any(|keep| name == *keep) {
                 unexpected.push(name.to_string_lossy().into_owned());
             }
         }
@@ -1780,6 +1788,31 @@ mod tests {
         assert!(root.path().join("archive-v0").is_dir());
         assert!(root.path().join("dists-v0").is_dir());
         assert!(root.path().join(".lock").is_file());
+    }
+
+    /// #240: `repo-v0` (repository metadata, `repository::ComposerSource`)
+    /// and `vcs-v0` (mirrored git checkouts, `vcs::GitDriver`) are buckets
+    /// viv writes itself, not leftovers from an older viv — `prune` must
+    /// not collect either as a stale bucket.
+    #[test]
+    fn prune_leaves_repo_and_vcs_buckets_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        fs_err::create_dir_all(root.path().join("repo-v0/packagist.org")).unwrap();
+        fs_err::write(
+            root.path().join("repo-v0/packagist.org/packages.json"),
+            "{}",
+        )
+        .unwrap();
+        fs_err::create_dir_all(root.path().join("vcs-v0/some-repo")).unwrap();
+        let report = store.prune(None).unwrap();
+        assert_eq!(report.entries, 0);
+        assert!(
+            root.path()
+                .join("repo-v0/packagist.org/packages.json")
+                .is_file()
+        );
+        assert!(root.path().join("vcs-v0/some-repo").is_dir());
     }
 
     #[test]

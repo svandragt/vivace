@@ -38,7 +38,7 @@ use crate::fetch::{Conditional, Fetcher};
 use crate::semver::{self, Constraint};
 use crate::solver::pool_builder::link_constraint_text;
 use crate::solver::{ConstraintCache, parse_constraint_cached};
-use crate::store::hex;
+use crate::store::{REPO_BUCKET, hex};
 use crate::vcs;
 
 /// `Config::$defaultRepositories`: the implicit last (lowest-priority)
@@ -837,7 +837,7 @@ struct ComposerSource {
 
 impl ComposerSource {
     /// Fetch `packages.json` from `url` and set up this source's provider
-    /// mechanism, caching under `<cache_root>/repo/<repo-host>/`
+    /// mechanism, caching under `<cache_root>/repo-v0/<repo-host>/`
     /// (`ComposerRepository::getCache`'s per-repo directory, keyed the same
     /// way this crate already keyed a single Packagist repo).
     async fn load<T: Transport>(
@@ -861,7 +861,7 @@ impl ComposerSource {
                 .with_context(|| format!("repository URL {configured} has no host"))?
                 .to_string()
         };
-        let cache_dir = cache_root.join("repo").join(&host);
+        let cache_dir = cache_root.join(REPO_BUCKET).join(&host);
 
         // `ComposerRepository::getPackagesJsonUrl`: a URL that already
         // names a `.json` file is used as-is; otherwise `/packages.json` is
