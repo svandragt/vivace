@@ -49,6 +49,23 @@ proj=$(cd "$1" && pwd); shift
 mirror=$1; shift
 mkdir -p "$mirror/dists" "$mirror/p2"
 
+# #221: a mirror recorded under an older shape (e.g. before #216 taught
+# record_p2 to split a v1 source's dev branches into <name>~dev.json)
+# otherwise keeps that gap forever, since #170 made mirrors persistent and
+# record_p2's own early return only ever checks <name>.json. Bump
+# MIRROR_FORMAT whenever this script's recorded layout changes, so a stale
+# mirror is wiped and fully rebuilt on its next ordinary recording run
+# instead of needing to be cleared by hand. generated-composer.lock is
+# corpus.sh's own cache living alongside the mirror, not this script's, so
+# it's left alone.
+MIRROR_FORMAT=2
+format_file="$mirror/.format"
+if [ "$(cat "$format_file" 2>/dev/null || echo 0)" != "$MIRROR_FORMAT" ]; then
+  rm -rf "$mirror/dists" "$mirror/p2" "$mirror/packages.json" \
+    "$mirror/advisories.json" "$mirror/.composer-cache"
+  mkdir -p "$mirror/dists" "$mirror/p2"
+fi
+
 # GitHub rate-limits unauthenticated zipball downloads; reuse the same
 # token Composer itself would use, never printed or logged.
 auth="$HOME/.config/composer/auth.json"
@@ -612,3 +629,8 @@ EOF
   fi
 }
 record_advisories
+
+# Written last: a crash partway through leaves no marker (or a stale one),
+# so the next run's format check above wipes and retries in full rather
+# than trusting a mirror that never finished this pass.
+echo "$MIRROR_FORMAT" > "$format_file"

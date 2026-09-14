@@ -13,3 +13,9 @@ riff 0.0.7 roots/bedrock update-warm
 riff 0.0.7 phpunit/phpunit update-warm
 riff 0.0.7 slimphp/Slim-Skeleton update-warm
 riff 0.0.7 statamic/statamic update-warm
+
+# #220: riff's own mirror-mode 304 race (see bench/run.sh's comment above
+# its hardcoded mirror-mode skip); these are the corpus entries it hits.
+riff 0.0.7 symfony/demo update-warm
+riff 0.0.7 composer/composer update-warm
+riff 0.0.7 craftcms/craft update-warm
