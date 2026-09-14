@@ -3,7 +3,12 @@
 //! template with the runtime class and `extra.runtime` options substituted
 //! in.
 //!
-//! Ported from `symfony/runtime` `v7.4.18` (fetched 2026-09-08, issue #93).
+//! Ported from `symfony/runtime` `v7.4.18` (fetched 2026-09-08, issue #93),
+//! bumped to `v8.1.0` (2026-09-14, #162): `ComposerPlugin::updateAutoloadFile`
+//! and `autoload_runtime.template` are byte-identical from v7.4.14 through
+//! v8.0.0 to v8.1.0 — the only diffs anywhere in `Internal/ComposerPlugin.php`
+//! across that range are a comment's casing and a trailing php-cs-fixer
+//! directive, neither emitted. No re-port, no fixture change.
 //! Runs from `install::write_autoload`, after `post-autoload-dump` — the
 //! real plugin subscribes to that event alone, and checks `vendor/autoload.php`
 //! already exists before doing anything, matching the phase it needs to run
@@ -31,7 +36,7 @@ impl Adapter for SymfonyRuntime {
     }
 
     fn upstream_version(&self) -> &'static str {
-        "v7.4.18"
+        "v8.1.0"
     }
 
     fn fixture(&self) -> &'static str {

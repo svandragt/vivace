@@ -4,6 +4,15 @@
 //! pretty name), falling back to the package's own
 //! `extra.wordpress-install-dir`, then the literal `"wordpress"`. Version
 //! pinned in `tests/fixtures/wordpress/composer.lock`.
+//!
+//! roots/wordpress-core-installer is the maintained fork: it `replace`s
+//! johnpbloch/wordpress-core-installer (stalled at 2.0.0 since 2020) and
+//! carries its own version train from there. `getInstallPath`
+//! (`WordPressCoreInstaller.php`) is byte-identical across roots 2.0.0,
+//! 3.0.0 and v4.0.0 (#162) — the only change in that range adds a type
+//! check on the conflict-exception path, which viv's `install_dir` doesn't
+//! model (it resolves a path, it never throws). `upstream_version()` follows
+//! to v4.0.0 with no re-port and no fixture change.
 
 use serde_json::Value;
 
@@ -22,7 +31,7 @@ impl Adapter for WordpressCore {
     }
 
     fn upstream_version(&self) -> &'static str {
-        "2.0.0"
+        "v4.0.0"
     }
 
     fn fixture(&self) -> &'static str {
