@@ -37,6 +37,14 @@ render as `__DIR__ . '/..' . '/psr/log/src'` and `__DIR__ . '/../..' . '/src'`.
 random hex. Class names: `ComposerAutoloaderInit<suffix>` and
 `Composer\Autoload\ComposerStaticInit<suffix>`.
 
+## APCu prefix
+
+`--apcu-autoloader-prefix`/`config.apcu-autoloader-prefix`, else the prefix
+already in `vendor/composer/autoload_real.php`
+(`setApcuPrefix\('([^']+)'\)`), else `bin2hex(random_bytes(10))`. The prefix
+keys every APCu entry the classmap uses, so reusing it is what keeps a dump
+from discarding the warm cache.
+
 ## Ordering
 
 Packages are sorted with `PackageSorter`: each package's weight is decremented

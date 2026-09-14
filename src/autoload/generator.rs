@@ -380,10 +380,12 @@ pub fn generate(input: &Input) -> Result<Generated> {
         file
     });
 
-    let apcu_prefix = input
-        .apcu_prefix
-        .as_ref()
-        .map(|custom| custom.clone().unwrap_or_else(random_apcu_prefix));
+    let apcu_prefix = input.apcu_prefix.as_ref().map(|custom| {
+        custom
+            .clone()
+            .or_else(|| existing_apcu_prefix(&input.vendor_dir))
+            .unwrap_or_else(random_apcu_prefix)
+    });
 
     let suffix = &input.suffix;
     let static_file = static_file(
@@ -1434,8 +1436,26 @@ fn sort_by_dependency_weight<'a>(packages: &[&'a Package]) -> Vec<&'a Package> {
         .collect()
 }
 
-/// Composer's `bin2hex(random_bytes(10))`: a fresh `APCu` key prefix when
-/// `--apcu-autoloader` is set without an explicit one.
+fn apcu_prefix_regex() -> &'static Regex {
+    static PREFIX_RE: OnceLock<Regex> = OnceLock::new();
+    PREFIX_RE.get_or_init(|| Regex::new(r"setApcuPrefix\('([^']+)'\)").expect("valid regex"))
+}
+
+/// The prefix already in `vendor/composer/autoload_real.php`
+/// (`setApcuPrefix('...')`), reused so a dump does not orphan the warm
+/// `APCu` cache — the prefix keys every entry in it. Mirrors
+/// `resolve_suffix`'s read-the-existing-file-first step in `src/install.rs`.
+fn existing_apcu_prefix(vendor_dir: &Path) -> Option<String> {
+    let existing = fs_err::read_to_string(vendor_dir.join("composer/autoload_real.php")).ok()?;
+    apcu_prefix_regex()
+        .captures(&existing)
+        .map(|caps| caps[1].to_string())
+}
+
+/// Composer's `bin2hex(random_bytes(10))`: generated only when
+/// `--apcu-autoloader` is set without an explicit prefix and there is no
+/// existing autoloader to read one from (`existing_apcu_prefix`); once
+/// generated, it is reused on every later dump.
 fn random_apcu_prefix() -> String {
     let mut bytes = [0u8; 10];
     std::io::Read::read_exact(
@@ -1974,5 +1994,64 @@ mod tests {
             error.to_string().contains("Could not scan for classes"),
             "unexpected error: {error}"
         );
+    }
+
+    /// #237: `--apcu-autoloader` without an explicit prefix must reuse the
+    /// one already in `vendor/composer/autoload_real.php` rather than
+    /// mint a fresh one on every dump, an explicit prefix must still win,
+    /// and a cleared `vendor/` (no autoloader to read) must fall back to a
+    /// new random one.
+    #[test]
+    fn apcu_prefix_is_reused_across_dumps_and_regenerated_once_vendor_is_cleared() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vendor_dir = dir.path().join("vendor");
+        fs_err::create_dir_all(&vendor_dir).expect("create vendor dir");
+
+        let dump = |apcu_prefix: Option<Option<String>>, vendor_dir: &Path| -> Option<String> {
+            let input = Input {
+                root: RootPackage {
+                    name: "root/pkg".into(),
+                    autoload: Value::Null,
+                    autoload_dev: Value::Null,
+                    target_dir: None,
+                    requires: vec![],
+                    include_path: vec![],
+                },
+                packages: vec![],
+                dev_mode: false,
+                scan_psr: false,
+                suffix: "abc123".into(),
+                vendor_dir: vendor_dir.to_path_buf(),
+                base_dir: dir.path().to_path_buf(),
+                platform_check: false,
+                prepend_autoloader: true,
+                classmap_authoritative: false,
+                apcu_prefix,
+                use_include_path: false,
+            };
+            generate(&input).expect("generate");
+            let real_file =
+                fs_err::read_to_string(vendor_dir.join("composer/autoload_real.php")).unwrap();
+            Regex::new(r"setApcuPrefix\('([^']+)'\)")
+                .unwrap()
+                .captures(&real_file)
+                .map(|caps| caps[1].to_string())
+        };
+
+        let first = dump(Some(None), &vendor_dir).expect("apcu prefix written");
+        let second = dump(Some(None), &vendor_dir).expect("apcu prefix written");
+        assert_eq!(first, second, "an unchanged vendor/ must reuse the prefix");
+
+        fs_err::remove_dir_all(&vendor_dir).unwrap();
+        fs_err::create_dir_all(&vendor_dir).unwrap();
+        let after_clean = dump(Some(None), &vendor_dir).expect("apcu prefix written");
+        assert_ne!(
+            first, after_clean,
+            "a cleared vendor/ has nothing to read a prefix from, so it gets a new one"
+        );
+
+        let explicit =
+            dump(Some(Some("fixed-prefix".into())), &vendor_dir).expect("apcu prefix written");
+        assert_eq!(explicit, "fixed-prefix", "an explicit prefix always wins");
     }
 }
