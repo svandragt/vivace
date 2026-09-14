@@ -34,8 +34,13 @@ fn classify(arg: &str) -> Flag {
         | "--ignore-platform-req"
         | "-v"
         | "-vv"
-        | "-vvv" => Flag::Keep,
-        "--no-plugins" | "--no-interaction" | "-n" | "--prefer-dist" => Flag::Drop,
+        | "-vvv"
+        // viv has `--no-plugins` (`install`/`dump-autoload` both take it,
+        // #227): dropping it silently, like `--no-interaction`, downgraded a
+        // plugin refusal back to a hard error instead of the warning the
+        // user asked for by passing it.
+        | "--no-plugins" => Flag::Keep,
+        "--no-interaction" | "-n" | "--prefer-dist" => Flag::Drop,
         "-q" | "--quiet" => Flag::DropNoted("viv has no equivalent of {flag}, ignoring it"),
         _ => Flag::Unknown,
     }

@@ -108,6 +108,25 @@ fn install_working_dir_space_form_delegates_to_real_composer() {
         .stdout("composer\ninstall\n--working-dir\n/some/dir\n");
 }
 
+/// #227: `--no-plugins` used to be dropped silently, downgrading an
+/// unadapted plugin's refusal back to a hard error instead of the warning
+/// the user asked for by passing it. Now it reaches `viv install` unchanged.
+#[test]
+fn install_no_plugins_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["install", "--no-plugins"])
+        .assert()
+        .success()
+        .stdout("viv\ninstall\n--no-plugins\n");
+}
+
 #[test]
 fn dump_autoload_with_supported_flag_calls_viv() {
     let _guard = SHIM_LOCK
