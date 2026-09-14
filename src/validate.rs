@@ -7,11 +7,17 @@
 //! `res/composer-schema.json`), `ConfigValidator`'s own hand-written checks,
 //! and `ValidatingArrayLoader`'s hand-written checks (run as part of loading
 //! a package from the parsed manifest). The schema pass mostly duplicates
-//! what the hand-written checks already catch (a wrong JSON type, a missing
-//! required key) and needs a JSON-schema validator dependency to reproduce
-//! byte-for-byte (`justinrainbow/json-schema`'s own error wording); this
-//! port skips it and sticks to the hand-written checks, the two commands'
-//! actual behavioural surface.
+//! what the hand-written checks already catch (a wrong JSON type), and
+//! reproducing the rest byte-for-byte would need a JSON-schema validator
+//! dependency (`justinrainbow/json-schema`'s own error wording); this port
+//! skips that pass and sticks to the hand-written checks, with one
+//! exception (#233): the schema pass is also where Composer's publish-only
+//! required-property check lives (`name`, `description` — hardcoded in
+//! `JsonFile::validateSchema(STRICT_SCHEMA)`, not in the schema file's own
+//! top level), and a missing one is the difference between `composer
+//! validate`'s exit 2 and a silent exit 0 in CI. That one finding is ported
+//! by hand as `check_required_for_publish`; nothing else from the schema
+//! pass is.
 //!
 //! Ported: name format (`ValidatingArrayLoader::hasPackageNamingError`,
 //! root and every link type), the publish-only uppercase-name suggestion,
@@ -19,12 +25,15 @@
 //! `composer-installer` type, require/require-dev overlap, provide/replace
 //! shadowing a requirement, commit-ref requires, `scripts-descriptions`/
 //! `scripts-aliases` naming non-existent scripts, empty PSR-0/PSR-4
-//! prefixes, and the link-type loop's own checks (self-reference, key
-//! format, constraint parse, unbound-constraint warning).
+//! prefixes, the link-type loop's own checks (self-reference, key format,
+//! constraint parse, unbound-constraint warning), and the schema pass's
+//! required-`name`/`description` publish errors.
 //!
 //! Not ported (no fixture needs it yet, add alongside one that does):
 //! JSON-schema-driven type errors beyond what the checks above already
-//! catch, SPDX license *validity* (only "is one set at all" is checked),
+//! catch, `additionalProperties: false` (the strict schema also rejects
+//! unknown top-level keys, not just missing `name`/`description`), SPDX
+//! license *validity* (only "is one set at all" is checked),
 //! duplicate-key detection, `authors`/`support`/`funding`/`php-ext`/
 //! `autoload`/`minimum-stability`/`source`/`dist`/`extra.branch-alias`
 //! validation, and the strict-vs-unbound-constraint (`CHECK_STRICT_CONSTRAINTS`)
@@ -246,10 +255,14 @@ fn exit_for(result: &Validated, strict: bool) -> u8 {
 }
 
 /// `ConfigValidator::validate` + `ValidatingArrayLoader::load`'s
-/// hand-written checks, minus the JSON-schema pass (see module doc).
+/// hand-written checks, plus the one JSON-schema-pass finding that reaches
+/// `composer validate`'s exit code (see module doc): `check_required_for_publish`
+/// runs first, matching `ConfigValidator::validate`'s own order (the schema
+/// pass runs before any of its hand-written checks).
 fn validate_manifest(manifest: &Value, check_all: bool) -> Validated {
     let mut result = Validated::default();
 
+    check_required_for_publish(manifest, &mut result);
     check_license(manifest, &mut result);
     check_version_field_present(manifest, &mut result);
     check_name_uppercase_publish(manifest, &mut result);
@@ -275,6 +288,24 @@ fn is_missing_or_empty(value: Option<&Value>) -> bool {
         Some(Value::Object(o)) => o.is_empty(),
         Some(Value::Bool(b)) => !b,
         Some(Value::Number(n)) => n.as_f64() == Some(0.0),
+    }
+}
+
+/// `JsonFile::validateSchema(STRICT_SCHEMA)`'s own override
+/// (`$schemaData->required = ['name', 'description']` in `JsonFile.php`,
+/// not anything the schema file itself declares — `res/composer-schema.json`
+/// has no top-level `required` key; see module doc) reproduced as a
+/// hand-written check: the only two schema-pass findings that turn into a
+/// publish error and so reach the exit code (#233). `required` in the
+/// `justinrainbow/json-schema` sense means "key present", not "non-empty" —
+/// an empty string still satisfies it, so this checks presence only.
+fn check_required_for_publish(manifest: &Value, result: &mut Validated) {
+    for property in ["name", "description"] {
+        if manifest.get(property).is_none() {
+            result
+                .publish_errors
+                .push(format!("{property} : The property {property} is required"));
+        }
     }
 }
 
