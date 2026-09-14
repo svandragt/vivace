@@ -49,7 +49,7 @@ use crate::repository::{
 use crate::semver;
 use crate::solver::platform::cached_platform_packages;
 use crate::solver::policy::DefaultPolicy;
-use crate::solver::pool::{Link, Package, Pool};
+use crate::solver::pool::{self, Link, Package, Pool};
 use crate::solver::pool_optimizer;
 use crate::solver::request::Request;
 use crate::solver::{ConstraintCache, parse_constraint_cached};
@@ -147,9 +147,9 @@ async fn filter_advisories<A: AdvisoriesTransport>(
     packages: Vec<Package>,
     exempt_upto: usize,
     filter: &AdvisoryFilter<'_, A>,
-) -> Result<Vec<Package>> {
+) -> Result<(Vec<Package>, Vec<pool::RemovedPackage>)> {
     if filter.no_blocking || (!filter.audit.block_insecure && !filter.audit.block_abandoned) {
-        return Ok(packages);
+        return Ok((packages, Vec::new()));
     }
 
     let mut names: Vec<String> = Vec::new();
@@ -197,25 +197,48 @@ async fn filter_advisories<A: AdvisoriesTransport>(
             None
         };
 
-    let has_matching_advisory = |name: &str, version: &semver::NormalizedVersion| {
-        let hits = |response: &AdvisoriesResponse| {
-            !audit::matching_advisory_ids(response, &filter.audit.ignore, name, version).is_empty()
-        };
-        filter
+    // Both responses can name the same advisory for a prefetch-covered name
+    // that also fell into `remainder` (never happens today — `remainder`
+    // only ever holds names `prefetched` doesn't cover — but de-duplicating
+    // here means that invariant isn't load-bearing for `removed`'s ids to
+    // stay accurate).
+    let matching_advisory_ids = |name: &str, version: &semver::NormalizedVersion| {
+        let mut ids = filter
             .prefetched
             .as_ref()
-            .is_some_and(|(_, response)| hits(response))
-            || remainder_response.as_ref().is_some_and(hits)
+            .map(|(_, response)| {
+                audit::matching_advisory_ids(response, &filter.audit.ignore, name, version)
+            })
+            .unwrap_or_default();
+        if let Some(response) = &remainder_response {
+            for id in audit::matching_advisory_ids(response, &filter.audit.ignore, name, version) {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
     };
 
     let mut to_remove: HashSet<usize> = HashSet::new();
+    let mut removed: Vec<pool::RemovedPackage> = Vec::new();
     for (index, package) in packages.iter().enumerate().skip(exempt_upto) {
         if filter.audit.block_abandoned && audit::is_abandoned(&package.raw) {
             to_remove.insert(index);
             continue;
         }
-        if !package.is_dev && has_matching_advisory(&package.name, &package.version) {
+        if package.is_dev {
+            continue;
+        }
+        let ids = matching_advisory_ids(&package.name, &package.version);
+        if !ids.is_empty() {
             to_remove.insert(index);
+            removed.push(pool::RemovedPackage {
+                name: package.name.clone(),
+                version: package.version.clone(),
+                pretty_version: package.pretty_version.clone(),
+                reason: pool::RemovalReason::Advisory(ids),
+            });
         }
     }
     // #175: an alias and the package it aliases are always kept or removed
@@ -249,7 +272,7 @@ async fn filter_advisories<A: AdvisoriesTransport>(
             package.alias_of = Some(remap[&alias_of]);
         }
     }
-    Ok(kept)
+    Ok((kept, removed))
 }
 
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr`
@@ -641,17 +664,17 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     );
 
     let advisory_started = Instant::now();
-    let packages = if let Some(advisories) = &advisories {
+    let (packages, removed) = if let Some(advisories) = &advisories {
         filter_advisories(packages, exempt_upto, advisories).await?
     } else {
-        packages
+        (packages, Vec::new())
     };
     tracing::debug!(
         elapsed_ms = advisory_started.elapsed().as_millis(),
         packages = packages.len(),
         "filtered the pool for advisories (--offline: should bail fast)"
     );
-    let pool = Pool::new(packages);
+    let pool = Pool::new(packages).with_removed(removed);
     let request = Request {
         requires: root_requires(&require, &require_dev)?,
         fixed,
@@ -1313,7 +1336,7 @@ mod tests {
             metadata_ttl: std::time::Duration::ZERO,
         };
 
-        let kept = filter_advisories(packages, 0, &filter).await.unwrap();
+        let (kept, _removed) = filter_advisories(packages, 0, &filter).await.unwrap();
         assert!(
             kept.is_empty(),
             "the alias must not outlive its filtered real package: {} left",
@@ -1345,7 +1368,7 @@ mod tests {
             metadata_ttl: std::time::Duration::ZERO,
         };
 
-        let kept = filter_advisories(packages, 0, &filter).await.unwrap();
+        let (kept, _removed) = filter_advisories(packages, 0, &filter).await.unwrap();
         assert_eq!(kept.len(), 2, "expected the real+alias pair to survive");
         assert_eq!(kept[1].alias_of, Some(0), "stale index was never remapped");
     }

@@ -1,0 +1,11 @@
+{
+    "packages": {
+        "acme/vuln": [
+            {
+                "name": "acme/vuln",
+                "version": "6.5.0",
+                "version_normalized": "6.5.0.0"
+            }
+        ]
+    }
+}

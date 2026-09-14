@@ -114,10 +114,43 @@ impl Package {
     }
 }
 
-/// `DependencyResolver/Pool.php`. No `unacceptableFixedOrLockedPackages`,
-/// `removedVersions*` or security/abandoned/filter-list bookkeeping: those
-/// back `Problem.php`'s verbose messages (stage 5) and the security
-/// advisory/filter-list pool filters, neither in scope for this stage.
+/// A candidate version `pool_builder` excluded before the pool was solved
+/// (a security advisory, #175's `filter_advisories`) — kept only so
+/// `problem.rs` can say *why* a name's candidates disappeared instead of
+/// reporting them as never having existed at all (#238, #152's shared
+/// plumbing). Never read by rule generation: `Pool::what_provides` only
+/// ever walks `packages`/`by_name` below, so a removed version can't
+/// resurface in a solve, only in a diagnostic message once one has already
+/// failed.
+#[derive(Clone)]
+pub struct RemovedPackage {
+    pub name: String,
+    pub version: NormalizedVersion,
+    pub pretty_version: String,
+    pub reason: RemovalReason,
+}
+
+/// Why `pool_builder` dropped a [`RemovedPackage`] before it ever reached
+/// [`Pool::new`]. Abandoned-package and minimum-stability removal
+/// (`Problem::getMissingPackageReason`'s own further branches) aren't
+/// modelled here yet — minimum-stability in particular is filtered out a
+/// stage earlier, in `Repository::load_closure_seeded`'s own breadth-first
+/// walk, not `pool_builder` (see that method's own doc comment), so
+/// recording it here would mean widening the closure walk's result too;
+/// add a variant and thread it through if a fixture ever needs that
+/// branch.
+#[derive(Clone)]
+pub enum RemovalReason {
+    /// Every advisory id that matched (`audit::matching_advisory_ids`).
+    Advisory(Vec<String>),
+}
+
+/// `DependencyResolver/Pool.php`. No `unacceptableFixedOrLockedPackages` or
+/// filter-list bookkeeping: filter-list has no vivace equivalent to filter
+/// by. `removedVersions*` bookkeeping (`Problem.php`'s verbose "X, Y
+/// removed by ..." annotation) still isn't ported — `removed` below only
+/// keeps enough to name *why* a name has no candidates left, not every
+/// removed version's own verbose listing.
 pub struct Pool {
     packages: Vec<Package>,
     /// Every name a package can be looked up under (its own name, plus
@@ -130,6 +163,9 @@ pub struct Pool {
     /// index once (`O(pool size)`) and scanning only its candidates per
     /// call is the same result for far less work.
     by_name: HashMap<String, Vec<i32>>,
+    /// See [`RemovedPackage`]. Empty for every caller that never sets it
+    /// (`with_removed`), which is every call site except `pool_builder`'s.
+    removed: Vec<RemovedPackage>,
 }
 
 impl Pool {
@@ -147,7 +183,29 @@ impl Pool {
                 }
             }
         }
-        Pool { packages, by_name }
+        Pool {
+            packages,
+            by_name,
+            removed: Vec::new(),
+        }
+    }
+
+    /// Attaches the versions `pool_builder`/`filter_advisories` excluded
+    /// before this pool was built, for `problem.rs`'s diagnostics.
+    /// `pool_optimizer::optimize` carries an existing pool's own list
+    /// through this on its rebuilt `Pool::new`, rather than losing it: the
+    /// optimizer prunes redundant *accepted* versions only, so what was
+    /// already removed before it ran is still accurate afterwards.
+    #[must_use]
+    pub fn with_removed(mut self, removed: Vec<RemovedPackage>) -> Self {
+        self.removed = removed;
+        self
+    }
+
+    /// `pool_optimizer::optimize`'s own copy-before-rebuild reads this
+    /// directly; `removed_matching` below is every other reader's way in.
+    pub fn removed(&self) -> &[RemovedPackage] {
+        &self.removed
     }
 
     pub fn packages(&self) -> &[Package] {
@@ -195,6 +253,26 @@ impl Pool {
             .iter()
             .copied()
             .filter(|&id| package_matches(self.package_by_id(id), name, constraint))
+            .collect()
+    }
+
+    /// The removed-before-solving [`RemovedPackage`]s matching `name` (a
+    /// name equality check only — a removed version never carries
+    /// `provides`/`replaces` links of its own to look up by, unlike
+    /// `what_provides`), narrowed to `constraint` when given. This is
+    /// `problem.rs`'s only way to tell "removed for a reason" apart from
+    /// "never existed" once `what_provides` itself comes back empty.
+    pub fn removed_matching(
+        &self,
+        name: &str,
+        constraint: Option<&Constraint>,
+    ) -> Vec<&RemovedPackage> {
+        self.removed
+            .iter()
+            .filter(|removed| {
+                removed.name == name
+                    && constraint.is_none_or(|constraint| constraint.matches(&removed.version))
+            })
             .collect()
     }
 }

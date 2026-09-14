@@ -199,18 +199,27 @@ fn reason_line(pool: &Pool, reason: &Reason) -> String {
             pretty_constraint,
         } => {
             let source = pool.package_by_id(pool::id_of(*source_index));
-            let providers = pool.what_provides(target, None);
-            if providers.is_empty() {
+            // #238/#152: constraint-aware, matching `RULE_PACKAGE_REQUIRES`'s
+            // own `count($requires) === 0` guard (`$requires` is the rule's
+            // own literals, built from `whatProvides($target, $constraint)`)
+            // — the plain `what_provides(target, None)` this used to check
+            // only ruled out "no version of `target` exists anywhere",
+            // missing every case where a *different*, unrelated version
+            // exists but every version actually matching this constraint
+            // was removed (advisory-filtered, or simply never published).
+            let constraint = pretty_constraint_as_constraint(pretty_constraint);
+            let matching = pool.what_provides(target, constraint.as_ref());
+            if matching.is_empty() {
                 format!(
                     "{} requires {target} {pretty_constraint} -> {}",
                     source.pretty_string(),
-                    missing_package_suffix(pool, target)
+                    missing_package_suffix(pool, target, pretty_constraint)
                 )
             } else {
                 format!(
-                    "{} requires {target} {pretty_constraint} -> {}",
+                    "{} requires {target} {pretty_constraint} -> satisfiable by {}.",
                     source.pretty_string(),
-                    satisfiable_or_found_suffix(pool, target, pretty_constraint)
+                    package_list(pool, &matching)
                 )
             }
         }
@@ -229,21 +238,29 @@ fn reason_line(pool: &Pool, reason: &Reason) -> String {
 }
 
 /// `Problem::getMissingPackageReason`'s `[prefix, suffix]` tuple, joined:
-/// the platform-package and found-but-mismatched-constraint branches this
-/// stage's fixtures exercise, plus the final could-not-be-found-at-all
-/// fallback. The security-advisory/abandoned/filter-list/lower-priority-repository
-/// branches are not reached (single-repository, no security data). Each
+/// the platform-package, root-conflict (#152), security-advisory (#238) and
+/// found-but-mismatched-constraint branches, plus the final
+/// could-not-be-found-at-all fallback. Abandoned/filter-list/
+/// lower-priority-repository still aren't reached: no abandoned-package
+/// bookkeeping on a [`pool::RemovedPackage`] yet (nothing filters for it),
+/// no filter-list feature, and one repository only. Minimum-stability is
+/// also not reached here — see [`pool::RemovalReason`]'s own doc for why
+/// that one is filtered a stage earlier than this module can see. Each
 /// branch has its own prefix shape (a not-found-at-all package gets no
-/// constraint text at all in the message, unlike the other two), so this
-/// isn't a single shared template.
-/// `Rule::getPrettyString`'s `-> satisfiable by ...` tail, shared by
-/// `RootRequire` and `PackageRequires` (both look `target` up in the pool
-/// the same way once their own "nothing at all provides this" case has
-/// already returned). #169: naively calling `what_provides(target, None)`
-/// here — as both callers used to — ignores the constraint entirely, so a
-/// platform package present at a non-matching version (`php ^7.3` against
-/// an assumed `php[8.3.0]`) reported "satisfiable by" even though nothing
-/// satisfies the requirement. A real Composer rule's literals are already
+/// constraint text at all in the message, unlike the others), so this
+/// isn't a single shared template; `missing_package_reason` picks the
+/// shape from what `missing_package_suffix` actually returns, rather than
+/// re-deriving the same branch condition a second time.
+/// `Rule::getPrettyString`'s `-> satisfiable by ...` tail for
+/// `Reason::RootRequire` (`Reason::PackageRequires`'s own arm above builds
+/// its constraint-aware `matching` list directly now, #238/#152 — its
+/// "nothing matches" case needs `missing_package_suffix`'s security-advisory
+/// and root-conflict branches too, which this function doesn't have the
+/// `Request` to check). #169: naively calling `what_provides(target, None)`
+/// here — as this used to — ignores the constraint entirely, so a platform
+/// package present at a non-matching version (`php ^7.3` against an assumed
+/// `php[8.3.0]`) reported "satisfiable by" even though nothing satisfies the
+/// requirement. A real Composer rule's literals are already
 /// constraint-filtered by the time `getPrettyString` runs (`Rule2Literals`/
 /// `GenericRule` are built from matching providers only); this re-filters
 /// to match, and falls back to `Problem::getMissingPackageReason`'s
@@ -271,26 +288,29 @@ fn missing_package_reason(pool: &Pool, package_name: &str, pretty_constraint: &s
     if crate::repository::is_platform_package(package_name) {
         return format!(
             "- Root composer.json requires {package_name} {pretty_constraint} but {}",
-            missing_package_suffix(pool, package_name)
+            missing_package_suffix(pool, package_name, pretty_constraint)
         );
     }
-    if pool.what_provides(package_name, None).is_empty() {
-        return format!(
-            "- Root composer.json requires {package_name}, it {}",
-            missing_package_suffix(pool, package_name)
-        );
+    // Every branch but the final could-not-be-found-at-all fallback keeps
+    // the constraint in the prefix (`getMissingPackageReason`'s own
+    // per-branch `[prefix, suffix]` pairs); reading it off the rendered
+    // suffix, rather than re-running the same "is there a reason" checks a
+    // second time here, is the only way this stays a single decision.
+    let suffix = missing_package_suffix(pool, package_name, pretty_constraint);
+    if suffix.starts_with("could not be found in any version") {
+        return format!("- Root composer.json requires {package_name}, it {suffix}");
     }
-    format!(
-        "- Root composer.json requires {package_name} {pretty_constraint}, {}",
-        missing_package_suffix(pool, package_name)
-    )
+    format!("- Root composer.json requires {package_name} {pretty_constraint}, {suffix}")
 }
 
 /// The suffix half of `getMissingPackageReason`'s `[prefix, suffix]` tuple:
 /// also reused standalone by `Reason::PackageRequires`'s `-> ...` tail
 /// (`Rule::getPrettyString`'s own `$text . ' -> ' . $reason[1]`, suffix
-/// only, no prefix).
-fn missing_package_suffix(pool: &Pool, package_name: &str) -> String {
+/// only, no prefix). Both callers only reach this once their own
+/// "nothing at all provides this" check already failed, matching
+/// Composer's own `count($packages) === 0`/`count($requires) === 0` guard
+/// before either calls into `getMissingPackageReason`.
+fn missing_package_suffix(pool: &Pool, package_name: &str, pretty_constraint: &str) -> String {
     if crate::repository::is_platform_package(package_name) {
         let installed = pool.what_provides(package_name, None);
         if let Some(&id) = installed.first() {
@@ -303,6 +323,18 @@ fn missing_package_suffix(pool: &Pool, package_name: &str) -> String {
         return format!("{package_name} is missing from your platform.");
     }
 
+    // #238: a name whose only matching candidates were filtered out before
+    // the pool was built (a security advisory) still has something to say
+    // beyond "never existed". `removed_matching` only ever holds advisory
+    // removals today (`pool::RemovalReason`'s own doc explains why
+    // minimum-stability isn't here yet).
+    if let Some(constraint) = pretty_constraint_as_constraint(pretty_constraint) {
+        let removed = pool.removed_matching(package_name, Some(&constraint));
+        if !removed.is_empty() {
+            return advisory_suffix(&removed);
+        }
+    }
+
     let any_version = pool.what_provides(package_name, None);
     if any_version.is_empty() {
         return "could not be found in any version, there may be a typo in the package name."
@@ -311,6 +343,53 @@ fn missing_package_suffix(pool: &Pool, package_name: &str) -> String {
     format!(
         "found {} but it does not match the constraint.",
         package_list(pool, &any_version)
+    )
+}
+
+/// `getMissingPackageReason`'s security-advisory branch (#238), Composer's
+/// own wording up to the ignore-config sentence: viv's equivalent config
+/// key is `audit.ignore`, not Composer's `policy.advisories.*` (this crate
+/// has no `policy.*` surface at all — see `AuditConfig`'s own doc), and the
+/// bug this exists to fix is precisely that viv's original message named
+/// neither remedy at all, so that closing sentence is viv's own rather
+/// than a byte-for-byte port.
+fn advisory_suffix(removed: &[&pool::RemovedPackage]) -> String {
+    let mut ids: Vec<&str> = Vec::new();
+    for package in removed {
+        let pool::RemovalReason::Advisory(advisory_ids) = &package.reason;
+        for id in advisory_ids {
+            if !ids.contains(&id.as_str()) {
+                ids.push(id);
+            }
+        }
+    }
+    format!(
+        "found {} but these were not loaded, because they are affected by security advisories \
+         (\"{}\"). Go to https://packagist.org/security-advisories/ to find advisory details. \
+         Require a patched version to clear this, or override with --no-blocking (or add the \
+         advisory to \"audit.ignore\") to install it anyway.",
+        removed_package_list(removed),
+        ids.join("\", \"")
+    )
+}
+
+/// [`package_list`]'s counterpart for a removed candidate: the same
+/// `name[v1, v2, ...]` shape, but built straight from [`pool::RemovedPackage`]
+/// (a removed version was never in `pool`'s own package list to look up by
+/// id).
+fn removed_package_list(removed: &[&pool::RemovedPackage]) -> String {
+    let name = &removed[0].name;
+    let mut versions: Vec<(NormalizedVersion, String)> = Vec::new();
+    for package in removed {
+        match versions.iter_mut().find(|(v, _)| *v == package.version) {
+            Some((_, pretty)) => pretty.clone_from(&package.pretty_version),
+            None => versions.push((package.version.clone(), package.pretty_version.clone())),
+        }
+    }
+    versions.sort_by(|a, b| semver::compare(&a.0, &b.0));
+    format!(
+        "{name}[{}]",
+        condense_version_list(&versions, 4, 16).join(", ")
     )
 }
 
@@ -595,8 +674,64 @@ impl std::error::Error for SolverError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{condense_version_list, major_bucket};
+    use std::sync::Arc;
+
+    use super::{condense_version_list, major_bucket, missing_package_suffix};
     use crate::semver;
+    use crate::solver::pool::{Package, Pool, RemovalReason, RemovedPackage};
+
+    fn package(name: &str, pretty_version: &str) -> Package {
+        let version = semver::normalize(pretty_version).unwrap();
+        Package {
+            stability: semver::stability(version.as_str()),
+            is_dev: false,
+            name: name.to_string(),
+            version,
+            pretty_version: pretty_version.to_string(),
+            requires: Vec::new(),
+            conflicts: Vec::new(),
+            provides: Vec::new(),
+            replaces: Vec::new(),
+            alias_of: None,
+            is_root_package_alias: false,
+            has_self_version_requires: false,
+            raw: Arc::new(serde_json::json!({"name": name, "version": pretty_version})),
+        }
+    }
+
+    fn removed(name: &str, pretty_version: &str, advisory_ids: &[&str]) -> RemovedPackage {
+        RemovedPackage {
+            name: name.to_string(),
+            version: semver::normalize(pretty_version).unwrap(),
+            pretty_version: pretty_version.to_string(),
+            reason: RemovalReason::Advisory(advisory_ids.iter().map(ToString::to_string).collect()),
+        }
+    }
+
+    /// `getMissingPackageReason`'s security-advisory branch, called
+    /// straight against a hand-built [`Pool`] rather than through a live
+    /// solve — `tests/problem_messages.rs`'s own
+    /// `advisory_blocked_root_require_names_the_advisory_and_no_blocking`
+    /// already covers the full path end to end; this is the direct,
+    /// no-network complement, the same pairing
+    /// `condense_version_list`'s own tests below have with a live solve.
+    #[test]
+    fn missing_package_suffix_reports_the_advisory() {
+        let pool = Pool::new(vec![package("acme/a", "1.5.0")]).with_removed(vec![removed(
+            "acme/a",
+            "2.0.0",
+            &["PKSA-test-0004"],
+        )]);
+
+        assert_eq!(
+            missing_package_suffix(&pool, "acme/a", "^2.0"),
+            "found acme/a[2.0.0] but these were not loaded, because they are affected by \
+             security advisories (\"PKSA-test-0004\"). Go to \
+             https://packagist.org/security-advisories/ to find advisory details. Require a \
+             patched version to clear this, or override with --no-blocking (or add the advisory \
+             to \"audit.ignore\") to install it anyway."
+        );
+    }
 
     fn versions(pretty: &[&str]) -> Vec<(semver::NormalizedVersion, String)> {
         pretty
