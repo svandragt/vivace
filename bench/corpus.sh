@@ -96,14 +96,15 @@ footnotes=()
 problem=0
 
 # Appends this project's footnotes to $report right after its own rows
-# (rather than buffering to the end of the run), and flags the run as
-# having had a problem — one trip switch whether the footnote came from a
-# create-project/lock failure or an n/a bench row. Bullets are prefixed
-# "$name" or "$name/$tool", which is unique enough across the whole run
-# without a separate numbering scheme.
+# (rather than buffering to the end of the run). `problem` (the exit-code
+# trip switch, #220) is set by each call site that appends a genuine,
+# unresolved failure, not here: a bench/skips.txt-known skip is still worth
+# a footnote so a reader can see what was skipped, but it's expected and
+# must not fail a release-cut run on its own. Bullets are prefixed "$name"
+# or "$name/$tool", which is unique enough across the whole run without a
+# separate numbering scheme.
 flush_footnotes() {
   [ ${#footnotes[@]} -eq 0 ] && return 0
-  problem=1
   {
     echo ""
     for f in "${footnotes[@]}"; do
@@ -139,6 +140,7 @@ run_entry() {
     if ! create_out=$(composer create-project --no-install --no-scripts --no-interaction \
         --ignore-platform-reqs "$name" "$srcdir" "$version" 2>&1); then
       footnotes+=("$name: create-project failed: $(last_line "$create_out")")
+      problem=1
       flush_footnotes
       return
     fi
@@ -161,6 +163,7 @@ run_entry() {
       if ! lock_out=$(composer -d "$srcdir" update --no-install --no-scripts --no-plugins \
           --ignore-platform-reqs 2>&1); then
         footnotes+=("$name: composer update (lock) failed: $(last_line "$lock_out")")
+        problem=1
         flush_footnotes
         rm -rf "$srcdir"
         return
@@ -232,6 +235,7 @@ bench_project() {
       reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
       [ -n "$reason" ] || reason=$(last_line "$run_out")
       footnotes+=("$name/$tool: $(redact <<< "$reason")")
+      problem=1
     elif [ -z "$upd" ]; then
       case " $skip_update " in
         *" $tool "*) : ;;  # already footnoted by skips_for
@@ -240,6 +244,7 @@ bench_project() {
           reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
           [ -n "$reason" ] || reason=$(last_line "$run_out")
           footnotes+=("$name/$tool: $(redact <<< "$reason")")
+          problem=1
           ;;
       esac
     elif [ "${BENCH_MIRROR:-}" = "1" ] && [ "$tool" = "viv" ] \
@@ -263,6 +268,7 @@ bench_project() {
           reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
           [ -n "$reason" ] || reason=$(last_line "$run_out")
           footnotes+=("$name/$tool: $(redact <<< "$reason")")
+          problem=1
           ;;
       esac
     fi
