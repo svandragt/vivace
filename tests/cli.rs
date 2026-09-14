@@ -83,6 +83,28 @@ fn update_unresolvable_requirement_exits_two() {
     viv_snapshot!(ctx, cmd);
 }
 
+/// #235: omitting `SCRIPT` (and `--list`) is an incomplete command, the same
+/// as any other missing required positional — not a silent `--list`.
+#[test]
+fn run_without_a_script_or_list_errors_naming_it() {
+    let ctx = TestContext::new();
+    fs::write(ctx.project.path().join("composer.json"), "{}").unwrap();
+    let mut cmd = ctx.viv();
+    cmd.arg("run");
+    viv_snapshot!(ctx, cmd);
+}
+
+/// #235: `--list` on a project with no `scripts` section says so, rather
+/// than printing nothing and exiting 0 the way a truncated command would.
+#[test]
+fn run_list_with_no_scripts_says_so() {
+    let ctx = TestContext::new();
+    fs::write(ctx.project.path().join("composer.json"), "{}").unwrap();
+    let mut cmd = ctx.viv();
+    cmd.args(["run", "--list"]);
+    viv_snapshot!(ctx, cmd);
+}
+
 #[test]
 fn install_dry_run_lists_the_plan() {
     let ctx = TestContext::new();

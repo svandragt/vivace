@@ -1,0 +1,15 @@
+---
+source: tests/cli.rs
+expression: snapshot
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+error: the following required arguments were not provided:
+  <SCRIPT>
+
+Usage: viv run <SCRIPT> [ARGS]...
+
+For more information, try '--help'.
