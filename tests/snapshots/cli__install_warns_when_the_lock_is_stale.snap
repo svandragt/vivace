@@ -1,6 +1,5 @@
 ---
 source: tests/cli.rs
-assertion_line: 81
 expression: snapshot
 ---
 success: true
@@ -12,4 +11,4 @@ install 3 / keep 0 / remove 0
   install psr/container (2.0.2)
 
 ----- stderr -----
-Warning: The lock file is not up to date with the latest changes in composer.json. You may be getting outdated dependencies. It is recommended that you run `composer update` or `composer update <package name>`.
+Warning: The lock file is not up to date with the latest changes in composer.json. You may be getting outdated dependencies. It is recommended that you run `viv update` or `viv update <package name>`.

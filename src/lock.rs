@@ -982,11 +982,25 @@ pub fn is_fresh_from_value(lock: &Lock, content: &Value) -> Result<bool> {
     Ok(validate_against_root_value(lock, content).is_ok())
 }
 
-/// Composer's exact wording (`Installer::doInstall`) for a stale
-/// `content-hash`, printed to stderr and continued past, never fatal.
+/// `install`'s stale-`content-hash` warning (`Installer::doInstall`'s
+/// slot), continued past, never fatal. Printed to **stderr**, which
+/// `docs/stability.md` frees for viv's own wording — so this names `viv
+/// update`, not `composer update` (#239). Do not reuse this for a stdout
+/// path; see [`STALE_LOCK_VALIDATE_WARNING`] for the one that must stay
+/// Composer-verbatim.
 pub const STALE_LOCK_WARNING: &str = "Warning: The lock file is not up to date with the \
      latest changes in composer.json. You may be getting outdated dependencies. It is \
-     recommended that you run `composer update` or `composer update <package name>`.";
+     recommended that you run `viv update` or `viv update <package name>`.";
+
+/// `validate`'s stale-lock line (`ValidateCommand`'s own check, worded
+/// differently from `Installer::doInstall`'s above), pushed into
+/// `lock_errors`, which is part of `validate`'s **stdout** — contractual,
+/// byte-identical to Composer per `docs/stability.md`. Do not reword this
+/// one, and do not fold it into [`STALE_LOCK_WARNING`]: that one is free to
+/// reword and already has (#239).
+pub const STALE_LOCK_VALIDATE_WARNING: &str = "- The lock file is not up to date with the \
+     latest changes in composer.json, it is recommended that you run `composer update` or \
+     `composer update <package name>`.";
 
 /// Composer's root package names that are platform, not real packages
 /// (`PlatformRepository::isPlatformPackage`, the subset vivace cares about).

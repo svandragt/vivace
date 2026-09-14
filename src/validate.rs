@@ -158,11 +158,9 @@ fn lock_check(
 
     let mut lock_errors = Vec::new();
     if !lock::is_fresh(&lock, root_json)? {
-        lock_errors.push(
-            "- The lock file is not up to date with the latest changes in composer.json, it is \
-             recommended that you run `composer update` or `composer update <package name>`."
-                .to_string(),
-        );
+        // Composer-verbatim, contractual stdout — see the constant's own
+        // doc comment before touching this (#239).
+        lock_errors.push(lock::STALE_LOCK_VALIDATE_WARNING.to_string());
     }
     lock_errors.extend(lock::missing_requirements(&lock, &root, true));
     Ok((check_lock, lock_errors))

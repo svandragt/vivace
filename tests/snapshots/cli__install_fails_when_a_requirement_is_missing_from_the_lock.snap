@@ -1,6 +1,5 @@
 ---
 source: tests/cli.rs
-assertion_line: 98
 expression: snapshot
 ---
 success: false
@@ -8,7 +7,7 @@ exit_code: 1
 ----- stdout -----
 
 ----- stderr -----
-Warning: The lock file is not up to date with the latest changes in composer.json. You may be getting outdated dependencies. It is recommended that you run `composer update` or `composer update <package name>`.
+Warning: The lock file is not up to date with the latest changes in composer.json. You may be getting outdated dependencies. It is recommended that you run `viv update` or `viv update <package name>`.
 - Required package "acme/not-locked" is not present in the lock file.
 This usually happens when composer files are incorrectly merged or the composer.json file is manually edited.
 Read more about correctly resolving merge conflicts https://getcomposer.org/doc/articles/resolving-merge-conflicts.md
