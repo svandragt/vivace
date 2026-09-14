@@ -7,4 +7,6 @@ exit_code: 1
 ----- stdout -----
 
 ----- stderr -----
-viv cannot run the Composer plugin acme/mystery-plugin; see docs/plugin-strategy.md. Pass --no-plugins to install without it, as Composer would.
+viv cannot run the Composer plugin `acme/mystery-plugin`.
+Pass --no-plugins to install without it, as Composer would. No adapter exists for it yet, so the work the plugin would have done is skipped. Check what it writes before you rely on the result.
+See docs/plugin-strategy.md.

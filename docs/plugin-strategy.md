@@ -45,7 +45,10 @@ For every package of type `composer-plugin` in the lock that is enabled by
 3. **Anything else**: viv refuses with an error naming the plugin and pointing
    at this page. `--no-plugins` turns the refusal into a warning and installs
    as Composer would with `--no-plugins`. Silent wrong installs are worse than
-   a loud stop.
+   a loud stop. The refusal also says whether `--no-plugins` is safe: plugins
+   in `BY_DESIGN_REFUSALS` (`src/plugins/mod.rs`) get "by design, you lose
+   nothing" with the one-clause reason from this page; everything else gets
+   the generic "not adapted yet, this skips real work" (#224).
 
 Plugins that `allow-plugins` sets to `false`, or that are absent from the map,
 are ignored, as Composer ignores them.

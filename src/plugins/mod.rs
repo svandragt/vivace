@@ -250,6 +250,17 @@ const KNOWN_INERT: &[&str] = &[
     "drupal/core-recipe-unpack",
 ];
 
+/// Refused plugins (rule 3) whose effect never applies to installing from an
+/// already-committed lock, so `--no-plugins` loses nothing — the refusal's
+/// "is this safe" answer for #224. Kept next to `KNOWN_INERT` so one place
+/// lists every plugin viv has an opinion on; a name absent here just gets the
+/// generic not-yet-adapted wording, never a false "by design".
+const BY_DESIGN_REFUSALS: &[(&str, &str)] = &[(
+    "symfony/flex",
+    "its work — recipes, `symfony.lock`, bundle registration — happens in `composer \
+     require`, already applied and committed by the time a lock exists",
+)];
+
 /// Which native adapters are active for this install, resolved once from the
 /// lock and the root `composer.json` ([`resolve`]), in `NATIVE_ADAPTERS`
 /// registration order — the order every method below loops them in.
@@ -309,10 +320,24 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
                 package.name
             ));
         } else {
+            // The answer to "is taking the remedy safe" goes on the same line
+            // as the remedy, so it is read with it rather than after it.
+            let verdict = match BY_DESIGN_REFUSALS
+                .iter()
+                .find(|(name, _)| *name == package.name)
+            {
+                Some((_, reason)) => format!("You lose nothing by doing so: {reason}."),
+                None => "No adapter exists for it yet, so the work the plugin would \
+                         have done is skipped. Check what it writes before you rely \
+                         on the result."
+                    .to_string(),
+            };
             bail!(
-                "viv cannot run the Composer plugin {}; see docs/plugin-strategy.md. Pass \
-                 --no-plugins to install without it, as Composer would.",
-                package.name
+                "viv cannot run the Composer plugin `{}`.\nPass --no-plugins to \
+                 install without it, as Composer would. {}\nSee \
+                 docs/plugin-strategy.md.",
+                package.name,
+                verdict
             );
         }
     }
@@ -514,6 +539,27 @@ mod tests {
         let err = resolve(&lock, &root, false).unwrap_err();
         assert!(err.to_string().contains("acme/mystery-plugin"), "{err}");
         assert!(err.to_string().contains("docs/plugin-strategy.md"), "{err}");
+        // #224: no record of this plugin, so the generic "not yet adapted"
+        // wording, never a "by design" claim it has no grounds for.
+        assert!(
+            err.to_string().contains("No adapter exists for it yet"),
+            "{err}"
+        );
+        assert!(!err.to_string().contains("You lose nothing"), "{err}");
+    }
+
+    /// #224: `symfony/flex` has a `BY_DESIGN_REFUSALS` entry, so the refusal
+    /// says taking `--no-plugins` is safe and why, instead of the generic
+    /// not-yet-adapted wording.
+    #[test]
+    fn by_design_refusal_says_no_plugins_is_safe() {
+        let lock = lock_with(&[plugin_package("symfony/flex")]);
+        let root = root(json!({"config": {"allow-plugins": {"symfony/flex": true}}}));
+        let err = resolve(&lock, &root, false).unwrap_err();
+        assert!(err.to_string().contains("symfony/flex"), "{err}");
+        assert!(err.to_string().contains("docs/plugin-strategy.md"), "{err}");
+        assert!(err.to_string().contains("You lose nothing"), "{err}");
+        assert!(err.to_string().contains("composer require"), "{err}");
     }
 
     #[test]
