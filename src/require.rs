@@ -714,7 +714,10 @@ fn remove_main_key_if_empty(root: &mut Value, key: &str) {
 /// Serialize the edited root and write it to `path`: any formatting here is
 /// throwaway, `maybe_normalize` immediately reindents/resorts it, so a
 /// plain pretty-printer (not a format-preserving one) is enough.
-fn write_composer_json(path: &Path, root: &Value) -> Result<()> {
+/// `pub(crate)`: `update.rs`'s own `bump-after-update` rewrite (#205) reuses
+/// this same write-then-normalize path rather than a second manifest
+/// writer.
+pub(crate) fn write_composer_json(path: &Path, root: &Value) -> Result<()> {
     let mut contents = serde_json::to_string_pretty(root)?;
     contents.push('\n');
     fs_err::write(path, contents)?;

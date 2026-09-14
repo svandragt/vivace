@@ -2,6 +2,7 @@ pub mod audit;
 pub mod auth;
 pub mod autoload;
 pub mod bin;
+pub mod bump;
 pub mod diagnose;
 pub mod fetch;
 pub mod init;

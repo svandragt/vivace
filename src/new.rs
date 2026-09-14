@@ -203,6 +203,7 @@ fn run_from_package(
                 prefer_stable: false,
                 dry_run: false,
                 no_normalize: false,
+                bump_after_update: None,
                 project_dir: dir.clone(),
                 no_scripts: args.no_scripts,
                 no_plugins: false,

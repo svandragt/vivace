@@ -4,13 +4,19 @@
 //! implicit `packagist.org`, solves against them
 //! (`solver::solve_update`/`solver::solve_partial_update`, the merged first
 //! solve plus the require-only second solve for the dev split), and writes
-//! a `composer.lock` (`lock_writer::write`). `update` only ever reads
-//! `composer.json`, never rewrites it: normalizing is reserved for the
-//! commands that edit it (`add`/`rm`/`init`, `docs/stability.md`), so
-//! `--no-normalize` here is a deprecated no-op, same shape as `install`/
-//! `dump-autoload`'s own (#95). `--lock` skips solving entirely: it
-//! re-derives the lock from itself, matching `composer update --lock`'s
-//! own Locker round-trip.
+//! a `composer.lock` (`lock_writer::write`). `update` otherwise only ever
+//! reads `composer.json`, never rewrites it: normalizing is reserved for the
+//! commands that edit it on purpose (`add`/`rm`/`init`, `docs/stability.md`),
+//! so `--no-normalize` here is a deprecated no-op, same shape as `install`/
+//! `dump-autoload`'s own (#95). The one exception is `config.bump-after-
+//! update`/`--bump-after-update` (#205, `bump.rs`): when it applies and the
+//! resolve actually installed or upgraded something, `composer.json` is
+//! rewritten (through `require.rs`'s own write-then-normalize path) and
+//! re-read *before* `lock_json` computes the lock's `content-hash`, since
+//! that hash has to cover the bumped file, not the one still on disk when
+//! this function started. `--lock` skips solving entirely: it re-derives
+//! the lock from itself, matching `composer update --lock`'s own Locker
+//! round-trip.
 //!
 //! Not reachable from `src/install.rs`/`src/main.rs`'s `install` path
 //! (`AGENTS.md`'s Performance rule only gates `install`).
@@ -84,12 +90,23 @@ pub struct UpdateArgs {
     /// Solve and print, but don't write `composer.lock`.
     #[arg(long)]
     pub dry_run: bool,
-    /// No-op since 0.8: `update` never writes `composer.json`, so there is
-    /// nothing left to skip (only `add`/`rm`/`init` normalize it). Kept,
+    /// No-op since 0.8: normalizing is reserved for the commands that edit
+    /// `composer.json` on purpose (`add`/`rm`/`init`); `update`'s own
+    /// `bump-after-update` rewrite (#205) always normalizes the same way
+    /// those do, so there is still nothing this flag can skip. Kept,
     /// hidden, for one release so an old invocation doesn't fail; prints a
     /// deprecation warning instead.
     #[arg(long, hide = true)]
     pub no_normalize: bool,
+    /// Increases the lower bound of every root requirement whose package
+    /// this update just installed or upgraded to a caret constraint on the
+    /// version it locked (`Composer\Command\BumpCommand`), same rule
+    /// `config.bump-after-update` applies. Bare `--bump-after-update` bumps
+    /// both `require` and `require-dev`; `=dev` limits it to
+    /// `require-dev`, `=no-dev` to `require`. Wins over
+    /// `config.bump-after-update` when passed.
+    #[arg(long = "bump-after-update", num_args = 0..=1, default_missing_value = "all")]
+    pub bump_after_update: Option<String>,
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
@@ -178,7 +195,9 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
     if args.no_normalize {
         warn_no_normalize_is_a_noop("update");
     }
-    let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
+    // Mutable: `bump-after-update` (#205) rewrites this file below and
+    // re-reads it, so the lock's `content-hash` covers the bumped bytes.
+    let mut composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root: Value = serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let lock_path = project_dir.join("composer.lock");
 
@@ -222,6 +241,55 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
         "resolved metadata and solved (merged solve, plus the dev-split \
          second solve when require-dev is non-empty)"
     );
+
+    // #205: `config.bump-after-update`/`--bump-after-update`, run *before*
+    // `lock_json` below so its `content-hash` covers the rewritten file
+    // (`UpdateCommand::execute`'s own ordering: `doBump` runs right after
+    // the install/lock-write succeeds, then `Locker::updateHash` re-hashes
+    // whatever `doBump` just wrote). Skipped under `--dry-run`: nothing is
+    // persisted either way, and there is no on-disk bump to preview.
+    if !args.dry_run
+        && let Some(scope) = crate::bump::resolve_scope(
+            args.bump_after_update.as_deref(),
+            root.pointer("/config/bump-after-update"),
+        )
+    {
+        let previous_by_name = read_locked_by_name(&lock_path)?;
+        let operations =
+            crate::lock::diff_lock_operations(&previous_by_name, &result.non_dev, &result.dev)?;
+        let updated_names: std::collections::HashSet<String> =
+            operations.changed_names.into_iter().collect();
+        if !updated_names.is_empty() {
+            let locked_versions: std::collections::HashMap<String, String> = result
+                .non_dev
+                .iter()
+                .chain(result.dev.iter())
+                .map(|package| {
+                    (
+                        package.name.to_ascii_lowercase(),
+                        package.pretty_version.clone(),
+                    )
+                })
+                .collect();
+            let mut bumped_root = root.clone();
+            let changed =
+                crate::bump::apply(&mut bumped_root, scope, &updated_names, &locked_versions)?;
+            if changed > 0 {
+                let indent = normalize::detect_indent(&String::from_utf8_lossy(&composer_json));
+                crate::require::write_composer_json(&composer_json_path, &bumped_root)?;
+                if normalize::maybe_normalize(&composer_json_path, &indent)? {
+                    out(&format!("Normalized {}", composer_json_path.display()));
+                }
+                composer_json =
+                    fs_err::read(&composer_json_path).context("reading composer.json")?;
+                out(&format!(
+                    "{} has been updated ({changed} changes).",
+                    composer_json_path.display()
+                ));
+            }
+        }
+    }
+
     let lock_write_started = Instant::now();
     let lock = lock_json(&result, &composer_json)?;
     tracing::debug!(

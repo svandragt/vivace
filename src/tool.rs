@@ -133,6 +133,7 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             prefer_stable: false,
             dry_run: false,
             no_normalize: false,
+            bump_after_update: None,
             project_dir: env_dir.clone(),
             no_scripts: false,
             no_plugins: false,
