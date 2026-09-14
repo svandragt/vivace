@@ -1,0 +1,42 @@
+# Groups keep this to roughly one PR per ecosystem per week rather than
+# one per package: CI is already slow and often red (#195), so a flood of
+# individual bumps makes that worse. Majors fall outside the group and
+# still open their own PR, since `dependabot-auto-merge.yml` only merges
+# minor/patch.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # No workspace at the repo root, so `fuzz/` (its own Cargo.lock, not a
+  # workspace member) needs its own entry or it goes unwatched.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      cargo:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "cargo"
+    directory: "/fuzz"
+    schedule:
+      interval: "weekly"
+    groups:
+      cargo:
+        update-types:
+          - "minor"
+          - "patch"
+
+# devbox.json/devbox.lock pin the PHP/hyperfine toolchain used by `make
+# check`/`make bench`; Dependabot has no package-ecosystem for devbox or
+# Nix, so those stay on manual bumps.
