@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Changed
+- **viv is now licensed GPL-3.0-or-later, not MIT.** Three native adapters are ports of GPL-2.0-or-later plugins — `drupal/core-composer-scaffold` and both WordPress core installers — so the binary is a derivative work of them and MIT was never a licence it could be distributed under. The `or later` term in those upstreams is what permits GPL-3.0. Every adapter is kept; the new `NOTICE.md` records each port, its upstream and its licence, and `adapter-drift.yml` now checks the licence as well as the version so an incompatible port fails rather than ships ([#245](https://github.com/svandragt/vivace/issues/245))
 ### Added
 - `--ignore-platform-reqs` and `--ignore-platform-req=<name>` on `update`, `require` and `remove`, and the `composer` shim passes both through instead of dropping them, same as `install`/`dump-autoload` already did. On all three, the flag only affects the chained install's autoload write (whether `vendor/composer/platform_check.php` gets written); the solve itself still only offers versions the detected platform satisfies, since `--ignore-platform-req(s)` has no port in `src/solver/solver.rs` yet ([#231](https://github.com/svandragt/vivace/issues/231))
 

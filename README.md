@@ -362,8 +362,11 @@ way, including the study of prior art that shaped viv's design.[^15]
 
 ## Licence
 
-MIT. A few files are vendored from other MIT-licensed projects and keep
-their original copyright notices.[^16]
+GPL-3.0-or-later. viv ports three Composer plugins whose own source is
+GPL-2.0-or-later, so the binary is a derivative work of them and carries
+their licence.[^18] A few files are vendored from MIT-licensed projects and
+keep their original copyright notices; MIT permits their use here.[^16]
+[`NOTICE.md`](NOTICE.md) records every port, its upstream and its licence.
 
 [^1]: viv relinks every package from its own content-addressed store into `vendor/`, using hardlinks so files aren't copied or re-extracted.
 [^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
@@ -379,3 +382,4 @@ their original copyright notices.[^16]
 [^15]: [`JOURNAL.md`](JOURNAL.md), including the study of [Riff](https://github.com/shyim/riff) and [Presto](https://github.com/paramientos/presto) that preceded the code.
 [^16]: `src/autoload/templates/` contains Composer's `ClassLoader.php`, `InstalledVersions.php` and licence, copied verbatim under Composer's MIT licence. `src/spdx-licenses.json` is `composer/spdx-licenses`' own resource file, also copied verbatim under its MIT licence. Test fixtures under `tests/fixtures/composer/` are Composer's own, also MIT.
 [^17]: [`docs/stability.md`](docs/stability.md) states what a minor release may and may not change.
+[^18]: `drupal/core-composer-scaffold`, `johnpbloch/wordpress-core-installer` and `roots/wordpress-core-installer` are all GPL-2.0-or-later. Their `or later` term is what allows GPL-3.0 here. See [#245](https://github.com/svandragt/vivace/issues/245) for the provenance of each port.

@@ -21,7 +21,7 @@ cat <<RUBY
 class Vivace < Formula
   desc "Fast composer install from composer.lock"
   homepage "https://github.com/$repo"
-  license "MIT"
+  license "GPL-3.0-or-later"
 
   on_macos do
     on_arm do
