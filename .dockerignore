@@ -1,0 +1,6 @@
+# The image is packaging over `dist/<arch>/`, which `release.yml` lays out
+# from the musl tarballs. Nothing else in the repo belongs in the build
+# context — `target/` alone is gigabytes, and sending it makes every build
+# slower for no gain.
+*
+!dist/

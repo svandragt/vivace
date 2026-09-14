@@ -155,3 +155,101 @@ jobs:
       - if: steps.gate.outputs.one_zero == 'true' && env.CARGO_REGISTRY_TOKEN == ''
         run: |
           echo 'crates.io publish skipped: no CARGO_REGISTRY_TOKEN secret set.' >> "$GITHUB_STEP_SUMMARY"
+
+  # #213: the image a multi-stage Dockerfile's vendor stage uses instead of
+  # `composer:2`. Packaging on the musl tarballs `build` already uploaded,
+  # not a second compile. Runs after `release` so the tag it names is the
+  # one whose assets exist.
+  image:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: artifacts
+          merge-multiple: true
+      # `Dockerfile` expects `dist/<TARGETARCH>/`, so map Rust's target
+      # triples onto Docker's architecture names once, here.
+      - name: Lay out the binaries by Docker architecture
+        run: |
+          set -euo pipefail
+          for pair in "amd64:x86_64-unknown-linux-musl" "arm64:aarch64-unknown-linux-musl"; do
+            arch="${pair%%:*}"
+            target="${pair#*:}"
+            tarball="artifacts/vivace-${TAG}-${target}.tar.gz"
+            [ -f "$tarball" ] || { echo "::error ::missing $tarball"; exit 1; }
+            mkdir -p "dist/${arch}"
+            tar xzf "$tarball" -C "dist/${arch}" --strip-components=1
+            # Fail loudly here rather than shipping an image whose binary is
+            # missing: COPY of an absent path is an error, but a truncated
+            # or wrong-arch one is not.
+            file "dist/${arch}/viv" | tee /dev/stderr | grep -q 'statically linked'
+          done
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # Moving tags, narrowest first: the exact version, then the minor
+      # series, then the major. No `:latest` — #212 is the cautionary tale
+      # for a tag a scripted consumer trusts, and a 0.x major tag is already
+      # as loose as this should get before 1.0.
+      - id: tags
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          minor="${version%.*}"
+          major="${version%%.*}"
+          {
+            echo "list<<EOF"
+            echo "${IMAGE}:${version}"
+            echo "${IMAGE}:${minor}"
+            echo "${IMAGE}:${major}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.list }}
+          provenance: false
+      # Every tag this job just wrote must actually resolve, on both
+      # architectures. #212 shipped ten releases whose `releases/latest`
+      # 404'd because nothing ever asked for the thing it had published.
+      - name: Verify every published tag pulls and runs
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          for tag in "${version}" "${version%.*}" "${version%%.*}"; do
+            for platform in linux/amd64 linux/arm64; do
+              got=$(docker run --rm --platform "$platform" "${IMAGE}:${tag}" --version)
+              echo "${IMAGE}:${tag} ($platform) -> ${got}"
+              case "$got" in
+                *"${version}"*) ;;
+                *) echo "::error ::${IMAGE}:${tag} ($platform) reports '${got}', expected ${version}"; exit 1 ;;
+              esac
+              # The shim ships alongside viv and is the migration path
+              # (#211); an image without it on PATH silently drops half the
+              # point of publishing one. Its `--version` prints, then execs
+              # the real Composer for anything it does not handle — which
+              # this image deliberately does not carry, so it exits 1. Match
+              # the line it prints rather than the exit code.
+              shim=$(docker run --rm --platform "$platform" \
+                --entrypoint /usr/local/bin/composer "${IMAGE}:${tag}" --version 2>&1 || true)
+              case "$shim" in
+                *"composer shim"*) ;;
+                *) echo "::error ::composer shim missing or wrong in ${IMAGE}:${tag} ($platform): ${shim}"; exit 1 ;;
+              esac
+            done
+          done
