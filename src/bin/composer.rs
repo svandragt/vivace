@@ -46,12 +46,30 @@ fn classify(arg: &str) -> Flag {
     }
 }
 
+/// Flags whose value is a separate following argument rather than joined
+/// with `=` (`-d /tmp` as well as `-d=/tmp`; #228). Every `translate*` loop
+/// below checks this before classifying, so the value is consumed alongside
+/// its flag instead of being classified — or, in `translate_with_packages`/
+/// `translate_create_project`, mistaken for a package-name positional — on
+/// its own. Not every flag here is accepted by every subcommand; each
+/// `classify*` function's own match arms still gate that.
+const VALUE_FLAGS: &[&str] = &[
+    "-d",
+    "--working-dir",
+    "--ignore-platform-req",
+    "--repository",
+];
+
 /// Translate `install`/`dump-autoload` args, or `None` if any arg isn't understood.
 fn translate(args: &[String]) -> Option<Vec<String>> {
     let mut out = Vec::new();
-    for arg in args {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
         // `--working-dir=foo` / `--ignore-platform-req=foo`: match on the flag part only.
         let flag = arg.split('=').next().unwrap_or(arg);
+        let value = (!arg.contains('=') && VALUE_FLAGS.contains(&flag))
+            .then(|| iter.next())
+            .flatten();
         match classify(flag) {
             Flag::Keep => {
                 out.push(if flag == "--working-dir" {
@@ -61,6 +79,9 @@ fn translate(args: &[String]) -> Option<Vec<String>> {
                 } else {
                     arg.clone()
                 });
+                if let Some(value) = value {
+                    out.push(value.clone());
+                }
             }
             Flag::Drop => {}
             Flag::DropNoted(msg) => {
@@ -77,12 +98,11 @@ fn translate(args: &[String]) -> Option<Vec<String>> {
 
 /// Flags accepted for `create-project`, mapped onto viv `new`'s own set.
 /// Everything `new` doesn't support at all (`--prefer-source`, `--keep-vcs`,
-/// `--stability`, `--ask`, `--repository <url>`'s space-separated form, ...)
-/// is `Unknown`, falling over to the real Composer rather than silently
-/// dropping something that changes behaviour.
+/// `--stability`, `--ask`, ...) is `Unknown`, falling over to the real
+/// Composer rather than silently dropping something that changes behaviour.
 fn classify_create_project(arg: &str) -> Flag {
     match arg {
-        "--no-dev" | "--no-install" | "--no-scripts" => Flag::Keep,
+        "--no-dev" | "--no-install" | "--no-scripts" | "--repository" => Flag::Keep,
         "--prefer-dist" | "--no-interaction" | "-n" => Flag::Drop,
         "--ignore-platform-reqs" | "--ignore-platform-req" | "-q" | "--quiet" => {
             Flag::DropNoted("viv has no equivalent of {flag}, ignoring it")
@@ -93,23 +113,27 @@ fn classify_create_project(arg: &str) -> Flag {
 
 /// Translate `create-project`'s positionals unchanged (`viv new` takes the
 /// same `vendor/package [dir [constraint]]` shape) and its flags via
-/// [`classify_create_project`]; `--repository=<url>` (only the `=` form,
-/// see that function's own doc) passes straight through since viv's `new`
-/// takes the identical flag.
+/// [`classify_create_project`], `--repository`'s value (either spelling,
+/// #228) consumed via [`VALUE_FLAGS`] rather than special-cased here.
 fn translate_create_project(args: &[String]) -> Option<Vec<String>> {
     let mut out = Vec::new();
-    for arg in args {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
         if !arg.starts_with('-') {
             out.push(arg.clone());
             continue;
         }
-        if arg.starts_with("--repository=") {
-            out.push(arg.clone());
-            continue;
-        }
         let flag = arg.split('=').next().unwrap_or(arg);
+        let value = (!arg.contains('=') && VALUE_FLAGS.contains(&flag))
+            .then(|| iter.next())
+            .flatten();
         match classify_create_project(flag) {
-            Flag::Keep => out.push(arg.clone()),
+            Flag::Keep => {
+                out.push(arg.clone());
+                if let Some(value) = value {
+                    out.push(value.clone());
+                }
+            }
             Flag::Drop => {}
             Flag::DropNoted(msg) => {
                 err_out(&format!(
@@ -216,12 +240,19 @@ fn classify_remove(arg: &str) -> Flag {
 /// `--working-dir`-to-`-d`/`-vv`+`-vvv`-to-`-v` rewrite `translate` does.
 fn translate_with_packages(args: &[String], classify: fn(&str) -> Flag) -> Option<Vec<String>> {
     let mut out = Vec::new();
-    for arg in args {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
         if !arg.starts_with('-') {
             out.push(arg.clone());
             continue;
         }
         let flag = arg.split('=').next().unwrap_or(arg);
+        // Consumed here, before the next loop iteration's own positional
+        // check, so a dropped flag's value (e.g. `--ignore-platform-req
+        // ext-foo`) can't fall through as if `ext-foo` were a package name.
+        let value = (!arg.contains('=') && VALUE_FLAGS.contains(&flag))
+            .then(|| iter.next())
+            .flatten();
         match classify(flag) {
             Flag::Keep => {
                 out.push(if flag == "--working-dir" {
@@ -231,6 +262,9 @@ fn translate_with_packages(args: &[String], classify: fn(&str) -> Flag) -> Optio
                 } else {
                     arg.clone()
                 });
+                if let Some(value) = value {
+                    out.push(value.clone());
+                }
             }
             Flag::Drop => {}
             Flag::DropNoted(msg) => {

@@ -85,15 +85,13 @@ fn install_working_dir_equals_form_rewrites_to_dash_d() {
         .stdout("viv\ninstall\n-d=/some/dir\n");
 }
 
-/// `--working-dir <dir>` (space-separated) through `translate`: unlike
-/// `translate_with_packages`, `translate` has no `!arg.starts_with('-')`
-/// positional passthrough (`install` takes no package positionals), so the
-/// bare `/some/dir` that follows hits `classify` on its own and comes back
-/// `Unknown`, falling the whole invocation through to the real Composer.
-/// Pinned here so that asymmetry with the `update`/`add`/`rm` path (which
-/// does keep it as `-d`'s value) doesn't silently change.
+/// `--working-dir <dir>` (space-separated, #228): before `VALUE_FLAGS`, the
+/// bare `/some/dir` that follows hit `classify` on its own, came back
+/// `Unknown`, and fell the whole invocation through to the real Composer —
+/// only the `=` form above worked. Now the value is consumed alongside its
+/// flag, same as `translate_with_packages` already did for `update`/`add`/`rm`.
 #[test]
-fn install_working_dir_space_form_delegates_to_real_composer() {
+fn install_working_dir_space_form_calls_viv() {
     let _guard = SHIM_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -105,7 +103,26 @@ fn install_working_dir_space_form_delegates_to_real_composer() {
         .args(["install", "--working-dir", "/some/dir"])
         .assert()
         .success()
-        .stdout("composer\ninstall\n--working-dir\n/some/dir\n");
+        .stdout("viv\ninstall\n-d\n/some/dir\n");
+}
+
+/// `-d <dir>` (short spelling, space-separated, #228): same fix as
+/// `--working-dir` above, but `-d` needs no rename so the bug was easier to
+/// miss — pinned separately.
+#[test]
+fn install_short_d_space_form_calls_viv() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .args(["install", "-d", "/some/dir"])
+        .assert()
+        .success()
+        .stdout("viv\ninstall\n-d\n/some/dir\n");
 }
 
 /// #227: `--no-plugins` used to be dropped silently, downgrading an
