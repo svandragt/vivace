@@ -1104,3 +1104,36 @@ what the plugin would have done. It now says whether taking the remedy costs
 anything, on the same line as the remedy so the two are read together, and
 defaults to "no adapter yet" for any plugin with no record — falsely claiming
 safety is the asymmetric failure.
+
+## 2026-09-14, night: 0.12.0
+
+**Nine issues, and two of them found by using the thing.** #227 and #228
+were not on the milestone when the evening started. They turned up while
+building a scratch project to reproduce #211's premise, which is the only
+reason anyone looked at the shim from outside. #228 is the one that
+matters: the shim understood `--working-dir=/app` but not `-d /app`, and an
+unrecognised argument makes it exec the real Composer silently. On a machine
+that still has Composer installed, that succeeds and looks normal. A
+migrated CI job keeps paying for Composer while everyone believes otherwise.
+
+**The sweep was clean and the docs were not.** 44 rows identical, 0 differ,
+6 skipped, and all 10 pinned projects resolve the same lock. Reading the
+README against it turned up three stale claims, one of which predates this
+release: it said viv has 20 pinned compatibility projects. It has 10, in 20
+rows. The footnote had been counting rows and calling them projects for
+several releases. `roots/bedrock` also stopped needing `--no-plugins` this
+release, so "two of the pinned projects" became one — and the remaining one,
+symfony/flex, is refused by design rather than not yet ported, which the old
+wording ran together.
+
+**v0.10.0 and v0.11.0 never committed a sweep result.** `compat/results/`
+jumps from v0.9.0 to v0.12.0. Step 3 of the release checklist says to commit
+one, and two releases skipped it without anything noticing. The README's
+own footnote linked to `compat/results/v0.11.0.md`, a file that has never
+existed in the tree.
+
+**The speed table says 0.11.0 on purpose.** The corpus bench runs
+`--no-plugins --no-scripts`, so an adapter, a flag, a shim fix and an image
+are all off the path it measures. Restamping the version onto numbers that
+were not re-taken would be the kind of small lie that is impossible to catch
+later. The table says which version produced it and why that still holds.

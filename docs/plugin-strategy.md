@@ -14,13 +14,14 @@ WordPress project):
 |---|---|---|
 | composer/installers | Install path per package type from `extra.installer-paths` | Native (`src/plugins/installers.rs`), pure path mapping |
 | johnpbloch/wordpress-core-installer | Install path of `wordpress-core` packages from `extra.wordpress-install-dir` | Native (`src/plugins/wordpress_core.rs`), pure path mapping |
-| dealerdirect/phpcodesniffer-composer-installer | Runs `phpcs --config-set installed_paths` after install | Native (`src/plugins/phpcs.rs`) |
+| dealerdirect/phpcodesniffer-composer-installer | Points phpcs's `installed_paths` at every installed standard | Native (`src/plugins/phpcs.rs`); writes `CodeSniffer.conf` directly rather than shelling out to `phpcs --config-set`, so an install needs no PHP runtime (#218) |
 | phpstan/extension-installer | Writes `GeneratedConfig.php` listing every `extra.phpstan` package | Native (`src/plugins/phpstan.rs`) |
 | php-http/discovery | Adds packages to the resolver and generates a discovery file | Native (`src/plugins/discovery.rs`), `preAutoloadDump`/`extra.discovery` only; the resolver half (`postUpdate`) isn't ported |
 | tbachert/spi | Generates a service-provider map file after autoload dump | Native (`src/plugins/spi.rs`), `extra.spi` only |
 | cweagans/composer-patches | Applies patches from `extra.patches`/a patches file | Native (`src/plugins/patches.rs`), git-apply path only (#53) |
 | yiisoft/yii2-composer | Writes `vendor/yiisoft/extensions.php` listing every `yii2-extension` package | Native (`src/plugins/yii2.rs`) (#92) |
 | craftcms/plugin-installer | Writes `vendor/craftcms/plugins.php` listing every `craft-plugin` package | Native (`src/plugins/craft.rs`) (#92) |
+| pestphp/pest-plugin | Writes `vendor/pest-plugins.json` listing every package's `extra.pest.plugins`, root last | Native (`src/plugins/pest.rs`) (#131) |
 | ffraenz/private-composer-installer | Substitutes `{%NAME}`/`{%version}` placeholders in a dist URL from the environment/`.env` right before download | Native (`src/plugins/private_installer.rs`) (#98) |
 | codeception/c3 | Copies its bundled `c3.php` into the project root on install/update, unless an existing, edited one is there | Native (`src/plugins/c3.rs`) (#126) |
 | drupal/core-composer-scaffold | Copies scaffold files (`index.php`, `.htaccess`, `settings.php`, …) from every allowed package, manages `.gitignore`, writes `vendor/drupal/DrupalInstalled.php` and points the root classmap at it | Native (`src/plugins/drupal_scaffold.rs`) (#93) |
@@ -80,6 +81,14 @@ are ignored, as Composer ignores them.
    `ScaffoldOptions::symlink()` (copy only, no symlink mode) and
    `Handler::scaffold`'s unchanged-file skip (see the ponytail notes in
    `src/plugins/drupal_scaffold.rs`).
+
+9. pestphp/pest-plugin (#131): writes `vendor/pest-plugins.json`, moving
+   `roots/bedrock` from `plugins: refused` to `plugins: native`. Its
+   `CommandProvider` capability isn't ported — it only matters to
+   `composer pest:dump-plugins`, which viv never runs. Entries come in
+   install order, not lock order, and the file is written only when the
+   plugin is itself installed: a `--no-dev` install of a project that needs
+   pest only for tests must write no file at all, as Composer writes none.
 
 symfony/flex stays refused. Its value is in `composer require`, which is
 where Symfony users should keep using Composer.

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-14
+### Added
+- A container image at `ghcr.io/svandragt/vivace`, so a multi-stage Dockerfile's vendor stage replaces `composer:2` in one line instead of fetching and verifying a release tarball by hand. Tagged `:0.12.0`, `:0.12` and `:0`, for amd64 and arm64, 16.6 MB against `composer:2` and its PHP runtime ([#213](https://github.com/svandragt/vivace/issues/213))
+- `--ignore-platform-reqs` and `--ignore-platform-req=<name>` on `install` and `dump-autoload`, and the `composer` shim passes both through instead of dropping them ([#214](https://github.com/svandragt/vivace/issues/214))
+- A native adapter for `pestphp/pest-plugin`, so `roots/bedrock` installs without `--no-plugins` ([#131](https://github.com/svandragt/vivace/issues/131))
+- `install` and `dump-autoload` accept and ignore `--no-interaction`, `--prefer-dist` and `--no-suggest`: the CI idiom every guide teaches already describes what viv does, so a migrating project need not edit every call site ([#211](https://github.com/svandragt/vivace/issues/211))
+
+### Fixed
+- An install with no PHP on `PATH` no longer reports success over a `vendor/` where phpcs cannot find its standards. The adapter writes `CodeSniffer.conf` itself rather than shelling out to `phpcs --config-set` ([#218](https://github.com/svandragt/vivace/issues/218))
+- A build stage that passed `--ignore-platform-reqs` got a `vendor/composer/platform_check.php` Composer omits, and an `autoload_real.php` that requires it — so a `vendor/` Composer would run could fatal under viv ([#214](https://github.com/svandragt/vivace/issues/214))
+- The `composer` shim no longer drops `--no-plugins`, which made a plugin refusal tell you to pass the flag you had just passed ([#227](https://github.com/svandragt/vivace/issues/227))
+- The `composer` shim understands a flag's value as a separate argument (`-d /app`, not only `-d=/app`). It previously fell back to the real Composer, so a migrated CI job or Dockerfile kept using Composer with nothing saying so ([#228](https://github.com/svandragt/vivace/issues/228))
+
+### Changed
+- A plugin refusal says whether taking `--no-plugins` costs anything: by design and you lose nothing, or not yet adapted and the plugin's work is skipped. A plugin with no record gets the cautious wording, never a false claim of safety ([#224](https://github.com/svandragt/vivace/issues/224))
+
 ## [0.11.0] - 2026-09-14
 ### Changed
 - Releases are no longer marked as pre-releases on GitHub, so `releases/latest` answers and a scripted install or Dockerfile can resolve the current version without pinning one by hand ([#212](https://github.com/svandragt/vivace/issues/212))

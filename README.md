@@ -2,7 +2,7 @@
 
 `viv` installs PHP dependencies from a Composer `composer.lock` file and
 writes a `vendor/` directory that matches what Composer would write, byte
-for byte. It's a proof of concept at v0.11.0, tested in CI on Linux and
+for byte. It's a proof of concept at v0.12.0, tested in CI on Linux and
 macOS, and not yet at 1.0.
 
 ## Try it
@@ -15,7 +15,7 @@ macOS x86_64 and aarch64), or install it another way:
 ```sh
 cargo binstall --git https://github.com/svandragt/vivace vivace
 # or build from source:
-cargo install --git https://github.com/svandragt/vivace --tag v0.11.0 vivace
+cargo install --git https://github.com/svandragt/vivace --tag v0.12.0 vivace
 ```
 
 Both commands also upgrade an existing install; add `--force` to
@@ -106,13 +106,13 @@ written outside the project and the cache.
 viv's contract is that its output matches Composer's byte for byte. Before
 every release, a compatibility sweep installs a mix of pinned popular
 projects and a random sample of Packagist packages with both Composer and
-viv, then compares the results.[^2] The v0.11.0 sweep: 44 rows identical, 0 differ, 6
+viv, then compares the results.[^2] The v0.12.0 sweep: 44 rows identical, 0 differ, 6
 skipped, and all 10 pinned projects resolve the same `composer.lock` as
 Composer as well as installing the same `vendor/`.[^3]
 
-Two of the pinned projects still need `--no-plugins` to install with
-viv, both for a Composer plugin viv doesn't yet support.[^4] See
-[Plugins](#plugins) below.
+One pinned project still needs `--no-plugins`, for a plugin viv refuses by
+design rather than one it has yet to port.[^4] See [Plugins](#plugins)
+below.
 
 ## Speed
 
@@ -121,7 +121,9 @@ mirror so no network is measured, AMD Ryzen 9 7900X3D (24 threads) on
 ext4, viv 0.11.0, composer 2.10.2, riff 0.0.7,
 `--no-plugins --no-scripts`, three runs each. Each cell is the geometric
 mean of how many times faster viv is, with the range across projects;
-below 1× viv is slower.
+below 1× viv is slower. The numbers are from 0.11.0 and were not re-measured
+for 0.12.0: the corpus runs `--no-plugins --no-scripts`, and nothing 0.12.0
+changed sits on the path that measures.
 Per-project numbers are in
 [`bench/results/corpus.md`](bench/results/corpus.md). riff's column
 measures the same job as viv and Composer (checksums, `platform_check.php`,
@@ -356,8 +358,8 @@ their original copyright notices.[^16]
 
 [^1]: viv relinks every package from its own content-addressed store into `vendor/`, using hardlinks so files aren't copied or re-extracted.
 [^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
-[^3]: The skips are packages Composer itself refuses to resolve — security advisories blocking every matching version, a `dev-master`-only package under the default `minimum-stability`, one unmet platform requirement — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.11.0.md`](compat/results/v0.11.0.md).
-[^4]: Of viv's 20 pinned compatibility projects, the two that need `--no-plugins` are `symfony/demo` and `roots/bedrock`.
+[^3]: The skips are packages Composer itself refuses to resolve — security advisories blocking every matching version, a `dev-master`-only package under the default `minimum-stability`, one unmet platform requirement — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.12.0.md`](compat/results/v0.12.0.md).
+[^4]: Of viv's 10 pinned compatibility projects, the one that needs `--no-plugins` is `symfony/demo`, for `symfony/flex`. Flex does its work in `composer require`, so installing from a committed lock loses nothing; see [`docs/plugin-strategy.md`](docs/plugin-strategy.md).
 [^5]: The ratio's range crosses 1×: within noise on some projects.
 [^6]: riff's phpunit/phpunit cold and warm times (9.2 s and 7.2 s) are an outlier against its other rows in this corpus; kept in the range, not dropped; see [`bench/results/corpus.md`](bench/results/corpus.md).
 [^10]: `install` runs the root's lifecycle scripts (`pre-install-cmd`, `post-autoload-dump`, `post-install-cmd`) as Composer does.
