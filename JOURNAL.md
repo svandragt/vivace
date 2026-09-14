@@ -1009,7 +1009,7 @@ the precedent was already set and phpcs was the outlier, not the pioneer.
 **The safety net was decorative.** `tests/fixtures/plugins/phpcs/expected/
 CodeSniffer.conf` has been in the tree since the adapter landed, and no
 test read it. The compat sweep does not cover this adapter either: it runs
-`--no-plugins` by default and no project in `compat.toml` or `hunted.md`
+`--no-plugins` by default and no project in `compat/corpus.toml` or `compat/hunted.md`
 uses phpcs. A fixture nothing asserts against is a file, not a test. Filed
 as #226 — one corpus project covers both that gap and the fact that
 `CodeSniffer.conf`'s format is now a second upstream `adapter-drift.yml`
