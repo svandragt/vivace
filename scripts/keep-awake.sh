@@ -21,7 +21,12 @@ fi
 why=$1
 shift
 
-if command -v systemd-inhibit >/dev/null 2>&1; then
+# Probe before committing to it: a CI runner has systemd-inhibit on PATH but
+# no session bus to take a lock on, and `exec` leaves nothing to catch the
+# failure afterwards. Taking and dropping a lock on `true` costs nothing and
+# is the only way to know the real thing would work.
+if command -v systemd-inhibit >/dev/null 2>&1 \
+    && systemd-inhibit --what=sleep:idle --who="vivace" --why="probe" true >/dev/null 2>&1; then
   exec systemd-inhibit --what=sleep:idle --who="vivace" --why="$why" -- "$@"
 elif command -v caffeinate >/dev/null 2>&1; then
   # macOS: -i blocks idle sleep, -m keeps the disk awake for a job that is
