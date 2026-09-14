@@ -105,6 +105,21 @@ pub struct UpdateArgs {
     /// (`composer update --no-install`): today's `viv update` behaviour.
     #[arg(long)]
     pub no_install: bool,
+    /// Skip every platform (`php`/`ext-*`) requirement check on the
+    /// *chained install*'s autoload write, same as `install`'s own flag
+    /// (`#231`). Unlike Composer, this does not reach the solve: the pool
+    /// still only offers versions whose `require: php`/`ext-*` the
+    /// detected (or `config.platform`-overridden) platform satisfies, so an
+    /// update cannot resolve a package pinned to a PHP version this
+    /// interpreter lacks (`Installer.php`'s `PlatformRequirementFilter` has
+    /// no port yet, `docs/resolver-design.md`; tracked separately).
+    #[arg(long)]
+    pub ignore_platform_reqs: bool,
+    /// Skip one named platform requirement (`*` glob, repeatable) on the
+    /// chained install's autoload write; the same solve-side gap as
+    /// `--ignore-platform-reqs` above applies.
+    #[arg(long, value_name = "REQ")]
+    pub ignore_platform_req: Vec<String>,
     /// Allows installing a version a known security advisory covers or a
     /// package Packagist marks abandoned, instead of blocking it by default
     /// (#175, `audit.block-insecure`/`audit.block-abandoned`). Also settable
@@ -256,8 +271,8 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
             classmap_authoritative: false,
             apcu_autoloader: false,
             apcu_autoloader_prefix: None,
-            ignore_platform_reqs: false,
-            ignore_platform_req: Vec::new(),
+            ignore_platform_reqs: args.ignore_platform_reqs,
+            ignore_platform_req: args.ignore_platform_req.clone(),
             no_scripts: args.no_scripts,
             no_normalize: false,
             no_plugins: args.no_plugins,

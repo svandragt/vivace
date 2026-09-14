@@ -176,11 +176,13 @@ fn classify_update(arg: &str) -> Flag {
         | "--no-security-blocking"
         | "-d"
         | "--working-dir"
+        | "--ignore-platform-reqs"
+        | "--ignore-platform-req"
         | "-v"
         | "-vv"
         | "-vvv" => Flag::Keep,
         "--no-interaction" | "-n" | "--prefer-dist" => Flag::Drop,
-        "--ignore-platform-reqs" | "--ignore-platform-req" | "-q" | "--quiet" | "--no-progress" => {
+        "-q" | "--quiet" | "--no-progress" => {
             Flag::DropNoted("viv has no equivalent of {flag}, ignoring it")
         }
         _ => Flag::Unknown,
@@ -203,11 +205,13 @@ fn classify_require(arg: &str) -> Flag {
         | "--no-security-blocking"
         | "-d"
         | "--working-dir"
+        | "--ignore-platform-reqs"
+        | "--ignore-platform-req"
         | "-v"
         | "-vv"
         | "-vvv" => Flag::Keep,
         "--no-interaction" | "-n" | "--prefer-dist" => Flag::Drop,
-        "--ignore-platform-reqs" | "--ignore-platform-req" | "-q" | "--quiet" | "--no-progress" => {
+        "-q" | "--quiet" | "--no-progress" => {
             Flag::DropNoted("viv has no equivalent of {flag}, ignoring it")
         }
         _ => Flag::Unknown,
@@ -228,11 +232,13 @@ fn classify_remove(arg: &str) -> Flag {
         | "--no-security-blocking"
         | "-d"
         | "--working-dir"
+        | "--ignore-platform-reqs"
+        | "--ignore-platform-req"
         | "-v"
         | "-vv"
         | "-vvv" => Flag::Keep,
         "--no-interaction" | "-n" => Flag::Drop,
-        "--ignore-platform-reqs" | "--ignore-platform-req" | "-q" | "--quiet" | "--no-progress" => {
+        "-q" | "--quiet" | "--no-progress" => {
             Flag::DropNoted("viv has no equivalent of {flag}, ignoring it")
         }
         _ => Flag::Unknown,
@@ -254,8 +260,9 @@ fn translate_with_packages(args: &[String], classify: fn(&str) -> Flag) -> Optio
         }
         let flag = arg.split('=').next().unwrap_or(arg);
         // Consumed here, before the next loop iteration's own positional
-        // check, so a dropped flag's value (e.g. `--ignore-platform-req
-        // ext-foo`) can't fall through as if `ext-foo` were a package name.
+        // check, so a value flag's value (e.g. `--ignore-platform-req
+        // ext-foo`) can't fall through as if `ext-foo` were a package name,
+        // whether that flag ends up kept or dropped.
         let value = (!arg.contains('=') && VALUE_FLAGS.contains(&flag))
             .then(|| iter.next())
             .flatten();

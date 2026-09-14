@@ -690,3 +690,69 @@ async fn viv_add_offline_synthesizes_a_constraint_from_a_composer_type_repositor
         "expected a synthesized ^-style constraint for psr/container, got {constraint:?}"
     );
 }
+
+/// #231: `--ignore-platform-reqs` now reaches `add`'s chained install, same
+/// as `install`'s own flag (#214) — monolog/monolog's real `require: php
+/// >=8.1` (`tests/fixtures/packagist`) would otherwise land in
+/// `vendor/composer/platform_check.php`. Only the autoload write is
+/// affected: `RequireArgs`'s own doc comment on the field names the
+/// solve-side gap.
+#[tokio::test]
+async fn viv_add_ignore_platform_reqs_writes_no_platform_check() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    fs_err::copy(fixture.join("composer.lock"), project.join("composer.lock")).unwrap();
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &project.join(dir));
+    }
+
+    ctx.viv()
+        .args([
+            "require",
+            "psr/container:^2.0",
+            "--offline",
+            "--ignore-platform-reqs",
+        ])
+        .assert()
+        .success();
+
+    assert!(
+        !project.join("vendor/composer/platform_check.php").exists(),
+        "platform_check.php should not be written when every platform requirement is ignored"
+    );
+}
+
+/// Same as above, for `viv rm`.
+#[tokio::test]
+async fn viv_remove_ignore_platform_reqs_writes_no_platform_check() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    fs_err::copy(fixture.join("composer.lock"), project.join("composer.lock")).unwrap();
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &project.join(dir));
+    }
+
+    ctx.viv()
+        .args([
+            "remove",
+            "psr/container",
+            "--dev",
+            "--offline",
+            "--ignore-platform-reqs",
+        ])
+        .assert()
+        .success();
+
+    assert!(
+        !project.join("vendor/composer/platform_check.php").exists(),
+        "platform_check.php should not be written when every platform requirement is ignored"
+    );
+}

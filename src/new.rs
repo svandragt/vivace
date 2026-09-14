@@ -207,6 +207,8 @@ fn run_from_package(
                 no_scripts: args.no_scripts,
                 no_plugins: false,
                 no_install: args.no_install,
+                ignore_platform_reqs: false,
+                ignore_platform_req: Vec::new(),
                 no_blocking: false,
                 no_security_blocking: false,
                 metadata_ttl: None,

@@ -78,6 +78,17 @@ pub struct RequireArgs {
     /// (`composer require --no-install`): today's `viv add` behaviour.
     #[arg(long)]
     pub no_install: bool,
+    /// Skip every platform (`php`/`ext-*`) requirement check on the
+    /// chained install's autoload write, same as `install`'s own flag
+    /// (`#231`). The partial update's own solve still only offers versions
+    /// the detected platform satisfies (`update.rs`'s `UpdateArgs` doc
+    /// comment on the same pair of flags explains the gap).
+    #[arg(long)]
+    pub ignore_platform_reqs: bool,
+    /// Skip one named platform requirement (`*` glob, repeatable) on the
+    /// chained install's autoload write; the same solve-side gap applies.
+    #[arg(long, value_name = "REQ")]
+    pub ignore_platform_req: Vec<String>,
     /// Allows installing a version a known security advisory covers or a
     /// package Packagist marks abandoned, instead of blocking it by default
     /// (#175, `audit.block-insecure`/`audit.block-abandoned`). Also settable
@@ -131,6 +142,17 @@ pub struct RemoveArgs {
     /// (`composer remove --no-install`): today's `viv rm` behaviour.
     #[arg(long)]
     pub no_install: bool,
+    /// Skip every platform (`php`/`ext-*`) requirement check on the
+    /// chained install's autoload write, same as `install`'s own flag
+    /// (`#231`). The partial update's own solve still only offers versions
+    /// the detected platform satisfies (`update.rs`'s `UpdateArgs` doc
+    /// comment on the same pair of flags explains the gap).
+    #[arg(long)]
+    pub ignore_platform_reqs: bool,
+    /// Skip one named platform requirement (`*` glob, repeatable) on the
+    /// chained install's autoload write; the same solve-side gap applies.
+    #[arg(long, value_name = "REQ")]
+    pub ignore_platform_req: Vec<String>,
     /// Allows installing a version a known security advisory covers or a
     /// package Packagist marks abandoned, instead of blocking it by default
     /// (#175, `audit.block-insecure`/`audit.block-abandoned`). Also settable
@@ -210,6 +232,8 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
         args.no_scripts,
         args.no_plugins,
         args.no_install,
+        args.ignore_platform_reqs,
+        &args.ignore_platform_req,
         args.no_blocking || args.no_security_blocking,
         metadata_ttl,
     )
@@ -278,6 +302,8 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
         args.no_scripts,
         args.no_plugins,
         args.no_install,
+        args.ignore_platform_reqs,
+        &args.ignore_platform_req,
         args.no_blocking || args.no_security_blocking,
         crate::update::metadata_ttl(args.metadata_ttl, offline),
     )
@@ -304,6 +330,8 @@ pub(crate) fn partial_update(
     no_scripts: bool,
     no_plugins: bool,
     no_install: bool,
+    ignore_platform_reqs: bool,
+    ignore_platform_req: &[String],
     no_blocking: bool,
     metadata_ttl: std::time::Duration,
 ) -> Result<()> {
@@ -424,8 +452,8 @@ pub(crate) fn partial_update(
             classmap_authoritative: false,
             apcu_autoloader: false,
             apcu_autoloader_prefix: None,
-            ignore_platform_reqs: false,
-            ignore_platform_req: Vec::new(),
+            ignore_platform_reqs,
+            ignore_platform_req: ignore_platform_req.to_vec(),
             no_scripts,
             no_normalize: false,
             no_plugins,
@@ -799,6 +827,8 @@ mod tests {
             no_scripts: true,
             no_plugins: true,
             no_install: true,
+            ignore_platform_reqs: false,
+            ignore_platform_req: Vec::new(),
             no_blocking: false,
             no_security_blocking: false,
             metadata_ttl: None,
