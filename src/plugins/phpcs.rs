@@ -1,25 +1,32 @@
 //! `dealerdirect/phpcodesniffer-composer-installer`'s
 //! `onDependenciesChangedEvent`: finds every installed `phpcodesniffer-standard`
 //! package's `ruleset.xml` files and points `squizlabs/php_codesniffer`'s own
-//! `installed_paths` config at their parent directories, via
-//! `phpcs --config-set` (writes `vendor/squizlabs/php_codesniffer/CodeSniffer.conf`).
+//! `installed_paths` config at their parent directories, by writing
+//! `vendor/squizlabs/php_codesniffer/CodeSniffer.conf` directly (the file
+//! `phpcs --config-set installed_paths` would otherwise produce).
 //!
 //! Ported from `PHPCSStandards/composer-installer` (Packagist still lists the
 //! package as `dealerdirect/phpcodesniffer-composer-installer`) `v1.2.1`'s
-//! `src/Plugin.php`, fetched 2026-09-06.
+//! `src/Plugin.php`, fetched 2026-09-06. The `CodeSniffer.conf` byte format
+//! itself is `squizlabs/php_codesniffer`'s own `Config::setConfigData`
+//! (`src/Config.php`), taken from `3.13.6` and confirmed unchanged in
+//! `4.0.4` — a second upstream this adapter tracks alongside the plugin.
 //!
-//! ponytail: always recomputes `installed_paths` from the current locked
-//! package set rather than merging into whatever `CodeSniffer.conf` already
-//! has (the real plugin's `loadInstalledPaths`/`cleanInstalledPaths`); a path
-//! a developer added to that file by hand, outside Composer, would be
-//! overwritten. Add a merge step if that ever bites.
+//! ponytail: rewrites the whole file from the current locked package set
+//! rather than reading whatever `CodeSniffer.conf` already exists and
+//! merging into it (the real `setConfigData` round-trips every other key,
+//! e.g. `default_standard`, and the plugin's own
+//! `loadInstalledPaths`/`cleanInstalledPaths` only touch `installed_paths`
+//! within that). A `default_standard` a developer set by hand, or a path
+//! added outside Composer, would be lost. Add a read-and-merge step if that
+//! ever bites.
 
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+use serde_json::json;
 
+use super::phpstan::var_export;
 use super::{Adapter, Ctx};
 use crate::lock::{Package, Root};
 
@@ -80,7 +87,21 @@ fn apply(root: &Root, packages: &[(&Package, PathBuf)]) -> Result<()> {
     // (`in_array` before push); a `BTreeSet` already gives both.
     let paths = installed_paths.into_iter().collect::<Vec<_>>().join(",");
 
-    run_phpcs(phpcs_dir, &["--config-set", "installed_paths", &paths])
+    write_config(phpcs_dir, &paths)
+}
+
+/// `Config::setConfigData`'s own serialisation (`src/Config.php`,
+/// `squizlabs/php_codesniffer` 3.13.6, confirmed unchanged in 4.0.4): a
+/// single-key `var_export` dump, always written to `<phpcs_dir>/CodeSniffer.conf`
+/// (the Phar case in that method doesn't apply to a Composer install).
+fn write_config(phpcs_dir: &Path, installed_paths: &str) -> Result<()> {
+    let data = json!({"installed_paths": installed_paths});
+    let body = format!(
+        "<?php\n $phpCodeSnifferConfig = {};\n?>",
+        var_export(&data, 0)
+    );
+    let path = phpcs_dir.join("CodeSniffer.conf");
+    fs_err::write(&path, body).with_context(|| format!("writing {}", path.display()))
 }
 
 /// `getMinDepth`: `0` for `PHP_CodeSniffer` >= 3, `1` for the ancient 1.x/2.x
@@ -165,35 +186,6 @@ pub(super) fn relative_path(from: &Path, to: &Path) -> String {
     parts.join("/")
 }
 
-/// Runs `php <phpcs_dir>/bin/phpcs <args>` with `phpcs_dir` as the working
-/// directory, matching `getPhpcsCommand`/`getPHPCodeSnifferInstallPath`.
-/// Skipped with a warning when `php` itself isn't on `PATH`, the same
-/// tolerance `src/scripts.rs` gives a missing interpreter.
-fn run_phpcs(phpcs_dir: &Path, args: &[&str]) -> Result<()> {
-    let bin = phpcs_dir.join("bin/phpcs");
-    match Command::new("php")
-        .arg(&bin)
-        .args(args)
-        .current_dir(phpcs_dir)
-        .output()
-    {
-        Ok(output) if output.status.success() => Ok(()),
-        Ok(output) => bail!(
-            "phpcs {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        ),
-        Err(err) if err.kind() == ErrorKind::NotFound => {
-            tracing::warn!(
-                "dealerdirect/phpcodesniffer-composer-installer: php is not on PATH, skipping \
-                 `phpcs --config-set installed_paths`"
-            );
-            Ok(())
-        }
-        Err(err) => Err(err).with_context(|| format!("running {}", bin.display())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
@@ -265,5 +257,48 @@ mod tests {
         let root = root(&json!({}));
         let packages: Vec<(&Package, PathBuf)> = Vec::new();
         apply(&root, &packages).unwrap();
+    }
+
+    /// Byte-exact against `Config::setConfigData`'s own output (fetched from
+    /// `squizlabs/php_codesniffer` 3.13.6, confirmed unchanged in 4.0.4): the
+    /// fixture's three `phpcodesniffer-standard` packages
+    /// (`phpcsstandards/phpcsextra`, `phpcsstandards/phpcsutils`,
+    /// `wp-coding-standards/wpcs`) exercise the comma-joined, sorted
+    /// multi-path case, not just a single standard.
+    #[test]
+    fn phpcs_fixture_matches_php_codesniffers_golden_bytes() {
+        use crate::lock::{read_lock, read_root};
+
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugins/phpcs");
+        let root = read_root(&dir.join("composer.json")).unwrap();
+        let lock = read_lock(&dir.join("composer.lock")).unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let vendor_dir = project_dir.path().join("vendor");
+        let packages: Vec<(&Package, PathBuf)> = lock
+            .packages(true)
+            .map(|p| (p, vendor_dir.join(&p.name)))
+            .collect();
+
+        // `post_install` runs after extraction, so the real adapter is always
+        // handed an install dir that exists; stand one in here.
+        let phpcs_dir = vendor_dir.join(PACKAGE_NAME);
+        fs_err::create_dir_all(&phpcs_dir).unwrap();
+
+        // A `ruleset.xml` one level under each standard's install dir, so
+        // `find_rulesets` reports the install dir itself (via `dirname`) as
+        // the standards path, matching the fixture's expected output.
+        for (package, install_dir) in &packages {
+            if package.r#type == PACKAGE_TYPE {
+                let standard_dir = install_dir.join("Standard");
+                fs_err::create_dir_all(&standard_dir).unwrap();
+                fs_err::write(standard_dir.join("ruleset.xml"), "").unwrap();
+            }
+        }
+
+        apply(&root, &packages).unwrap();
+
+        let got = fs_err::read_to_string(phpcs_dir.join("CodeSniffer.conf")).unwrap();
+        let want = fs_err::read_to_string(dir.join("expected/CodeSniffer.conf")).unwrap();
+        assert_eq!(got, want);
     }
 }
