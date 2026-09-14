@@ -157,6 +157,7 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
 
     let status = validate::run(&ValidateArgs {
         file: Some(composer_json_path.clone()),
+        project_dir: PathBuf::from("."),
         no_check_all: false,
         check_lock: false,
         no_check_lock: false,

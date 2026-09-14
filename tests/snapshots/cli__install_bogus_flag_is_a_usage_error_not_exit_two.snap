@@ -1,0 +1,14 @@
+---
+source: tests/cli.rs
+expression: snapshot
+---
+success: false
+exit_code: 1
+----- stdout -----
+
+----- stderr -----
+error: unexpected argument '--bogus-flag' found
+
+Usage: viv install [OPTIONS]
+
+For more information, try '--help'.

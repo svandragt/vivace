@@ -60,10 +60,14 @@ viv's exit codes, defined in `src/main.rs`:
 - `0` — success.
 - `1` — a command failed (an `anyhow::Error` bubbled up from the command,
   or an `outdated`/`audit` check that isn't a lock mismatch or vulnerable
-  package).
+  package), or the command line itself was invalid: a bad flag, a missing
+  required argument, an unknown subcommand (`cli_error`).
 - `2` — the dependency resolver couldn't find a solution
   (`resolver_error`).
 
+`1` covers both a command that failed and a command that was never
+recognised as valid; `2` is reserved for the resolver alone, so a script can
+tell "no solution exists" from "you typed the command wrong" (#236).
 `outdated --strict`-style checks that report "something out of date" use
 `1` rather than a dedicated code; treat any non-zero exit as failure unless
 a command's own docs say otherwise.

@@ -53,8 +53,9 @@ pub struct XArgs {
 pub struct RunArgs {
     /// Script name from the root `composer.json`'s `scripts` section; omit
     /// with `--list`.
+    #[arg(required_unless_present = "list")]
     pub script: Option<String>,
-    /// List every script declared in `scripts`, printing nothing else.
+    /// List every script declared in `scripts`.
     #[arg(long)]
     pub list: bool,
     /// Project directory holding `composer.json`.
@@ -186,11 +187,15 @@ pub fn run_run(args: &RunArgs) -> Result<()> {
     let composer_json_value: Value =
         serde_json::from_slice(&composer_json).context("parsing composer.json")?;
 
-    if args.list || args.script.is_none() {
+    if args.list {
         list_scripts(&composer_json_value);
         return Ok(());
     }
-    let script = args.script.as_deref().expect("checked above");
+    // clap's `required_unless_present = "list"` on `script` guarantees this.
+    let script = args
+        .script
+        .as_deref()
+        .expect("script required without --list");
 
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
     let mut runner = scripts::Runner::new(
@@ -319,12 +324,18 @@ fn resolve_bin(
     Ok(bin_dir.join(chosen))
 }
 
+/// `--list`'s own body (#235): says so explicitly when there are no scripts
+/// declared, rather than printing nothing, so an empty project can't be
+/// mistaken for a command that ran and found nothing to report.
 fn list_scripts(composer_json: &Value) {
-    let Some(scripts) = composer_json.get("scripts").and_then(Value::as_object) else {
-        return;
-    };
-    for name in scripts.keys() {
-        out(name);
+    let scripts = composer_json.get("scripts").and_then(Value::as_object);
+    match scripts {
+        Some(scripts) if !scripts.is_empty() => {
+            for name in scripts.keys() {
+                out(name);
+            }
+        }
+        _ => out("No scripts declared in composer.json"),
     }
 }
 

@@ -147,7 +147,10 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => return cli_error(&err),
+    };
     init_logging(cli.verbose);
     let offline = cli.offline || network_disabled_by_env();
     match cli.command {
@@ -298,6 +301,22 @@ fn resolver_error(err: &anyhow::Error) -> ExitCode {
     }
     err_out(&format!("{err:#}"));
     ExitCode::from(1)
+}
+
+/// clap's own usage errors (a bad flag, a missing required argument, an
+/// unknown subcommand) print to stderr and exit `2` by default, which
+/// collides with `resolver_error`'s dependency-resolution code — a script
+/// couldn't tell "resolver found no solution" from "you typed the command
+/// wrong" (#236). Fold usage errors into the generic `1` instead, so `2`
+/// stays reserved for `SolverError`; `--help`/`--version` still print to
+/// stdout and exit `0`, clap's own behaviour for those.
+fn cli_error(err: &clap::Error) -> ExitCode {
+    let _ = err.print();
+    if err.use_stderr() {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr` lint.
