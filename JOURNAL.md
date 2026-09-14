@@ -1060,3 +1060,47 @@ shape you thought to build into it. `roots/bedrock` was in the corpus the
 whole time — the sweep just is not run per change, only before a release.
 Twice in one evening a test existed and proved nothing: the phpcs golden
 file nothing read, and this.
+
+## 2026-09-14, late: 0.13 folded into 0.12, and a shim that wasn't one
+
+**The migration path did not survive being used.** 0.13's four tickets moved
+into 0.12, and setting up the smallest of them turned up two bugs in the
+`composer` shim that no test covered. The shim dropped `--no-plugins`, so a
+project with an unadapted plugin refused, told the user to pass
+`--no-plugins`, and refused again when they did — the one flag a user reaches
+for *because viv told them to*. And `translate` classified each argument on
+its own, so `-d /app` classified `-d` as `Keep`, classified `/app` as
+`Unknown`, and handed the whole command to the real Composer. Only the `=`
+spelling ever ran viv.
+
+**The second one fails in the worst direction.** On a machine that still has
+Composer installed, the fallback succeeds and the output looks normal. A
+migrated CI job or Dockerfile keeps paying for Composer while everyone
+believes the migration landed. `-d /app` is what people write in a
+Dockerfile, not `-d=/app`. A drop-in replacement whose failure mode is
+"silently not replacing anything" is worse than one that errors.
+
+**A flag that was already plumbed.** `--ignore-platform-reqs` needed no new
+mechanism: `IgnorePlatform::All`/`List` existed and `platform_check()`
+honoured them, but the one construction site hard-coded `None` and no CLI
+flag could reach the rest. Dead plumbing waiting for a switch. Its
+second-order effect fixed itself too — `write_autoload` sets the generator's
+`platform_check` bool from the same call, so `autoload_real.php`'s `require`
+line was already conditional on the same decision. One call site, both files.
+
+**Static is not self-contained.** #213 wanted `FROM scratch` on the grounds
+that the binary is static musl. viv links `rustls-platform-verifier` with
+`rustls-native-certs` and no `webpki-roots`, so it reads the host CA store:
+`SSL_CERT_DIR=/nonexistent viv update` gives `No CA certificates were loaded
+from the system`. Static linking removes the libc dependency and says nothing
+about trust anchors. Settled on `gcr.io/distroless/static`. Linking
+`webpki-roots` instead would have made `FROM scratch` honest and broken
+anyone running a private Satis over an internal CA, which is this tool's
+own audience.
+
+**The refusal now answers the question it provoked.** "Pass --no-plugins, as
+Composer would" said the install matches Composer run with the same flag, not
+what the plugin would have done. It now says whether taking the remedy costs
+anything, on the same line as the remedy so the two are read together, and
+defaults to "no adapter yet" for any plugin with no record — falsely claiming
+safety is the asymmetric failure.
