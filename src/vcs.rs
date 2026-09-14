@@ -36,6 +36,7 @@ use tokio::sync::OnceCell;
 
 use crate::fetch::Conditional;
 use crate::repository::{PackageVersion, Transport};
+use crate::store::VCS_BUCKET;
 
 /// A tag or branch name mapped to the commit it currently points at
 /// (`Vcs\GitDriver`/`Vcs\GitHubDriver`'s `getTags`/`getBranches`, a
@@ -469,7 +470,7 @@ impl GitDriver {
             }
             (PathBuf::from(&path), path)
         } else {
-            let dir = cache_root.join("vcs-v0").join(slugify(url));
+            let dir = cache_root.join(VCS_BUCKET).join(slugify(url));
             sync_mirror(url, &dir)?;
             (dir, url.to_string())
         };
