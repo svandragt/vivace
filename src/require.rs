@@ -416,6 +416,9 @@ pub(crate) fn partial_update(
             no_normalize: false,
             no_plugins,
             no_progress: false,
+            no_interaction: false,
+            prefer_dist: false,
+            no_suggest: false,
         };
         install::run_after_update(&install_args, Some(&cache_dir), offline)?;
     }

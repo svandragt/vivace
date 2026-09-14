@@ -153,6 +153,25 @@ fn install_no_plugins_downgrades_the_refusal_to_a_warning() {
     viv_snapshot!(ctx, cmd);
 }
 
+/// #211: Composer's `--prefer-dist --no-interaction` idiom is CI boilerplate
+/// that already describes viv's own behaviour (dist-only, never prompts);
+/// accepting rather than rejecting it must not change what gets installed.
+#[test]
+fn install_accepts_and_ignores_composer_noop_flags() {
+    let ctx = TestContext::new();
+    copy_monolog_sources(ctx.project.path());
+    let mut plain = ctx.viv();
+    plain.args(["install", "--dry-run"]);
+    let plain_output = plain.output().expect("failed to run viv");
+
+    let mut noisy = ctx.viv();
+    noisy.args(["install", "--dry-run", "--no-interaction", "--prefer-dist"]);
+    let noisy_output = noisy.output().expect("failed to run viv");
+
+    assert_eq!(plain_output.status.code(), noisy_output.status.code());
+    assert_eq!(plain_output.stdout, noisy_output.stdout);
+}
+
 /// #23: `--offline` with nothing in the store fails fast, naming every
 /// missing package in one message rather than the first one a fetch
 /// attempt happens to reach.

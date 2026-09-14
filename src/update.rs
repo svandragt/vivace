@@ -262,6 +262,9 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
             no_normalize: false,
             no_plugins: args.no_plugins,
             no_progress: false,
+            no_interaction: false,
+            prefer_dist: false,
+            no_suggest: false,
         };
         install::run_after_update(&install_args, cache_dir, offline)?;
     }

@@ -113,6 +113,18 @@ pub struct InstallArgs {
     /// terminal (Composer has the same flag).
     #[arg(long)]
     pub no_progress: bool,
+    /// Accepted for compatibility with the CI-script idiom that pairs it
+    /// with `--prefer-dist`/`--no-progress` (#211): viv never prompts, aside
+    /// from `--adopt` on a TTY, so this is already true and only logged.
+    #[arg(short = 'n', long)]
+    pub no_interaction: bool,
+    /// Accepted for compatibility (#211): viv only ever installs dist
+    /// archives, so this is already true and only logged.
+    #[arg(long)]
+    pub prefer_dist: bool,
+    /// Accepted for compatibility (#211): viv prints no suggestions to skip.
+    #[arg(long)]
+    pub no_suggest: bool,
 }
 
 /// `viv dump-autoload` flags: same autoload-shaping knobs as `install`, minus
@@ -167,6 +179,12 @@ pub struct DumpAutoloadArgs {
     /// `install --no-plugins` (`docs/plugin-strategy.md`).
     #[arg(long)]
     pub no_plugins: bool,
+    /// Accepted for compatibility (#211): global to every Composer command,
+    /// but `dump-autoload` never prompts either way, so this is already true
+    /// and only logged. `--prefer-dist`/`--no-suggest` aren't accepted here
+    /// (`install`-only in Composer): `dump-autoload` fetches nothing.
+    #[arg(short = 'n', long)]
+    pub no_interaction: bool,
 }
 
 /// `viv cache` flags: which cache maintenance operation to run.
@@ -304,6 +322,7 @@ fn run_impl(
     if args.no_normalize {
         warn_no_normalize_is_a_noop("install");
     }
+    log_composer_noop_flags(args.no_interaction, args.prefer_dist, args.no_suggest);
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     // Parsed once (#122) and threaded through the freshness check and the
@@ -796,6 +815,9 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
     // `run`'s own comment.
     if args.no_normalize {
         warn_no_normalize_is_a_noop("dump-autoload");
+    }
+    if args.no_interaction {
+        tracing::debug!("ignoring --no-interaction, dump-autoload never prompts");
     }
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
@@ -1498,6 +1520,25 @@ fn warn_no_normalize_is_a_noop(command: &str) {
         "0.6",
         &format!("{command} no longer touches composer.json"),
     ));
+}
+
+/// `install`'s three Composer flags that are already viv's own behaviour
+/// (#211): accepted rather than rejected, so the `--prefer-dist
+/// --no-interaction --no-progress` idiom every CI guide teaches doesn't need
+/// editing to run against viv directly. Debug level, not a warning: nothing
+/// is wrong, there's just nothing left to do.
+fn log_composer_noop_flags(no_interaction: bool, prefer_dist: bool, no_suggest: bool) {
+    if no_interaction {
+        tracing::debug!(
+            "ignoring --no-interaction, viv never prompts (aside from --adopt on a TTY)"
+        );
+    }
+    if prefer_dist {
+        tracing::debug!("ignoring --prefer-dist, viv is dist-only");
+    }
+    if no_suggest {
+        tracing::debug!("ignoring --no-suggest, viv prints no suggestions");
+    }
 }
 
 /// `--adopt`'s TTY confirmation: `y`/`yes` (any case) continues, anything

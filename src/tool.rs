@@ -164,6 +164,9 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             no_normalize: false,
             no_plugins: false,
             no_progress: false,
+            no_interaction: false,
+            prefer_dist: false,
+            no_suggest: false,
         };
         install::run(&install_args, Some(&cache_dir), offline)
             .with_context(|| format!("installing {spec}"))?;

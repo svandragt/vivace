@@ -183,6 +183,14 @@ ahead of the real Composer, or symlink it as `composer` in CI: everyday
 `install`, `dump-autoload`, `normalize` and `create-project` run through
 viv; every other command falls through to your real Composer install.[^12]
 
+This is also the cheapest way to check whether a project migrates cleanly:
+alias `composer` to the shim and run your existing scripts unedited.
+
+You can also point a script straight at `viv`. The CI idiom
+`--prefer-dist --no-interaction --no-progress` already describes what viv
+does, so `viv install` and `viv dump-autoload` accept those flags and
+ignore them instead of failing.
+
 ## Plugins
 
 Composer plugins are PHP code that hooks into Composer's own process; viv
