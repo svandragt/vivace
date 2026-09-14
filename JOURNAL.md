@@ -984,3 +984,56 @@ Two issues closed having produced a test and a paragraph each.
 about a quarter. Three issues reasoned from that number before anyone
 measured the call directly. A stage counter that aggregates two stages
 is worse than no counter, because it is trusted.
+
+## 2026-09-14, evening: 0.12's plugin tickets, and two comments that were wrong
+
+**A comment caused the bug.** `phpcs.rs`'s `run_phpcs` warned and returned
+`Ok` when `php` was not on `PATH`, justified in a comment as "the same
+tolerance `src/scripts.rs` gives a missing interpreter". The analogy does
+not hold. A Composer script is user code with a documented `--no-scripts`
+opt-out, so skipping it is the user's call; a plugin adapter's post-install
+step is part of producing a correct `vendor/`, which is the thing viv
+promises. The install reported success and the failure surfaced later, in
+whatever next ran `phpcs`. Anyone with viv on the host and PHP inside devbox
+hit it every time.
+
+**The fix was to delete the dependency, not handle it.** The issue offered
+three options — fail the install, record the skipped work for a later
+install to repair, or warn louder — and all three keep a second code path
+for a failure that does not need to exist. `--config-set` exists to write
+one file, and viv already emulates `var_export` byte-exactly in
+`phpstan.rs` for `craft` and `yii2`. phpcs was the only adapter shelling
+out to `php` at all; every other plugin subprocess in `src/` is `git`. So
+the precedent was already set and phpcs was the outlier, not the pioneer.
+
+**The safety net was decorative.** `tests/fixtures/plugins/phpcs/expected/
+CodeSniffer.conf` has been in the tree since the adapter landed, and no
+test read it. The compat sweep does not cover this adapter either: it runs
+`--no-plugins` by default and no project in `compat.toml` or `hunted.md`
+uses phpcs. A fixture nothing asserts against is a file, not a test. Filed
+as #226 — one corpus project covers both that gap and the fact that
+`CodeSniffer.conf`'s format is now a second upstream `adapter-drift.yml`
+does not track.
+
+**The ticket's guess was wrong and the source was one fetch away.** #131
+speculated that `pestphp/pest-plugin` writes
+`vendor/pestphp/pest-plugin/src/Plugins.php`. It writes
+`vendor/pest-plugins.json`, and no `Plugins.php` exists anywhere in the
+package. What decided adapter-versus-inert was `getSubscribedEvents`
+returning `post-autoload-dump` — an event a plain install always fires —
+and a handler that unconditionally writes into `vendor/`. A plugin that
+only registered a command provider would have been inert.
+
+**Closing five adapters nobody asked for.** #151 recorded five skeletons
+whose plugins viv refuses: TYPO3, CakePHP, Contao, Silverstripe, Bolt.
+Closed as unneeded. Writing them would add five upstream versions to track
+in `adapter-drift.yml` for no user who is waiting on them, against a rule
+that says an adapter gets written when a project we run needs it.
+
+**The baseline, from fourteen runs.** Post-release step 3 for 0.11.0. Cold
+install is where 0.11's work landed: monolog moved from 0.070 to 0.048 of
+Composer's time, laravel from 0.155 to 0.115. The sub-10ms scenarios —
+warm, noop, monolog's update-offline — rose by at most 10.3%, inside the
+gate's 15% tolerance. At three to five milliseconds a run, that ratio moves
+on scheduler noise rather than on work viv does, which is the reason the
+baseline is a median of fourteen runs and not one.
