@@ -55,10 +55,9 @@ jobs:
           VIVACE_TEST_NETWORK: "1"
 
   # macOS is a supported platform; this job blocks like the Linux one. It
-  # waits for the Linux gate so a fmt or clippy slip is paid once, on the
-  # cheaper runner.
+  # runs alongside the Linux gate: serialising them put it on the critical
+  # path and cost more wall time than the occasional fmt slip saved (#195).
   check-macos:
-    needs: check
     if: github.event_name == 'push'
     runs-on: macos-latest
     timeout-minutes: 20
@@ -112,7 +111,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   bench:
-    needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true

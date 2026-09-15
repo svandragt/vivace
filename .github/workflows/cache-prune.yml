@@ -1,0 +1,46 @@
+name: Cache prune
+
+# GitHub evicts Actions caches only once the repo passes 10 GB, and then
+# from every job at once, so restores go partly cold. rust-cache keys carry
+# the Cargo.lock hash and devbox keys carry the devbox.lock hash, so every
+# lock bump leaves the previous generation behind for seven days. This keeps
+# the newest entry per key family on main and drops everything saved under
+# a tag ref (#195).
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh cache list --limit 500 --json id,key,ref,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[] | [.id, .ref, .key] | @tsv' > caches.tsv
+          : > delete.txt
+          declare -A seen
+          while IFS=$'\t' read -r id ref key; do
+            if [ "$ref" != "refs/heads/main" ]; then
+              echo "$id" >> delete.txt; continue
+            fi
+            # Key family: the key with its trailing hash(es) removed.
+            family=$(sed -E 's/(-[0-9a-f]{8,})+$//' <<<"$key")
+            if [ -n "${seen[$family]+x}" ]; then
+              echo "$id" >> delete.txt
+            else
+              seen[$family]=1
+            fi
+          done < caches.tsv
+          echo "$(wc -l < caches.tsv) entries, deleting $(wc -l < delete.txt)"
+          xargs -r -n1 gh cache delete < delete.txt
+          gh api "repos/$GH_REPO/actions/cache/usage" \
+            --jq '"now \(.active_caches_count) entries, \(.active_caches_size_in_bytes/1e9|.*100|floor/100) GB"'

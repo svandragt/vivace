@@ -20,10 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Caches are scoped per ref, so a tag run would save a 650 MB copy
+      # of main's devbox store under its own ref every release (#195).
+      # Tags can still read main's entries; only the save is skipped.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: compat
+          save-if: ${{ github.ref_type != 'tag' }}
       - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
         with:
-          enable-cache: true
+          enable-cache: ${{ github.ref_type != 'tag' }}
       - run: make compat
         env:
           COMPAT_SEED: ${{ github.event_name == 'schedule' && github.run_id || inputs.seed }}
