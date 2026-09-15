@@ -428,3 +428,81 @@ viv 0.11.0, composer 2.10.2, riff 0.0.7, flags `--no-plugins --no-scripts`, 3 ru
 | craftcms/craft | 118 | viv | 0.501 | 0.129 | 0.007 | 0.348 |
 
 - craftcms/craft/riff: run.sh: riff update-warm skipped, known mirror-mode failure (304 race, see bench/results/README.md)
+
+## 2026-09-15T06:53:33Z
+
+viv 0.12.0, composer 2.10.2, riff 0.0.7, vivacity 0.6.0, flags `--no-plugins --no-scripts`, 3 runs each, from a local mirror.
+
+| Project | Packages | Tool | Cold | Warm | No-op | Update-warm |
+|---|---|---|---|---|---|---|
+
+## 2026-09-15T06:54:06Z
+
+viv 0.12.0, composer 2.10.2, riff 0.0.7, vivacity 0.6.0, flags `--no-plugins --no-scripts`, 3 runs each, from a local mirror.
+
+| Project | Packages | Tool | Cold | Warm | No-op | Update-warm |
+|---|---|---|---|---|---|---|
+| laravel/laravel | 109 | composer | 1.581 | 1.211 | 0.556 | 0.348 |
+| laravel/laravel | 109 | riff | 0.504 | 0.406 | 0.340 | n/a |
+| laravel/laravel | 109 | viv | 0.297 | 0.072 | 0.007 | 0.231 |
+| laravel/laravel | 109 | vivacity | 0.582 | 0.164 | 0.072 | 0.345 |
+
+- laravel/laravel/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| symfony/demo | 153 | composer | 1.538 | 1.014 | 0.184 | 0.550 |
+| symfony/demo | 153 | riff | 0.347 | 0.278 | 0.056 | n/a |
+| symfony/demo | 153 | viv | 0.199 | 0.048 | 0.008 | 0.385 |
+| symfony/demo | 153 | vivacity | 0.566 | 0.154 | 0.040 | 0.611 |
+
+- symfony/demo/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| drupal/recommended-project | 68 | composer | 1.972 | 2.105 | 0.114 | 0.297 |
+| drupal/recommended-project | 68 | riff | 0.814 | 0.832 | 0.019 | n/a |
+| drupal/recommended-project | 68 | viv | 0.694 | 0.308 | 0.006 | 0.179 |
+| drupal/recommended-project | 68 | vivacity | n/a | n/a | n/a | n/a |
+
+- drupal/recommended-project/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+- drupal/recommended-project/vivacity: run.sh: failed: vivacity
+| roots/bedrock | 73 | composer | 1.496 | 1.988 | 0.262 | 0.350 |
+| roots/bedrock | 73 | riff | 0.555 | 0.471 | 0.111 | n/a |
+| roots/bedrock | 73 | viv | 0.431 | 0.062 | 0.006 | 0.165 |
+| roots/bedrock | 73 | vivacity | n/a | n/a | n/a | n/a |
+
+- roots/bedrock/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+- roots/bedrock/vivacity: run.sh: failed: vivacity
+| composer/composer | 36 | composer | 0.641 | 0.513 | 0.100 | 0.182 |
+| composer/composer | 36 | riff | 0.103 | 0.048 | 0.010 | n/a |
+| composer/composer | 36 | viv | 0.058 | 0.012 | 0.004 | 0.062 |
+| composer/composer | 36 | vivacity | 0.112 | 0.021 | 0.012 | 0.098 |
+
+- composer/composer/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| phpunit/phpunit | 26 | composer | 0.686 | 0.566 | 0.207 | 0.108 |
+| phpunit/phpunit | 26 | riff | 7.397 | 7.342 | 0.066 | n/a |
+| phpunit/phpunit | 26 | viv | 0.073 | 0.049 | 0.004 | 0.027 |
+| phpunit/phpunit | 26 | vivacity | 0.144 | 0.054 | 0.045 | 0.048 |
+
+- phpunit/phpunit/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| slimphp/Slim-Skeleton | 57 | composer | 0.941 | 0.759 | 0.141 | 0.144 |
+| slimphp/Slim-Skeleton | 57 | riff | 0.251 | 0.162 | 0.051 | n/a |
+| slimphp/Slim-Skeleton | 57 | viv | 0.148 | 0.040 | 0.005 | 0.082 |
+| slimphp/Slim-Skeleton | 57 | vivacity | 0.261 | 0.091 | 0.019 | 0.094 |
+
+- slimphp/Slim-Skeleton/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| yiisoft/yii2-app-basic | 93 | composer | 1.223 | 0.865 | 0.191 | 0.462 |
+| yiisoft/yii2-app-basic | 93 | riff | n/a | n/a | n/a | n/a |
+| yiisoft/yii2-app-basic | 93 | viv | 0.224 | 0.039 | 0.006 | 0.298 |
+| yiisoft/yii2-app-basic | 93 | vivacity | n/a | n/a | n/a | n/a |
+
+- yiisoft/yii2-app-basic/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+- yiisoft/yii2-app-basic/vivacity: run.sh: failed: vivacity
+| statamic/statamic | 160 | composer | 2.388 | 1.953 | 0.844 | 0.485 |
+| statamic/statamic | 160 | riff | 0.727 | 0.628 | 0.463 | n/a |
+| statamic/statamic | 160 | viv | 0.484 | 0.119 | 0.008 | 0.369 |
+| statamic/statamic | 160 | vivacity | 0.907 | 0.272 | 0.122 | 0.509 |
+
+- statamic/statamic/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+| craftcms/craft | 118 | composer | 1.940 | 1.509 | 0.738 | 0.533 |
+| craftcms/craft | 118 | riff | 0.875 | 0.546 | 0.324 | n/a |
+| craftcms/craft | 118 | viv | 0.477 | 0.125 | 0.008 | 0.346 |
+| craftcms/craft | 118 | vivacity | n/a | n/a | n/a | n/a |
+
+- craftcms/craft/riff: skipped, known failure at riff 0.0.7 (bench/skips.txt)
+- craftcms/craft/vivacity: run.sh: failed: vivacity

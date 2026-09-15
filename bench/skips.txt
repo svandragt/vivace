@@ -19,3 +19,7 @@ riff 0.0.7 statamic/statamic update-warm
 riff 0.0.7 symfony/demo update-warm
 riff 0.0.7 composer/composer update-warm
 riff 0.0.7 craftcms/craft update-warm
+vivacity 0.6.0 roots/bedrock install
+vivacity 0.6.0 drupal/recommended-project install
+vivacity 0.6.0 yiisoft/yii2-app-basic install
+vivacity 0.6.0 craftcms/craft install
