@@ -1241,3 +1241,30 @@ One thing found while writing it: the draft told binstall readers to run
 tarball already ships `composer` beside `viv` and binstall's `bin-dir`
 template installs every binary in it, so the shim arrives with the first
 command; the README now says so instead.
+
+## 2026-09-15, afternoon: CI back on the table (#195)
+
+The README commit went red twice on tests it could not have touched, which
+turned the observation window back into work. Three findings, three commits.
+
+**What mints the cache.** Not rust-cache: `compat.yml` runs on tags and
+its devbox action saved the same 648 MB nix store under four tag refs,
+2.6 GB of one file, because GitHub scopes caches per ref and the action has
+no save-if. And every Cargo.lock or devbox.lock bump leaves the previous
+generation of every job's entry for seven days. Both cache actions in
+`compat.yml` now skip saving on a tag, and `cache-prune.yml` runs daily,
+keeping the newest entry per key family on main. First run: 34 entries and
+10.76 GB to 14 and 3.8 GB.
+
+**Duration.** `check-macos` sat behind `needs: check`, so the critical path
+was 2.2 plus 4.9 min. Both it and `bench` now run alongside. 7.8 min median
+to 4.9 min on the first green run, against a 4 min target; the rest is
+devbox install on macOS, 159 s of a 295 s job.
+
+**Red.** Three runs in a row failed with 504 from `api.github.com` zipball
+downloads, Linux runners only, while the macOS job passed the same tests
+and the URLs answered 200 from here. viv and the Composer the tests shell
+out to were both fetching unauthenticated. `COMPOSER_AUTH` with the
+workflow token, set once at workflow level, is read by both; viv already
+maps a `github.com` token onto `api.github.com`. `NEXTEST_RETRIES: 2`
+covers a single blip. The next run was green.
