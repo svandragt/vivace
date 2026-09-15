@@ -1137,3 +1137,91 @@ existed in the tree.
 are all off the path it measures. Restamping the version onto numbers that
 were not re-taken would be the kind of small lie that is impossible to catch
 later. The table says which version produced it and why that still holds.
+
+## 2026-09-15: 0.13.0
+
+**Twenty-two issues in a day, and the theme held.** The milestone had six:
+every place viv reported success for work it did not do. `rm` on a package
+that was never required printed "Writing lock file" and exited 0. `run` with
+no script name listed scripts instead of erroring, and on a project with no
+scripts printed nothing at all. `cache clean` refused viv's own metadata
+bucket because the known-bucket list did not know it, and `cache prune`
+deleted that bucket every run for the same reason. `validate` passed a
+manifest Composer rejects. The shim fell back to real Composer without a
+word. Sixteen more shipped from the milestones behind it because the lanes
+were already open: the apcu prefix, `bump-after-update`, the problem-message
+branches, `--ignore-platform-reqs` on `update`/`require`/`remove`, the bench
+harness, Dependabot, the action pins.
+
+**Four of the tickets were wrong in a way only fixing them showed.** #240
+said `cache clean` exited 0 on refusal; it exited 1, and a snapshot already
+asserted it — the bucket half of the ticket was right, the exit-code half
+was written from the theme rather than from `$?`. #239 said `validate` and
+`install` shared one `STALE_LOCK_WARNING` constant; `validate` had an inline
+literal with different wording, so the trap the ticket warned about did not
+exist, though the fix — a named constant with its stream and constraint in a
+comment — was still the right one. #220 proposed three `skips.txt` entries;
+the exit-code switch tripped on *any* footnote, known skips included, so the
+run was already failing on seven existing entries and three more would have
+changed nothing. #221 called widening `record_p2`'s early return "the smaller
+change"; it would have added a network round trip to every run for every
+package without a dev branch, against the mirror's whole point. Every one
+was caught by a brief that said *reproduce the claim first* and *verify both
+directions*. The tickets were filed by the same author the same day. A strong
+theme makes the next instance easier to see and easier to see wrongly.
+
+**The licence was wrong from the first drupal release.** `Cargo.toml` said
+MIT. `src/plugins/drupal_scaffold.rs` says in its own module doc that it is
+ported, class by class, from `drupal/core-composer-scaffold`, which is
+GPL-2.0-or-later; three of its error strings are near-verbatim translations
+of upstream text. Both WordPress core installers are GPL too. `cargo deny`
+checks dependency licences, not the provenance of hand-written ports, so
+every gate was green. It was found by reading a competitor's `NOTICE.md`:
+they had made the same port, removed it in their 0.6.0 for exactly this
+reason, yanked three releases, and written down why. viv is GPL-3.0-or-later
+from this release; the ports' `or later` is what permits it. `NOTICE.md`
+records every adapter's upstream and licence, and `adapter-drift.yml` now
+fails on a mismatch or a missing row, so the next port cannot ship without
+the question being asked. `cargo deny` then rejected `GPL-3.0` as an
+unmatched allowance: it compares the exact SPDX expression.
+
+**The competitor is real, and the name is coming back.** `Adelagric/vivacity`
+started four days after this repo, under this repo's name, with the same
+byte-identical promise and no shared code. On finding the clash they renamed
+and, when asked, deleted the `vivace` crates rather than yank them, since a
+yank keeps the name. It is publishable from about 23:36 UTC today. Their
+harnesses run against any binary taking Composer's arguments; two
+implementations checked against one Composer is the best outcome here.
+They are also the fourth tool in `bench/corpus.sh` now: viv is 2.0× faster
+cold and warm, 6.8× on a no-op, 1.5× on a warm update, on the six projects
+vivacity installs. It refuses the other four — WordPress, Drupal, Yii,
+Craft — because their locks name a plugin outside its list, and it does so
+even under `--no-plugins`. That last part is a bug in their help text, parked
+until the name is settled.
+
+**The speed table was re-measured this time.** 0.12.0 shipped 0.11.0's
+numbers on purpose and said so. This release's table is from a run taken
+today with all four tools from the local mirror, and it states the section
+of `corpus.md` it came from. Footnote 5 ("the range crosses 1×") retired: riff's
+worst cold ratio is now 1.2×, not 0.9×.
+
+**Sweep.** 40 rows: 34 identical, two of them under `--no-plugins` for
+symfony/flex, 0 differ, 6 skipped — three packages Composer itself cannot
+resolve — and all 10 pinned projects resolve the same lock. Then the README,
+read against it as the checklist says: three bullets in "Reasons not to use
+viv" were false. One said 20 pinned projects with two needing `--no-plugins`
+— the footnote was fixed in 0.12.0, the bullet beside it was not. One said
+riff leads cold installs on two of ten; today's run has viv ahead on all
+nine where riff ran, so the bullet is gone rather than reworded. One listed
+two unported error messages, both of which this release ports. Third release
+running where the sweep was clean and the prose was not; the checklist's
+"read it after, not before" earns its place each time.
+
+**Memory, briefly.** Four concurrent `make check` runs across worktrees drove
+the machine to 25 GB and 5 GB of swap the day before. `test-threads = 8` in
+`nextest.toml` was the first commit of the day, before any lane opened, and
+was then measured under four lanes: anonymous memory 1.5–3.4 GB, swap growth
+875 MB over half an hour. The `memory.current` figure of 23.8 GB was page
+cache. `memory.peak` cannot be reset without root, so on a machine that has
+already blown past a ceiling once it reports that incident forever — sample
+`memory.current` on a timer and split `memory.stat` instead.

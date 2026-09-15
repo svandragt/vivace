@@ -5,10 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.13.0] - 2026-09-15
 ### Changed
 - **viv is now licensed GPL-3.0-or-later, not MIT.** Three native adapters are ports of GPL-2.0-or-later plugins — `drupal/core-composer-scaffold` and both WordPress core installers — so the binary is a derivative work of them and MIT was never a licence it could be distributed under. The `or later` term in those upstreams is what permits GPL-3.0. Every adapter is kept; the new `NOTICE.md` records each port, its upstream and its licence, and `adapter-drift.yml` now checks the licence as well as the version so an incompatible port fails rather than ships ([#245](https://github.com/svandragt/vivace/issues/245))
+- Usage errors — an unrecognised flag, an unknown subcommand, a missing required argument — now exit 1; exit 2 is reserved for the dependency resolver failing to find a solution. A script that greps for exit 2 to detect a resolver failure previously matched a typo in the command line too ([#236](https://github.com/svandragt/vivace/issues/236))
+
+- The README speed table is re-measured for this release — 10 corpus projects, four tools including vivacity, from the local mirror — rather than carried forward from 0.11.0 as 0.12.0's was ([#248](https://github.com/svandragt/vivace/issues/248))
+
 ### Added
 - `--ignore-platform-reqs` and `--ignore-platform-req=<name>` on `update`, `require` and `remove`, and the `composer` shim passes both through instead of dropping them, same as `install`/`dump-autoload` already did. On all three, the flag only affects the chained install's autoload write (whether `vendor/composer/platform_check.php` gets written); the solve itself still only offers versions the detected platform satisfies, since `--ignore-platform-req(s)` has no port in `src/solver/solver.rs` yet ([#231](https://github.com/svandragt/vivace/issues/231))
+- `config.bump-after-update`: after `update` resolves, `composer.json`'s requirements are rewritten up to the versions just locked, as Composer does, so the lock's `content-hash` describes the same file Composer's would rather than diverging on every project that sets it ([#205](https://github.com/svandragt/vivace/issues/205))
+- `viv validate` accepts `-d`/`--project-dir`, like every other project-scoped command, so a script that passes it project-wide no longer needs a special case for `validate` ([#234](https://github.com/svandragt/vivace/issues/234))
+- Problem messages: a package that exists but conflicts with the root requirement now gets Composer's own wording — `found acme/a[2.0.0] but it conflicts with your root composer.json require (^1.0)` — instead of the generic "could not be found in any version, there may be a typo". The `minimum-stability` branch is not ported: those versions are filtered a stage earlier, where the reason is not recorded ([#152](https://github.com/svandragt/vivace/issues/152))
+- The bench harness gains vivacity, another Rust reimplementation of Composer and the closest comparison viv has, as a fourth tool measured alongside Composer and riff; the first corpus run records its four known plugin refusals so a newer vivacity is retried automatically instead of the run silently going stale
+- Dependabot opens pull requests for `github-actions` and `cargo` updates, auto-merging patch and minor bumps; CI's own action pins (`actions/checkout`, `download-artifact`, `github-script`, `taiki-e/install-action`) caught up several majors behind ([#192](https://github.com/svandragt/vivace/issues/192), [#232](https://github.com/svandragt/vivace/issues/232))
+
+### Fixed
+- `viv rm` for a package that isn't required now names it instead of silently succeeding, and — unlike a normal removal — leaves `composer.json` untouched rather than rewriting it for nothing; a deliberate divergence from Composer, which rewrites the file even on a no-op ([#241](https://github.com/svandragt/vivace/issues/241))
+- stderr diagnostics that told the user to run `composer install` or `composer update` now say `viv install` and `viv update` ([#239](https://github.com/svandragt/vivace/issues/239))
+- The `composer` shim names the argument it did not recognise before falling back to real Composer, instead of silently running Composer and leaving a migrated CI job looking like it used viv when it didn't; `VIV_SHIM_STRICT=1` makes that fallback a hard error ([#230](https://github.com/svandragt/vivace/issues/230))
+- `dump-autoload --apcu-autoloader` reuses the prefix already written in `vendor/`'s autoloader instead of writing a fresh random one on every run, so `vendor/` is reproducible and a deploy no longer orphans the APCu cache ([#237](https://github.com/svandragt/vivace/issues/237))
+- A version blocked by a security advisory is reported as blocked, naming `--no-blocking`, instead of "could not be found in any version, there may be a typo" ([#238](https://github.com/svandragt/vivace/issues/238))
+- `viv validate` reports the same publish errors Composer does, such as a missing `description`, and exits 2, instead of exiting 0 on a manifest Composer would reject for publishing ([#233](https://github.com/svandragt/vivace/issues/233))
+- `viv run` with no script name errors naming the missing argument instead of listing scripts, and on a project with no `scripts` section no longer prints nothing and exits 0; `viv run --list` on such a project says so ([#235](https://github.com/svandragt/vivace/issues/235))
+- `viv cache clean` no longer refuses a cache holding only viv's own metadata, and `viv cache prune` no longer deletes the repository-metadata and git-mirror buckets on every run — the bucket list existed twice and knew neither. One list now, and the metadata bucket is `repo-v0/` like every other; an existing `repo/` is pruned as stale, costing one metadata refetch ([#240](https://github.com/svandragt/vivace/issues/240))
+- A refused-plugin row in the compat report says `identical` only alongside the flags that earned it, so the word can no longer be quoted out of context as proof of a plugin-enabled run ([#225](https://github.com/svandragt/vivace/issues/225))
+- The `roots/wordpress-core-installer` and `symfony/runtime` adapters move their pinned upstream to v4.0.0 and v8.1.0 after the weekly drift check flagged them; the ported surface is byte-identical across those ranges, so no fixture changed ([#162](https://github.com/svandragt/vivace/issues/162))
+- A store test that failed under `cargo test --lib` raced a sibling test over a process-wide environment variable; a lock now serialises the two. Separately, nextest caps at 8 threads, so several concurrent `make check` runs no longer exhaust memory ([#217](https://github.com/svandragt/vivace/issues/217), [#219](https://github.com/svandragt/vivace/issues/219))
+- The bench corpus run no longer exits non-zero for known third-party (riff) failures with viv clean, and a mirror recorded before a fix now self-heals instead of needing to be cleared by hand ([#220](https://github.com/svandragt/vivace/issues/220), [#221](https://github.com/svandragt/vivace/issues/221))
 
 ## [0.12.0] - 2026-09-14
 ### Added
@@ -254,3 +279,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [0.9.0]: https://github.com/svandragt/vivace/releases/tag/v0.9.0
 [0.10.0]: https://github.com/svandragt/vivace/releases/tag/v0.10.0
 [0.11.0]: https://github.com/svandragt/vivace/releases/tag/v0.11.0
+[0.12.0]: https://github.com/svandragt/vivace/releases/tag/v0.12.0
+[0.13.0]: https://github.com/svandragt/vivace/releases/tag/v0.13.0

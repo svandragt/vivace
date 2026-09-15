@@ -2,7 +2,7 @@
 
 `viv` installs PHP dependencies from a Composer `composer.lock` file and
 writes a `vendor/` directory that matches what Composer would write, byte
-for byte. It's a proof of concept at v0.12.0, tested in CI on Linux and
+for byte. It's a proof of concept at v0.13.0, tested in CI on Linux and
 macOS, and not yet at 1.0.
 
 ## Try it
@@ -15,7 +15,7 @@ macOS x86_64 and aarch64), or install it another way:
 ```sh
 cargo binstall --git https://github.com/svandragt/vivace vivace
 # or build from source:
-cargo install --git https://github.com/svandragt/vivace --tag v0.12.0 vivace
+cargo install --git https://github.com/svandragt/vivace --tag v0.13.0 vivace
 ```
 
 Both commands also upgrade an existing install; add `--force` to
@@ -106,7 +106,7 @@ written outside the project and the cache.
 viv's contract is that its output matches Composer's byte for byte. Before
 every release, a compatibility sweep installs a mix of pinned popular
 projects and a random sample of Packagist packages with both Composer and
-viv, then compares the results.[^2] The v0.12.0 sweep: 44 rows identical, 0 differ, 6
+viv, then compares the results.[^2] The v0.13.0 sweep: 34 rows identical, 0 differ, 6
 skipped, and all 10 pinned projects resolve the same `composer.lock` as
 Composer as well as installing the same `vendor/`.[^3]
 
@@ -116,26 +116,29 @@ below.
 
 ## Speed
 
-10 projects from viv's compatibility corpus, 2026-09-14, from a local
+10 projects from viv's compatibility corpus, 2026-09-15, from a local
 mirror so no network is measured, AMD Ryzen 9 7900X3D (24 threads) on
-ext4, viv 0.11.0, composer 2.10.2, riff 0.0.7,
-`--no-plugins --no-scripts`, three runs each. Each cell is the geometric
-mean of how many times faster viv is, with the range across projects;
-below 1× viv is slower. The numbers are from 0.11.0 and were not re-measured
-for 0.12.0: the corpus runs `--no-plugins --no-scripts`, and nothing 0.12.0
-changed sits on the path that measures.
-Per-project numbers are in
-[`bench/results/corpus.md`](bench/results/corpus.md). riff's column
-measures the same job as viv and Composer (checksums, `platform_check.php`,
-proxies, `installed.*`); the cosmetic differences are listed in
-[`bench/results/README.md`](bench/results/README.md).
+ext4, viv 0.13.0, composer 2.10.2, riff 0.0.7, vivacity 0.6.0,
+`--no-plugins --no-scripts` on every tool and `--no-fallback` on vivacity
+so a run it hands to Composer can never count as its own, three runs each.
+Each cell is the geometric mean of how many times faster viv is, with the
+range across projects; below 1× viv is slower. Per-project numbers are in
+[`bench/results/corpus.md`](bench/results/corpus.md), section
+`2026-09-15T06:54:06Z`. riff's column measures the same job as viv and
+Composer (checksums, `platform_check.php`, proxies, `installed.*`); the
+cosmetic differences are listed in
+[`bench/results/README.md`](bench/results/README.md). vivacity is the
+closest comparison: it makes the same byte-identical promise. Its column
+covers the 6 projects it installs; on the other 4 it exits rather than
+install a lock naming a plugin outside its list, even with
+`--no-plugins`.[^7]
 
-| Scenario | viv vs Composer | viv vs riff |
-|---|---|---|
-| Cold | 6.1× (2.7 to 10.9) | 2.0× (0.9 to 127.2)[^5][^6] |
-| Warm | 19.4× (5.8 to 104.0) | 5.5× (2.1 to 147.4)[^6] |
-| No-op | 43.3× (19.3 to 109.6) | 12.6× (2.5 to 52.1) |
-| Update-warm | 1.8× (1.4 to 4.2) | n/a |
+| Scenario | viv vs Composer | viv vs riff | viv vs vivacity |
+|---|---|---|---|
+| Cold | 5.6× (2.8 to 11.1) | 2.5× (1.2 to 101.3)[^6] | 2.0× (1.8 to 2.8) |
+| Warm | 17.8× (6.8 to 42.8) | 6.9× (2.7 to 149.8)[^6] | 2.0× (1.1 to 3.2) |
+| No-op | 42.0× (19.0 to 105.5) | 13.9× (2.5 to 57.9) | 6.8× (3.0 to 15.2) |
+| Update-warm | 1.9× (1.3 to 4.0) | n/a | 1.5× (1.1 to 1.8) |
 
 A warm update still revalidates every package's metadata with the registry,
 one conditional request each, even when nothing changed. `--metadata-ttl
@@ -224,7 +227,7 @@ Two things differ from the `composer:2` stage it replaces:
   the shim doesn't understand hard-errors there instead of silently running
   Composer, the way it would on a machine that still has Composer installed.
 
-Tags are `:0.12`, `:0.12.0` and `:0`. There is no `:latest`: a moving tag
+Tags are `:0.13`, `:0.13.0` and `:0`. There is no `:latest`: a moving tag
 that silently resolves to nothing breaks scripted installs, which is the
 mistake that kept `releases/latest` returning 404 for ten releases.
 
@@ -288,8 +291,8 @@ without touching the network.[^14]
 - **Some Composer plugins stop the install.** symfony/flex and any plugin
   without a native adapter make viv exit with an error naming the plugin.
   `--no-plugins` installs as Composer would without them, but the plugin's
-  work is not done. Of the 20 pinned test projects, 2 are in this position:
-  `symfony/demo` and `roots/bedrock`.
+  work is not done. Of the 10 pinned test projects, 1 is in this position:
+  `symfony/demo`, for symfony/flex, which viv refuses by design.
 - **The shim needs a real Composer for everything else.** It maps
   `install`, `dump-autoload`, `normalize`, `create-project`, `update`,
   `require` and `remove` to viv; `search` and the rest go to the Composer on
@@ -299,15 +302,12 @@ without touching the network.[^14]
   project on the machine. If you patch vendor files by hand, install with
   `--link-mode copy`, or `--link-mode clone` for writable files sharing the
   store's disk space where the filesystem supports it.
-- **Cold installs are not always the fastest.** In the corpus above riff
-  leads cold installs on two of ten projects, drupal/recommended-project by
-  0.6 s and slimphp/Slim-Skeleton by 50 ms; the cause is not established.
-  On the other eight, and on every warm install, no-op and update, viv is
-  ahead.
-- **Two error messages still differ.** Composer's "found X but it conflicts
-  with your root require" wording is not ported yet, and when a version is
-  skipped for a security advisory and the solve then fails, Composer's
-  message says so and viv's does not.
+- **Two `update` gaps.** `--ignore-platform-reqs` on `update`, `require`
+  and `remove` affects the autoload write, not the solve, so a package
+  pinned to a PHP this interpreter lacks still fails to resolve
+  ([#242](https://github.com/svandragt/vivace/issues/242)). And a version
+  filtered out by `minimum-stability` is still reported as not found rather
+  than as filtered; Composer names the cause.
 
 ## Scope
 
@@ -370,10 +370,10 @@ keep their original copyright notices; MIT permits their use here.[^16]
 
 [^1]: viv relinks every package from its own content-addressed store into `vendor/`, using hardlinks so files aren't copied or re-extracted.
 [^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
-[^3]: The skips are packages Composer itself refuses to resolve — security advisories blocking every matching version, a `dev-master`-only package under the default `minimum-stability`, one unmet platform requirement — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.12.0.md`](compat/results/v0.12.0.md).
+[^3]: The skips are packages Composer itself refuses to resolve — security advisories blocking every matching version, a `dev-master`-only package under the default `minimum-stability`, a dependency whose only versions require a framework the root cannot take — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.13.0.md`](compat/results/v0.13.0.md).
 [^4]: Of viv's 10 pinned compatibility projects, the one that needs `--no-plugins` is `symfony/demo`, for `symfony/flex`. Flex does its work in `composer require`, so installing from a committed lock loses nothing; see [`docs/plugin-strategy.md`](docs/plugin-strategy.md).
-[^5]: The ratio's range crosses 1×: within noise on some projects.
-[^6]: riff's phpunit/phpunit cold and warm times (9.2 s and 7.2 s) are an outlier against its other rows in this corpus; kept in the range, not dropped; see [`bench/results/corpus.md`](bench/results/corpus.md).
+[^6]: riff's phpunit/phpunit cold and warm times (7.4 s and 7.3 s) are an outlier against its other rows in this corpus; kept in the range, not dropped; see [`bench/results/corpus.md`](bench/results/corpus.md).
+[^7]: roots/bedrock, drupal/recommended-project, yiisoft/yii2-app-basic and craftcms/craft, recorded in [`bench/skips.txt`](bench/skips.txt) against vivacity 0.6.0 so a newer release is retried. A refusal is an `n/a` cell, never a slow one.
 [^10]: `install` runs the root's lifecycle scripts (`pre-install-cmd`, `post-autoload-dump`, `post-install-cmd`) as Composer does.
 [^11]: Normalisation follows `ergebnis/composer-normalize`'s rules, so a project already using that plugin sees no change.
 [^12]: The shim maps `install`, `dump-autoload`, `normalize`, `create-project`, `update`, `require` and `remove` with their supported flags (`update`'s partial-update package arguments and `-w`/`-W` included) to `viv`; everything else, `search`, an unrecognised flag, it hands through to the real Composer binary unchanged. Point `VIV_COMPOSER_PATH` at the real binary if it isn't first on `PATH`. The shim only has something to hand through to if a real Composer is on `PATH` in the first place: if there isn't one, those commands fail rather than silently falling back to viv.
