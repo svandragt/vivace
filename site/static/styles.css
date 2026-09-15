@@ -1,0 +1,132 @@
+/* Trimmed from https://vandragt.com/themes/2026/styles/styles.css:
+   colour tokens (light/dark), body/code fonts. Everything else is
+   written for this site's own three pages. */
+
+@font-face {
+    font-family: 'Public Sans';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('fonts/public-sans-400-latin.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: 'Public Sans';
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url('fonts/public-sans-600-latin.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: 'Geist Mono';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('fonts/geist-mono-400-latin.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: 'Geist Mono';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('fonts/geist-mono-500-latin.woff2') format('woff2');
+}
+
+:root {
+    --paper:        oklch(98% 0.006 70);
+    --paper-raised: oklch(95% 0.010 70);
+    --ink:          oklch(22% 0.02 50);
+    --ink-soft:     oklch(50% 0.025 55);
+    --rule:         oklch(88% 0.012 70);
+    --accent-link:  oklch(46% 0.140 60);
+    --accent-hover: oklch(38% 0.140 58);
+
+    --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --font-body: "Public Sans", "Source Sans 3", system-ui, sans-serif;
+    --leading: 1.65;
+    --measure: 65ch;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --paper:        oklch(20% 0.012 60);
+        --paper-raised: oklch(25% 0.014 60);
+        --ink:          oklch(92% 0.012 70);
+        --ink-soft:     oklch(75% 0.020 65);
+        --rule:         oklch(32% 0.015 60);
+        --accent-link:  oklch(82% 0.130 72);
+        --accent-hover: oklch(88% 0.115 75);
+    }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+    font: 400 1.0625rem/var(--leading) var(--font-body);
+    color: var(--ink);
+    background: var(--paper);
+    -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent-link); }
+a:hover, a:focus-visible { color: var(--accent-hover); }
+
+h1, h2, h3 {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+}
+
+code, pre {
+    font-family: var(--font-mono);
+    background: var(--paper-raised);
+    border-radius: 3px;
+}
+
+code { padding: 0.15em 0.35em; }
+pre { padding: 1rem; overflow-x: auto; }
+pre code { padding: 0; background: none; }
+
+.site-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 1rem 1.5rem;
+    padding: 1.5rem;
+    border-bottom: 1px solid var(--rule);
+}
+
+.site-header a { text-decoration: none; }
+
+.site-title { font-family: var(--font-mono); font-weight: 500; }
+
+nav { display: flex; flex-wrap: wrap; gap: 1rem; font-size: 0.9375rem; }
+
+main {
+    max-width: var(--measure);
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+}
+
+.table-wrap { overflow-x: auto; }
+
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 0.4em 0.8em 0.4em 0; border-bottom: 1px solid var(--rule); }
+
+.source {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    color: var(--ink-soft);
+}
+
+.site-footer {
+    text-align: center;
+    padding: 2rem 1.5rem;
+    color: var(--ink-soft);
+    font-size: 0.875rem;
+}
