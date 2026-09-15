@@ -45,8 +45,8 @@
 
     --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
     --font-body: "Public Sans", "Source Sans 3", system-ui, sans-serif;
-    --leading: 1.65;
-    --measure: 65ch;
+    --leading: 1.3;
+    --measure: 75ch;
 }
 
 @media (prefers-color-scheme: dark) {
