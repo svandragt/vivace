@@ -59,3 +59,35 @@ Ten projects attempted, none previously in this file: 8 identical, 1 differs,
 `composer.json`-mutation feature gap (`bump-after-update`), not a resolver
 disagreement — package/version selection matched in every case, including
 the differs row.
+
+## 2026-09-15, popular applications and local projects
+
+Fourteen public applications pinned to that day's head, plus eleven local projects (five personal, six client, anonymised) as `path` entries. Twelve rows got no verdict for harness reasons, tracked in #260.
+
+| Project | Commit | dev | no-dev | Notes |
+|---|---|---|---|---|
+| phpmyadmin/phpmyadmin | 9e4dc5b | identical | identical |  |
+| matomo-org/matomo | bdb35cf | skipped | skipped | git-lfs missing on the runner (#260) |
+| monicahq/monica | e08e917 | identical | identical |  |
+| koel/koel | 8befe78 | skipped | skipped | platform |
+| pixelfed/pixelfed | 472b4c4 | skipped | skipped | platform |
+| BookStackApp/BookStack | b5641aa | viv error | viv error | dist URL placeholder fetched literally (#257) |
+| snipe/snipe-it | 16362cc | identical | identical |  |
+| mautic/mautic | 1f0a58c | skipped | skipped | refused composer/package-versions-deprecated; platform |
+| kimai/kimai | c7b8f18 | skipped | skipped | refused symfony/flex; platform |
+| firefly-iii/firefly-iii | 6143c0f | identical | identical |  |
+| pterodactyl/panel | 113ea43 | identical | identical |  |
+| librenms/librenms | c0950ba | identical | identical |  |
+| humhub/humhub | ffb6701 | viv error | viv error | lock check ignores replace (#258) |
+| akaunting/akaunting | 50a0293 | skipped | differs | refused mnsami/composer-custom-directory-installer; no-dev autoload_files order and a bin mode bit (#259); dev skipped: platform |
+| local project A | local | identical | identical |  |
+| local project B | local | skipped | skipped | platform |
+| local project C | local | identical | identical |  |
+| local project D | local | identical | identical |  |
+| local project E | local | identical | identical |  |
+| local project F | local | identical | identical |  |
+| local project G | local | identical | identical |  |
+| local project H | local | identical | identical |  |
+| local project I | local | skipped | skipped | refused altis/cms-installer,altis/core,altis/dev-tools-command,altis/local-server,ion-bazan/composer-diff; composer failed: transport (ERR_DRAINING) |
+| local project J | local | skipped | skipped | composer failed: transport (ERR_DRAINING) |
+| local project K | local | identical | identical |  |
