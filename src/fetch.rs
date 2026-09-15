@@ -207,17 +207,26 @@ impl Fetcher {
                 redact(&display_url)
             );
         }
+        // #257: Composer's own `Package::getUrls`/`ComposerMirror::processUrl`
+        // placeholders (`%package%`, `%version%`, `%prettyVersion%`,
+        // `%reference%`, `%type%`), a VCS driver can leave literal in a lock's
+        // dist URL (Codeberg's Gitea API does for a tag archive). Expanded
+        // unconditionally, ahead of #98's private-installer substitution
+        // below, matching Composer's own order: its dist URL is fully
+        // resolved before any plugin's pre-download event sees it.
+        let composer_expanded = expand_dist_placeholders(&dist.url, pkg);
         // #98: the URL actually requested. Resolved fresh per download
         // (never cached on `pkg`/written back to it) so a secret substituted
         // in only ever exists in this local variable, not in `composer.lock`,
         // `installed.json`, or (via `display_url` above) a log line.
         let request_url = match &self.private_installer {
             Some(env) => {
-                let substituted =
-                    crate::plugins::private_installer::resolve(&dist.url, &pkg.version, env)
-                        .with_context(|| {
-                            format!("{}: resolving dist URL placeholders", pkg.name)
-                        })?;
+                let substituted = crate::plugins::private_installer::resolve(
+                    &composer_expanded,
+                    &pkg.version,
+                    env,
+                )
+                .with_context(|| format!("{}: resolving dist URL placeholders", pkg.name))?;
                 Url::parse(&substituted).with_context(|| {
                     format!(
                         "{}: dist URL is not a valid URL once its placeholders are resolved",
@@ -225,7 +234,12 @@ impl Fetcher {
                     )
                 })?
             }
-            None => display_url.clone(),
+            None => Url::parse(&composer_expanded).with_context(|| {
+                format!(
+                    "{}: dist URL is not a valid URL once its placeholders are resolved",
+                    pkg.name
+                )
+            })?,
         };
         let started = std::time::Instant::now();
         let (downloaded, actual_sha1) = self
@@ -674,6 +688,23 @@ async fn read_body(response: reqwest::Response, temp_dir: &Path) -> Result<(Down
     Ok((Downloaded::Bytes(buf), hex(hasher.finalize())))
 }
 
+/// Composer's `Package::getUrls`/`ComposerMirror::processUrl` dist-URL
+/// placeholders (#257): a VCS driver can write these into a lock's dist URL
+/// expecting Composer to fill them in per package/version at download time.
+/// Only the request URL is expanded — `composer.lock` and `installed.json`
+/// keep the original string verbatim (`autoload::installed::dump_package`
+/// copies `raw`'s `dist` block untouched).
+fn expand_dist_placeholders(url: &str, pkg: &Package) -> String {
+    let dist = pkg.dist.as_ref().expect("validate_dist checked");
+    let version_normalized =
+        crate::version::normalize(&pkg.version).unwrap_or_else(|_| pkg.version.clone());
+    url.replace("%package%", &pkg.name)
+        .replace("%version%", &version_normalized)
+        .replace("%prettyVersion%", &pkg.version)
+        .replace("%reference%", dist.reference.as_deref().unwrap_or(""))
+        .replace("%type%", &dist.r#type)
+}
+
 /// Resolve a `Location` header (relative or absolute) against the URL that
 /// produced it.
 fn redirect_target(current: &Url, location: &str) -> Result<Url> {
@@ -1036,6 +1067,36 @@ mod tests {
             install_dir: None,
             install_from_source: false,
         }
+    }
+
+    #[test]
+    fn expand_dist_placeholders_fills_in_composer_mirror_variables() {
+        let mut pkg = dist_package(
+            "danb/htmldiff",
+            "https://codeberg.org/api/v1/repos/danb/HtmlDiff/archive/%prettyVersion%.zip",
+        );
+        pkg.version = "v2.0.0".to_string();
+        pkg.dist.as_mut().unwrap().reference = Some("b7bc848".to_string());
+        let expanded = expand_dist_placeholders(&pkg.dist.as_ref().unwrap().url, &pkg);
+        assert_eq!(
+            expanded,
+            "https://codeberg.org/api/v1/repos/danb/HtmlDiff/archive/v2.0.0.zip"
+        );
+    }
+
+    #[test]
+    fn expand_dist_placeholders_fills_in_package_version_reference_and_type() {
+        let mut pkg = dist_package(
+            "acme/pkg",
+            "https://example.test/%package%/%version%/%reference%.%type%",
+        );
+        pkg.version = "1.2.3".to_string();
+        pkg.dist.as_mut().unwrap().reference = Some("deadbeef".to_string());
+        let expanded = expand_dist_placeholders(&pkg.dist.as_ref().unwrap().url, &pkg);
+        assert_eq!(
+            expanded,
+            "https://example.test/acme/pkg/1.2.3.0/deadbeef.zip"
+        );
     }
 
     #[tokio::test]
