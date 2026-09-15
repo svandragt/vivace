@@ -37,7 +37,7 @@ check:
 	devbox run -- env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
 bench:
-	scripts/keep-awake.sh "bench: laravel" devbox run -- bench/run.sh bench/laravel composer riff viv
+	scripts/keep-awake.sh "bench: laravel" devbox run -- bench/run.sh bench/laravel composer riff viv vivacity
 
 bench-check:
 	devbox run -- bench/run.sh tests/fixtures/monolog composer viv

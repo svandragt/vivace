@@ -1,10 +1,10 @@
 #!/usr/bin/env sh
 # Benchmark `install` from an existing composer.lock across tools.
-# Usage: bench/run.sh <project-dir> [tool...]   (tools: composer riff presto viv)
+# Usage: bench/run.sh <project-dir> [tool...]   (tools: composer riff presto viv vivacity)
 # Scenarios: cold (no cache, no vendor), warm (cache kept, no vendor), noop (vendor present);
 # plus update-warm (#55): resolve composer.json against a warm metadata cache
-# (composer/viv always, riff only when it's on PATH — no presto, it has no
-# update command); plus first-run (#202, composer/viv only): a genuine first
+# (composer/viv always, riff and vivacity only when on PATH — no presto, it
+# has no update command); plus first-run (#202, composer/viv only): a genuine first
 # install — empty store, dists fetched from BENCH_MIRROR — required rather
 # than optional, so it never reports a number with the real network's
 # variance baked in.
@@ -33,7 +33,8 @@ out=$(cd "$out" && pwd)
 xdg_cache_home="$work/xdg-cache"
 composer_home="$work/composer-home"
 riff_cache_dir="$work/riff-cache"
-mkdir -p "$xdg_cache_home" "$composer_home" "$riff_cache_dir"
+vivacity_cache_dir="$work/vivacity-cache"
+mkdir -p "$xdg_cache_home" "$composer_home" "$riff_cache_dir" "$vivacity_cache_dir"
 for auth in "$HOME/.config/composer/auth.json" "${COMPOSER_HOME:-}/auth.json"; do
   [ -n "$auth" ] && [ -f "$auth" ] && cp "$auth" "$composer_home/auth.json" && break
 done
@@ -134,6 +135,11 @@ cmd_for() {
     riff)     echo "${RIFF:-riff} install --no-interaction $flags" ;;
     presto)   echo "${PRESTO:-presto} install" ;;
     viv)      echo "${VIV:-$root/target/release/viv} install $flags" ;;
+    # --no-fallback: by default vivacity delegates an out-of-scope project to
+    # the real Composer, which is on PATH here. A delegated run would report
+    # Composer's time under vivacity's name; this makes it fail instead, as
+    # viv does, so a vivacity row is always vivacity.
+    vivacity) echo "${VIVACITY:-vivacity} install --no-fallback $flags" ;;
   esac
 }
 env_for() {
@@ -142,6 +148,11 @@ env_for() {
     riff)     echo "RIFF_CACHE_DIR=$riff_cache_dir" ;;
     presto)   echo "" ;;   # presto has no real cache; kept for symmetry
     viv)      echo "XDG_CACHE_HOME=$xdg_cache_home" ;;
+    # vivacity keeps two caches under two variables: downloads and metadata
+    # under COMPOSER_CACHE_DIR (its port of Factory::getCacheDir), the
+    # platform cache under VIVACITY_CACHE_DIR. Setting one leaves the other
+    # at ~/.cache/vivacity, and "cold" is then not cold.
+    vivacity) echo "COMPOSER_CACHE_DIR=$vivacity_cache_dir VIVACITY_CACHE_DIR=$vivacity_cache_dir" ;;
   esac
 }
 cache_for() {
@@ -150,12 +161,20 @@ cache_for() {
     riff)     echo "$riff_cache_dir" ;;
     presto)   echo "$work/presto-home" ;;   # presto has no real cache; kept for symmetry
     viv)      echo "$xdg_cache_home/vivace" ;;
+    vivacity) echo "$vivacity_cache_dir" ;;
   esac
 }
 
 failed=""
 failed_rc=0
 for tool in $tools; do
+  # vivacity, unlike the others, isn't assumed installed on every machine:
+  # skip it rather than let a missing binary fail the whole run (#220's
+  # "a competitor's absence is data, not a fault" applied before it even runs).
+  if [ "$tool" = "vivacity" ] && ! command -v "${VIVACITY:-vivacity}" >/dev/null 2>&1; then
+    echo "run.sh: vivacity not found on PATH, skipped" >&2
+    continue
+  fi
   dir="$work/$tool"; rm -rf "$dir"; mkdir -p "$dir"
   cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"
   log="$out/$tool-cold.log"; : >"$log"
@@ -222,6 +241,9 @@ update_cmd_for() {
               else
                 echo "${VIV:-$root/target/release/viv} update $flags"
               fi ;;
+    # vivacity has no legacy baseline to stay consistent with, so it takes
+    # the composer/riff shape: --no-install always, resolve time only.
+    vivacity) echo "${VIVACITY:-vivacity} update --no-install --no-fallback $flags" ;;
   esac
 }
 update_offline_cmd_for() {
@@ -240,6 +262,7 @@ for tool in $tools; do
   case $tool in
     composer|viv) ;;
     riff) command -v "${RIFF:-riff}" >/dev/null 2>&1 || continue ;;
+    vivacity) command -v "${VIVACITY:-vivacity}" >/dev/null 2>&1 || continue ;;
     *) continue ;;
   esac
   case " $failed " in

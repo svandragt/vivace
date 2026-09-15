@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Benchmark the pinned public compat corpus (compat/corpus.toml) with
-# composer, riff and viv, appending rows to bench/results/corpus.md.
+# composer, riff, viv and vivacity, appending rows to bench/results/corpus.md.
 # See bench/run.sh for the cold/warm/noop/update-warm scenarios this reuses,
 # and bench/results/README.md for the single-project (bench/laravel) numbers
 # this complements with the wider corpus #106 asked for.
@@ -16,7 +16,8 @@
 # Run inside devbox (`devbox run -- bench/corpus.sh`) so php/composer/
 # hyperfine resolve. Env: BENCH_RUNS (default 3, forwarded to bench/run.sh),
 # BENCH_CORPUS_WORK (scratch dir, default a removed-on-exit mktemp),
-# COMPAT_CORPUS (corpus.toml path), VIV/RIFF (binaries under test).
+# COMPAT_CORPUS (corpus.toml path), VIV/RIFF/VIVACITY (binaries under test;
+# vivacity, like riff, is optional — its absence is skipped, not a failure).
 #
 # #170: each project's mirror (BENCH_MIRROR=1) and, for a version-only entry,
 # its generated composer.lock live under BENCH_CACHE (default
@@ -31,6 +32,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 corpus=${COMPAT_CORPUS:-$root/compat/corpus.toml}
 viv_bin=${VIV:-$root/target/release/viv}
 riff_bin=${RIFF:-riff}
+vivacity_bin=${VIVACITY:-vivacity}
 runs=${BENCH_RUNS:-3}
 only=${1:-}
 report=${BENCH_CORPUS_REPORT:-$root/bench/results/corpus.md}
@@ -192,7 +194,7 @@ bench_project() {
 
   local skip_tools skip_update skip_offline run_tools
   skips_for "$name"
-  run_tools="composer riff viv"
+  run_tools="composer riff viv vivacity"
   for tool in $skip_tools; do
     run_tools=$(sed "s/\b$tool\b//" <<< "$run_tools")
   done
@@ -217,7 +219,7 @@ bench_project() {
     log "bench/run.sh reported a problem for $name (see footnote per affected tool)"
   fi
 
-  for tool in composer riff viv; do
+  for tool in composer riff viv vivacity; do
     local cold_json update_json cold warm noop upd
     cold_json="$out/$tool.json"
     update_json="$out/$tool-update.json"
@@ -232,7 +234,11 @@ bench_project() {
       local reason
       # `|| true`: an unmatched grep exits 1, and pipefail would otherwise
       # propagate that through `set -e` and kill the whole script (#106).
-      reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
+      # `\b` boundaries: "viv" is a substring of "vivacity", so a plain
+      # `grep -i "$tool"` would pick up vivacity's log lines while looking
+      # for viv's failure reason (and vice versa isn't possible, but the
+      # boundary costs nothing either way).
+      reason=$(grep -iE "\b$tool\b" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
       [ -n "$reason" ] || reason=$(last_line "$run_out")
       footnotes+=("$name/$tool: $(redact <<< "$reason")")
       problem=1
@@ -241,7 +247,7 @@ bench_project() {
         *" $tool "*) : ;;  # already footnoted by skips_for
         *)
           local reason
-          reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
+          reason=$(grep -iE "\b$tool\b" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
           [ -n "$reason" ] || reason=$(last_line "$run_out")
           footnotes+=("$name/$tool: $(redact <<< "$reason")")
           problem=1
@@ -265,7 +271,7 @@ bench_project() {
         *" $tool "*) : ;; # already footnoted by skips_for
         *)
           local reason
-          reason=$(grep -i "$tool" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
+          reason=$(grep -iE "\b$tool\b" <<< "$run_out" | grep -iE 'error|fail|warn' | tail -1 || true)
           [ -n "$reason" ] || reason=$(last_line "$run_out")
           footnotes+=("$name/$tool: $(redact <<< "$reason")")
           problem=1
@@ -291,6 +297,15 @@ skips_for() {
   skip_tools=""
   skip_update=""
   skip_offline=""
+  # vivacity, unlike composer/riff/viv, isn't assumed installed on every
+  # machine running this corpus: a missing binary is recorded here as a
+  # skip, same shape as a known bench/skips.txt failure, rather than left
+  # to fail bench/run.sh's own attempt (#220: a competitor's absence is
+  # data, not a fault in this repo).
+  if ! command -v "$vivacity_bin" >/dev/null 2>&1; then
+    skip_tools="$skip_tools vivacity"
+    footnotes+=("$name/vivacity: binary not found, skipped")
+  fi
   [ -f "$skips" ] || return 0
   local tool ver proj scenario tool_ver
   while read -r tool ver proj scenario; do
@@ -321,6 +336,7 @@ tool_bin() {
     composer) echo composer ;;
     riff) echo "$riff_bin" ;;
     viv) echo "$viv_bin" ;;
+    vivacity) echo "$vivacity_bin" ;;
   esac
 }
 
@@ -329,7 +345,7 @@ tool_bin() {
   echo "## $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo ""
   echo "viv $(ver_from "$viv_bin"), composer $(ver_from composer), riff $(ver_from "$riff_bin")," \
-    "flags \`--no-plugins --no-scripts\`, $runs runs each$( \
+    "vivacity $(ver_from "$vivacity_bin"), flags \`--no-plugins --no-scripts\`, $runs runs each$( \
       [ "${BENCH_MIRROR:-}" = "1" ] && echo ", from a local mirror")."
   echo ""
   echo "| Project | Packages | Tool | Cold | Warm | No-op | Update-warm |"

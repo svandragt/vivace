@@ -39,7 +39,7 @@
         "cargo nextest run"
       ],
       "bench": [
-        "bench/run.sh bench/laravel composer riff viv"
+        "bench/run.sh bench/laravel composer riff viv vivacity"
       ],
       "hooks": [
         "printf \"#!/bin/sh\\nexec devbox run check\\n\" > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit"
