@@ -88,6 +88,10 @@ fn shared_psr4_prefix_matches_composer_order() {
                 is_dev: p.dev,
                 include_path: Vec::new(),
                 archive_dir: None,
+                is_plugin: p.r#type == "composer-plugin" || p.r#type == "composer-installer",
+                modifies_downloads: p.r#type == "composer-plugin"
+                    && p.raw.pointer("/extra/plugin-modifies-downloads")
+                        == Some(&Value::Bool(true)),
             })
             .collect(),
         dev_mode: true,

@@ -48,6 +48,14 @@ pub struct Package {
     /// or one the store had no cache hit for. Lets a classmap scan survive
     /// `vendor/` being rebuilt from scratch instead of always rescanning.
     pub archive_dir: Option<PathBuf>,
+    /// `type: composer-plugin` or `composer-installer`: `install_order`'s own
+    /// `movePluginsToFront` step pulls it (and its non-platform requires)
+    /// ahead of every other package.
+    pub is_plugin: bool,
+    /// A `composer-plugin` with `extra.plugin-modifies-downloads: true`:
+    /// `movePluginsToFront`'s separate bucket, moved ahead of every other
+    /// plugin.
+    pub modifies_downloads: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1337,6 +1345,19 @@ pub(crate) trait Requires {
     /// Every other name this package satisfies a requirement under
     /// (`provide`/`replace`).
     fn install_order_provides(&self) -> impl Iterator<Item = &str>;
+    /// `Package::getType() === 'composer-plugin' || 'composer-installer'`
+    /// (`Transaction::movePluginsToFront`). Defaults to `false`: `plugins/mod.rs`'s
+    /// `crate::lock::Package` use of the shared DFS has no plugin metadata to
+    /// check, so it never reorders for one.
+    fn install_order_is_plugin(&self) -> bool {
+        false
+    }
+    /// A `composer-plugin` with `extra.plugin-modifies-downloads: true`:
+    /// `movePluginsToFront`'s separate front-of-front bucket. Same default as
+    /// [`Self::install_order_is_plugin`], for the same reason.
+    fn install_order_modifies_downloads(&self) -> bool {
+        false
+    }
 }
 
 impl Requires for Package {
@@ -1354,22 +1375,30 @@ impl Requires for Package {
             .chain(&self.replaces)
             .map(String::as_str)
     }
+
+    fn install_order_is_plugin(&self) -> bool {
+        self.is_plugin
+    }
+
+    fn install_order_modifies_downloads(&self) -> bool {
+        self.modifies_downloads
+    }
 }
 
-/// `Transaction::calculateOperations`'s install order: a postorder DFS over
-/// `requires` (dependencies before dependents), seeded from every package
-/// nothing else in the set requires (Composer's own root package never
-/// appears here — it isn't part of the locked/installed repository this
-/// mirrors), those seeds visited in ascending name order the way Composer's
-/// `array_pop`-driven, descending-sorted stack works out to. A sibling's own
-/// children are visited in reverse `requires` order, since Composer's stack
-/// is LIFO and pushes them in declared order.
+/// `Transaction::calculateOperations` plus `movePluginsToFront`, ported as a
+/// non-recursive stack to match exactly (including a quirk a recursive
+/// postorder DFS can't reproduce, see below): every result package is a
+/// fresh install here (there's no "present" repository to diff against), so
+/// every operation `calculateOperations` would emit is an `InstallOperation`,
+/// in the order the stack first pops each package a second time.
 ///
-/// ponytail: resolves a `requires` target to at most one provider (the first
-/// package found under that name or one of its `provide`/`replace` names);
-/// Composer visits every provider when several packages share a virtual
-/// package name. Upgrade to a `HashMap<&str, Vec<&P>>` if that ever shows up
-/// in a byte-diff.
+/// `getRootPackages`, ported almost verbatim: a package already excluded from
+/// the root set is skipped *before* it gets to exclude whatever it requires
+/// (`if (!isset($roots[$hash])) continue;`) — an order-dependent quirk that
+/// is exactly what lets a `requires` cycle still surface one of its members
+/// as a root, in descending-name order (`Transaction::setResultPackageMaps`'s
+/// `uasort`), which is also why the seed stack below pops in *ascending*
+/// name order (`array_pop` off the end of that descending array).
 pub(crate) fn install_order<'a, P: Requires>(packages: &[&'a P]) -> Vec<&'a P> {
     let mut by_name: HashMap<&str, &'a P> = HashMap::new();
     for package in packages {
@@ -1379,35 +1408,72 @@ pub(crate) fn install_order<'a, P: Requires>(packages: &[&'a P]) -> Vec<&'a P> {
             by_name.entry(name).or_insert(package);
         }
     }
-    let required_by_someone: HashSet<&str> = packages
+
+    let mut sorted: Vec<&'a P> = packages.to_vec();
+    sorted.sort_by(|a, b| b.install_order_name().cmp(a.install_order_name()));
+
+    let mut is_root: HashMap<&str, bool> = sorted
         .iter()
-        .flat_map(|p| p.install_order_requires())
-        .filter_map(|name| by_name.get(name))
-        .map(|p| p.install_order_name())
+        .map(|p| (p.install_order_name(), true))
         .collect();
-    let mut roots: Vec<&P> = packages
+    for package in &sorted {
+        let name = package.install_order_name();
+        if !is_root[name] {
+            continue;
+        }
+        for requirement in package.install_order_requires() {
+            if let Some(&dep) = by_name.get(requirement) {
+                let dep_name = dep.install_order_name();
+                if dep_name != name {
+                    is_root.insert(dep_name, false);
+                }
+            }
+        }
+    }
+    let mut stack: Vec<&'a P> = sorted
         .iter()
         .copied()
-        .filter(|p| !required_by_someone.contains(p.install_order_name()))
+        .filter(|p| is_root[p.install_order_name()])
         .collect();
-    roots.sort_by(|a, b| a.install_order_name().cmp(b.install_order_name()));
 
-    let mut visited = HashSet::new();
-    let mut order = Vec::with_capacity(packages.len());
-    for root in roots {
-        visit(root, &by_name, &mut visited, &mut order);
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut processed: HashSet<&str> = HashSet::new();
+    let mut order: Vec<&'a P> = Vec::with_capacity(packages.len());
+
+    // `calculateOperations`'s own explicit stack: a package popped for the
+    // first time is pushed back behind its own (still unvisited-or-not)
+    // requires; popped again while unprocessed, it is emitted. Pushing a
+    // require regardless of whether it's already visited is what lets a
+    // cycle's ancestor come back around and get emitted early.
+    while let Some(package) = stack.pop() {
+        let name = package.install_order_name();
+        if processed.contains(name) {
+            continue;
+        }
+        if visited.insert(name) {
+            stack.push(package);
+            for requirement in package.install_order_requires() {
+                if let Some(&dep) = by_name.get(requirement) {
+                    stack.push(dep);
+                }
+            }
+        } else if processed.insert(name) {
+            order.push(package);
+        }
     }
-    // A require cycle with no true root would otherwise drop packages;
-    // Composer's own stack never loses one, only reorders it.
+    // A require cycle with no true root at all (every member unrooted before
+    // its own turn) would otherwise drop packages; Composer's own stack
+    // never loses one, only reorders it. This fallback has no real Composer
+    // behaviour to match — it's a safety net, not a ported quirk.
     for package in packages {
-        visit(*package, &by_name, &mut visited, &mut order);
+        visit(*package, &by_name, &mut processed, &mut order);
     }
-    order
+
+    move_plugins_to_front(order)
 }
 
-/// One step of [`install_order`]'s DFS: a package's own postorder visit,
-/// pushing its still-unvisited `requires` first, last-declared first (the
-/// stack Composer's algorithm pops from is LIFO).
+/// [`install_order`]'s no-true-root fallback: a package's own postorder
+/// visit, pushing its still-unvisited `requires` first, last-declared first.
 fn visit<'a, P: Requires>(
     package: &'a P,
     by_name: &HashMap<&str, &'a P>,
@@ -1424,6 +1490,78 @@ fn visit<'a, P: Requires>(
         }
     }
     order.push(package);
+}
+
+/// `Transaction::movePluginsToFront`: on this module's always-fresh-install
+/// modelling, every entry in `operations` is what would be an
+/// `InstallOperation`, so this reorders [`install_order`]'s own output
+/// in place of a separate operations list. Scans in reverse so a plugin's
+/// own (still-to-come, earlier-installed) requires are seen *after* the
+/// plugin itself, letting their names already be in `plugin_requires` by the
+/// time they're checked.
+fn move_plugins_to_front<'a, P: Requires>(operations: Vec<&'a P>) -> Vec<&'a P> {
+    let mut dl_modifying_no_deps: Vec<&'a P> = Vec::new();
+    let mut dl_modifying_with_deps: Vec<&'a P> = Vec::new();
+    let mut dl_modifying_requires: HashSet<&'a str> = HashSet::new();
+    let mut plugins_no_deps: Vec<&'a P> = Vec::new();
+    let mut plugins_with_deps: Vec<&'a P> = Vec::new();
+    let mut plugin_requires: HashSet<&'a str> = HashSet::new();
+    let mut rest: Vec<&'a P> = Vec::new();
+
+    for package in operations.into_iter().rev() {
+        let names: Vec<&str> = std::iter::once(package.install_order_name())
+            .chain(package.install_order_provides())
+            .collect();
+        let non_platform_requires = || {
+            package
+                .install_order_requires()
+                .filter(|r| !crate::repository::is_platform_package(r))
+        };
+
+        let is_downloads_modifying = package.install_order_modifies_downloads();
+        if is_downloads_modifying || names.iter().any(|n| dl_modifying_requires.contains(n)) {
+            let requires: Vec<&str> = non_platform_requires().collect();
+            if is_downloads_modifying && requires.is_empty() {
+                dl_modifying_no_deps.push(package);
+            } else {
+                dl_modifying_requires.extend(requires);
+                dl_modifying_with_deps.push(package);
+            }
+            continue;
+        }
+
+        let is_plugin = package.install_order_is_plugin();
+        if is_plugin || names.iter().any(|n| plugin_requires.contains(n)) {
+            let requires: Vec<&str> = non_platform_requires().collect();
+            if is_plugin && requires.is_empty() {
+                plugins_no_deps.push(package);
+            } else {
+                plugin_requires.extend(requires);
+                plugins_with_deps.push(package);
+            }
+            continue;
+        }
+
+        rest.push(package);
+    }
+
+    for bucket in [
+        &mut dl_modifying_no_deps,
+        &mut dl_modifying_with_deps,
+        &mut plugins_no_deps,
+        &mut plugins_with_deps,
+        &mut rest,
+    ] {
+        bucket.reverse();
+    }
+
+    dl_modifying_no_deps
+        .into_iter()
+        .chain(dl_modifying_with_deps)
+        .chain(plugins_no_deps)
+        .chain(plugins_with_deps)
+        .chain(rest)
+        .collect()
 }
 
 /// `PackageSorter::sortPackages` with no weight overrides, over borrowed
@@ -1892,6 +2030,75 @@ pub(crate) fn find_shortest_path_code(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_package(name: &str, requires: &[&str], is_plugin: bool) -> Package {
+        Package {
+            name: name.to_string(),
+            autoload: Value::Null,
+            requires: requires.iter().map(|s| (*s).to_string()).collect(),
+            replaces: Vec::new(),
+            provides: Vec::new(),
+            target_dir: None,
+            install_path: None,
+            is_dev: false,
+            include_path: Vec::new(),
+            archive_dir: None,
+            is_plugin,
+            modifies_downloads: false,
+        }
+    }
+
+    /// #259: `Transaction::getRootPackages` iterates in descending-name
+    /// order (d/d, c/c, b/b, a/a) and skips a package's own `requires` the
+    /// moment that package has *already* lost its root status — so by the
+    /// time a/a's turn comes (unrooted by c/c's own requires-check, one step
+    /// earlier), a/a never gets to unroot b/b via its `requires: [b/b]`.
+    /// Only a/a and c/c end up unrooted; b/b and d/d seed the stack, still
+    /// in descending order: `[d/d, b/b]`.
+    ///
+    /// Popping that stack (LIFO; a require is pushed regardless of whether
+    /// it's already been visited, so a cycle's ancestor comes back around):
+    /// pop b/b (unvisited) -> repush b/b, push its require c/c; pop c/c
+    /// (unvisited) -> repush c/c, push its require a/a; pop a/a (unvisited)
+    /// -> repush a/a, push its require b/b; pop b/b (visited, unprocessed)
+    /// -> emit b/b; pop a/a (visited, unprocessed) -> emit a/a; pop c/c
+    /// (visited, unprocessed) -> emit c/c; pop b/b (processed) -> skip; pop
+    /// d/d (unvisited) -> repush d/d (no requires); pop d/d (visited,
+    /// unprocessed) -> emit d/d.
+    #[test]
+    fn install_order_cycle_root_quirk_matches_composers_stack() {
+        let a = test_package("a/a", &["b/b"], false);
+        let b = test_package("b/b", &["c/c"], false);
+        let c = test_package("c/c", &["a/a"], false);
+        let d = test_package("d/d", &[], false);
+        let packages: Vec<&Package> = vec![&a, &b, &c, &d];
+
+        let order: Vec<&str> = install_order(&packages)
+            .into_iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(order, ["b/b", "a/a", "c/c", "d/d"]);
+    }
+
+    /// `zzz/app` requires `zzz/plugin`, so the plain stack DFS (before
+    /// `movePluginsToFront`) emits `[aaa/leaf, zzz/plugin, zzz/app]`: leaf is
+    /// the only other root, and the plugin is app's dependency so it comes
+    /// out first between the two. `movePluginsToFront` then pulls the
+    /// dependency-free plugin to the very front, ahead of even the
+    /// independent leaf that sorts before it alphabetically.
+    #[test]
+    fn install_order_moves_a_dependency_free_plugin_to_the_front() {
+        let leaf = test_package("aaa/leaf", &[], false);
+        let plugin = test_package("zzz/plugin", &[], true);
+        let app = test_package("zzz/app", &["zzz/plugin"], false);
+        let packages: Vec<&Package> = vec![&leaf, &plugin, &app];
+
+        let order: Vec<&str> = install_order(&packages)
+            .into_iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(order, ["zzz/plugin", "aaa/leaf", "zzz/app"]);
+    }
 
     #[test]
     fn normalises_paths_like_composer() {

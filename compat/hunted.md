@@ -71,15 +71,15 @@ Fourteen public applications pinned to that day's head, plus eleven local projec
 | monicahq/monica | e08e917 | identical | identical |  |
 | koel/koel | 8befe78 | skipped | skipped | platform |
 | pixelfed/pixelfed | 472b4c4 | skipped | skipped | platform |
-| BookStackApp/BookStack | b5641aa | viv error | viv error | dist URL placeholder fetched literally (#257) |
+| BookStackApp/BookStack | b5641aa | viv error | viv error | dist URL placeholder fetched literally; fixed by #257 |
 | snipe/snipe-it | 16362cc | identical | identical |  |
 | mautic/mautic | 1f0a58c | skipped | skipped | refused composer/package-versions-deprecated; platform |
 | kimai/kimai | c7b8f18 | skipped | skipped | refused symfony/flex; platform |
 | firefly-iii/firefly-iii | 6143c0f | identical | identical |  |
 | pterodactyl/panel | 113ea43 | identical | identical |  |
 | librenms/librenms | c0950ba | identical | identical |  |
-| humhub/humhub | ffb6701 | viv error | viv error | lock check ignores replace (#258) |
-| akaunting/akaunting | 50a0293 | skipped | differs | refused mnsami/composer-custom-directory-installer; no-dev autoload_files order and a bin mode bit (#259); dev skipped: platform |
+| humhub/humhub | ffb6701 | viv error | viv error | lock check ignores replace; fixed by #258 |
+| akaunting/akaunting | 50a0293 | skipped | differs | refused mnsami/composer-custom-directory-installer; no-dev autoload_files order and a bin mode bit, fixed by #259; dev skipped: platform |
 | local project A | local | identical | identical |  |
 | local project B | local | skipped | skipped | platform |
 | local project C | local | identical | identical |  |
