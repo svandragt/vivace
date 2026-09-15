@@ -10,6 +10,15 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 54 tests fetch real dists from GitHub and Packagist. Unauthenticated
+# zipball downloads from Linux runners returned 504 on three runs in a row
+# while the same URLs worked elsewhere (#195); the workflow token, read by
+# both viv and Composer through COMPOSER_AUTH, makes those requests
+# authenticated. A retry covers a single blip; an outage still fails.
+env:
+  NEXTEST_RETRIES: 2
+  COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ github.token }}"}}'
+
 jobs:
   check:
     runs-on: ubuntu-latest
