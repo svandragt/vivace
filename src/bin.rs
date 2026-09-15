@@ -148,10 +148,17 @@ fn install_one(
         ));
         return Ok(None);
     }
-    // Composer also `chmod`s the target to add the execute bit;
-    // vivace's store files are read-only hardlinks shared with every other
-    // project on the machine, so the target keeps whatever mode the zip
-    // gave it and only the proxy gets one here.
+    // Composer `chmod`s the target to `0777 & ~umask`. The target is a
+    // read-only store hardlink shared with every project on the machine,
+    // so only the execute bits are added (#259): the same package declares
+    // the same bin everywhere, and the write bit stays off.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs_err::metadata(&canonical_target)?.permissions().mode() & 0o777;
+        if mode & 0o111 != 0o111 {
+            fs_err::set_permissions(&canonical_target, PermissionsExt::from_mode(mode | 0o111))?;
+        }
+    }
 
     let name = Path::new(bin)
         .file_name()

@@ -282,6 +282,17 @@ mod tests {
             PermissionsExt::from_mode(0o444),
         )
         .unwrap();
+        // A store archive dir's executable bit (`store::extract_zip`/`extract_tar`:
+        // 0o555 for a zip/tar entry with any exec bit set, `bin/tool` matching
+        // those tests' own naming), same convention `#259`'s `bin/carbon` needs
+        // preserved through to `vendor/`.
+        fs_err::create_dir(dir.path().join("bin")).unwrap();
+        fs_err::write(dir.path().join("bin/tool"), "#!/bin/sh\n").unwrap();
+        fs_err::set_permissions(
+            dir.path().join("bin/tool"),
+            PermissionsExt::from_mode(0o555),
+        )
+        .unwrap();
         dir
     }
 
@@ -423,6 +434,32 @@ mod tests {
         let dest = vendor.path().join("acme/pkg");
         link_tree(src.path(), &dest, LinkMode::Hardlink).unwrap();
         assert_eq!(mode(&dest.join("composer.json")), 0o444);
+    }
+
+    /// #259: `nesbot/carbon`'s `bin/carbon` came out 0444 (not executable)
+    /// under viv where Composer's own `0755` survives — a hardlink shares
+    /// the store's inode outright, so this only re-confirms that path never
+    /// touches the mode `store::extract_zip`/`extract_tar` set.
+    #[test]
+    fn hardlink_preserves_the_executable_bit() {
+        let src = source();
+        let vendor = tempfile::tempdir().unwrap();
+        let dest = vendor.path().join("acme/pkg");
+        link_tree(src.path(), &dest, LinkMode::Hardlink).unwrap();
+        assert_eq!(mode(&dest.join("bin/tool")), 0o555);
+    }
+
+    /// #259, the copy/clone half: `make_writable` adds the owner-write bit
+    /// back onto whatever `fs_err::copy` produced, so it must add it to a
+    /// mode that still carries the exec bits (0o555 -> 0o755), not one a
+    /// non-mode-preserving copy already flattened to 0o644.
+    #[test]
+    fn copy_preserves_the_executable_bit() {
+        let src = source();
+        let vendor = tempfile::tempdir().unwrap();
+        let dest = vendor.path().join("acme/pkg");
+        link_tree(src.path(), &dest, LinkMode::Copy).unwrap();
+        assert_eq!(mode(&dest.join("bin/tool")), 0o755);
     }
 
     /// uv's `warn_user_once!`: a 101-package install shouldn't print 101

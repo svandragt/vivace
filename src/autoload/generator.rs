@@ -468,7 +468,18 @@ pub fn generate(input: &Input) -> Result<Generated> {
 /// `AutoloadGenerator::parseAutoloads`: filter dev packages, sort, then
 /// collect each autoload type in the order Composer uses.
 fn parse_autoloads(input: &Input, base: &str) -> Autoloads {
-    let mut packages: Vec<&Package> = input.packages.iter().collect();
+    // `AutoloadGenerator::dump` feeds this from `$localRepo->getCanonicalPackages()`,
+    // whose order for a real `composer install` is the install transaction's
+    // own dependency-first DFS (`Transaction::calculateOperations`), not
+    // whatever order install/plan bookkeeping (a partial keep-vs-install
+    // split, say) handed packages to the generator in. `PackageSorter`'s
+    // cycle-breaking (first-visit-wins on a `requires` cycle, see
+    // `sort_packages`) depends on this input order, not only on the
+    // computed weights, so a dependency cycle sorts differently — a
+    // different member becomes the first-visited, cycle-cancelled one —
+    // unless this is re-derived here rather than trusted from the caller
+    // (#259).
+    let mut packages: Vec<&Package> = install_order(&input.packages.iter().collect::<Vec<_>>());
     if !input.dev_mode {
         if packages.iter().any(|p| p.is_dev) {
             packages.retain(|p| !p.is_dev);
