@@ -8,6 +8,7 @@ on:
       - bench/results/**
       - compat/results/**
       - README.md
+      - docs/**
       - .github/workflows/site.yml
   schedule:
     - cron: "17 6 * * *"

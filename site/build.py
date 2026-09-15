@@ -4,13 +4,15 @@
 Usage: python3 site/build.py
 
 Renders each page with a shared HTML shell, copies site/static/ into
-site/dist/, and writes CNAME and .nojekyll for GitHub Pages. index.md's
-`{{viv_cold}}` style placeholders are filled from bench/results/corpus.md
-and compat/results/v*.md so every number on the page has a real source --
-see AGENTS.md and #249.
+site/dist/, and writes CNAME and .nojekyll for GitHub Pages. Each page's
+`{{placeholder}}` style tags are filled from bench/results/corpus.md,
+compat/results/v*.md, docs/plugin-strategy.md, docs/stability.md and
+README.md so every number and claim on the site has a real source -- see
+AGENTS.md, #249, #251 and #252.
 """
 import re
 import shutil
+import statistics
 import sys
 import json
 import urllib.request
@@ -62,17 +64,77 @@ def wrap_tables(html):
     )
 
 
+def latest_corpus_section(text):
+    """Return (heading, body) for the newest `## <timestamp>` section of a
+    corpus.md-shaped file."""
+    sections = re.split(r"^## (\S+)$", text, flags=re.MULTILINE)[1:]
+    return max(zip(sections[0::2], sections[1::2]))
+
+
 def corpus_cold_times():
     """Return (viv_cold, composer_cold, section_heading) for laravel/laravel's
     Cold column in the latest section of bench/results/corpus.md."""
     text = (ROOT / "bench/results/corpus.md").read_text()
-    sections = re.split(r"^## (\S+)$", text, flags=re.MULTILINE)[1:]
-    heading, body = max(zip(sections[0::2], sections[1::2]))
+    heading, body = latest_corpus_section(text)
     row_re = re.compile(
         r"^\| laravel/laravel \| \d+ \| (composer|viv) \| (\S+) \|", re.MULTILINE
     )
     times = dict(row_re.findall(body))
     return times["viv"], times["composer"], heading
+
+
+CORPUS_TOOLS = ("composer", "riff", "viv", "vivacity")
+CORPUS_SCENARIOS = ("Cold", "Warm", "No-op", "Update-warm")
+CORPUS_ROW_RE = re.compile(
+    r"^\| (\S.*?) \| \d+ \| (composer|riff|viv|vivacity) \|"
+    r" (\S+) \| (\S+) \| (\S+) \| (\S+) \|$",
+    re.MULTILINE,
+)
+
+
+def corpus_row_values(body):
+    """Return {project: {tool: {scenario: value_or_None}}} for every row in
+    a corpus.md section body."""
+    projects = {}
+    for project, tool, *values in CORPUS_ROW_RE.findall(body):
+        projects.setdefault(project, {})[tool] = {
+            scenario: (None if v == "n/a" else float(v))
+            for scenario, v in zip(CORPUS_SCENARIOS, values)
+        }
+    return projects
+
+
+def corpus_speed_table(body):
+    """Return {tool: {scenario: (median, included, total) or None}}, the
+    median across projects with a numeric value plus coverage, since a tool
+    that didn't run everywhere shouldn't average its gaps in as zero."""
+    projects = corpus_row_values(body)
+    total = len(projects)
+    table = {}
+    for tool in CORPUS_TOOLS:
+        table[tool] = {}
+        for scenario in CORPUS_SCENARIOS:
+            values = [
+                p[tool][scenario]
+                for p in projects.values()
+                if tool in p and p[tool][scenario] is not None
+            ]
+            table[tool][scenario] = (
+                (statistics.median(values), len(values), total) if values else None
+            )
+    return table
+
+
+def format_speed_cell(entry):
+    """Median plus a small coverage count when a tool ran on fewer projects
+    than the total, "n/a" style coverage when it ran on none at all."""
+    if entry is None:
+        return "n/a"
+    median, included, total = entry
+    cell = f"{median:.2f}s"
+    if included < total:
+        cell += f" ({included}/{total})"
+    return cell
 
 
 def newest_compat_file():
@@ -98,6 +160,155 @@ def compat_identical_count(path):
     total = len(projects)
     identical = sum(projects.values())
     return identical, total
+
+
+def plugin_adapter_count():
+    """Count viv's native adapters in docs/plugin-strategy.md's inventory
+    table (rows marked "Native", not the "Known inert" ones)."""
+    text = (ROOT / "docs/plugin-strategy.md").read_text()
+    section = text.split("## Inventory", 1)[1].split("\n## ", 1)[0]
+    return section.count("| Native (")
+
+
+def github_anchor(heading):
+    """GitHub's Markdown heading slug: lowercase, spaces to hyphens, drop
+    anything that isn't alphanumeric, space or hyphen."""
+    slug = re.sub(r"[^\w\s-]", "", heading.lower())
+    return re.sub(r"\s+", "-", slug.strip())
+
+
+def rewrite_relative_links(text, current_rel_path):
+    """Point a doc's relative and #anchor links at the file on GitHub, so a
+    snippet lifted onto the site keeps working outside the repo."""
+    current_dir = Path(current_rel_path).parent
+
+    def replace(m):
+        label, target = m.group(1), m.group(2)
+        if target.startswith(("http://", "https://")):
+            return m.group(0)
+        if target.startswith("#"):
+            return f"[{label}]({GITHUB_BLOB}{current_rel_path}{target})"
+        path_part, _, anchor = target.partition("#")
+        resolved = (ROOT / current_dir / path_part).resolve().relative_to(ROOT).as_posix()
+        url = f"{GITHUB_BLOB}{resolved}"
+        if anchor:
+            url += f"#{anchor}"
+        return f"[{label}]({url})"
+
+    return re.sub(r"\[([^\]]*)\]\(([^)]+)\)", replace, text)
+
+
+def demote_headings(text):
+    """Push every Markdown heading down one level, so a `###` lifted from a
+    README section nests under the page's own `##` heading."""
+    return re.sub(r"^(#{1,6} )", r"#\1", text, flags=re.MULTILINE)
+
+
+def readme_section(heading):
+    """Return README.md's body text between `## <heading>` and the next
+    `## `, links rewritten to point at GitHub and headings demoted to nest
+    under the page's own."""
+    text = (ROOT / "README.md").read_text()
+    pattern = re.compile(rf"^## {re.escape(heading)}\n(.*?)(?=\n## |\Z)", re.MULTILINE | re.DOTALL)
+    body = pattern.search(text).group(1).strip("\n")
+    # Footnote markers ([^12]) point at definitions outside this section;
+    # the "From the README" link above each section is where to find them.
+    body = re.sub(r"\[\^\d+\]", "", body)
+    return demote_headings(rewrite_relative_links(body, "README.md"))
+
+
+def stability_summary():
+    """The first paragraph under docs/stability.md's first heading, links
+    rewritten the same way as readme_section."""
+    text = (ROOT / "docs/stability.md").read_text()
+    para = re.search(r"^## [^\n]*\n\n(.*?)\n\n", text, re.MULTILINE | re.DOTALL).group(1)
+    return rewrite_relative_links(para, "docs/stability.md")
+
+
+def compare_placeholders():
+    corpus_path = "bench/results/corpus.md"
+    text = (ROOT / corpus_path).read_text()
+    heading, body = latest_corpus_section(text)
+    date = heading.split("T")[0]
+    version_line = body.strip().splitlines()[0]
+    skip_notes = re.findall(r"^- \S.*$", body, re.MULTILINE)
+    speed = corpus_speed_table(body)
+
+    tool_labels = {"composer": "Composer", "riff": "riff", "viv": "viv", "vivacity": "vivacity"}
+    speed_lines = [
+        "| Tool | Cold | Warm | No-op | Update-warm |",
+        "|---|---|---|---|---|",
+    ]
+    for tool in CORPUS_TOOLS:
+        cells = " | ".join(format_speed_cell(speed[tool][s]) for s in CORPUS_SCENARIOS)
+        speed_lines.append(f"| {tool_labels[tool]} | {cells} |")
+
+    installed = {
+        tool: (speed[tool]["Cold"][1] if speed[tool]["Cold"] else 0) for tool in CORPUS_TOOLS
+    }
+    total_projects = len(corpus_row_values(body))
+
+    compat_path = newest_compat_file()
+    identical, compat_total = compat_identical_count(compat_path)
+    compat_rel = compat_path.relative_to(ROOT).as_posix()
+    adapters = plugin_adapter_count()
+
+    capability_lines = [
+        "| | [Composer](https://getcomposer.org) | [riff](https://github.com/shyim/riff) | [vivacity](https://github.com/Adelagric/vivacity) | [viv](https://github.com/svandragt/vivace) |",
+        "|---|---|---|---|---|",
+        f"| Byte-identical `vendor/` | is the reference "
+        f"| no — 4 differences (autoloader-suffix, `provide` order, "
+        f"`NULL` vs `null`, a newer `InstalledVersions.php`) "
+        f"([JOURNAL.md, 2026-09-06]({GITHUB_BLOB}JOURNAL.md)) "
+        f"| not measured here "
+        f"| yes, {identical}/{compat_total} pinned projects "
+        f"([{compat_rel}]({GITHUB_BLOB}{compat_rel})) |",
+        f"| Corpus projects installed (of {total_projects}) | {installed['composer']} "
+        f"| {installed['riff']} | {installed['vivacity']} | {installed['viv']} |",
+        f"| Plugins handled natively | all (runs PHP) | not measured here "
+        f"| its known list ([JOURNAL.md, 2026-09-15]({GITHUB_BLOB}JOURNAL.md)) "
+        f"| {adapters} adapters "
+        f"([docs/plugin-strategy.md]({GITHUB_BLOB}docs/plugin-strategy.md)) |",
+        "| Needs PHP to install | yes | no | no | no |",
+        "| Drop-in `composer` shim | — | — | — | yes |",
+        f"| Publishes its failures | — | — | NOTICE, changelog "
+        f"| [compat/results/]({GITHUB_BLOB}compat/results), "
+        f"[bench/results/corpus.md]({GITHUB_BLOB}{corpus_path}) footnotes, "
+        f"[JOURNAL.md]({GITHUB_BLOB}JOURNAL.md) |",
+    ]
+
+    return {
+        "speed_table": "\n".join(speed_lines),
+        "speed_source": (
+            f"{version_line}\n<span class=\"source\">source: "
+            f'<a href="{GITHUB_BLOB}{corpus_path}">{corpus_path}</a>, '
+            f'section <code>{heading}</code> ({date})</span>'
+        ),
+        "speed_skips": "\n".join(skip_notes),
+        "capability_table": "\n".join(capability_lines),
+    }
+
+
+def readme_source_line(heading):
+    anchor = github_anchor(heading)
+    return (
+        f'<span class="source">From the README: '
+        f'<a href="{GITHUB_BLOB}README.md#{anchor}">{heading}</a></span>'
+    )
+
+
+def migrate_placeholders():
+    return {
+        "shim_from_readme": readme_source_line("Using viv as composer"),
+        "shim_section": readme_section("Using viv as composer"),
+        "dockerfile_from_readme": readme_source_line("In a Dockerfile"),
+        "dockerfile_section": readme_section("In a Dockerfile"),
+        "ci_from_readme": readme_source_line("Using viv as composer"),
+        "stability_summary": (
+            f"{stability_summary()}\n\n"
+            f'<span class="source">source: <a href="{GITHUB_BLOB}docs/stability.md">docs/stability.md</a></span>'
+        ),
+    }
 
 
 def latest_posts():
@@ -137,6 +348,13 @@ def index_placeholders():
     }
 
 
+PAGE_PLACEHOLDERS = {
+    "index": index_placeholders,
+    "compare": compare_placeholders,
+    "migrate": migrate_placeholders,
+}
+
+
 def render_page(md_path, placeholders=None):
     text = md_path.read_text()
     if placeholders:
@@ -155,7 +373,8 @@ def main():
     DIST.mkdir(parents=True)
 
     for md_path in sorted((SITE / "pages").glob("*.md")):
-        placeholders = index_placeholders() if md_path.stem == "index" else None
+        placeholder_fn = PAGE_PLACEHOLDERS.get(md_path.stem)
+        placeholders = placeholder_fn() if placeholder_fn else None
         title, content_html = render_page(md_path, placeholders)
         html = SHELL.format(title=title, nav=render_nav(), content=content_html)
         (DIST / f"{md_path.stem}.html").write_text(html)
@@ -164,10 +383,10 @@ def main():
     (DIST / "CNAME").write_text("vivace.vandragt.com\n")
     (DIST / ".nojekyll").write_text("")
 
-    index_html = (DIST / "index.html").read_text()
-    if "{{" in index_html:
-        print("site/build.py: unfilled {{placeholder}} in index.html", file=sys.stderr)
-        return 1
+    for html_path in sorted(DIST.glob("*.html")):
+        if "{{" in html_path.read_text():
+            print(f"site/build.py: unfilled {{{{placeholder}}}} in {html_path.name}", file=sys.stderr)
+            return 1
     print(f"site/build.py: wrote {DIST}")
     return 0
 
