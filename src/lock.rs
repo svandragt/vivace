@@ -1015,13 +1015,24 @@ fn is_platform_package(name: &str) -> bool {
 
 /// Composer's `Locker::getMissingRequirementInfo`, presence-only: is each of
 /// `root`'s required packages (and, when `dev`, `require-dev` too) locked at
-/// all? Whether the locked version actually *satisfies* the root constraint
-/// needs a semver solver, which vivace's no-dependency-resolution planner
-/// deliberately doesn't have; that half of Composer's check is out of scope
-/// for v0.1.
+/// all, or `replace`d/`provide`d by a locked package (#117 did the same for
+/// the solver; humhub/humhub's `codeception/phpunit-wrapper`, replaced by
+/// locked `codeception/codeception`, is the real case, #258)? Whether the
+/// locked version actually *satisfies* the root constraint needs a semver
+/// solver, which vivace's no-dependency-resolution planner deliberately
+/// doesn't have; that half of Composer's check is out of scope for v0.1.
 pub fn missing_requirements(lock: &Lock, root: &Root, dev: bool) -> Vec<String> {
-    let locked: std::collections::HashSet<String> =
-        lock.packages(dev).map(|p| p.name.clone()).collect();
+    let locked: std::collections::HashSet<String> = lock
+        .packages(dev)
+        .flat_map(|p| {
+            std::iter::once(p.name.clone()).chain(
+                p.replace
+                    .keys()
+                    .chain(p.provide.keys())
+                    .map(|name| name.to_lowercase()),
+            )
+        })
+        .collect();
     let mut sets: Vec<(&str, &Map<String, Value>)> = vec![("Required", &root.require)];
     if dev {
         sets.push(("Required (in require-dev)", &root.require_dev));
@@ -1748,6 +1759,60 @@ mod tests {
             with_dev
                 .iter()
                 .any(|line| line.contains("Required (in require-dev) package \"acme/missing-dev\""))
+        );
+    }
+
+    #[test]
+    fn missing_requirements_accepts_a_name_satisfied_only_by_replace() {
+        let lock_json = r#"{
+            "packages": [{
+                "name": "codeception/codeception",
+                "version": "5.3.5",
+                "replace": {"codeception/phpunit-wrapper": "*"}
+            }],
+            "packages-dev": []
+        }"#;
+        let mut lock_file = tempfile::NamedTempFile::new().unwrap();
+        lock_file.write_all(lock_json.as_bytes()).unwrap();
+        let lock = read_lock(lock_file.path()).unwrap();
+
+        let root_json = r#"{
+            "require": {"codeception/phpunit-wrapper": "^9.0"}
+        }"#;
+        let mut root_file = tempfile::NamedTempFile::new().unwrap();
+        root_file.write_all(root_json.as_bytes()).unwrap();
+        let root = read_root(root_file.path()).unwrap();
+
+        assert_eq!(
+            missing_requirements(&lock, &root, false),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn missing_requirements_accepts_a_name_satisfied_only_by_provide() {
+        let lock_json = r#"{
+            "packages": [{
+                "name": "monolog/monolog",
+                "version": "2.9.1",
+                "provide": {"psr/log-implementation": "1.0.0"}
+            }],
+            "packages-dev": []
+        }"#;
+        let mut lock_file = tempfile::NamedTempFile::new().unwrap();
+        lock_file.write_all(lock_json.as_bytes()).unwrap();
+        let lock = read_lock(lock_file.path()).unwrap();
+
+        let root_json = r#"{
+            "require": {"psr/log-implementation": "1.0.0"}
+        }"#;
+        let mut root_file = tempfile::NamedTempFile::new().unwrap();
+        root_file.write_all(root_json.as_bytes()).unwrap();
+        let root = read_root(root_file.path()).unwrap();
+
+        assert_eq!(
+            missing_requirements(&lock, &root, false),
+            Vec::<String>::new()
         );
     }
 
