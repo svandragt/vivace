@@ -1225,3 +1225,19 @@ was then measured under four lanes: anonymous memory 1.5–3.4 GB, swap growth
 cache. `memory.peak` cannot be reset without root, so on a machine that has
 already blown past a ceiling once it reports that incident forever — sample
 `memory.current` on a timer and split `memory.stat` instead.
+
+## 2026-09-15, afternoon: the first screen (#247)
+
+Twenty minutes on 0.14. The README opened with "proof of concept ... not yet
+at 1.0" thirteen releases in, then a good install block that the sentence
+before it undid. The top now leads with the description's own pitch, one
+sourced number from today's corpus run (cold laravel/laravel 0.30 s against
+Composer's 1.58 s), the compat sweep, and the install block in the first
+twenty lines. The "not covered" sentence stays, as a sentence pointing at
+`docs/stability.md`, not a disclaimer.
+
+One thing found while writing it: the draft told binstall readers to run
+`make install-shim`, which needs a checkout they do not have. The release
+tarball already ships `composer` beside `viv` and binstall's `bin-dir`
+template installs every binary in it, so the shim arrives with the first
+command; the README now says so instead.

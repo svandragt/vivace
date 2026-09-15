@@ -1,32 +1,37 @@
 # vivace
 
-`viv` installs PHP dependencies from a Composer `composer.lock` file and
-writes a `vendor/` directory that matches what Composer would write, byte
-for byte. It's a proof of concept at v0.13.0, tested in CI on Linux and
-macOS, and not yet at 1.0.
+`viv` is to Composer what uv was to pip: a Rust reimplementation that
+installs from `composer.lock` and writes the `vendor/` directory Composer
+would write, byte for byte. On the [bench corpus](bench/results/corpus.md)
+(2026-09-15) a cold `laravel/laravel` install takes 0.30 s against
+Composer's 1.58 s, and the [compat sweep](compat/hunted.md) finds an
+identical `vendor/` on every project viv installs. Plugins other than the
+shipped adapters and Composer's long tail of commands stay with Composer;
+[`docs/stability.md`](docs/stability.md) lists exactly what is and isn't
+covered.
 
 ## Try it
 
-Download a prebuilt binary from the [releases
-page](https://github.com/svandragt/vivace/releases) (Linux x86_64 as glibc
-and static musl builds, aarch64 as static musl, also packaged as a .deb;
-macOS x86_64 and aarch64), or install it another way:
-
 ```sh
 cargo binstall --git https://github.com/svandragt/vivace vivace
-# or build from source:
+viv install     # in a project with composer.json and composer.lock
+```
+
+That also installs a `composer` shim next to `viv`; put it first on `PATH`
+and your existing scripts run through viv unedited (see [Using viv as
+composer](#using-viv-as-composer)).
+
+Prebuilt binaries are on the [releases
+page](https://github.com/svandragt/vivace/releases) (Linux x86_64 as glibc
+and static musl builds, aarch64 as static musl, also packaged as a .deb;
+macOS x86_64 and aarch64). To build from source instead:
+
+```sh
 cargo install --git https://github.com/svandragt/vivace --tag v0.13.0 vivace
 ```
 
 Both commands also upgrade an existing install; add `--force` to
 `cargo install` when the version has not changed.
-
-Then run it in a project that already has a `composer.json` and
-`composer.lock`:
-
-```sh
-viv install
-```
 
 If Composer already wrote the `vendor/` directory, viv adopts it
 automatically, no flag needed.[^1] Only `composer install` run through the
