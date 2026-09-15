@@ -22,7 +22,7 @@ make install-shim                  # adds a drop-in `composer` shim that shadows
 make build                         # cargo build --release, binary at target/release/viv
 make test                          # cargo nextest run (PHP-dependent tests skip without php)
 make check                         # fmt --check, clippy -D warnings, nextest, cargo deny
-make bench                         # hyperfine: composer vs riff vs viv on bench/laravel
+make bench                         # hyperfine: composer vs riff vs viv vs vivacity on bench/laravel
 make hooks                         # install the pre-commit hook that runs `make check`
 make fixtures                      # regenerate the monolog fixture's expected Composer output
 make fuzz                          # cargo-fuzz, 30s per target (#44); nightly toolchain required
@@ -44,7 +44,7 @@ devbox run check                   # fmt, clippy -D warnings, nextest, cargo den
 devbox run test                    # cargo nextest run (PHP-dependent tests skip without php)
 cargo nextest run -E 'test(classmap)'   # one test or filter
 cargo insta review                 # accept or reject snapshot changes
-devbox run bench                   # hyperfine: composer vs riff vs viv on bench/laravel
+devbox run bench                   # hyperfine: composer vs riff vs viv vs vivacity on bench/laravel
 devbox run hooks                   # install the pre-commit hook that runs `check`
 ```
 
