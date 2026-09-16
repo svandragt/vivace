@@ -1,4 +1,4 @@
-# Migrate
+# Migrating from Composer
 
 The migration story already lives in the README; this page pulls the three
 sections a team moving a project onto viv actually needs, kept in sync with

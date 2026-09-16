@@ -6,10 +6,7 @@ would write, byte for byte.
 
 ## Try it
 
-```sh
-cargo binstall --git https://github.com/svandragt/vivace vivace
-viv install     # in a project with composer.json and composer.lock
-```
+{{install_block}}
 
 That also installs a `composer` shim next to `viv`; put it first on `PATH`
 and your existing scripts run through viv unedited. Prebuilt binaries and

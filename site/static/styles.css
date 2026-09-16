@@ -113,6 +113,35 @@ main {
     padding: 2rem 1.5rem 4rem;
 }
 
+.layout {
+    display: flex;
+    gap: 2.5rem;
+    max-width: calc(var(--measure) + 12rem);
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+}
+
+.layout main { max-width: var(--measure); margin: 0; padding: 0; }
+
+.sidebar {
+    flex: 0 0 10rem;
+    font-size: 0.9375rem;
+}
+
+.sidebar a {
+    display: block;
+    padding: 0.2em 0;
+    text-decoration: none;
+    color: var(--ink-soft);
+}
+
+.sidebar a.current { color: var(--ink); font-weight: 600; }
+
+@media (max-width: 640px) {
+    .layout { flex-direction: column; gap: 1rem; }
+    .sidebar { flex: none; }
+}
+
 .table-wrap { overflow-x: auto; }
 
 table { border-collapse: collapse; width: 100%; }

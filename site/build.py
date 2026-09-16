@@ -10,9 +10,11 @@ compat/results/v*.md, docs/plugin-strategy.md, docs/stability.md and
 README.md so every number and claim on the site has a real source -- see
 AGENTS.md, #249, #251 and #252.
 """
+import os
 import re
 import shutil
 import statistics
+import subprocess
 import sys
 import json
 import urllib.request
@@ -26,8 +28,24 @@ DIST = SITE / "dist"
 FEED = "https://vandragt.com/tag/vivace/feed.json"
 GITHUB_BLOB = "https://github.com/svandragt/vivace/blob/main/"
 
-NAV = [("Home", "index.html"), ("Compare", "compare.html"), ("Migrate", "migrate.html"),
+NAV = [("Home", "index.html"), ("Manual", "manual.html"), ("Compare", "compare.html"),
        ("GitHub", "https://github.com/svandragt/vivace")]
+
+# Drives both the sidebar every non-index page renders and manual.html's own
+# list; order here is the order readers see.
+MANUAL = [
+    ("getting-started", "Getting started"),
+    ("install", "Install and upgrade"),
+    ("commands", "Commands"),
+    ("shim", "Using viv as composer"),
+    ("migrate", "Migrating from Composer"),
+    ("plugins", "Plugins"),
+    ("cache", "Cache and offline use"),
+    ("compatibility", "Compatibility and scope"),
+    ("reference", "Reference"),
+    ("troubleshooting", "Troubleshooting"),
+    ("compare", "Compare"),
+]
 
 SHELL = """<!doctype html>
 <html lang="en">
@@ -40,11 +58,9 @@ SHELL = """<!doctype html>
 <body>
 <header class="site-header">
 <a class="site-title" href="index.html">viv</a>
-<nav>{nav}</nav>
+{nav}
 </header>
-<main>
-{content}
-</main>
+{layout}
 <footer class="site-footer">
 <a href="https://github.com/svandragt/vivace">svandragt/vivace</a> on GitHub
 </footer>
@@ -55,6 +71,45 @@ SHELL = """<!doctype html>
 
 def render_nav():
     return "\n".join(f'<a href="{href}">{label}</a>' for label, href in NAV)
+
+
+def render_sidebar(current_slug):
+    links = []
+    for slug, title in MANUAL:
+        current = ' class="current"' if slug == current_slug else ""
+        links.append(f'<a href="{slug}.html"{current}>{title}</a>')
+    return "\n".join(links)
+
+
+def find_viv_binary():
+    """The `viv` binary to run for `--help` text: $VIV, else `viv` on PATH,
+    else the release build. Missing entirely fails the build rather than
+    letting the command reference go stale silently."""
+    env_viv = os.environ.get("VIV")
+    if env_viv:
+        return env_viv
+    on_path = shutil.which("viv")
+    if on_path:
+        return on_path
+    release = ROOT / "target/release/viv"
+    if release.exists():
+        return str(release)
+    raise SystemExit(
+        "site/build.py: no viv binary found -- set $VIV, put viv on PATH, or "
+        "build ./target/release/viv (devbox run -- cargo build --release)"
+    )
+
+
+def viv_help(cmd):
+    """`$VIV <cmd> --help` output, ready to drop into a fenced code block."""
+    binary = find_viv_binary()
+    try:
+        result = subprocess.run(
+            [binary, cmd, "--help"], capture_output=True, text=True, check=True
+        )
+    except FileNotFoundError:
+        raise SystemExit(f"site/build.py: $VIV points at a missing binary: {binary}")
+    return result.stdout.strip("\n")
 
 
 def wrap_tables(html):
@@ -204,17 +259,54 @@ def demote_headings(text):
     return re.sub(r"^(#{1,6} )", r"#\1", text, flags=re.MULTILINE)
 
 
-def readme_section(heading):
-    """Return README.md's body text between `## <heading>` and the next
-    `## `, links rewritten to point at GitHub and headings demoted to nest
-    under the page's own."""
-    text = (ROOT / "README.md").read_text()
-    pattern = re.compile(rf"^## {re.escape(heading)}\n(.*?)(?=\n## |\Z)", re.MULTILINE | re.DOTALL)
-    body = pattern.search(text).group(1).strip("\n")
+def section_from_file(rel_path, heading):
+    """Return the body text of a `## <heading>` or `### <heading>` section
+    in a file at rel_path (up to the next heading of that level or
+    shallower), links rewritten to point at GitHub and headings demoted to
+    nest under the page's own."""
+    text = (ROOT / rel_path).read_text()
+    start = re.search(rf"^(#{{2,3}}) {re.escape(heading)}\n", text, re.MULTILINE)
+    if not start:
+        raise SystemExit(f"site/build.py: heading '{heading}' not found in {rel_path}")
+    level = len(start.group(1))
+    rest = text[start.end():]
+    end = re.search(rf"^#{{1,{level}}} ", rest, re.MULTILINE)
+    body = (rest[: end.start()] if end else rest).strip("\n")
     # Footnote markers ([^12]) point at definitions outside this section;
     # the "From the README" link above each section is where to find them.
     body = re.sub(r"\[\^\d+\]", "", body)
-    return demote_headings(rewrite_relative_links(body, "README.md"))
+    return demote_headings(rewrite_relative_links(body, rel_path))
+
+
+def readme_section(heading):
+    return section_from_file("README.md", heading)
+
+
+def readme_fenced_block(heading):
+    """The first fenced code block inside a README.md section, so a page
+    can show just the command without pulling in the surrounding prose."""
+    body = readme_section(heading)
+    match = re.search(r"```.*?```", body, re.DOTALL)
+    if not match:
+        raise SystemExit(f"site/build.py: no fenced block in README section '{heading}'")
+    return match.group(0)
+
+
+def doc_section(path, heading):
+    return section_from_file(path, heading)
+
+
+GENERIC_PLACEHOLDER_RE = re.compile(r"\{\{(help|readme|doc):([^}]+)\}\}")
+
+
+def resolve_generic_placeholder(match):
+    kind, arg = match.group(1), match.group(2)
+    if kind == "help":
+        return viv_help(arg)
+    if kind == "readme":
+        return readme_section(arg)
+    path, _, heading = arg.partition("#")
+    return doc_section(path, heading)
 
 
 def stability_summary():
@@ -344,6 +436,7 @@ def index_placeholders():
         ),
         "compat_identical": f"{identical}/{total}",
         "compat_source": f'<a href="{GITHUB_BLOB}{compat_rel}">{compat_rel}</a>',
+        "install_block": readme_fenced_block("Try it"),
         "posts": latest_posts(),
     }
 
@@ -360,10 +453,11 @@ def render_page(md_path, placeholders=None):
     if placeholders:
         for key, value in placeholders.items():
             text = text.replace(f"{{{{{key}}}}}", value)
+    text = GENERIC_PLACEHOLDER_RE.sub(resolve_generic_placeholder, text)
     title = text.splitlines()[0].lstrip("# ").strip()
     if title.lower() != "viv":
         title = f"{title} - viv"
-    body_html = markdown.markdown(text, extensions=["tables", "fenced_code"])
+    body_html = markdown.markdown(text, extensions=["tables", "fenced_code", "toc"])
     return title, wrap_tables(body_html)
 
 
@@ -376,7 +470,18 @@ def main():
         placeholder_fn = PAGE_PLACEHOLDERS.get(md_path.stem)
         placeholders = placeholder_fn() if placeholder_fn else None
         title, content_html = render_page(md_path, placeholders)
-        html = SHELL.format(title=title, nav=render_nav(), content=content_html)
+        if md_path.stem == "index":
+            nav = f"<nav>{render_nav()}</nav>"
+            layout = f"<main>\n{content_html}\n</main>"
+        else:
+            nav = ""
+            layout = (
+                '<div class="layout">\n'
+                f'<aside class="sidebar">\n{render_sidebar(md_path.stem)}\n</aside>\n'
+                f"<main>\n{content_html}\n</main>\n"
+                "</div>"
+            )
+        html = SHELL.format(title=title, nav=nav, layout=layout)
         (DIST / f"{md_path.stem}.html").write_text(html)
 
     shutil.copytree(SITE / "static", DIST, dirs_exist_ok=True)
