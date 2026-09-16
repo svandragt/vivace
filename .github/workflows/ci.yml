@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A run with no code change, for measuring the workflow itself (#195).
+  workflow_dispatch:
 
 # A newer push to the same branch supersedes the run in flight.
 concurrency:
