@@ -66,6 +66,9 @@ jobs:
   # macOS is a supported platform; this job blocks like the Linux one. It
   # runs alongside the Linux gate: serialising them put it on the critical
   # path and cost more wall time than the occasional fmt slip saved (#195).
+  # No devbox here: its macOS install took 186 s of a 6 min job. The runner's
+  # own rustup plus setup-php gives the tests the same `php` and `composer`
+  # on PATH in seconds. Lints that don't depend on the OS stay Linux-only.
   check-macos:
     if: github.event_name == 'push'
     runs-on: macos-latest
@@ -76,22 +79,22 @@ jobs:
         with:
           shared-key: check-macos
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
-          enable-cache: true
-      - run: devbox run -- cargo fmt --check
-      - run: devbox run -- cargo clippy --all-targets -- -D warnings
-      - run: devbox run -- cargo nextest run
+          php-version: "8.4"
+          tools: composer:2
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: nextest
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo nextest run
         env:
           VIVACE_TEST_NETWORK: "1"
-      - run: devbox run -- cargo deny check
-      - run: devbox run -- cargo machete
-      - run: devbox run -- env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
   # Report only, no threshold (#45): surfaces which parts of the solver port
-  # and lock writer are untested, not a number to gate on.
+  # and lock writer are untested, not a number to gate on. Not chained
+  # behind `check`: the chain was a 5 min critical path for a report (#195).
   coverage:
-    needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -119,56 +122,69 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # One job per project so the two hyperfine runs overlap instead of
+  # queueing (#195). Each job uploads its own results and baseline candidate;
+  # a candidate carries the committed baseline's other project untouched.
   bench:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: monolog
+            dir: tests/fixtures/monolog
+            out: bench/results
+            compare_args: ""
+          # bench/laravel (101 packages) is a second, larger project so a
+          # regression that only shows with real package counts doesn't hide
+          # behind monolog's tiny warm/noop times (#164).
+          - project: laravel
+            dir: bench/laravel
+            out: bench/results/laravel
+            compare_args: --project laravel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: bench
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.project == 'monolog' }}
       - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
         with:
           enable-cache: true
       - run: devbox run -- cargo build --release
-      - run: devbox run -- bench/run.sh tests/fixtures/monolog composer viv
+      - run: devbox run -- bench/run.sh ${{ matrix.dir }} composer viv
         env:
           BENCH_RUNS: 5
-      # bench/laravel (101 packages) is a second, larger project so a
-      # regression that only shows with real package counts doesn't hide
-      # behind monolog's tiny warm/noop times (#164). BENCH_OUT keeps its
-      # results out of bench/results/viv.json, which monolog just wrote.
-      - run: devbox run -- bench/run.sh bench/laravel composer viv
-        env:
-          BENCH_RUNS: 5
-          BENCH_OUT: bench/results/laravel
+          BENCH_OUT: ${{ matrix.out }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: bench-results
+          name: bench-results-${{ matrix.project }}
           path: bench/results/**/*.json
       # Fails the job on a warm, no-op or update-offline (#165) regression past
       # tolerance on viv/composer's ratio (runner-independent, see
       # bench/compare.py); skips with a notice if bench/results/baseline.json
       # has no entry yet for this project. update-warm stays informational (#159).
-      - run: python3 bench/compare.py bench/results/viv.json bench/results/viv-update.json bench/results/viv-update-offline.json bench/results/composer.json bench/results/composer-update.json --baseline bench/results/baseline.json
-      - run: python3 bench/compare.py bench/results/laravel/viv.json bench/results/laravel/viv-update.json bench/results/laravel/viv-update-offline.json bench/results/laravel/composer.json bench/results/laravel/composer-update.json --project laravel --baseline bench/results/baseline.json
+      - run: python3 bench/compare.py $O/viv.json $O/viv-update.json $O/viv-update-offline.json $O/composer.json $O/composer-update.json ${{ matrix.compare_args }} --baseline bench/results/baseline.json
+        env:
+          O: ${{ matrix.out }}
       # Runners differ from a maintainer's machine, so the baseline can't come
       # from a local run: this candidate is uploaded for a maintainer to
       # download and commit as bench/results/baseline.json (see bench/results/README.md).
       - run: |
           cp bench/results/baseline.json /tmp/baseline-candidate.json
-          python3 bench/compare.py bench/results/viv.json bench/results/viv-update.json bench/results/viv-update-offline.json bench/results/composer.json bench/results/composer-update.json --baseline /tmp/baseline-candidate.json --write-baseline
-          python3 bench/compare.py bench/results/laravel/viv.json bench/results/laravel/viv-update.json bench/results/laravel/viv-update-offline.json bench/results/laravel/composer.json bench/results/laravel/composer-update.json --project laravel --baseline /tmp/baseline-candidate.json --write-baseline
+          python3 bench/compare.py $O/viv.json $O/viv-update.json $O/viv-update-offline.json $O/composer.json $O/composer-update.json ${{ matrix.compare_args }} --baseline /tmp/baseline-candidate.json --write-baseline
+        env:
+          O: ${{ matrix.out }}
         if: always()
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: baseline-candidate
+          name: baseline-candidate-${{ matrix.project }}
           path: /tmp/baseline-candidate.json
       # #183: the noise gate fails often enough that continue-on-error hides
       # it from the run's status; this keeps a red bench visible instead of
       # silently green.
       - if: failure()
-        run: "echo '**bench gate failed**: noise gate, see #183 (bench: the Laravel no-op cell is noisier than the 5 ms slack)' >> \"$GITHUB_STEP_SUMMARY\""
+        run: "echo '**bench gate failed** (${{ matrix.project }}): noise gate, see #183 (bench: the Laravel no-op cell is noisier than the 5 ms slack)' >> \"$GITHUB_STEP_SUMMARY\""

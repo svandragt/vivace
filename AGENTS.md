@@ -120,7 +120,7 @@ project, unlike the local `bench/laravel` numbers above) and
 `bench/compare.py` fails the job if either mean rises more than 15% above
 `bench/results/baseline.json`. That baseline is measured on GitHub's runners,
 not Sander's machine, so it isn't written by a local run: a maintainer
-downloads the `baseline-candidate` artifact from a green CI run and commits it
+downloads the `baseline-candidate-<project>` artifact from a green CI run and commits it
 as `bench/results/baseline.json`. Run `make bench-check` to reproduce the same
 check locally against the committed baseline.
 
@@ -161,7 +161,7 @@ check locally against the committed baseline.
    (`.claude/skills/triage-milestones/`): prune the current one to its
    theme and seed the next.
 3. Refresh the bench baseline from at least ten runs, not from one (#183).
-   Download the `bench-results` artifact from ten or more recent CI runs on
+   Download the `bench-results-<project>` artifact from ten or more recent CI runs on
    `main` into sibling directories, then take the per-scenario median:
 
    ```sh

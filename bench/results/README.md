@@ -71,7 +71,7 @@ and `noop`. But it's informational only, not gated — see "`update-offline`'s
 ratio was gated on the wrong yardstick" below (#204) for why.
 
 `baseline.json` never updates itself: every release downloads the CI run's
-`baseline-candidate` artifact and commits it as the new `baseline.json` (see
+`baseline-candidate-<project>` artifact and commits it as the new `baseline.json` (see
 "After a release" in `AGENTS.md`). A scenario's new baseline ratio may only
 go down or stay within tolerance of the old one; a rise is a regression to
 explain in the release notes, not a new floor.
@@ -87,7 +87,7 @@ the edge of the distribution rather than its middle.
 
 `bench/compare.py --merge-runs <run-dir>...` regenerates a project's
 baseline entry as the per-scenario MEDIAN across several runs instead of
-one. Each `<run-dir>` is a downloaded `bench-results` artifact directory:
+one. Each `<run-dir>` is a downloaded `bench-results-<project>` artifact directory:
 the fixed files `bench/run.sh`/`ci.yml` write (`viv.json`,
 `viv-update.json`, `viv-update-offline.json`, `composer.json`,
 `composer-update.json`) at the top level for the default `monolog` project,
@@ -96,7 +96,7 @@ For each run, `--merge-runs` computes the same ratios `--write-baseline`
 would for that run alone, then writes the median across all runs as
 `--project`'s baseline entry, leaving other projects' entries untouched.
 
-To regenerate: download the `bench-results` artifact from at least ten
+To regenerate: download the `bench-results-<project>` artifact from at least ten
 recent CI runs on `main` into sibling directories (one per run), then run
 once per project:
 
