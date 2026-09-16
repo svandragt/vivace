@@ -10,6 +10,17 @@
 //! reproduce — see `src/validate.rs`'s module doc), so an installed
 //! dependency's own `composer.json` is the only place those two errors show
 //! up in `ConfigValidator`'s own formatted output.
+//!
+//! `fixable/` (#262, `--fix`) hits the same `RootPackageLoader` abort for
+//! two of the six fixable findings: a self-require and an upper-case name
+//! both crash real `composer validate` on the root file (verified with
+//! `devbox run -- composer validate` against each in isolation), so its
+//! `composer.json` carries the other four (stale lock, require/require-dev
+//! overlap, a require a provide already shadows, an orphaned
+//! `scripts-descriptions` entry) plus one finding `--fix` leaves alone (a
+//! missing `description`); `src/validate.rs`'s own `tests` module covers the
+//! self-require/rename fixes directly, without a Composer recording to
+//! diff against.
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -36,8 +47,12 @@ fn expected(scenario: &str, name: &str) -> String {
     fs_err::read_to_string(fixture(scenario).join("expected").join(name)).unwrap()
 }
 
-/// Asserts `viv validate <args>` in `scenario` matches Composer's recorded
-/// `expected/<label>.{out,err}` and exit code, byte-for-byte.
+/// Asserts `viv validate <args>` in `scenario` starts with Composer's
+/// recorded `expected/<label>.{out,err}` bytes exactly, and exit code
+/// matches. `--fix` (#262) appends its own lines after Composer's own
+/// report, so this is a prefix match, not equality: whatever follows the
+/// recorded bytes must be empty or start with the blank line viv's own
+/// output adds before appending.
 fn assert_matches_composer(scenario: &str, args: &[&str], label: &str, exit_code: i32) {
     let output = run(scenario, args);
     assert_eq!(
@@ -45,15 +60,27 @@ fn assert_matches_composer(scenario: &str, args: &[&str], label: &str, exit_code
         Some(exit_code),
         "{scenario} {args:?}: exit code"
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        expected(scenario, &format!("{label}.out")),
-        "{scenario} {args:?}: stdout"
+    assert_starts_with_composer(
+        &String::from_utf8_lossy(&output.stdout),
+        &expected(scenario, &format!("{label}.out")),
+        &format!("{scenario} {args:?}: stdout"),
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        expected(scenario, &format!("{label}.err")),
-        "{scenario} {args:?}: stderr"
+    assert_starts_with_composer(
+        &String::from_utf8_lossy(&output.stderr),
+        &expected(scenario, &format!("{label}.err")),
+        &format!("{scenario} {args:?}: stderr"),
+    );
+}
+
+fn assert_starts_with_composer(actual: &str, recorded: &str, context: &str) {
+    assert!(
+        actual.starts_with(recorded),
+        "{context}: does not start with Composer's recorded bytes\n--- actual ---\n{actual}\n--- recorded ---\n{recorded}"
+    );
+    let rest = &actual[recorded.len()..];
+    assert!(
+        rest.is_empty() || rest.starts_with('\n'),
+        "{context}: bytes after Composer's own output must start with a blank line, got {rest:?}"
     );
 }
 
@@ -174,5 +201,81 @@ fn project_dir_combined_with_file_is_an_error() {
         String::from_utf8_lossy(&output.stderr).contains("cannot combine a FILE argument"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// #262: without `--fix`, a count of how many findings could be
+/// auto-fixed, after a blank line following Composer's own report.
+#[test]
+fn fixable_count_line_follows_composers_report() {
+    assert_matches_composer("fixable", &[], "plain", 2);
+    let output = run("fixable", &[]);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "{}\n4 of 5 findings can be fixed: run viv validate --fix\n",
+            expected("fixable", "plain.err")
+        )
+    );
+}
+
+/// Copies `scenario`'s `composer.json`/`composer.lock` into `dest`, so a
+/// test that mutates them (`--fix`) never touches the committed fixture.
+fn copy_fixture_project(scenario: &str, dest: &Path) {
+    for name in ["composer.json", "composer.lock"] {
+        fs_err::copy(fixture(scenario).join(name), dest.join(name)).unwrap();
+    }
+}
+
+/// #262: `--fix` applies every fixable finding in a temp copy, writes
+/// `composer.json` back through the normaliser, rewrites the stale lock's
+/// `content-hash`, and re-runs validation reporting what's left; a second
+/// plain run afterwards sees only the one finding `--fix` leaves alone (a
+/// missing `description`), with no count line (nothing left to fix).
+#[test]
+fn fix_applies_every_fixable_finding() {
+    let dir = tempfile::tempdir().unwrap();
+    copy_fixture_project("fixable", dir.path());
+
+    let output = Command::new(cargo_bin("viv"))
+        .current_dir(dir.path())
+        .args(["validate", "--fix"])
+        .output()
+        .expect("failed to run viv");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+    let fixed_json = fs_err::read_to_string(dir.path().join("composer.json")).unwrap();
+    let normalized_expected = {
+        let scratch = tempfile::tempdir().unwrap();
+        fs_err::copy(
+            fixture("fixable").join("expected/fixed.composer.json"),
+            scratch.path().join("composer.json"),
+        )
+        .unwrap();
+        Command::new(cargo_bin("viv"))
+            .current_dir(scratch.path())
+            .arg("normalize")
+            .output()
+            .expect("failed to run viv normalize");
+        fs_err::read_to_string(scratch.path().join("composer.json")).unwrap()
+    };
+    assert_eq!(fixed_json, normalized_expected);
+
+    // A second run sees only the unfixable finding, with the lock now
+    // fresh (no "# Lock file errors" section) and no count line (nothing
+    // left `--fix` could resolve).
+    let second = Command::new(cargo_bin("viv"))
+        .current_dir(dir.path())
+        .arg("validate")
+        .output()
+        .expect("failed to run viv");
+    assert_eq!(second.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&second.stderr),
+        "./composer.json is valid for simple usage with Composer but has\n\
+         strict errors that make it unable to be published as a package\n\
+         See https://getcomposer.org/doc/04-schema.md for details on the schema\n\
+         # Publish errors\n\
+         - description : The property description is required\n"
     );
 }

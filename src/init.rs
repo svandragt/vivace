@@ -169,6 +169,7 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
         no_check_publish: true,
         with_dependencies: false,
         strict: false,
+        fix: false,
     })?;
     if status >= 2 {
         bail!("{} failed validation", composer_json_path.display());

@@ -711,7 +711,9 @@ fn add_link(root: &mut Value, link_type: &str, package: &str, constraint: &str) 
 /// `require-dev` here. A no-op if `main_node` is absent or doesn't hold
 /// `package` (case-insensitively). Returns whether anything was actually
 /// removed, so `run_remove` can tell a real removal from a typo (#241).
-fn remove_sub_node(root: &mut Value, main_node: &str, package: &str) -> bool {
+/// `pub(crate)`: `validate.rs`'s own `--fix` (#262) reuses this same
+/// removal, `main_node` there ranging over link and scripts sections too.
+pub(crate) fn remove_sub_node(root: &mut Value, main_node: &str, package: &str) -> bool {
     let Some(Value::Object(links)) = root.get_mut(main_node) else {
         return false;
     };
@@ -727,8 +729,9 @@ fn remove_sub_node(root: &mut Value, main_node: &str, package: &str) -> bool {
 }
 
 /// `JsonManipulator::removeMainKeyIfEmpty`: drop `key` from the root object
-/// if its value parsed to an empty object or array.
-fn remove_main_key_if_empty(root: &mut Value, key: &str) {
+/// if its value parsed to an empty object or array. `pub(crate)`: shared with
+/// `remove_sub_node` above.
+pub(crate) fn remove_main_key_if_empty(root: &mut Value, key: &str) {
     let is_empty = match root.get(key) {
         Some(Value::Object(o)) => o.is_empty(),
         Some(Value::Array(a)) => a.is_empty(),

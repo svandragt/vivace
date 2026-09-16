@@ -677,8 +677,10 @@ fn locked_packages_by_name(lock: &Value) -> HashMap<String, Value> {
 
 /// `composer update --lock`: re-run `Locker::setLockData`'s own
 /// normalisation (content-hash, key order, `fixupJsonDataType`) over the
-/// current lock's package lists, without solving anything.
-fn lock_only(lock_path: &Path, composer_json: &[u8]) -> Result<String> {
+/// current lock's package lists, without solving anything. `pub(crate)`:
+/// `validate.rs`'s own `--fix` (#262) reuses this exact re-derivation to
+/// rewrite a stale lock's `content-hash` once it has fixed `composer.json`.
+pub(crate) fn lock_only(lock_path: &Path, composer_json: &[u8]) -> Result<String> {
     let lock_bytes = fs_err::read(lock_path).context("reading composer.lock")?;
     let lock: Value = serde_json::from_slice(&lock_bytes).context("parsing composer.lock")?;
 

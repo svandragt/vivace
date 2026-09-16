@@ -1,0 +1,11 @@
+./composer.json is valid for simple usage with Composer but has
+strict errors that make it unable to be published as a package
+See https://getcomposer.org/doc/04-schema.md for details on the schema
+# Publish errors
+- description : The property description is required
+# Lock file errors
+- The lock file is not up to date with the latest changes in composer.json, it is recommended that you run `composer update` or `composer update <package name>`.
+# General warnings
+- psr/log is required both in require and require-dev, this can lead to unexpected behavior
+- The package foo/bar in require is also listed in provide which satisfies the requirement. Remove it from provide if you wish to install it.
+- Description for non-existent script "lint" found in "scripts-descriptions"

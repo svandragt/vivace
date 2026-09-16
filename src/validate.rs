@@ -46,6 +46,7 @@ use clap::Args;
 use serde_json::Value;
 
 use crate::lock;
+use crate::normalize;
 use crate::semver;
 
 /// `viv validate` flags (`ValidateCommand::configure`, minus
@@ -87,6 +88,11 @@ pub struct ValidateArgs {
     /// Exit non-zero for warnings too, not just errors.
     #[arg(long)]
     pub strict: bool,
+    /// Apply every finding that has one unambiguous fix (#262), then
+    /// re-run validation and report what's left. Composer has no
+    /// equivalent flag.
+    #[arg(long)]
+    pub fix: bool,
 }
 
 /// `ValidateCommand`'s own doc block: `0` ok, `1` warnings (`--strict`
@@ -139,10 +145,6 @@ pub fn run(args: &ValidateArgs) -> Result<u8> {
         return Ok(EXIT_UNREADABLE);
     };
 
-    let check_all = !args.no_check_all;
-    let mut result = validate_manifest(&manifest, check_all);
-
-    let check_publish = !args.no_check_publish;
     let project_dir = if has_project_dir {
         args.project_dir.clone()
     } else {
@@ -151,6 +153,14 @@ pub fn run(args: &ValidateArgs) -> Result<u8> {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf()
     };
+
+    if args.fix {
+        return run_fix(args, &read_path, &file, &project_dir, manifest, &bytes);
+    }
+
+    let check_all = !args.no_check_all;
+    let mut result = validate_manifest(&manifest, check_all);
+    let check_publish = !args.no_check_publish;
     let (check_lock, lock_errors) = lock_check(args, &project_dir, &bytes)?;
 
     let name = file.display().to_string();
@@ -162,6 +172,7 @@ pub fn run(args: &ValidateArgs) -> Result<u8> {
         &lock_errors,
         true,
     );
+    print_fixable_count(&result);
     let mut exit_code = exit_for(&result, args.strict);
 
     if args.with_dependencies {
@@ -174,6 +185,230 @@ pub fn run(args: &ValidateArgs) -> Result<u8> {
     }
 
     Ok(exit_code)
+}
+
+/// `viv validate --fix` (#262): applies every fixable finding from the
+/// issue's own table (`apply_fixable_fixes`), writes `composer.json` back
+/// through the normaliser (same write-then-normalize path `update.rs`'s own
+/// `bump-after-update` reuses), rewrites the lock's `content-hash` the way
+/// `update --lock` does if it was stale, then re-runs validation and reports
+/// what's left. Composer has no `--fix`, so there is no oracle for any of
+/// this beyond the plain re-run's own report, which stays Composer-exact.
+fn run_fix(
+    args: &ValidateArgs,
+    read_path: &Path,
+    file: &Path,
+    project_dir: &Path,
+    manifest: Value,
+    original_bytes: &[u8],
+) -> Result<u8> {
+    let check_all = !args.no_check_all;
+    let check_publish = !args.no_check_publish;
+    let (_, lock_errors) = lock_check(args, project_dir, original_bytes)?;
+    let lock_was_stale = lock_errors
+        .iter()
+        .any(|error| error == lock::STALE_LOCK_VALIDATE_WARNING);
+
+    let mut root = manifest;
+    let fix_lines = apply_fixable_fixes(&mut root);
+    for line in &fix_lines {
+        err_out(line);
+    }
+
+    let indent = normalize::detect_indent(&String::from_utf8_lossy(original_bytes));
+    crate::require::write_composer_json(read_path, &root)?;
+    normalize::maybe_normalize(read_path, &indent)?;
+
+    let lock_path = project_dir.join("composer.lock");
+    let mut rewrote_lock = false;
+    if lock_was_stale && lock_path.exists() {
+        let fixed_bytes = fs_err::read(read_path).context("reading composer.json")?;
+        let lock = crate::update::lock_only(&lock_path, &fixed_bytes)?;
+        fs_err::write(&lock_path, lock)?;
+        err_out("Updated composer.lock's content-hash");
+        rewrote_lock = true;
+    }
+
+    if !fix_lines.is_empty() || rewrote_lock {
+        err_out("");
+    }
+
+    let bytes = fs_err::read(read_path).context("reading composer.json")?;
+    let fixed_manifest: Value = serde_json::from_slice(&bytes).context("parsing composer.json")?;
+    let mut result = validate_manifest(&fixed_manifest, check_all);
+    let (check_lock, lock_errors) = lock_check(args, project_dir, &bytes)?;
+    let name = file.display().to_string();
+    output_result(
+        &name,
+        &mut result,
+        check_publish,
+        check_lock,
+        &lock_errors,
+        true,
+    );
+
+    let remaining = result.errors.len() + result.warnings.len();
+    if remaining > 0 {
+        err_out("");
+        err_out(&format!("{remaining} findings remain that need a decision"));
+    }
+
+    Ok(exit_for(&result, args.strict))
+}
+
+/// `--fix`'s own fixes (#262's table), applied to `root` in the issue's
+/// order and returning each one's single stderr line. Re-derives what to
+/// change straight from `root` rather than parsing `is_fixable`'s messages,
+/// so the two can't silently disagree about what "fixed" means. The
+/// provide/replace shadowing fix removes from `provide`/`replace`, exactly
+/// as Composer's own warning text says ("Remove it from provide/replace if
+/// you wish to install it."), keeping `require` so the real package still
+/// installs.
+fn apply_fixable_fixes(root: &mut Value) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if let Some(required) = root
+        .get("require")
+        .and_then(Value::as_object)
+        .map(|require| require.keys().cloned().collect::<Vec<_>>())
+    {
+        for package in required {
+            if root
+                .get("require-dev")
+                .and_then(Value::as_object)
+                .is_some_and(|dev| dev.contains_key(&package))
+                && crate::require::remove_sub_node(root, "require-dev", &package)
+            {
+                lines.push(format!(
+                    "Removed {package} from require-dev, it is already in require"
+                ));
+            }
+        }
+    }
+    crate::require::remove_main_key_if_empty(root, "require-dev");
+
+    for link_type in ["provide", "replace"] {
+        let Some(shadowing) = root
+            .get(link_type)
+            .and_then(Value::as_object)
+            .map(|links| links.keys().cloned().collect::<Vec<_>>())
+        else {
+            continue;
+        };
+        for package in shadowing {
+            let required = root
+                .get("require")
+                .and_then(Value::as_object)
+                .is_some_and(|require| require.contains_key(&package));
+            if required && crate::require::remove_sub_node(root, link_type, &package) {
+                lines.push(format!(
+                    "Removed {package} from {link_type}, it is also required"
+                ));
+            }
+        }
+        crate::require::remove_main_key_if_empty(root, link_type);
+    }
+
+    for section in ["scripts-descriptions", "scripts-aliases"] {
+        let Some(orphans) = root.get(section).and_then(Value::as_object).map(|entries| {
+            entries
+                .keys()
+                .filter(|name| {
+                    !root
+                        .get("scripts")
+                        .and_then(Value::as_object)
+                        .is_some_and(|scripts| scripts.contains_key(name.as_str()))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        }) else {
+            continue;
+        };
+        for name in orphans {
+            if crate::require::remove_sub_node(root, section, &name) {
+                lines.push(format!("Removed \"{name}\" from {section}, no such script"));
+            }
+        }
+        crate::require::remove_main_key_if_empty(root, section);
+    }
+
+    if let Some(root_name) = root.get("name").and_then(Value::as_str).map(str::to_string) {
+        for link_type in ["require", "require-dev", "conflict", "provide", "replace"] {
+            let Some(self_key) = root
+                .get(link_type)
+                .and_then(Value::as_object)
+                .and_then(|links| {
+                    links
+                        .keys()
+                        .find(|key| key.eq_ignore_ascii_case(&root_name))
+                        .cloned()
+                })
+            else {
+                continue;
+            };
+            if crate::require::remove_sub_node(root, link_type, &self_key) {
+                lines.push(format!(
+                    "Removed {self_key} from {link_type}, a package cannot set a {link_type} on \
+                     itself"
+                ));
+            }
+            crate::require::remove_main_key_if_empty(root, link_type);
+        }
+
+        if root_name.contains(|c: char| c.is_ascii_uppercase()) {
+            let suggested = suggest_kebab_name(&root_name);
+            if let Some(obj) = root.as_object_mut() {
+                obj.insert("name".to_string(), Value::String(suggested.clone()));
+            }
+            lines.push(format!(
+                "Renamed package to \"{suggested}\"; check anywhere the old name is referenced"
+            ));
+        }
+    }
+
+    lines
+}
+
+/// Findings `--fix` (#262) can resolve on its own, matched by the exact
+/// message shape each check pushes: only used for the "N of M can be fixed"
+/// summary line, never to decide what to change (`apply_fixable_fixes` does
+/// that straight off the manifest). The schema-pattern-mismatch line an
+/// upper-case name also triggers (`check_name`'s first push) isn't matched
+/// here: it also fires for names invalid in ways a rename can't fix, and no
+/// fixture yet needs the two told apart.
+/// ponytail: undercounts by at most one line on a manifest with an
+/// upper-case name; split it out once a fixture needs that precision.
+fn is_fixable(message: &str) -> bool {
+    message == lock::STALE_LOCK_VALIDATE_WARNING
+        || message.contains("required both in require and require-dev")
+        || (message.starts_with("The package ") && message.contains(" is also listed in "))
+        || message.contains("found in \"scripts-descriptions\"")
+        || message.contains("found in \"scripts-aliases\"")
+        || (message.contains(" : a package cannot set a ") && message.ends_with(" on itself"))
+        || message.contains("it should not contain uppercase characters. We suggest using")
+        || (message.starts_with("Name \"") && message.contains("does not match the best practice"))
+}
+
+/// The "N of M findings can be fixed" line (#262), printed after Composer's
+/// own report when at least one finding `is_fixable`. `result` has already
+/// been mutated by `output_result` (publish/lock findings folded into
+/// `errors`/`warnings` exactly as printed), so `errors.len() +
+/// warnings.len()` here is exactly what just appeared on screen.
+fn print_fixable_count(result: &Validated) {
+    let total = result.errors.len() + result.warnings.len();
+    let fixable = result
+        .errors
+        .iter()
+        .chain(&result.warnings)
+        .filter(|message| is_fixable(message))
+        .count();
+    if fixable == 0 {
+        return;
+    }
+    err_out("");
+    err_out(&format!(
+        "{fixable} of {total} findings can be fixed: run viv validate --fix"
+    ));
 }
 
 /// `ValidateCommand::execute`'s lock-check block: `Locker::isFresh` and
@@ -831,4 +1066,53 @@ fn out(message: &str) {
 fn err_out(message: &str) {
     use std::io::Write as _;
     let _ = writeln!(std::io::stderr().lock(), "{message}");
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::apply_fixable_fixes;
+
+    /// #262: a package requiring itself is one of `--fix`'s six fixes, but
+    /// never reachable as an ordinary `composer validate` finding on a
+    /// *root* project — Composer 2.10.2's own `RootPackageLoader` aborts
+    /// the whole command first (`In RootPackageLoader.php line 169: Root
+    /// package '...' cannot require itself`), verified with `devbox run --
+    /// composer validate` against this exact manifest, so
+    /// `tests/fixtures/validate/fixable/` can't record a Composer oracle
+    /// for it. Covered here directly instead.
+    #[test]
+    fn fix_deletes_a_self_require() {
+        let mut root = json!({
+            "name": "acme/selfreq",
+            "require": {"php": ">=8.1", "acme/selfreq": "^1.0"},
+        });
+        let lines = apply_fixable_fixes(&mut root);
+        assert_eq!(
+            lines,
+            vec!["Removed acme/selfreq from require, a package cannot set a require on itself"]
+        );
+        assert_eq!(
+            root,
+            json!({"name": "acme/selfreq", "require": {"php": ">=8.1"}})
+        );
+    }
+
+    /// #262: same reachability caveat as above — an upper-case root name
+    /// also aborts real Composer's `validate` before it would ever print
+    /// the rename suggestion (verified the same way).
+    #[test]
+    fn fix_renames_an_uppercase_name() {
+        let mut root = json!({"name": "Acme/UpperCase"});
+        let lines = apply_fixable_fixes(&mut root);
+        assert_eq!(
+            lines,
+            vec![
+                "Renamed package to \"acme/upper-case\"; check anywhere the old name is \
+                 referenced"
+            ]
+        );
+        assert_eq!(root["name"], "acme/upper-case");
+    }
 }

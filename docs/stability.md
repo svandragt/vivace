@@ -86,7 +86,7 @@ warning to stderr the first time it fires. The next minor release removes
 it.
 
 viv rewrites `composer.json` only when a command edits it (`add`, `rm`,
-`init`); `install` and `update` only ever read it.
+`init`, `validate --fix`); `install` and `update` only ever read it.
 
 The first instance is `--no-normalize` on `install` and `dump-autoload`
 (#95): since 0.6, neither command touches `composer.json`, so the flag has

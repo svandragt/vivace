@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+- `viv validate --fix` applies the findings that have one answer — a package in both `require` and `require-dev`, a `provide`/`replace` entry for a package the root also requires, `scripts-descriptions`/`scripts-aliases` entries for scripts that don't exist, a self-require, a name that isn't lower-cased-with-dashes, and a stale lock `content-hash` — writes `composer.json` through the normaliser, and re-validates. Without `--fix`, a plain `viv validate` says after Composer's findings how many of them `--fix` would handle; the findings themselves stay byte-identical to Composer's ([#262](https://github.com/svandragt/vivace/issues/262))
+
+### Fixed
+- A lock `dist.url` carrying Composer's `%package%`, `%version%`, `%prettyVersion%`, `%reference%` or `%type%` placeholders is expanded before the download instead of requested literally; BookStack's Codeberg dist failed on it ([#257](https://github.com/svandragt/vivace/issues/257))
+- A root requirement that a locked package satisfies through `replace` or `provide` counts as present in the lock; HumHub's `codeception/phpunit-wrapper`, replaced by `codeception/codeception`, was reported as a merge-conflict lock ([#258](https://github.com/svandragt/vivace/issues/258))
+- `autoload_files.php` orders packages the way Composer's install transaction does, including on a `requires` cycle, and a package's declared `bin` gets its execute bits; akaunting's `vendor/` differed on both ([#259](https://github.com/svandragt/vivace/issues/259))
 
 ## [0.13.0] - 2026-09-15
 ### Changed

@@ -1,0 +1,21 @@
+{
+    "name": "acme/fixable-project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.1",
+        "psr/log": "^3.0",
+        "foo/bar": "^1.0"
+    },
+    "require-dev": {
+        "psr/log": "^3.0"
+    },
+    "provide": {
+        "foo/bar": "1.0.0"
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "scripts-descriptions": {
+        "lint": "Lint the code"
+    }
+}
