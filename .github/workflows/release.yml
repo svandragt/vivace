@@ -137,22 +137,12 @@ jobs:
         with:
           shared-key: publish
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # crates.io is gated on 1.0 (#166), and a publish cannot be undone —
-      # only yanked — so a 0.x tag must not reach it even once the token
-      # exists. The version gate is checked here rather than in the job's
-      # `if:` so the summary can say which condition stopped it.
-      - id: gate
-        run: |
-          case "$TAG" in
-            v0.*|0.*) echo "one_zero=false" >> "$GITHUB_OUTPUT" ;;
-            *) echo "one_zero=true" >> "$GITHUB_OUTPUT" ;;
-          esac
-      - if: steps.gate.outputs.one_zero == 'true' && env.CARGO_REGISTRY_TOKEN != ''
+      # A publish cannot be undone, only yanked, so this runs last, once the
+      # binaries binstall resolves to are already uploaded. 0.13.0 was
+      # published by hand (#166); every tag since publishes here.
+      - if: env.CARGO_REGISTRY_TOKEN != ''
         run: cargo publish
-      - if: steps.gate.outputs.one_zero != 'true'
-        run: |
-          echo "crates.io publish skipped: $TAG is pre-1.0, see #166." >> "$GITHUB_STEP_SUMMARY"
-      - if: steps.gate.outputs.one_zero == 'true' && env.CARGO_REGISTRY_TOKEN == ''
+      - if: env.CARGO_REGISTRY_TOKEN == ''
         run: |
           echo 'crates.io publish skipped: no CARGO_REGISTRY_TOKEN secret set.' >> "$GITHUB_STEP_SUMMARY"
 

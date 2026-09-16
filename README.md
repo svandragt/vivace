@@ -13,7 +13,7 @@ covered.
 ## Try it
 
 ```sh
-cargo binstall --git https://github.com/svandragt/vivace vivace
+cargo binstall vivace
 viv install     # in a project with composer.json and composer.lock
 ```
 
@@ -27,10 +27,11 @@ and static musl builds, aarch64 as static musl, also packaged as a .deb;
 macOS x86_64 and aarch64). To build from source instead:
 
 ```sh
-cargo install --git https://github.com/svandragt/vivace --tag v0.13.0 vivace
+cargo install vivace --locked
 ```
 
-Both commands also upgrade an existing install; add `--force` to
+Both commands also upgrade an existing install: binstall only downloads when
+the release is newer than the one installed; add `--force` to
 `cargo install` when the version has not changed.
 
 If Composer already wrote the `vendor/` directory, viv adopts it
