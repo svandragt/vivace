@@ -101,12 +101,12 @@ def find_viv_binary():
 
 
 def viv_help(cmd):
-    """`$VIV <cmd> --help` output, ready to drop into a fenced code block."""
+    """`$VIV <cmd> --help` output, ready to drop into a fenced code block. An
+    empty cmd means bare `viv --help`, the global options and command list."""
     binary = find_viv_binary()
+    args = [binary, "--help"] if not cmd else [binary, cmd, "--help"]
     try:
-        result = subprocess.run(
-            [binary, cmd, "--help"], capture_output=True, text=True, check=True
-        )
+        result = subprocess.run(args, capture_output=True, text=True, check=True)
     except FileNotFoundError:
         raise SystemExit(f"site/build.py: $VIV points at a missing binary: {binary}")
     return result.stdout.strip("\n")
@@ -253,17 +253,27 @@ def rewrite_relative_links(text, current_rel_path):
     return re.sub(r"\[([^\]]*)\]\(([^)]+)\)", replace, text)
 
 
-def demote_headings(text):
-    """Push every Markdown heading down one level, so a `###` lifted from a
-    README section nests under the page's own `##` heading."""
-    return re.sub(r"^(#{1,6} )", r"#\1", text, flags=re.MULTILINE)
+def demote_relative(text, offset):
+    """Shift every Markdown heading in text by offset levels (clamped to
+    h1..h6), so a section lifted from a README/doc nests under whatever
+    page heading precedes it rather than always one level down."""
+    if offset == 0:
+        return text
+
+    def shift(match):
+        level = max(1, min(6, len(match.group(1)) + offset))
+        return "#" * level + " "
+
+    return re.sub(r"^(#{1,6}) ", shift, text, flags=re.MULTILINE)
 
 
 def section_from_file(rel_path, heading):
-    """Return the body text of a `## <heading>` or `### <heading>` section
+    """Return (level, body) for a `## <heading>` or `### <heading>` section
     in a file at rel_path (up to the next heading of that level or
-    shallower), links rewritten to point at GitHub and headings demoted to
-    nest under the page's own."""
+    shallower): level is that heading's own depth, and body is the section
+    text below it, links rewritten to point at GitHub. Headings inside body
+    are left at their source depth -- callers demote them relative to
+    wherever the section lands."""
     text = (ROOT / rel_path).read_text()
     start = re.search(rf"^(#{{2,3}}) {re.escape(heading)}\n", text, re.MULTILINE)
     if not start:
@@ -275,11 +285,12 @@ def section_from_file(rel_path, heading):
     # Footnote markers ([^12]) point at definitions outside this section;
     # the "From the README" link above each section is where to find them.
     body = re.sub(r"\[\^\d+\]", "", body)
-    return demote_headings(rewrite_relative_links(body, rel_path))
+    return level, rewrite_relative_links(body, rel_path)
 
 
-def readme_section(heading):
-    return section_from_file("README.md", heading)
+def readme_section(heading, offset=1):
+    level, body = section_from_file("README.md", heading)
+    return demote_relative(body, offset)
 
 
 def readme_fenced_block(heading):
@@ -292,21 +303,34 @@ def readme_fenced_block(heading):
     return match.group(0)
 
 
-def doc_section(path, heading):
-    return section_from_file(path, heading)
+def doc_section(path, heading, offset=1):
+    level, body = section_from_file(path, heading)
+    return demote_relative(body, offset)
 
 
-GENERIC_PLACEHOLDER_RE = re.compile(r"\{\{(help|readme|doc):([^}]+)\}\}")
+GENERIC_PLACEHOLDER_RE = re.compile(r"\{\{(help|readme|doc):([^}]*)\}\}")
+
+
+def preceding_heading_level(text, pos):
+    """The level of the last Markdown heading before pos in text, or 1 (the
+    page's own `#` title) when nothing precedes it."""
+    heads = list(re.finditer(r"^(#{1,6}) ", text[:pos], re.MULTILINE))
+    return len(heads[-1].group(1)) if heads else 1
 
 
 def resolve_generic_placeholder(match):
     kind, arg = match.group(1), match.group(2)
     if kind == "help":
         return viv_help(arg)
+    # Demote so the section's own top heading lands one level below whatever
+    # page heading precedes this placeholder, not always one level down.
+    page_level = preceding_heading_level(match.string, match.start())
     if kind == "readme":
-        return readme_section(arg)
-    path, _, heading = arg.partition("#")
-    return doc_section(path, heading)
+        level, body = section_from_file("README.md", arg)
+    else:
+        path, _, heading = arg.partition("#")
+        level, body = section_from_file(path, heading)
+    return demote_relative(body, page_level - level)
 
 
 def stability_summary():
