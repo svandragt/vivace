@@ -3,6 +3,7 @@
 Everything you need to install, run and troubleshoot viv day to day.
 
 - [Getting started](getting-started.html): a first project, end to end.
+- [Cheat sheet](cheatsheet.html): the common commands, one line each.
 - [Install and upgrade](install.html): prebuilt binaries, the `.deb`, and upgrading in place.
 - [Commands](commands.html): every subcommand's flags, straight from `--help`.
 - [Using viv as composer](shim.html): the `composer` shim, for scripts that call Composer by name.

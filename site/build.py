@@ -36,6 +36,7 @@ NAV = [("Home", "index.html"), ("Manual", "manual.html"), ("Compare", "compare.h
 # list; order here is the order readers see.
 MANUAL = [
     ("getting-started", "Getting started"),
+    ("cheatsheet", "Cheat sheet"),
     ("install", "Install and upgrade"),
     ("commands", "Commands"),
     ("shim", "Using viv as composer"),
