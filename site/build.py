@@ -16,6 +16,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import html as html_lib
 import json
 import urllib.request
 from pathlib import Path
@@ -427,6 +428,12 @@ def migrate_placeholders():
     }
 
 
+def excerpt(html, limit=80):
+    text = html_lib.unescape(re.sub(r"<[^>]+>", " ", html))
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+
 def latest_posts():
     """Render the newest five vivace-tagged posts, or "" when the feed is
     unreachable (a vandragt.com outage must not block a deploy) or empty."""
@@ -441,7 +448,10 @@ def latest_posts():
     lines = ["## Latest posts", ""]
     for item in items[:5]:
         date = item.get("date_published", "")[:10]
-        lines.append(f"- [{item['title']}]({item['url']}) <span class=\"source\">{date}</span>")
+        # JSON Feed makes `title` optional; a status post has none, so use
+        # the first line of its text instead.
+        title = item.get("title") or excerpt(item.get("content_text") or item.get("content_html", ""))
+        lines.append(f"- [{title}]({item['url']}) <span class=\"source\">{date}</span>")
     return "\n".join(lines)
 
 
