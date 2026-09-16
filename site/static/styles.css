@@ -159,3 +159,7 @@ th, td { text-align: left; padding: 0.4em 0.8em 0.4em 0; border-bottom: 1px soli
     color: var(--ink-soft);
     font-size: 0.875rem;
 }
+
+code, pre {
+    font-variant-ligatures: none;
+}
