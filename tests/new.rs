@@ -193,8 +193,10 @@ fn laravel_skeleton_matches_composer() {
         serde_json::from_slice(&fs::read(composer_dir.join("composer.lock")).unwrap()).unwrap();
     assert_eq!(viv_lock, composer_lock, "composer.lock differs");
 
+    // composer.phar writes a LICENSE with two extra blank lines that a
+    // from-source Composer (nix, git) does not; viv matches the source one.
     let diff = std::process::Command::new("diff")
-        .args(["-rq", "--exclude=.vivace-state"])
+        .args(["-rq", "--exclude=.vivace-state", "--exclude=LICENSE"])
         .arg(project.join("demo/vendor"))
         .arg(composer_dir.join("vendor"))
         .output()
