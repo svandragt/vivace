@@ -79,7 +79,7 @@ pub struct ValidateArgs {
     /// Don't check whether the lock file is up to date.
     #[arg(long = "no-check-lock")]
     pub no_check_lock: bool,
-    /// Don't check for publish errors (name best-practice violations).
+    /// Don't check for publish errors: a missing `description`, or a name that isn't lower-cased-with-dashes. For an application that will never be on Packagist.
     #[arg(long = "no-check-publish")]
     pub no_check_publish: bool,
     /// Also validate the `composer.json` of every installed dependency.
