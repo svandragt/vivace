@@ -918,7 +918,7 @@ fn extract_stability_flag(
         if stability == "stable" {
             continue;
         }
-        if stability_rank(stability) <= stability_rank(minimum_stability) {
+        if stability_rank(stability) < stability_rank(minimum_stability) {
             continue;
         }
         set_flag_if_less_stable(stability_flags, &name, stability);
@@ -1476,5 +1476,19 @@ mod tests {
             vec![vec!["vendor/b".to_string()]],
             "only the name missing from the prefetch should be requested"
         );
+    }
+
+    // #261: Composer keeps an inferred flag equal to `minimum-stability`
+    // (`$minimumStability > $stability` is the skip), so a `dev-*` require
+    // under `minimum-stability: dev` still lands in the lock's flags.
+    #[test]
+    fn inferred_dev_flag_equal_to_minimum_stability_is_kept() {
+        let mut flags = HashMap::new();
+        extract_stability_flag("Acme/Plugin", "dev-master", "dev", &mut flags);
+        assert_eq!(flags.get("acme/plugin"), Some(&"dev"));
+
+        let mut flags = HashMap::new();
+        extract_stability_flag("acme/plugin", "1.0.0-beta1", "dev", &mut flags);
+        assert!(flags.is_empty(), "beta is more stable than the dev minimum");
     }
 }
