@@ -107,6 +107,38 @@ pre code { padding: 0; background: none; }
 
 nav { display: flex; flex-wrap: wrap; gap: 1rem; font-size: 0.9375rem; }
 
+#site-search {
+    margin-left: auto;
+    padding: 0.3em 0.6em;
+    font: 0.9375rem var(--font-body);
+    color: var(--ink);
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+}
+
+#search-results {
+    max-width: var(--measure);
+    margin: 0 auto;
+    padding: 0 1.5rem;
+    background: var(--paper);
+}
+
+#search-results a {
+    display: block;
+    padding: 0.6em 0;
+    border-bottom: 1px solid var(--rule);
+    text-decoration: none;
+}
+
+#search-results a span {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    color: var(--ink-soft);
+}
+
+#search-results a p { margin: 0.2em 0 0; color: var(--ink-soft); font-size: 0.9375rem; }
+
 main {
     max-width: var(--measure);
     margin: 0 auto;

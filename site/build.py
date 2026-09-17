@@ -62,11 +62,14 @@ SHELL = """<!doctype html>
 <header class="site-header">
 <a class="site-title" href="index.html">viv</a>
 {nav}
+<input type="search" id="site-search" placeholder="Search" aria-label="Search the manual" autocomplete="off">
 </header>
+<div id="search-results" hidden></div>
 {layout}
 <footer class="site-footer">
 <a href="https://github.com/svandragt/vivace">svandragt/vivace</a> on GitHub
 </footer>
+<script src="search.js" defer></script>
 </body>
 </html>
 """
@@ -497,15 +500,43 @@ def render_page(md_path, placeholders=None):
     return title, wrap_tables(body_html)
 
 
+H2_RE = re.compile(r'<h2 id="([^"]+)">(.*?)</h2>', re.DOTALL)
+
+
+def index_sections(slug, title, content_html):
+    """One search record for the page's intro (before its first h2) plus one
+    per h2 section, {url, page, heading, text}; ids come from the toc
+    extension's own <h2 id="..."> output rather than recomputing a slug."""
+    title = title.removesuffix(" - viv")
+    matches = list(H2_RE.finditer(content_html))
+    records = []
+    intro_end = matches[0].start() if matches else len(content_html)
+    intro_text = excerpt(content_html[:intro_end], 400)
+    if intro_text:
+        records.append({"url": f"{slug}.html", "page": title, "heading": title, "text": intro_text})
+    for i, match in enumerate(matches):
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(content_html)
+        records.append({
+            "url": f"{slug}.html#{match.group(1)}",
+            "page": title,
+            "heading": excerpt(match.group(2), 200),
+            "text": excerpt(content_html[start:end], 400),
+        })
+    return records
+
+
 def main():
     if DIST.exists():
         shutil.rmtree(DIST)
     DIST.mkdir(parents=True)
 
+    search_index = []
     for md_path in sorted((SITE / "pages").glob("*.md")):
         placeholder_fn = PAGE_PLACEHOLDERS.get(md_path.stem)
         placeholders = placeholder_fn() if placeholder_fn else None
         title, content_html = render_page(md_path, placeholders)
+        search_index.extend(index_sections(md_path.stem, title, content_html))
         if md_path.stem == "index":
             nav = f"<nav>{render_nav()}</nav>"
             layout = f"<main>\n{content_html}\n</main>"
@@ -521,6 +552,7 @@ def main():
         (DIST / f"{md_path.stem}.html").write_text(html)
 
     shutil.copytree(SITE / "static", DIST, dirs_exist_ok=True)
+    (DIST / "search.json").write_text(json.dumps(search_index))
     (DIST / "CNAME").write_text("vivace.vandragt.com\n")
     (DIST / ".nojekyll").write_text("")
 
