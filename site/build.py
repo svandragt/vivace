@@ -41,6 +41,7 @@ MANUAL = [
     ("commands", "Commands"),
     ("shim", "Using viv as composer"),
     ("migrate", "Migrating from Composer"),
+    ("frameworks", "For your framework"),
     ("plugins", "Plugins"),
     ("cache", "Cache and offline use"),
     ("compatibility", "Compatibility and scope"),
@@ -82,7 +83,12 @@ def render_nav():
 def render_sidebar(current_slug):
     links = []
     for slug, title in MANUAL:
-        current = ' class="current"' if slug == current_slug else ""
+        # Every generated for-<framework> page highlights the hub entry,
+        # since none of them has its own MANUAL row (#265).
+        is_current = slug == current_slug or (
+            slug == "frameworks" and current_slug.startswith("for-")
+        )
+        current = ' class="current"' if is_current else ""
         links.append(f'<a href="{slug}.html"{current}>{title}</a>')
     return "\n".join(links)
 
@@ -419,18 +425,209 @@ def readme_source_line(heading):
     )
 
 
+def shim_section():
+    """README's "Using viv as composer" section without its GitHub Actions
+    paragraph, which the CI sections render on their own via ci_snippet()."""
+    return readme_section("Using viv as composer").replace(ci_snippet(), "").rstrip()
+
+
+def ci_snippet():
+    """The GitHub Actions paragraph inside README's "Using viv as composer"
+    section -- intro sentence, yaml step and the explanation after it.
+    Shared by the migrate page and every framework page's CI section so the
+    two copies of this text can't drift apart (#265)."""
+    _, body = section_from_file("README.md", "Using viv as composer")
+    match = re.search(r"In GitHub Actions.*?keyed on `composer\.lock`\.", body, re.DOTALL)
+    if not match:
+        raise SystemExit(
+            "site/build.py: CI snippet not found in README's "
+            "'Using viv as composer' section"
+        )
+    return match.group(0)
+
+
 def migrate_placeholders():
     return {
         "shim_from_readme": readme_source_line("Using viv as composer"),
-        "shim_section": readme_section("Using viv as composer"),
+        "shim_section": shim_section(),
         "dockerfile_from_readme": readme_source_line("In a Dockerfile"),
         "dockerfile_section": readme_section("In a Dockerfile"),
         "ci_from_readme": readme_source_line("Using viv as composer"),
+        "ci_snippet": ci_snippet(),
         "stability_summary": (
             f"{stability_summary()}\n\n"
             f'<span class="source">source: <a href="{GITHUB_BLOB}docs/stability.md">docs/stability.md</a></span>'
         ),
     }
+
+
+# One entry per framework page (#265): slug, display name, the corpus/compat
+# project name, and the Composer plugin packages that framework's starter
+# usually enables (see docs/plugin-strategy.md's Inventory table).
+FRAMEWORKS = [
+    {"slug": "for-laravel", "name": "Laravel", "project": "laravel/laravel", "plugins": []},
+    {
+        "slug": "for-symfony",
+        "name": "Symfony",
+        "project": "symfony/demo",
+        "plugins": ["symfony/flex", "symfony/runtime"],
+    },
+    {
+        "slug": "for-drupal",
+        "name": "Drupal",
+        "project": "drupal/recommended-project",
+        "plugins": [
+            "drupal/core-composer-scaffold",
+            "drupal/core-project-message",
+            "drupal/core-recipe-unpack",
+            "composer/installers",
+        ],
+    },
+    {
+        "slug": "for-wordpress",
+        "name": "WordPress (Bedrock)",
+        "project": "roots/bedrock",
+        "plugins": ["composer/installers", "johnpbloch/wordpress-core-installer"],
+    },
+    {
+        "slug": "for-craft",
+        "name": "Craft CMS",
+        "project": "craftcms/craft",
+        "plugins": ["craftcms/plugin-installer", "yiisoft/yii2-composer"],
+    },
+    {"slug": "for-statamic", "name": "Statamic", "project": "statamic/statamic", "plugins": []},
+]
+
+
+def fmt_time(value):
+    return f"{value:.2f}s" if value is not None else "n/a"
+
+
+def framework_corpus_times(project):
+    """Return (composer_cold, composer_warm, viv_cold, viv_warm, heading,
+    body) for project's row in the latest bench/results/corpus.md section,
+    values float or None (a `n/a` cell)."""
+    text = (ROOT / "bench/results/corpus.md").read_text()
+    heading, body = latest_corpus_section(text)
+    row = corpus_row_values(body).get(project, {})
+    composer, viv = row.get("composer", {}), row.get("viv", {})
+    return composer.get("Cold"), composer.get("Warm"), viv.get("Cold"), viv.get("Warm"), heading, body
+
+
+def plugin_portable_text(text, plugin):
+    """The "Portable?" text for plugin from docs/plugin-strategy.md's
+    Inventory section: its table cell, or -- for a plugin only named in the
+    prose below the table, like symfony/flex -- the parenthetical after its
+    name. Raises if the plugin is in neither, so a framework page's plugin
+    list can't drift from the inventory (#265)."""
+    section = text.split("## Inventory", 1)[1].split("\n## ", 1)[0]
+    row = re.search(rf"^\| {re.escape(plugin)} \| [^|]*\| (.*) \|$", section, re.MULTILINE)
+    if row:
+        cell = row.group(1).strip()
+    else:
+        prose = re.search(rf"{re.escape(plugin)}\s*\n?\(([^)]*)\)", section)
+        if not prose:
+            raise SystemExit(
+                f"site/build.py: plugin '{plugin}' not found in "
+                "docs/plugin-strategy.md's Inventory section"
+            )
+        cell = prose.group(1).strip()
+    return rewrite_relative_links(cell, "docs/plugin-strategy.md")
+
+
+def compat_project_rows(path, project):
+    """Return [(mode, result, details), ...] for project's dev/no-dev rows
+    in path's Pinned corpus table."""
+    section = path.read_text().split("## Pinned corpus", 1)[1].split("\n## ", 1)[0]
+    row_re = re.compile(
+        rf"^\| {re.escape(project)} \| (dev|no-dev) \| (\S.*?) \| \S+ \| (.*) \|$",
+        re.MULTILINE,
+    )
+    return row_re.findall(section)
+
+
+def framework_page(entry):
+    """The full Markdown for one framework page, or None if its project's
+    Composer/viv Cold time in the latest corpus section is missing -- a
+    framework with no data gets no page and no hub listing (#265)."""
+    corpus_path = "bench/results/corpus.md"
+    composer_cold, composer_warm, viv_cold, viv_warm, heading, body = framework_corpus_times(
+        entry["project"]
+    )
+    if composer_cold is None or viv_cold is None:
+        return None
+    date = heading.split("T")[0]
+    version_line = body.strip().splitlines()[0]
+    times_source = (
+        f"{version_line}\n"
+        f'<span class="source">source: <a href="{GITHUB_BLOB}{corpus_path}">{corpus_path}</a>, '
+        f'section <code>{heading}</code> ({date})</span>'
+    )
+
+    if entry["plugins"]:
+        strategy_text = (ROOT / "docs/plugin-strategy.md").read_text()
+        plugin_rows = "\n".join(
+            f"| {p} | {plugin_portable_text(strategy_text, p)} |" for p in entry["plugins"]
+        )
+        plugins_md = (
+            "| Plugin | viv |\n"
+            "|---|---|\n"
+            f"{plugin_rows}\n\n"
+            f'<span class="source">source: <a href="{GITHUB_BLOB}docs/plugin-strategy.md">docs/plugin-strategy.md</a></span>'
+        )
+    else:
+        plugins_md = (
+            f"{entry['project']} enables no Composer plugins, so `viv install` "
+            "runs without `--no-plugins`."
+        )
+
+    compat_path = newest_compat_file()
+    compat_rel = compat_path.relative_to(ROOT).as_posix()
+    compat_rows = compat_project_rows(compat_path, entry["project"])
+    compat_lines = ["| Mode | Result | Details |", "|---|---|---|"]
+    compat_lines += [f"| {mode} | {result} | {details} |" for mode, result, details in compat_rows]
+    compat_md = (
+        "\n".join(compat_lines)
+        + f'\n\n<span class="source">source: <a href="{GITHUB_BLOB}{compat_rel}">{compat_rel}</a></span>'
+    )
+
+    return f"""# {entry['name']}
+
+Install times for {entry['project']}, the {entry['name']} starter in viv's benchmark corpus.
+
+| | Composer | viv |
+|---|---|---|
+| Cold | {fmt_time(composer_cold)} | {fmt_time(viv_cold)} |
+| Warm | {fmt_time(composer_warm)} | {fmt_time(viv_warm)} |
+
+{times_source}
+
+## Plugins
+
+{plugins_md}
+
+## Local
+
+{readme_source_line("Using viv as composer")}
+
+{shim_section()}
+
+## Dockerfile
+
+{readme_source_line("In a Dockerfile")}
+
+{readme_section("In a Dockerfile")}
+
+## CI
+
+{readme_source_line("Using viv as composer")}
+
+{ci_snippet()}
+
+## Compatibility sweep
+
+{compat_md}
+"""
 
 
 def excerpt(html, limit=80):
@@ -487,17 +684,21 @@ PAGE_PLACEHOLDERS = {
 }
 
 
-def render_page(md_path, placeholders=None):
-    text = md_path.read_text()
-    if placeholders:
-        for key, value in placeholders.items():
-            text = text.replace(f"{{{{{key}}}}}", value)
+def render_markdown(text):
     text = GENERIC_PLACEHOLDER_RE.sub(resolve_generic_placeholder, text)
     title = text.splitlines()[0].lstrip("# ").strip()
     if title.lower() != "viv":
         title = f"{title} - viv"
     body_html = markdown.markdown(text, extensions=["tables", "fenced_code", "toc"])
     return title, wrap_tables(body_html)
+
+
+def render_page(md_path, placeholders=None):
+    text = md_path.read_text()
+    if placeholders:
+        for key, value in placeholders.items():
+            text = text.replace(f"{{{{{key}}}}}", value)
+    return render_markdown(text)
 
 
 H2_RE = re.compile(r'<h2 id="([^"]+)">(.*?)</h2>', re.DOTALL)
@@ -532,6 +733,34 @@ def main():
     DIST.mkdir(parents=True)
 
     search_index = []
+
+    # Generated pages, not files under site/pages/ (#265): built first so
+    # frameworks.md's {{framework_list}} can list only the ones with data.
+    frameworks_generated = []
+    for entry in FRAMEWORKS:
+        md_text = framework_page(entry)
+        if md_text is None:
+            continue
+        title, content_html = render_markdown(md_text)
+        search_index.extend(index_sections(entry["slug"], title, content_html))
+        layout = (
+            '<div class="layout">\n'
+            f'<aside class="sidebar">\n{render_sidebar(entry["slug"])}\n</aside>\n'
+            f"<main>\n{content_html}\n</main>\n"
+            "</div>"
+        )
+        html = SHELL.format(title=title, nav="", layout=layout)
+        (DIST / f"{entry['slug']}.html").write_text(html)
+        viv_cold = framework_corpus_times(entry["project"])[2]
+        frameworks_generated.append((entry["slug"], entry["name"], fmt_time(viv_cold)))
+
+    PAGE_PLACEHOLDERS["frameworks"] = lambda: {
+        "framework_list": "\n".join(
+            f"- [{name}]({slug}.html) ({cold} cold)"
+            for slug, name, cold in frameworks_generated
+        )
+    }
+
     for md_path in sorted((SITE / "pages").glob("*.md")):
         placeholder_fn = PAGE_PLACEHOLDERS.get(md_path.stem)
         placeholders = placeholder_fn() if placeholder_fn else None
