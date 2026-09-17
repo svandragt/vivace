@@ -45,6 +45,7 @@ use crate::audit::{self, AdvisoriesResponse, AdvisoriesTransport, NoAdvisories};
 use crate::lock::AuditConfig;
 use crate::repository::{
     ClosureRoot, DevAcceptance, PackageVersion, Repository, Transport, branch_alias_target,
+    branch_alias_target_from_raw,
 };
 use crate::semver;
 use crate::solver::platform::cached_platform_packages;
@@ -633,7 +634,26 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
 
     for name in &skip {
         if let Some(entry) = locked_by_name.get(name) {
+            let base_index = packages.len();
             packages.push(package_from_lock_entry(entry, &mut constraint_cache)?);
+            // #267: a held `dev-*` entry's `extra.branch-alias` names a
+            // second package (`ArrayLoader`'s `AliasPackage`) that never has
+            // its own lock entry, only ever a derivation of this one — the
+            // same alias `push_package_version`/`solver::resolve`'s
+            // dev-split already reconstruct for a fetched or cloned
+            // package, needed here too or a require pinned to the alias's
+            // numeric range (`^2.3` against a `2.x-dev` alias) has no
+            // candidate at all once the base package is locked out.
+            let base = &packages[base_index];
+            if let Some(alias_normalized) =
+                branch_alias_target_from_raw(&base.pretty_version, &base.raw)
+            {
+                packages.push(crate::solver::branch_alias_package(
+                    base,
+                    base_index,
+                    &alias_normalized,
+                )?);
+            }
         }
     }
     // Everything pushed so far (platform, root, locked-out-and-not-updated)
@@ -713,10 +733,13 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
 /// Turns one `composer.lock` package entry (`ArrayDumper`-shaped: the same
 /// `require`/`conflict`/`provide`/`replace` fields a provider-file version
 /// has) into a pool [`Package`], for a partial update's locked-out names.
-/// No branch-alias or root-alias reconstruction (`push_package_version`'s
-/// two extra cases): a lock entry that is itself a branch alias already
-/// carries that alias's own version/requires, and nothing in a partial
-/// update looks up a *further* alias of a package it isn't refetching.
+/// No root-alias reconstruction (`push_package_version`'s other extra
+/// case): nothing in a partial update looks up a *further* alias of a
+/// package it isn't refetching. A lock entry only ever stores the branch
+/// itself (`"version": "dev-main"`); its alias lives in the entry's own
+/// `extra.branch-alias`, exactly where Composer's `ArrayLoader` reads it
+/// from — this fn's caller reconstructs that alias package separately, it
+/// is not carried in the `Package` returned here.
 fn package_from_lock_entry(entry: &Value, cache: &mut ConstraintCache) -> Result<Package> {
     let obj = entry
         .as_object()

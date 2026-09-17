@@ -822,6 +822,83 @@ async fn partial_update_keeps_the_unlisted_package_locked() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// #267: `acme/installers` is held at `dev-main` (`extra.branch-alias`
+/// names `2.x-dev`, the shape Composer's `ArrayLoader` turns into a real
+/// `dev-main` package plus an `AliasPackage` at `2.x-dev`) and the held
+/// `acme/plugin` requires it as `^2.3` — only the alias numerically
+/// satisfies that. A partial update that never refetches either of them
+/// (`acme/other` is the only allow-listed name) must still carry the alias
+/// into the seeded pool, or the solver has no candidate for `^2.3` at all
+/// and reports "could not be found in any version, there may be a typo".
+#[tokio::test]
+async fn partial_update_holds_a_dev_branch_through_its_branch_alias() {
+    let cache = tempfile::tempdir().unwrap();
+    let repo_url = "https://satis.example.test";
+    let transport = FixtureTransport {
+        root: Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/branch-alias-partial-update/repo"),
+    };
+    let repo = Repository::load(repo_url, cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let root = serde_json::json!({
+        "name": "vivace/fixture-branch-alias-partial-update",
+        "require": {
+            "acme/installers": "dev-main",
+            "acme/plugin": "1.0.0",
+            "acme/other": "^1.0",
+        },
+        "repositories": [
+            {"type": "composer", "url": repo_url},
+            {"packagist.org": false},
+        ],
+    });
+
+    let mut locked_by_name = HashMap::new();
+    locked_by_name.insert(
+        "acme/installers".to_string(),
+        serde_json::json!({
+            "name": "acme/installers",
+            "version": "dev-main",
+            "extra": {"branch-alias": {"dev-main": "2.x-dev"}},
+        }),
+    );
+    locked_by_name.insert(
+        "acme/plugin".to_string(),
+        serde_json::json!({
+            "name": "acme/plugin",
+            "version": "1.0.0",
+            "require": {"acme/installers": "^2.3"},
+        }),
+    );
+
+    let result = solver::solve_partial_update(
+        &repo,
+        &root,
+        false,
+        false,
+        &locked_by_name,
+        &["acme/other".to_string()],
+        vivace::solver::pool_builder::UpdateAllowMode::OnlyListed,
+    )
+    .await
+    .expect("acme/installers' dev-main branch alias must still satisfy acme/plugin's ^2.3 require");
+
+    let installers = result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "acme/installers")
+        .unwrap();
+    assert_eq!(installers.pretty_version, "dev-main");
+    let plugin = result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "acme/plugin")
+        .unwrap();
+    assert_eq!(plugin.pretty_version, "1.0.0");
+}
+
 /// #79: `psr/log` is only a transitive requirement, reached solely through
 /// `monolog/monolog` (root `composer.json` there never mentions `psr/log`
 /// directly, unlike `tests/fixtures/partial-update`). Before the fix,

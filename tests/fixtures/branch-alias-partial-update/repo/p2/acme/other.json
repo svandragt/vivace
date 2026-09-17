@@ -1,0 +1,21 @@
+{
+    "packages": {
+        "acme/other": [
+            {
+                "name": "acme/other",
+                "version": "1.0.0",
+                "version_normalized": "1.0.0.0",
+                "source": {
+                    "url": "https://example.test/acme/other.git",
+                    "type": "git",
+                    "reference": "0000000000000000000000000000000000000020"
+                },
+                "dist": {
+                    "url": "https://example.test/acme/other/1.0.0.zip",
+                    "type": "zip",
+                    "shasum": ""
+                }
+            }
+        ]
+    }
+}
