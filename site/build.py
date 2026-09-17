@@ -46,6 +46,7 @@ MANUAL = [
     ("compatibility", "Compatibility and scope"),
     ("reference", "Reference"),
     ("troubleshooting", "Troubleshooting"),
+    ("support", "Support"),
     ("compare", "Compare"),
 ]
 

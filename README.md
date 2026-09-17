@@ -363,6 +363,8 @@ make bench      # composer vs riff vs viv on bench/laravel
 VIVACE_TEST_NETWORK=1 make test   # includes the end-to-end install
 ```
 
+To report a bug or ask a question, see the [Support](https://vivace.vandragt.com/support.html) page and [`SECURITY.md`](SECURITY.md) for anything security-related.
+
 There's an engineering log of what was measured and decided along the
 way, including the study of prior art that shaped viv's design.[^15]
 

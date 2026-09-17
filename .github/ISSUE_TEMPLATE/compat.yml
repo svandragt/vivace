@@ -1,0 +1,26 @@
+name: Compatibility difference
+description: viv's vendor/ or composer.lock differs from Composer's
+labels: [compat]
+body:
+  - type: input
+    id: project
+    attributes:
+      label: Project
+      description: A public repository or package name that shows the difference. Private projects can describe the shape instead.
+    validations:
+      required: true
+  - type: textarea
+    id: diff
+    attributes:
+      label: diff -r of the two vendor/ trees
+      description: Run `composer install` and `viv install` in two copies of the project, then `diff -rq vendor-composer vendor-viv`.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: viv diagnose output
+      render: text
+    validations:
+      required: true
