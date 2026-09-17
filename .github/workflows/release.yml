@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*.*.*"]  # not the moving v0 tag (#263)
   workflow_dispatch:
     inputs:
       tag:
@@ -99,8 +99,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          sha256sum vivace-*.tar.gz *.deb > SHA256SUMS
           version=$(echo "$TAG" | sed 's/^v//')
+          sha256sum vivace-*.tar.gz *.deb > SHA256SUMS
+          ../scripts/brew-formula.sh "$version" SHA256SUMS > vivace.rb
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # Match the milestone whose title starts with the tag's major.minor,
             # e.g. v0.6.0 -> "0.6 ...". Falls back to auto-generated notes if
@@ -115,7 +116,39 @@ jobs:
               gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes
             fi
           fi
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber vivace-*.tar.gz *.deb SHA256SUMS
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber vivace-*.tar.gz *.deb SHA256SUMS vivace.rb
+      # #263: uses: svandragt/vivace/action@v0 follows the latest 0.x, the
+      # way official actions move their major tag.
+      - name: Move the major tag
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # A workflow_dispatch rerun may have checked out main, not the tag.
+          git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+          major="${TAG%%.*}"
+          git tag -f "$major" "$TAG^{}"
+          git push -f origin "refs/tags/$major"
+      # #222: the formula lands in the tap so `brew install svandragt/tap/vivace`
+      # gets this release. Needs a token that can push to that repository; the
+      # workflow token cannot. Skipped, visibly, when the secret is missing.
+      - name: Push the formula to the tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo 'Homebrew tap not updated: no HOMEBREW_TAP_TOKEN secret set.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/svandragt/homebrew-tap.git" tap
+          cp dist/vivace.rb tap/Formula/vivace.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/vivace.rb
+          git commit -m "vivace ${TAG}" || exit 0
+          git push
 
   # #166: `cargo binstall vivace` reads the crate's own
   # `[package.metadata.binstall]` off crates.io to find the release tarball,

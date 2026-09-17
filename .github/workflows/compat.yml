@@ -2,7 +2,7 @@ name: Compatibility sweep
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*.*.*"]  # not the moving v0 tag (#263)
   schedule:
     - cron: '17 4 * * 1'
   workflow_dispatch:

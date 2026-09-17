@@ -1,0 +1,69 @@
+name: Set up viv
+description: Install viv and its composer shim from a GitHub release
+
+inputs:
+  version:
+    description: Release tag to install, or "latest"
+    default: latest
+  shim:
+    description: Put the composer shim on PATH alongside viv
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # Inputs and the token arrive as env vars, never interpolated into the
+    # script body, so a crafted `version` input can't inject shell.
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ inputs.version }}
+        SHIM: ${{ inputs.shim }}
+      run: |
+        set -euo pipefail
+
+        tag="$VERSION"
+        if [ "$tag" = "latest" ]; then
+          tag=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/svandragt/vivace/releases/latest | jq -r .tag_name)
+        fi
+
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) target=x86_64-unknown-linux-musl ;;
+          Linux-ARM64) target=aarch64-unknown-linux-musl ;;
+          macOS-X64) target=x86_64-apple-darwin ;;
+          macOS-ARM64) target=aarch64-apple-darwin ;;
+          *)
+            echo "::error ::unsupported runner $RUNNER_OS-$RUNNER_ARCH"
+            exit 1
+            ;;
+        esac
+
+        base_url="https://github.com/svandragt/vivace/releases/download/$tag"
+        archive="vivace-${tag}-${target}.tar.gz"
+
+        workdir=$(mktemp -d)
+        curl -fsSL -o "$workdir/$archive" "$base_url/$archive"
+        curl -fsSL -o "$workdir/SHA256SUMS" "$base_url/SHA256SUMS"
+
+        cd "$workdir"
+        grep " $archive\$" SHA256SUMS > SHA256SUMS.archive
+        if [ "$RUNNER_OS" = "macOS" ]; then
+          shasum -a 256 -c SHA256SUMS.archive
+        else
+          sha256sum -c SHA256SUMS.archive
+        fi
+
+        install_dir="$RUNNER_TEMP/viv"
+        mkdir -p "$install_dir"
+        tar xzf "$archive" -C "$install_dir" --strip-components=1
+
+        if [ "$SHIM" != "true" ]; then
+          rm -f "$install_dir/composer"
+        fi
+
+        echo "$install_dir" >> "$GITHUB_PATH"
+        echo "viv $tag ($target) on PATH"
+
+        # No cache here: viv's own cache under XDG_CACHE_HOME is what a
+        # caller keys actions/cache on, not the install this action does.

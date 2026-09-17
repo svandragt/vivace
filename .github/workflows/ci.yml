@@ -65,6 +65,25 @@ jobs:
         env:
           VIVACE_TEST_NETWORK: "1"
 
+  # #263: the composite action installs the latest release, and a real
+  # install runs through the shim in strict mode, so a silent fallback to
+  # Composer fails the job instead of passing quietly.
+  action:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./action
+      - run: composer install --no-dev
+        working-directory: tests/fixtures/monolog
+        env:
+          VIV_SHIM_STRICT: "1"
+      - run: test -f tests/fixtures/monolog/vendor/autoload.php
+
   # macOS is a supported platform; this job blocks like the Linux one. It
   # runs alongside the Linux gate: serialising them put it on the critical
   # path and cost more wall time than the occasional fmt slip saved (#195).

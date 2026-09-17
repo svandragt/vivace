@@ -13,7 +13,7 @@ covered.
 ## Try it
 
 ```sh
-cargo binstall vivace
+cargo binstall vivace          # or: brew install svandragt/tap/vivace
 viv install     # in a project with composer.json and composer.lock
 ```
 
@@ -196,6 +196,15 @@ viv; every other command falls through to your real Composer install.[^12]
 
 This is also the cheapest way to check whether a project migrates cleanly:
 alias `composer` to the shim and run your existing scripts unedited.
+
+In GitHub Actions, one step installs viv and puts the shim first on `PATH`, so an existing `composer install` step runs through viv unedited:
+
+```yaml
+- uses: svandragt/vivace/action@v0
+- run: composer install --no-dev
+```
+
+The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.13.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim. Cache viv's store with `actions/cache` on `~/.cache/vivace`, keyed on `composer.lock`.
 
 A command or flag the shim doesn't understand falls back to the real
 Composer with a note on stderr naming what wasn't understood, so a migration
