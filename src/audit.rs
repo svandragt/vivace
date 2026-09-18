@@ -398,18 +398,18 @@ pub(crate) fn matching_advisory_ids(
         .collect()
 }
 
-/// `CompletePackageInterface::isAbandoned`, read straight off a pool
-/// package's raw provider-metadata `abandoned` field for the update/require
-/// pool filter's `audit.block-abandoned` (`AuditPackage::abandonment` is
-/// this same check for the audited-install path, which reads from
+/// `CompletePackageInterface::isAbandoned` for the update/require pool
+/// filter's `audit.block-abandoned` (`AuditPackage::abandonment` is this
+/// same check for the audited-install path, which reads from
 /// `installed.json`/the lock instead, and also carries the suggested
 /// replacement — the pool filter only ever needs the yes/no, never reports
-/// it, so this stays a `bool`).
-pub(crate) fn is_abandoned(raw: &Value) -> bool {
-    matches!(
-        raw.get("abandoned"),
-        Some(Value::Bool(true) | Value::String(_))
-    )
+/// it, so this stays a `bool`). Takes the already-extracted `abandoned`
+/// value rather than a whole provider-metadata `Value` (#268 step two):
+/// `pool_builder`'s pre-solve filter reads a pool `Package`'s own typed
+/// `abandoned` field, never its `raw`, which may still be an
+/// unmaterialised deferred slot at that point.
+pub(crate) fn is_abandoned_value(abandoned: Option<&Value>) -> bool {
+    matches!(abandoned, Some(Value::Bool(true) | Value::String(_)))
 }
 
 /// One audited package: name, its own version (to filter advisories by

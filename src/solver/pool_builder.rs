@@ -34,7 +34,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -45,7 +44,7 @@ use crate::audit::{self, AdvisoriesResponse, AdvisoriesTransport, NoAdvisories};
 use crate::lock::AuditConfig;
 use crate::repository::{
     ClosureRoot, DevAcceptance, PackageVersion, Repository, Transport, branch_alias_target,
-    branch_alias_target_from_raw,
+    branch_alias_target_of,
 };
 use crate::semver;
 use crate::solver::platform::cached_platform_packages;
@@ -224,7 +223,7 @@ async fn filter_advisories<A: AdvisoriesTransport>(
     let mut to_remove: HashSet<usize> = HashSet::new();
     let mut removed: Vec<pool::RemovedPackage> = Vec::new();
     for (index, package) in packages.iter().enumerate().skip(exempt_upto) {
-        if filter.audit.block_abandoned && audit::is_abandoned(&package.raw) {
+        if filter.audit.block_abandoned && audit::is_abandoned_value(package.abandoned.as_ref()) {
             to_remove.insert(index);
             continue;
         }
@@ -646,7 +645,7 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
             // candidate at all once the base package is locked out.
             let base = &packages[base_index];
             if let Some(alias_normalized) =
-                branch_alias_target_from_raw(&base.pretty_version, &base.raw)
+                branch_alias_target_of(&base.pretty_version, base.branch_alias.as_ref())
             {
                 packages.push(crate::solver::branch_alias_package(
                     base,
@@ -762,6 +761,11 @@ fn package_from_lock_entry(entry: &Value, cache: &mut ConstraintCache) -> Result
     let conflicts = parse_links(&map_field(obj, "conflict"), &name, &pretty_version, cache)?;
     let provides = parse_links(&map_field(obj, "provide"), &name, &pretty_version, cache)?;
     let replaces = parse_links(&map_field(obj, "replace"), &name, &pretty_version, cache)?;
+    let abandoned = obj.get("abandoned").cloned();
+    let branch_alias = obj
+        .get("extra")
+        .and_then(|extra| extra.get("branch-alias"))
+        .cloned();
 
     Ok(Package {
         name,
@@ -776,7 +780,9 @@ fn package_from_lock_entry(entry: &Value, cache: &mut ConstraintCache) -> Result
         alias_of: None,
         is_root_package_alias: false,
         has_self_version_requires: false,
-        raw: Arc::new(entry.clone()),
+        raw: crate::repository::RawHandle::ready(entry.clone()),
+        abandoned,
+        branch_alias,
     })
 }
 
@@ -998,6 +1004,8 @@ pub(crate) fn clone_package(package: &Package) -> Package {
         is_root_package_alias: false,
         has_self_version_requires: package.has_self_version_requires,
         raw: package.raw.clone(),
+        abandoned: package.abandoned.clone(),
+        branch_alias: package.branch_alias.clone(),
     }
 }
 
@@ -1078,12 +1086,16 @@ fn push_package_version(
     let replaces = parse_links(&pv.replace, &name, &pv.version, cache)?;
     let is_dev = stability == "dev";
     let alias_target = branch_alias_target(&pv);
-    // Moved once, not deep-cloned per push: a branch-alias or root-alias
-    // version pushes two or three `Package`s off this one `pv`, and the
-    // pool holds 45k+ of these on a Laravel-sized closure — an `Arc::clone`
-    // for the extra pushes instead of re-cloning the whole JSON tree
-    // (`bench/results/profile.md`'s named candidate).
-    let raw = Arc::new(pv.raw);
+    // `RawHandle`, not a deep clone (#268 step two): a branch-alias or
+    // root-alias version pushes two or three `Package`s off this one `pv`,
+    // and the pool holds 45k+ of these on a Laravel-sized closure — an
+    // `Arc` pointer copy for the extra pushes instead of re-cloning the
+    // whole JSON tree (`bench/results/profile.md`'s named candidate), and
+    // it never materialises that tree at all unless a later reader
+    // actually calls `.get()` on it.
+    let raw = pv.raw_handle();
+    let abandoned = pv.abandoned;
+    let branch_alias = pv.branch_alias;
     let pretty_version = pv.version;
 
     let real_index = if let Some(alias_normalized) = alias_target {
@@ -1107,7 +1119,9 @@ fn push_package_version(
             // correctly (`parse_links`'s doc comment) even though this flag
             // doesn't track it.
             has_self_version_requires: false,
-            raw: Arc::clone(&raw),
+            raw: raw.clone(),
+            abandoned: abandoned.clone(),
+            branch_alias: branch_alias.clone(),
         });
         packages.push(Package {
             name: name.clone(),
@@ -1122,7 +1136,9 @@ fn push_package_version(
             alias_of: None,
             is_root_package_alias: false,
             has_self_version_requires: false,
-            raw: Arc::clone(&raw),
+            raw: raw.clone(),
+            abandoned: abandoned.clone(),
+            branch_alias: branch_alias.clone(),
         });
         real_index
     } else {
@@ -1141,6 +1157,8 @@ fn push_package_version(
             is_root_package_alias: false,
             has_self_version_requires: false,
             raw,
+            abandoned,
+            branch_alias,
         });
         index
     };
@@ -1164,6 +1182,8 @@ fn push_package_version(
             let provides = clone_links(&real.provides);
             let replaces = clone_links(&real.replaces);
             let raw = real.raw.clone();
+            let abandoned = real.abandoned.clone();
+            let branch_alias = real.branch_alias.clone();
             packages.push(Package {
                 name: name.clone(),
                 version: semver::normalize(alias_normalized)?,
@@ -1178,6 +1198,8 @@ fn push_package_version(
                 is_root_package_alias: true,
                 has_self_version_requires: false,
                 raw,
+                abandoned,
+                branch_alias,
             });
         }
     }
@@ -1227,7 +1249,9 @@ pub(crate) fn root_package(root: &Value, cache: &mut ConstraintCache) -> Result<
     let replaces = parse_links(&string_map(root, "replace"), &name, &pretty_version, cache)?;
     // Never reached: `transaction::resolved_packages` drops fixed packages
     // before a lock ever sees them (platform packages' same stand-in).
-    let raw = Arc::new(serde_json::json!({ "name": name, "version": pretty_version }));
+    let raw = crate::repository::RawHandle::ready(
+        serde_json::json!({ "name": name, "version": pretty_version }),
+    );
 
     Ok(Package {
         name,
@@ -1243,6 +1267,8 @@ pub(crate) fn root_package(root: &Value, cache: &mut ConstraintCache) -> Result<
         is_root_package_alias: false,
         has_self_version_requires: false,
         raw,
+        abandoned: None,
+        branch_alias: None,
     })
 }
 
@@ -1250,8 +1276,9 @@ pub(crate) fn root_package(root: &Value, cache: &mut ConstraintCache) -> Result<
 mod tests {
     use super::*;
 
-    /// A minimal, non-alias pool package: `raw` carries `abandoned` so
-    /// `audit::is_abandoned` has something to read.
+    /// A minimal, non-alias pool package: the typed `abandoned` field is
+    /// what `audit::is_abandoned_value` reads (#268 step two moved it off
+    /// `raw`).
     fn package(name: &str, pretty_version: &str, abandoned: bool) -> Package {
         let version = semver::normalize(pretty_version).unwrap();
         Package {
@@ -1267,11 +1294,13 @@ mod tests {
             alias_of: None,
             is_root_package_alias: false,
             has_self_version_requires: false,
-            raw: Arc::new(serde_json::json!({
+            raw: crate::repository::RawHandle::ready(serde_json::json!({
                 "name": name,
                 "version": pretty_version,
                 "abandoned": abandoned,
             })),
+            abandoned: Some(Value::Bool(abandoned)),
+            branch_alias: None,
         }
     }
 

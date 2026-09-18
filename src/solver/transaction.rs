@@ -61,7 +61,10 @@ pub fn resolved_packages(
         .map(|package| ResolvedPackage {
             name: package.name.clone(),
             pretty_version: package.pretty_version.clone(),
-            raw: (*package.raw).clone(),
+            // Materialises a deferred slot if this is the first read of it
+            // (#268 step two): a solve winner is exactly the case this is
+            // meant to pay for, everything else in the pool never gets here.
+            raw: package.raw.get().clone(),
         })
         .collect()
 }

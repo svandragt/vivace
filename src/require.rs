@@ -757,7 +757,7 @@ pub(crate) fn write_composer_json(path: &Path, root: &Value) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Map, json};
+    use serde_json::json;
 
     use super::version_selector;
     use super::{add_link, remove_main_key_if_empty, remove_sub_node, run_require};
@@ -847,21 +847,13 @@ mod tests {
     /// doc comment.
     #[test]
     fn recommended_constraint_transforms_versions() {
-        let pv = |version: &str, normalized: &str| crate::repository::PackageVersion {
-            name: "acme/pkg".to_string(),
-            version: version.to_string(),
-            version_normalized: normalized.to_string(),
-            require: Map::default(),
-            require_dev: Map::default(),
-            replace: Map::default(),
-            provide: Map::default(),
-            conflict: Map::default(),
-            default_branch: false,
-            dist: None,
-            source: None,
-            branch_alias: None,
-            time: None,
-            raw: serde_json::json!({}),
+        let pv = |version: &str, normalized: &str| {
+            crate::repository::PackageVersion::from_owned_value(serde_json::json!({
+                "name": "acme/pkg",
+                "version": version,
+                "version_normalized": normalized,
+            }))
+            .unwrap()
         };
         assert_eq!(
             version_selector::recommended_constraint(&pv("1.2.1", "1.2.1.0")).unwrap(),

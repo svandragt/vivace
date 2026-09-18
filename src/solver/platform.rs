@@ -1375,7 +1375,11 @@ fn entry_to_package(entry: Entry) -> Result<Package> {
         alias_of: None,
         is_root_package_alias: false,
         has_self_version_requires: false,
-        raw: Arc::new(serde_json::json!({ "name": entry.name, "version": Value::Null })),
+        raw: crate::repository::RawHandle::ready(
+            serde_json::json!({ "name": entry.name, "version": Value::Null }),
+        ),
+        abandoned: None,
+        branch_alias: None,
         name: entry.name,
     })
 }

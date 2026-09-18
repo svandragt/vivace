@@ -72,14 +72,24 @@ pub struct Package {
     /// reached: `transaction::resolved_packages` drops fixed packages
     /// before a lock ever sees them).
     ///
-    /// `Arc`, not `Value`: `push_package_version` pushes a branch-alias or
-    /// root-alias version as two or three `Package`s sharing the same raw
-    /// entry, and `clone_package`'s dev-split second solve clones every
-    /// first-solve package again — a deep JSON clone each time would be one
-    /// of the largest per-package costs in `pool_builder::build` (`bench/
-    /// results/profile.md`'s "string cloning in `PackageVersion` -> `Package`
-    /// conversion" candidate), where an `Arc::clone` is a pointer copy.
-    pub raw: Arc<Value>,
+    /// `RawHandle`, not `Arc<Value>` (#268 step two): still an `Arc`-cheap
+    /// clone for `push_package_version`'s branch-alias/root-alias pushes
+    /// and `clone_package`'s dev-split copy, but also carries a
+    /// `PackageVersion::raw`'s deferred-replay recipe through unmaterialised
+    /// -- the pool build reads [`Package::abandoned`]/[`Package::branch_alias`]
+    /// instead of this for its own pre-solve checks, so most packages in a
+    /// closure never pay to expand it at all; only a solve winner does,
+    /// in `transaction::resolved_packages`.
+    pub raw: crate::repository::RawHandle,
+    /// `abandoned`, threaded from [`crate::repository::PackageVersion::abandoned`]
+    /// so `pool_builder`'s pre-solve abandoned-package filter never
+    /// materialises `raw` for it.
+    pub abandoned: Option<Value>,
+    /// `extra.branch-alias`, threaded from
+    /// [`crate::repository::PackageVersion::branch_alias`] the same way, for
+    /// `solver::resolve`'s dev-split rebuild and a partial update's
+    /// locked-out-name reconstruction.
+    pub branch_alias: Option<Value>,
 }
 
 impl Package {

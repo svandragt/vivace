@@ -48,7 +48,7 @@ use anyhow::Result;
 use serde_json::{Map, Value};
 
 use crate::audit::AdvisoriesTransport;
-use crate::repository::{Repository, Transport, branch_alias_target_from_raw};
+use crate::repository::{Repository, Transport, branch_alias_target_of};
 use crate::semver::{self, Constraint, NormalizedVersion};
 use policy::DefaultPolicy;
 use pool::{Package, Pool};
@@ -303,7 +303,9 @@ fn branch_alias_package(
         alias_of: Some(base_index),
         is_root_package_alias: false,
         has_self_version_requires: false,
-        raw: Arc::clone(&base.raw),
+        raw: base.raw.clone(),
+        abandoned: base.abandoned.clone(),
+        branch_alias: base.branch_alias.clone(),
     })
 }
 
@@ -387,7 +389,7 @@ fn resolve(
             // require-only solve failed where the first solve (and
             // Composer) succeeded.
             if let Some(alias_normalized) =
-                branch_alias_target_from_raw(&package.pretty_version, &package.raw)
+                branch_alias_target_of(&package.pretty_version, package.branch_alias.as_ref())
             {
                 second_packages.push(branch_alias_package(
                     &second_packages[base_index],

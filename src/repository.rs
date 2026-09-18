@@ -23,7 +23,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
@@ -144,8 +144,227 @@ impl DevAcceptance {
     }
 }
 
+/// #268 step two: [`PackageVersion::raw`]'s storage, either already
+/// expanded ([`RawSlot::Ready`], every non-lazy source and
+/// [`DeltaChain::expand_all`]'s bulk path, which already built the full
+/// `Value` anyway) or a replay recipe against a minified/non-minified
+/// chain's own immutable deltas, materialised only when
+/// [`RawHandle::get`] is first called — never during the closure walk or
+/// pool build, only for a version something downstream actually reads
+/// `raw` off (`solver/transaction.rs`'s winners, not `pool_builder`'s own
+/// abandoned/branch-alias checks, which read the typed fields added
+/// alongside this instead and so never touch it at all).
+enum RawSlot {
+    Ready(Value),
+    Deferred {
+        deltas: Arc<[Box<RawValue>]>,
+        minified: bool,
+        index: usize,
+        notify_url: Option<Arc<str>>,
+        cache: OnceLock<Value>,
+    },
+}
+
+impl std::fmt::Debug for RawSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RawSlot::Ready(v) => f.debug_tuple("Ready").field(v).finish(),
+            RawSlot::Deferred { index, .. } => {
+                f.debug_struct("Deferred").field("index", index).finish()
+            }
+        }
+    }
+}
+
+/// #176's debug counter idiom, one for how many [`RawSlot::Deferred`]
+/// entries actually got materialised (`bench/results/profile.md` §9's
+/// follow-up: proves the closure walk itself stays at zero, and that only
+/// winners/abandoned-checked versions pay this at all, not every accepted
+/// version).
+static RAW_MATERIALISED: AtomicUsize = AtomicUsize::new(0);
+
+impl RawSlot {
+    fn materialise(&self) -> &Value {
+        match self {
+            RawSlot::Ready(v) => v,
+            RawSlot::Deferred {
+                deltas,
+                minified,
+                index,
+                notify_url,
+                cache,
+            } => cache.get_or_init(|| {
+                RAW_MATERIALISED.fetch_add(1, Ordering::Relaxed);
+                replay_deferred(deltas, *minified, *index, notify_url.as_deref()).expect(
+                    "deltas 0..=index already parsed once by DeltaChain::expand when this \
+                     version was accepted; replaying the same immutable text can't fail now",
+                )
+            }),
+        }
+    }
+}
+
+/// [`PackageVersion::raw`]'s handle, also what [`crate::solver::pool::Package::raw`]
+/// carries: cheap to clone (an `Arc` pointer copy, same as the `Arc<Value>`
+/// it replaces) so a branch-alias/root-alias push or the dev-split
+/// second-solve clone shares one slot rather than re-materialising it, and
+/// a shared [`OnceLock`] cache means whichever clone reads it first pays
+/// the replay for every clone.
+#[derive(Debug, Clone)]
+pub struct RawHandle(Arc<RawSlot>);
+
+impl RawHandle {
+    /// `pool_builder::package_from_lock_entry` builds a pool
+    /// [`crate::solver::pool::Package`] straight off a lock entry, no
+    /// [`PackageVersion`] involved -- always `Ready`, nothing to defer for
+    /// an entry that's already a fully-parsed `Value`. `pub`, not
+    /// `pub(crate)`: `Package::raw` is itself a `pub` field, so anything
+    /// building a `Package` literal (`tests/solver.rs`'s hand-built pools)
+    /// needs a way to build a `RawHandle` too.
+    pub fn ready(value: Value) -> RawHandle {
+        RawHandle(Arc::new(RawSlot::Ready(value)))
+    }
+
+    pub fn get(&self) -> &Value {
+        self.0.materialise()
+    }
+}
+
+/// Replays deltas `0..=index` against a fresh map, independent of any live
+/// [`DeltaChain`] (which may already be dropped by the time this runs) —
+/// same merge/`"__unset"` semantics as [`DeltaChain::expand`], same
+/// `notification-url` stamp as [`DeltaChain::finalize`]. `deltas`/`minified`/
+/// `index`/`notify_url` are exactly what a [`RawSlot::Deferred`] carries, so
+/// this is the whole slot's "recipe" run for real.
+fn replay_deferred(
+    deltas: &[Box<RawValue>],
+    minified: bool,
+    index: usize,
+    notify_url: Option<&str>,
+) -> Result<Value> {
+    let mut map = if minified {
+        merge_deltas(deltas, 0, index, None)
+            .expect("index within bounds implies at least one delta processed")
+    } else {
+        serde_json::from_str(deltas[index].get())
+            .context("provider version entry is not an object")?
+    };
+    stamp_notify_url(notify_url, &mut map);
+    Ok(Value::Object(map))
+}
+
+/// [`DeltaChain::expand`]'s merge loop and [`replay_deferred`]'s own replay
+/// share this: `"__unset"` removes a key instead of inheriting it, same as
+/// [`expand_minified`]/`MetadataMinifier::expand`.
+fn merge_deltas(
+    deltas: &[Box<RawValue>],
+    start: usize,
+    end_inclusive: usize,
+    mut current: Option<Map<String, Value>>,
+) -> Option<Map<String, Value>> {
+    for delta in &deltas[start..=end_inclusive] {
+        let Ok(diff) = serde_json::from_str::<Map<String, Value>>(delta.get()) else {
+            // `DeltaChain::from_deltas` already filtered these out for a
+            // minified chain; defensive only.
+            continue;
+        };
+        current = Some(match current.take() {
+            None => diff,
+            Some(mut prev) => {
+                for (key, value) in diff {
+                    if value == "__unset" {
+                        prev.remove(&key);
+                    } else {
+                        prev.insert(key, value);
+                    }
+                }
+                prev
+            }
+        });
+    }
+    current
+}
+
+/// [`DeltaChain::finalize`]/[`replay_deferred`]'s shared `notification-url`
+/// stamp: `ComposerSource::load_versions`'s post-hoc behaviour, applied
+/// wherever a version's merged object is finally built.
+fn stamp_notify_url(notify_url: Option<&str>, map: &mut Map<String, Value>) {
+    if let Some(url) = notify_url
+        && !map.contains_key("notification-url")
+    {
+        map.insert(
+            "notification-url".to_string(),
+            Value::String(url.to_string()),
+        );
+    }
+}
+
+/// The typed fields [`PackageVersion::from_owned_value`]/[`extract_fields`]
+/// pull out of a version entry, everything but `raw` itself — split out so
+/// a deferred chain ([`DeltaChain::expand`]) can extract these by
+/// reference from its own running map without ever handing that map's
+/// ownership to a `PackageVersion`, the whole point of `raw` staying
+/// unmaterialised.
+struct TypedFields {
+    name: String,
+    version: String,
+    version_normalized: String,
+    require: Map<String, Value>,
+    require_dev: Map<String, Value>,
+    replace: Map<String, Value>,
+    provide: Map<String, Value>,
+    conflict: Map<String, Value>,
+    default_branch: bool,
+    dist: Option<Value>,
+    source: Option<Value>,
+    branch_alias: Option<Value>,
+    time: Option<String>,
+    abandoned: Option<Value>,
+}
+
+fn extract_fields(obj: &Map<String, Value>) -> Result<TypedFields> {
+    let name = string_field(obj, "name")?;
+    let (version, version_normalized) = version_fields(obj)?;
+    let require = map_field(obj, "require");
+    let require_dev = map_field(obj, "require-dev");
+    let replace = map_field(obj, "replace");
+    let provide = map_field(obj, "provide");
+    let conflict = map_field(obj, "conflict");
+    let default_branch = obj
+        .get("default-branch")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let dist = obj.get("dist").cloned();
+    let source = obj.get("source").cloned();
+    let branch_alias = branch_alias_field(obj);
+    let time = obj.get("time").and_then(Value::as_str).map(str::to_string);
+    let abandoned = obj.get("abandoned").cloned();
+    Ok(TypedFields {
+        name,
+        version,
+        version_normalized,
+        require,
+        require_dev,
+        replace,
+        provide,
+        conflict,
+        default_branch,
+        dist,
+        source,
+        branch_alias,
+        time,
+        abandoned,
+    })
+}
+
 /// A single version entry's fields the solver needs; everything else stays
-/// in `raw`, which the pool and lock dumper need verbatim later.
+/// in `raw`, which the pool and lock dumper need verbatim later — `raw`
+/// itself is private (#268 step two): most readers want a typed field
+/// instead ([`PackageVersion::abandoned`]/[`PackageVersion::branch_alias`]
+/// exist for exactly the two the pre-solve pool build needs), and the ones
+/// that do want the untouched JSON go through [`PackageVersion::raw`],
+/// which may replay a minified chain's deltas on first call rather than
+/// have paid for that on every accepted version up front.
 #[derive(Debug, Clone)]
 pub struct PackageVersion {
     pub name: String,
@@ -162,11 +381,34 @@ pub struct PackageVersion {
     /// `extra.branch-alias` (`dev-main` -> `3.x-dev`).
     pub branch_alias: Option<Value>,
     pub time: Option<String>,
-    /// The untouched, expanded (no longer minified) version entry.
-    pub raw: Value,
+    /// `abandoned`, read once at construction so
+    /// `solver::pool_builder`'s pre-solve abandoned-package filter never
+    /// has to materialise [`PackageVersion::raw`] for it (#268 step two).
+    pub abandoned: Option<Value>,
+    raw: RawHandle,
 }
 
 impl PackageVersion {
+    fn from_typed_fields(fields: TypedFields, raw: RawHandle) -> PackageVersion {
+        PackageVersion {
+            name: fields.name,
+            version: fields.version,
+            version_normalized: fields.version_normalized,
+            require: fields.require,
+            require_dev: fields.require_dev,
+            replace: fields.replace,
+            provide: fields.provide,
+            conflict: fields.conflict,
+            default_branch: fields.default_branch,
+            dist: fields.dist,
+            source: fields.source,
+            branch_alias: fields.branch_alias,
+            time: fields.time,
+            abandoned: fields.abandoned,
+            raw,
+        }
+    }
+
     /// `pub(crate)`: [`crate::vcs`] builds a provider-file-shaped `Value`
     /// from a VCS ref's `composer.json` (`name`/`version`/
     /// `version_normalized`/`dist`/`source`/`time` overridden onto the
@@ -188,37 +430,48 @@ impl PackageVersion {
         let obj = raw
             .as_object()
             .context("provider version entry is not an object")?;
-        let name = string_field(obj, "name")?;
-        let (version, version_normalized) = version_fields(obj)?;
-        let require = map_field(obj, "require");
-        let require_dev = map_field(obj, "require-dev");
-        let replace = map_field(obj, "replace");
-        let provide = map_field(obj, "provide");
-        let conflict = map_field(obj, "conflict");
-        let default_branch = obj
-            .get("default-branch")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let dist = obj.get("dist").cloned();
-        let source = obj.get("source").cloned();
-        let branch_alias = branch_alias_field(obj);
-        let time = obj.get("time").and_then(Value::as_str).map(str::to_string);
-        Ok(PackageVersion {
-            name,
-            version,
-            version_normalized,
-            require,
-            require_dev,
-            replace,
-            provide,
-            conflict,
-            default_branch,
-            dist,
-            source,
-            branch_alias,
-            time,
-            raw,
-        })
+        let fields = extract_fields(obj)?;
+        Ok(PackageVersion::from_typed_fields(
+            fields,
+            RawHandle::ready(raw),
+        ))
+    }
+
+    /// [`PackageVersion::raw`]'s crate-visible handle: an `Arc` pointer
+    /// copy, cheap to carry into `solver::pool::Package::raw` without
+    /// materialising it (#268 step two's whole point — the pool build
+    /// reads [`PackageVersion::abandoned`]/[`PackageVersion::branch_alias`]
+    /// instead, never this).
+    pub(crate) fn raw_handle(&self) -> RawHandle {
+        self.raw.clone()
+    }
+
+    /// The untouched, expanded (no longer minified) version entry:
+    /// materialises a deferred slot on first call and caches the result
+    /// (`RawSlot::materialise`), so a version that never turns out to be a
+    /// solve winner never pays for this at all. `pub`, matching the field's
+    /// old visibility (`tests/vcs.rs` reads it on a `PackageVersion` built
+    /// through the crate's public `Repository`/`vcs` surface).
+    pub fn raw(&self) -> &Value {
+        self.raw.get()
+    }
+
+    /// Exclusive access for an in-place mutation
+    /// ([`SourceVersions::set_notify_url`]'s `Ready` branch, stamping
+    /// `notification-url` onto an already-materialised version):
+    /// materialises first if deferred, same as [`PackageVersion::raw`],
+    /// then hands out a private, uniquely-owned copy to mutate.
+    pub(crate) fn raw_mut(&mut self) -> &mut Value {
+        if !matches!(&*self.raw.0, RawSlot::Ready(_)) || Arc::get_mut(&mut self.raw.0).is_none() {
+            let value = self.raw().clone();
+            self.raw = RawHandle::ready(value);
+        }
+        match Arc::get_mut(&mut self.raw.0)
+            .expect("just replaced with a uniquely-owned Ready Arc above")
+        {
+            RawSlot::Ready(v) => v,
+            RawSlot::Deferred { .. } => unreachable!("just replaced with Ready above"),
+        }
     }
 }
 
@@ -438,9 +691,15 @@ fn raw_is_object(raw: &RawValue) -> bool {
 #[derive(Clone)]
 struct DeltaChain {
     minified: bool,
-    deltas: Vec<Box<RawValue>>,
+    /// `Arc<[_]>`, not `Vec`: [`DeltaChain::expand`] hands a clone of this
+    /// straight to every accepted version's [`RawSlot::Deferred`] (#268
+    /// step two), so cloning it per accepted index must be a pointer copy,
+    /// not a re-clone of every delta's owned JSON text.
+    deltas: Arc<[Box<RawValue>]>,
     keys: Vec<DeltaKey>,
-    notify_url: Option<String>,
+    /// `Arc<str>`, not `String`, for the same reason as `deltas`: shared
+    /// by every accepted version's `RawSlot::Deferred` off this chain.
+    notify_url: Option<Arc<str>>,
     /// Memoised running state for [`DeltaChain::expand`]: the last index
     /// replayed and the merged `Map` that produced it, so accepting indices
     /// in increasing order (the common case: `ClosureWalk::process` always
@@ -475,7 +734,7 @@ impl DeltaChain {
         };
         Ok(DeltaChain {
             minified,
-            deltas,
+            deltas: deltas.into(),
             keys,
             notify_url: None,
             replay: None,
@@ -490,80 +749,83 @@ impl DeltaChain {
         &self.keys[index]
     }
 
-    /// Stamps `ComposerSource`'s own `notify_url` the same way
+    /// [`DeltaChain::expand_all`]'s bulk path only (#268 step two): builds
+    /// an eagerly-`Ready` `PackageVersion` from an already fully-merged
+    /// object, stamping `notify_url` the same way
     /// `ComposerSource::load_versions` used to, post-hoc, on the finished
-    /// `Vec<PackageVersion>`: applied here instead, at the point a single
+    /// `Vec<PackageVersion>` -- applied here instead, at the point a single
     /// entry's merged object is finalized, since entries no longer all
     /// finish at the same time. A free function taking `notify_url`
     /// explicitly rather than `&self`, so [`DeltaChain::expand_all`] can
-    /// call it after consuming `self.deltas` by value.
+    /// call it after consuming `self.deltas` by value. [`DeltaChain::expand`]
+    /// does not call this: it has nothing to gain from building a `Ready`
+    /// slot when a `Deferred` one is just as cheap and often never
+    /// materialised at all.
     fn finalize(notify_url: Option<&str>, mut map: Map<String, Value>) -> Result<PackageVersion> {
-        if let Some(url) = notify_url
-            && !map.contains_key("notification-url")
-        {
-            map.insert(
-                "notification-url".to_string(),
-                Value::String(url.to_string()),
-            );
-        }
+        stamp_notify_url(notify_url, &mut map);
         let convert_started = Instant::now();
-        let pv = PackageVersion::from_owned_value(Value::Object(map));
+        let fields = extract_fields(&map)?;
         STAGE_CONVERT_NS.fetch_add(elapsed_ns(convert_started.elapsed()), Ordering::Relaxed);
-        if pv.is_ok() {
-            VERSIONS_PRODUCED.fetch_add(1, Ordering::Relaxed);
-        }
-        pv
+        VERSIONS_PRODUCED.fetch_add(1, Ordering::Relaxed);
+        Ok(PackageVersion::from_typed_fields(
+            fields,
+            RawHandle::ready(Value::Object(map)),
+        ))
     }
 
     /// Replays deltas up to and including `index` against one running
     /// `Map` (`MetadataMinifier::expand` semantics: `"__unset"` removes a
     /// key), continuing from the last replay when `index` is at or after
-    /// it, and pays the one deep clone this type exists to avoid only for
-    /// `index` itself. Each delta in the replayed range is parsed from its
-    /// raw text on demand (#268) rather than upfront, so the timing below
-    /// now covers that parse too, not just the merge -- still `STAGE_EXPAND_NS`,
+    /// it. Each delta in the replayed range is parsed from its raw text on
+    /// demand (#268 step one) rather than upfront, so the timing below now
+    /// covers that parse too, not just the merge -- still `STAGE_EXPAND_NS`,
     /// since it's still expansion work, just moved later.
     ///
-    /// Costs ~12.3 us/call, ~9.5 us of it the `map.clone()` below:
-    /// measured and attributed in #210, which records why that clone
-    /// is not worth removing at the closure's current size.
+    /// #268 step two: the returned version's typed fields are read by
+    /// *reference* off `map` (`extract_fields`, timed as `STAGE_CONVERT_NS`
+    /// same as before), and `map` itself is moved into `self.replay`
+    /// afterwards rather than cloned there and moved into `raw` here --
+    /// the ~9.5 us `map.clone()` #210 attributed to this call is gone, not
+    /// because the replay memoisation went away (it hasn't: a later
+    /// `expand` at a higher index still continues from it) but because
+    /// nothing needs a *second* copy of the same map any more. `raw`
+    /// itself becomes a [`RawSlot::Deferred`] recipe instead of the merged
+    /// object: cheap regardless (an `Arc` clone plus three small fields),
+    /// and never replayed at all unless something downstream actually
+    /// calls [`PackageVersion::raw`].
     fn expand(&mut self, index: usize) -> Result<PackageVersion> {
-        if !self.minified {
-            let expand_started = Instant::now();
-            let map: Map<String, Value> = serde_json::from_str(self.deltas[index].get())
-                .context("provider version entry is not an object")?;
-            STAGE_EXPAND_NS.fetch_add(elapsed_ns(expand_started.elapsed()), Ordering::Relaxed);
-            return DeltaChain::finalize(self.notify_url.as_deref(), map);
-        }
         let expand_started = Instant::now();
-        let (start, mut current) = match self.replay.take() {
-            Some((last, map)) if last <= index => (last + 1, Some(map)),
-            _ => (0, None),
-        };
-        for delta in &self.deltas[start..=index] {
-            let Ok(diff) = serde_json::from_str::<Map<String, Value>>(delta.get()) else {
-                // `from_deltas` already filtered these out for a minified
-                // chain; defensive only.
-                continue;
+        let map = if self.minified {
+            let (start, current) = match self.replay.take() {
+                Some((last, map)) if last <= index => (last + 1, Some(map)),
+                _ => (0, None),
             };
-            current = Some(match current.take() {
-                None => diff,
-                Some(mut prev) => {
-                    for (key, value) in diff {
-                        if value == "__unset" {
-                            prev.remove(&key);
-                        } else {
-                            prev.insert(key, value);
-                        }
-                    }
-                    prev
-                }
-            });
-        }
-        let map = current.expect("index within bounds implies at least one delta processed");
-        self.replay = Some((index, map.clone()));
+            merge_deltas(&self.deltas, start, index, current)
+                .expect("index within bounds implies at least one delta processed")
+        } else {
+            serde_json::from_str(self.deltas[index].get())
+                .context("provider version entry is not an object")?
+        };
         STAGE_EXPAND_NS.fetch_add(elapsed_ns(expand_started.elapsed()), Ordering::Relaxed);
-        DeltaChain::finalize(self.notify_url.as_deref(), map)
+
+        let convert_started = Instant::now();
+        let fields = extract_fields(&map)?;
+        STAGE_CONVERT_NS.fetch_add(elapsed_ns(convert_started.elapsed()), Ordering::Relaxed);
+        VERSIONS_PRODUCED.fetch_add(1, Ordering::Relaxed);
+
+        let slot = RawHandle(Arc::new(RawSlot::Deferred {
+            deltas: Arc::clone(&self.deltas),
+            minified: self.minified,
+            index,
+            notify_url: self.notify_url.clone(),
+            cache: OnceLock::new(),
+        }));
+
+        if self.minified {
+            self.replay = Some((index, map));
+        }
+
+        Ok(PackageVersion::from_typed_fields(fields, slot))
     }
 
     /// Every consumer that still wants the whole name's versions up front
@@ -665,14 +927,16 @@ impl SourceVersions {
             SourceVersions::Ready(versions) => {
                 let Some(url) = notify_url else { return };
                 for version in versions {
-                    if let Value::Object(obj) = &mut version.raw
+                    if let Value::Object(obj) = version.raw_mut()
                         && !obj.contains_key("notification-url")
                     {
                         obj.insert("notification-url".to_string(), Value::String(url.clone()));
                     }
                 }
             }
-            SourceVersions::Deferred(chain) => chain.notify_url = notify_url.cloned(),
+            SourceVersions::Deferred(chain) => {
+                chain.notify_url = notify_url.map(|url| Arc::from(url.as_str()));
+            }
         }
     }
 }
@@ -1991,6 +2255,7 @@ impl<T: Transport> Repository<T> {
         let normalize_calls_before = VERSION_NORMALIZE_CALLS.load(Ordering::Relaxed);
         let from_deltas_ns_before = FROM_DELTAS_NS.load(Ordering::Relaxed);
         let from_deltas_calls_before = FROM_DELTAS_CALLS.load(Ordering::Relaxed);
+        let raw_materialised_before = RAW_MATERIALISED.load(Ordering::Relaxed);
 
         let mut walk = ClosureWalk {
             skip,
@@ -2113,6 +2378,10 @@ impl<T: Transport> Repository<T> {
             versions_produced = VERSIONS_PRODUCED.load(Ordering::Relaxed) - versions_before,
             normalize_calls =
                 VERSION_NORMALIZE_CALLS.load(Ordering::Relaxed) - normalize_calls_before,
+            // #268 step two: how many `RawSlot::Deferred` entries actually
+            // got replayed -- expected to track the lock's package count,
+            // not `versions_produced`.
+            raw_materialised = RAW_MATERIALISED.load(Ordering::Relaxed) - raw_materialised_before,
             "#176: read+parse cached metadata stage split"
         );
         // #177: dropping `states`/`versions_by_name`/`stashed`/`queue` here
@@ -2421,8 +2690,8 @@ pub(crate) fn branch_alias_target(pv: &PackageVersion) -> Option<String> {
     branch_alias_target_of(&pv.version, pv.branch_alias.as_ref())
 }
 
-/// [`branch_alias_target`], but reading `extra.branch-alias` straight from a
-/// pool [`crate::solver::pool::Package`]'s own `raw` entry instead of a
+/// [`branch_alias_target`], but reading `extra.branch-alias` straight off
+/// [`crate::solver::pool::Package::branch_alias`] instead of a
 /// [`PackageVersion`]: `solver::resolve`'s dev-split second solve rebuilds
 /// its pool from already-`Package`-shaped first-solve winners
 /// (`pool_builder::clone_package`), which never carried a `PackageVersion`
@@ -2431,13 +2700,16 @@ pub(crate) fn branch_alias_target(pv: &PackageVersion) -> Option<String> {
 /// metadata too, it never carries the first solve's `AliasPackage` object
 /// across (`pool_builder::clone_package`'s own doc comment's "never carries
 /// `AliasPackage` entries either" is only true of the *objects*, not of
-/// whether an alias exists in the rebuilt pool).
-pub(crate) fn branch_alias_target_from_raw(pretty_version: &str, raw: &Value) -> Option<String> {
-    let branch_alias = raw.get("extra").and_then(|extra| extra.get("branch-alias"));
-    branch_alias_target_of(pretty_version, branch_alias)
-}
-
-fn branch_alias_target_of(pretty_version: &str, branch_alias: Option<&Value>) -> Option<String> {
+/// whether an alias exists in the rebuilt pool). Reads the typed field
+/// `pool_builder::push_package_version` threads through from
+/// [`PackageVersion::branch_alias`] rather than `Package::raw` (#268 step
+/// two): a partial update's locked-out-name reconstruction
+/// (`pool_builder::package_from_lock_entry`) populates the same field
+/// straight off the lock entry, so this never needs `Package::raw` at all.
+pub(crate) fn branch_alias_target_of(
+    pretty_version: &str,
+    branch_alias: Option<&Value>,
+) -> Option<String> {
     if !(pretty_version.starts_with("dev-") || pretty_version.ends_with("-dev")) {
         return None;
     }
@@ -2901,7 +3173,42 @@ mod tests {
         // Index 1 (the one carrying the "__unset") is never expanded on its
         // own -- only index 2, the one that actually gets accepted.
         let accepted = chain.expand(2).unwrap();
-        assert!(accepted.raw.get("foo").is_none());
+        assert!(accepted.raw().get("foo").is_none());
+    }
+
+    /// #268 step two: [`PackageVersion::raw`]'s deferred slot must replay
+    /// to the same value [`DeltaChain::expand_all`]'s eager path would
+    /// build, even after the [`DeltaChain`] that produced it is gone --
+    /// the slot carries its own `Arc`-shared deltas rather than leaning on
+    /// the chain's own state, and the `notification-url` stamp must
+    /// survive the same way.
+    #[test]
+    fn deferred_raw_materialises_after_chain_dropped() {
+        let deltas = vec![
+            serde_json::json!({"name": "acme/deferred", "version": "1.0.0", "version_normalized": "1.0.0.0", "require": {"php": ">=7.0"}}),
+            serde_json::json!({"version": "1.1.0", "version_normalized": "1.1.0.0", "extra": {"foo": "bar"}}),
+        ];
+        let notify_url = "https://example.test/notify";
+
+        let mut reference_chain = DeltaChain::from_deltas(raws(&deltas), true).unwrap();
+        reference_chain.notify_url = Some(Arc::from(notify_url));
+        let reference = reference_chain.expand_all().unwrap();
+
+        let accepted = {
+            let mut chain = DeltaChain::from_deltas(raws(&deltas), true).unwrap();
+            chain.notify_url = Some(Arc::from(notify_url));
+            chain.expand(1).unwrap()
+            // `chain` dropped here -- the slot must still replay correctly.
+        };
+
+        assert_eq!(accepted.raw(), reference[1].raw());
+        assert_eq!(
+            accepted
+                .raw()
+                .get("notification-url")
+                .and_then(Value::as_str),
+            Some(notify_url)
+        );
     }
 
     /// #176: [`ClosureWalk::process`] rescans a name from its start on every
@@ -2921,7 +3228,7 @@ mod tests {
         let mut chain = DeltaChain::from_deltas(raws(&deltas), true).unwrap();
         for &i in &[2, 0, 3, 1, 3, 0] {
             let expanded = chain.expand(i).unwrap();
-            assert_eq!(expanded.raw, reference[i], "index {i}");
+            assert_eq!(*expanded.raw(), reference[i], "index {i}");
         }
     }
 
@@ -3035,7 +3342,7 @@ mod tests {
                 assert_eq!(chain.len(), reference.len(), "{path:?} {name}: entry count");
                 for (i, expected) in reference.iter().enumerate() {
                     let expanded = chain.expand(i).unwrap();
-                    assert_eq!(&expanded.raw, expected, "{path:?} {name} index {i}");
+                    assert_eq!(expanded.raw(), expected, "{path:?} {name} index {i}");
                     checked += 1;
                 }
             }

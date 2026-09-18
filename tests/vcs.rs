@@ -358,7 +358,7 @@ async fn github_repository_lists_tags_and_the_default_branch() {
     );
     assert_eq!(dist["reference"], TAG_SHA);
     assert_eq!(
-        tag.raw["support"]["source"],
+        tag.raw()["support"]["source"],
         "https://github.com/acme/widget-gh/tree/1.0.0"
     );
 
@@ -367,7 +367,7 @@ async fn github_repository_lists_tags_and_the_default_branch() {
     assert_eq!(main.time.as_deref(), Some("2024-01-01T00:00:00+00:00"));
     assert_eq!(main.require["php"].as_str(), Some(">=8.0"));
     assert_eq!(
-        main.raw["support"]["source"],
+        main.raw()["support"]["source"],
         "https://github.com/acme/widget-gh/tree/main"
     );
 }

@@ -723,8 +723,6 @@ impl std::error::Error for SolverError {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::{condense_version_list, major_bucket, missing_package_suffix};
     use crate::semver;
     use crate::solver::pool::{Package, Pool, RemovalReason, RemovedPackage};
@@ -758,7 +756,11 @@ mod tests {
             alias_of: None,
             is_root_package_alias: false,
             has_self_version_requires: false,
-            raw: Arc::new(serde_json::json!({"name": name, "version": pretty_version})),
+            raw: crate::repository::RawHandle::ready(
+                serde_json::json!({"name": name, "version": pretty_version}),
+            ),
+            abandoned: None,
+            branch_alias: None,
         }
     }
 

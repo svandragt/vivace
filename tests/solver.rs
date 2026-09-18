@@ -125,7 +125,11 @@ fn package(name: &str, pretty_version: &str) -> Package {
         alias_of: None,
         is_root_package_alias: false,
         has_self_version_requires: false,
-        raw: std::sync::Arc::new(serde_json::json!({ "name": name, "version": pretty_version })),
+        raw: vivace::repository::RawHandle::ready(
+            serde_json::json!({ "name": name, "version": pretty_version }),
+        ),
+        abandoned: None,
+        branch_alias: None,
     }
 }
 
