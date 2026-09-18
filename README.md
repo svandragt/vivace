@@ -1,19 +1,21 @@
 # vivace
 
-`viv` is to Composer what uv was to pip: a Rust reimplementation that
-installs from `composer.lock` and writes the `vendor/` directory Composer
-would write, byte for byte. On the [bench corpus](bench/results/corpus.md)
-(2026-09-15) a cold `laravel/laravel` install takes 0.30 s against
-Composer's 1.58 s, and the [compat sweep](compat/hunted.md) finds an
-identical `vendor/` on every project viv installs. Plugins other than the
-shipped adapters and Composer's long tail of commands stay with Composer;
+`viv` is a Rust reimplementation of Composer that installs from
+`composer.lock` and writes the `vendor/` directory Composer would write,
+byte for byte. On the [bench corpus](bench/results/corpus.md) (2026-09-15)
+a cold `laravel/laravel` install takes 0.30 s against Composer's 1.58 s,
+and the [compat sweep](compat/hunted.md) finds an identical `vendor/` on
+every project viv installs. Plugins other than the shipped adapters and
+Composer's long tail of commands stay with Composer;
 [`docs/stability.md`](docs/stability.md) lists exactly what is and isn't
 covered.
 
-The compat work is finished and frozen as a control; viv continues as a
-research vehicle for package-manager design, one measured chapter at a
-time. [`docs/research.md`](docs/research.md) has the programme and the
-current chapter, a lock format that does not conflict in git.
+It began as a question, whether a person directing coding agents can build
+a faster drop-in Composer, and that question is answered. The compatible
+mode is finished and frozen as a control. viv continues as a research
+vehicle for package-manager design, one measured chapter at a time;
+[`docs/research.md`](docs/research.md) has the programme and the current
+chapter, a lock format that does not conflict in git.
 
 ## Try it
 
@@ -308,6 +310,12 @@ without touching the network.[^14]
   (`vendor/` and `composer.lock` identical to Composer's) is the one thing
   that does not move.[^17]
 - **Windows is not supported.** Linux and macOS only.
+- **Maintenance is on demand.** The compatible mode is complete and no new
+  plugin adapters or Composer commands are planned. A bug in it that a real
+  project hits gets fixed; open an issue with the project's `composer.json`
+  and lock. Releases continue as research chapters land, and the compat
+  sweep and benchmark gates run on every change so the drop-in behaviour
+  does not regress.
 - **Some Composer plugins stop the install.** symfony/flex and any plugin
   without a native adapter make viv exit with an error naming the plugin.
   `--no-plugins` installs as Composer would without them, but the plugin's
