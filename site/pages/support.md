@@ -13,7 +13,7 @@ One person maintains viv. Expect an acknowledgement within a week. Bugs that mak
 
 ## What holds across releases
 
-viv is pre-1.0. A minor release may add commands, change progress wording or get faster. It may not change the bytes of `vendor/`, `composer.lock` or the plain-text output of `show`, `why` and `validate` that Composer's pinned version would write for the same input, unless it fixes a bug in an earlier release's output. Each release states which Composer version it targets. The full contract is [docs/stability.md](https://github.com/svandragt/vivace/blob/main/docs/stability.md).
+viv stays in the 0.x series; no 1.0 is planned. A minor release may add commands, change progress wording or get faster. It may not change the bytes of `vendor/`, `composer.lock` or the plain-text output of `show`, `why` and `validate` that Composer's pinned version would write for the same input, unless it fixes a bug in an earlier release's output. Each release states which Composer version it targets. The full contract is [docs/stability.md](https://github.com/svandragt/vivace/blob/main/docs/stability.md).
 
 ## If the maintainer stops
 

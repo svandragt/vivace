@@ -305,8 +305,8 @@ without touching the network.[^14]
 
 ## Reasons not to use viv
 
-- **It is pre-1.0.** Minor releases can change behaviour and flags; the
-  release notes and `JOURNAL.md` call those out. The output contract
+- **It stays 0.x.** No 1.0 is planned. Minor releases can change behaviour
+  and flags; the release notes and `JOURNAL.md` call those out. The output contract
   (`vendor/` and `composer.lock` identical to Composer's) is the one thing
   that does not move.[^17]
 - **Windows is not supported.** Linux and macOS only.

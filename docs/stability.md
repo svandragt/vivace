@@ -36,8 +36,10 @@ against that version before the release ships.
 
 ## Versioning
 
-viv is pre-1.0: expect breaking changes between minor releases, and expect
-them to be called out in `JOURNAL.md`. Within that, a minor release may:
+viv stays in the 0.x series; no 1.0 is planned, because a 1.0 promises
+maintenance that nobody has asked for yet (see `docs/research.md`). Minor
+releases can make breaking changes, called out in `JOURNAL.md`. Within
+that, a minor release may:
 
 - add new commands or flags,
 - make internals faster,
