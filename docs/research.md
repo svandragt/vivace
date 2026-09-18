@@ -81,6 +81,68 @@ Not started. Depends on nothing in chapter 1. The two shims decide whether
 real projects keep working, so the measurement is the compat corpus booting,
 not only the install time.
 
+## Chapter 3: workspaces (planned)
+
+**Question.** When a repository holds several `composer.json` files, can
+one lock and one solve serve all of them, so every member agrees on one
+version of each dependency and the install costs the union of the
+members, not the sum?
+
+**Why Composer has no answer.** A Composer root is one `composer.json`
+next to one `composer.lock` and one `vendor/`. A repository with several
+roots, such as a platform with a plugin and a theme per directory or a
+framework split into components, gets one of two workarounds:
+
+- Independent roots. Each member keeps its own lock and `vendor/`. The
+  same package is solved, downloaded and extracted once per member, and
+  the members drift to different versions of it without anyone choosing
+  to.
+- One aggregate root. A top-level `composer.json` requires every member
+  through a `path` repository with `symlink: true`. Members lose their own
+  lock and cannot be installed alone, and the aggregate lock conflicts in
+  git exactly as chapter 1 describes.
+
+npm, pnpm, Cargo and uv solve this with a workspace: the root names its
+members, one lock covers them, and a member that requires another member
+gets it from the tree rather than a registry.
+
+**Hypothesis.** A root that lists its members, one solve over the union
+of their requirements, and one lock in chapter 1's format (each record
+already carries the requirement that selected it, so it can carry the
+member too) gives three measurable results against independent roots:
+
+- zero version drift, because there is one resolved version per package
+- install time and store size that grow with the union of the
+  dependencies, not with the number of members
+- each member still installable alone, with its own `vendor/` and
+  autoloader against the shared lock
+
+**Design sketch.** Members are declared in the root `composer.json` under
+`extra.viv.workspace.members` as globs, so Composer ignores the setting
+and compat mode is untouched. A member that requires another member by
+name gets a symlink into the tree, the way `workspace:*` works in pnpm.
+Each member gets a `vendor/` linked from the store and its own generated
+autoloader, so `php members/x/bin/tool` works without the root. The
+shared lock lives at the root. `composer.lock` is still exportable per
+member, projected from the shared lock, so a member can leave the
+workspace.
+
+**Control.** Compat mode run once per member: N independent installs
+against the same store, each writing its own `composer.lock`.
+
+**Measurement.** A corpus of public repositories with several
+`composer.json` files that are installable roots. Per repository: members
+found, packages in the union versus the sum, distinct versions of the
+same package across independent member solves (the drift count), warm
+and cold install time for N installs versus one workspace install, and
+store size. Results land in `bench/results/workspaces.md`.
+
+**Work.** Member discovery and inter-member linking (#276), one solve and
+one lock over the union (#277), per-member `vendor/` and `composer.lock`
+projection (#278), corpus and measurement harness (#279). Depends on
+chapter 1's record format (#272) for the lock; the discovery and solve
+work does not wait for it.
+
 ## Candidate chapters
 
 Opportunities that open once the contract is "a working project managed by
@@ -104,5 +166,3 @@ question and a measurement; none is scheduled.
   Composer plugins are path mapping, file scaffolding and patching. A
   manifest that declares those directly replaces emulating plugin execution,
   and the adapter list becomes the migration table.
-- **Workspaces.** Several `composer.json` files sharing one lock and one
-  store, which Composer lacks. Depends on chapter 1's per-record lock.
