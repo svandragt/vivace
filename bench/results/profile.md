@@ -862,3 +862,147 @@ generation's remaining 29 ms no longer has a single dominant line item
 this task's own `what_provides` fix, which is exactly the shape this
 section's methodology (measure, only change what the measurement justifies)
 is supposed to stop at.
+
+## 9. Spike 2026-09-18: first CPU profile, laravel only (#268 #269 #270 #271)
+
+viv 0.13.0 release build, `--no-plugins --no-scripts`, `perf_event_paranoid=1` for the first time, so the flamegraphs in sections 5 and 6.3 said could not be taken now exist: `flamegraph-install-warm-2026-09-18.svg` and `flamegraph-update-warm-2026-09-18.svg` in this directory. Kernel symbols are unresolved (`kptr_restrict`). Only `bench/laravel` had a checkout (#271), so every table below is laravel, 101 packages. Tickets: #268 metadata closure decode, #269 `-o` root scan, #270 sequential linking, #271 corpus checkouts.
+
+# CPU/perf spike on viv 0.13.0
+
+Machine: AMD Ryzen 9 7900X3D (24 logical), Linux 7.0, `uptime` load average
+0.57-0.78 across the session. Binary: `target/release/viv` (`viv 0.13.0`,
+built from `3c7fcc4`). `perf_event_paranoid` was `1` at the start and still
+`1` immediately before step D, so step D ran.
+
+### 9.Scope actually covered
+
+Only **laravel/laravel** (`bench/laravel`, the committed 101-package
+fixture) has a usable local checkout. `bench/corpus.sh`'s persistent cache
+(`~/.cache/vivace-bench`) has **mirrors only**, no checkouts, for
+`laravel/laravel`, `symfony/demo`, `statamic/statamic`, `roots/bedrock` -
+`corpus.sh`'s own checkouts are ephemeral (`rm -rf "$srcdir"` at the end of
+`run_entry`, work dir removed on exit unless `BENCH_CORPUS_WORK` is set) and
+none was left over from a prior run. Per instruction, a missing checkout was
+not recreated via `git clone` (network work). The existing laravel mirror
+also doesn't line up with `bench/laravel`'s own lock closely enough to serve
+it cleanly (only 50/73 packages match by exact `dist.reference`, 2 packages
+absent entirely) - so it wasn't used either.
+
+**Result: `symfony/demo`, `statamic/statamic`, `roots/bedrock` are not
+represented anywhere below** - no checkout, no fallback, skipped rather than
+cloned. Steps C and D's statamic leg were substituted with a second laravel
+scenario (warm install) instead, noted at each occurrence. Everywhere a
+"warm" cache was needed, it was built with one real online `viv
+install`/`update --dry-run` against the real registry into a fresh,
+throw-away `XDG_CACHE_HOME` (never `~/.cache/vivace`) - the fallback the
+task itself sanctions when mirror-serving isn't worth the setup. All flags
+`--no-plugins --no-scripts`.
+
+### 9.A. Wall clock (`hyperfine --warmup 1 --runs 10`, viv only)
+
+| Project | warm install | no-op install | warm install -o | update-warm (`--offline --no-install`) |
+|---|---|---|---|---|
+| laravel/laravel (101 pkgs) | 43.0 +/- 2.5 ms | 4.8 +/- 0.2 ms | 69.2 +/- 3.6 ms | 211.1 +/- 4.8 ms |
+
+symfony/demo, statamic/statamic, roots/bedrock: no checkout available, not run.
+
+### 9.B. Phase split (`RUST_LOG=vivace=debug -v`, laravel, one run per scenario, phases >=1 ms)
+
+**warm install** (total 37 ms of logged phases; wall 43 ms)
+| Phase | ms |
+|---|---|
+| linked packages into vendor | 19 |
+| generated autoload files | 10 |
+| scanned classmap/PSR directories | 4 |
+| read and parsed composer.lock | 2 |
+| wrote installed.json/php and state | 2 |
+
+**no-op install** (total 2 ms; wall 4.8 ms)
+| Phase | ms |
+|---|---|
+| read and parsed composer.lock | 2 |
+
+**warm install -o** (total 134 ms; wall 69 ms - hyperfine's wall mean was measured in a separate run from this log capture, same cache state, run-to-run variance explains the gap)
+| Phase | ms |
+|---|---|
+| generated autoload files | 61 |
+| scanned classmap/PSR directories | 45 |
+| linked packages into vendor | 24 |
+| read and parsed composer.lock | 2 |
+| wrote installed.json/php and state | 2 |
+
+**update-warm (`--offline`)** (total 338 ms; wall 211 ms - "resolved metadata and solved" is the parent span, it includes "loaded metadata closure" below it, same nesting convention as `bench/results/profile.md` Section 1.2)
+| Phase | ms |
+|---|---|
+| resolved metadata and solved (parent span, includes the row below) | 189 |
+| loaded metadata closure | 110 |
+| pruned the pool before rule generation | 22 |
+| converted the metadata closure into pool packages | 7 |
+| built fetcher/repository and read the current lock | 6 |
+| detected platform packages (`php` subprocess) | 2 |
+| dev-split second solve | 1 |
+| wrote composer.lock | 1 |
+
+### 9.C. `strace -c -f`, warm install, laravel (statamic: no checkout, not run)
+
+Top by time:
+| syscall | % time | calls |
+|---|---|---|
+| linkat | 42.54% | 7746 |
+| futex | 19.97% | 5 |
+| mkdir | 10.00% | 1208 |
+| getdents64 | 8.33% | 2202 |
+| chmod | 4.37% | 1103 |
+
+Top by count: linkat (7746), getdents64 (2202), mkdir (1208), chmod (1103),
+openat (1197). Total: 17,805 syscalls, 0.84 s. Consistent with
+`profile.md` Section 1.5's own laravel numbers (linkat/mkdir/getdents64 dominant).
+
+### 9.D. `perf record -g --call-graph dwarf -F 999` (ran: paranoid=1)
+
+Statamic substituted with **laravel warm install** (statamic has no
+checkout). Kernel symbols unresolved (`kptr_restrict`/no `vmlinux`), so `[k]
+0x...` entries below are opaque; userspace (`[.]`) symbols are real.
+
+**laravel warm install** (123 samples, `laravel-warm-install.perf.data`), top 5 self-time:
+1. 7.20% `[k] 0xffffffffaf295d70` (unresolved kernel)
+2. 4.84% `[k] 0xffffffffaf6a4c2a` (unresolved kernel)
+3. 4.42% `[k] 0xffffffffaf77c5cd` (unresolved kernel)
+4. 3.64% `[k] 0xffffffffaf59b725` (unresolved kernel)
+5. 3.49% `regex_syntax::ast::parse::ParserI::parse_group` (userspace, `viv`)
+
+**laravel update-warm (`--offline`)** (846 samples, `laravel-update-warm.perf.data`), top 5 self-time:
+1. 7.10% `[k] 0xffffffffaf24c673` (unresolved kernel, `tokio-rt-worker`)
+2. 3.88% `malloc` (`libc.so.6`)
+3. 2.96% `[k] 0xffffffffaf24b748` (unresolved kernel, `tokio-rt-worker`)
+4. 2.43% `malloc` (`libc.so.6`)
+5. 2.37% `[k] 0xffffffffaf577dce` (unresolved kernel)
+
+Full top-15 lists per profile: `D/laravel-warm-install-flat.txt`,
+`D/laravel-update-warm-flat.txt`. Raw `perf.data`:
+`D/laravel-warm-install.perf.data`, `D/laravel-update-warm.perf.data`.
+
+Flamegraphs (`flamegraph --perfdata`, `inferno`-backed; no separate
+`inferno-collapse-perf`/`inferno-flamegraph` binaries on `PATH`, but the
+standalone `flamegraph` CLI bundles the same crate):
+- `D/laravel-warm-install.svg`
+- `D/laravel-update-warm.svg`
+
+### 9.E. Cold install, phase split, laravel, one run
+
+Real registry (see "Scope" above for why not the recorded mirror). Wall:
+"Installed 101 packages (0 from cache), removed 0, in 2.11s" - far above the
+task's own ~300 ms expectation; the actual split shows why:
+
+| Phase | ms | % of wall |
+|---|---|---|
+| metadata read/diff (parse lock, plugins, plan) | 2 | 0.1% |
+| fetch (101 concurrent dist downloads, real network) | 2015 | 95% |
+| extract (sum of per-package spans, overlaps fetch) | 245 | 12% |
+| link_tree into vendor | 33 | 1.6% |
+| autoload generation (incl. 47 ms classmap scan) | 52 | 2.5% |
+| write installed.json/state | 2 | 0.1% |
+
+Network fetch is ~95% of cold wall time on this run; everything else
+(parse/link/autoload/write) is single-digit-to-tens of ms, same shape as the
+warm scenario above.
