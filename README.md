@@ -10,6 +10,11 @@ shipped adapters and Composer's long tail of commands stay with Composer;
 [`docs/stability.md`](docs/stability.md) lists exactly what is and isn't
 covered.
 
+The compat work is finished and frozen as a control; viv continues as a
+research vehicle for package-manager design, one measured chapter at a
+time. [`docs/research.md`](docs/research.md) has the programme and the
+current chapter, a lock format that does not conflict in git.
+
 ## Try it
 
 ```sh

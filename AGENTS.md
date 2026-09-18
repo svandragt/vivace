@@ -8,6 +8,9 @@ vivace (`viv`) is a byte-compatible reimplementation of Composer: it solves
 `composer.json` into a `composer.lock` and installs a lock into a `vendor/`
 directory that is a drop-in for Composer's. Read `ARCHITECTURE.md` for the
 pipeline and `docs/composer-contract.md` for the exact output rules.
+Since 0.14 the compat mode is frozen as a control and new work follows
+`docs/research.md`: one chapter at a time, behind a flag, measured
+against compat mode.
 `JOURNAL.md` is a public engineering log: append an entry at the end of every
 working session.
 

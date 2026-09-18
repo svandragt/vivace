@@ -1268,3 +1268,37 @@ out to were both fetching unauthenticated. `COMPOSER_AUTH` with the
 workflow token, set once at workflow level, is read by both; viv already
 maps a `github.com` token onto `api.github.com`. `NEXTEST_RETRIES: 2`
 covers a single blip. The next run was green.
+
+## 2026-09-18: the tap, six framework pages, a spike, and a course correction
+
+**Packaging.** The Homebrew tap exists and the release workflow has the
+token to push to it; the formula for 0.13.0 checks out against every
+release tarball. Untested on a Mac still.
+
+**Site.** One generated page per framework (Laravel, Symfony, Drupal,
+Bedrock, Craft, Statamic), every number read at build time from the corpus,
+the compat sweep and the plugin inventory; a plugin the inventory does not
+name fails the build.
+
+**The first CPU profile.** `perf_event_paranoid` dropped to 1 for the first
+time, so the flamegraphs sections 5 and 6.3 of `profile.md` said could not
+be taken now exist. Laravel only: the corpus script deletes its checkouts.
+The metadata closure on an offline update was 110 ms of 211; the flamegraph
+showed malloc, indexmap pushes and string clones, which is a JSON tree per
+version delta, 13,996 of them for 3,114 accepted versions and about 100 in
+the lock. Two steps: keep deltas as raw slices and decode a three-key header
+for the acceptance screen (215 to 170 ms), then defer the verbatim object
+until a solve winner reads it (170 to 131 ms). #210 had measured the
+snapshot clone and called it irreducible; the difference was reading the
+consumer list, which showed only two pre-solve readers. An untagged serde
+enum for the list-or-object entry cost back half of step one and was
+replaced by a first-byte sniff. Lock byte-identical throughout.
+
+**Course correction.** The question this project started with, whether a
+person directing coding agents can build a faster byte-compatible Composer,
+is answered. Compat mode is frozen as a control; the open fidelity items
+moved to an on-demand milestone. New work follows `docs/research.md`: one
+chapter at a time, behind a flag, measured against compat mode, written
+up. Chapter 1 is a lock format that does not conflict in git, measured by
+replaying historical merges. Chapter 2, autoload from the store without a
+vendor tree, is sketched.
