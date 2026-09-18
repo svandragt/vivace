@@ -15,7 +15,7 @@ a faster drop-in Composer, and that question is answered. The compatible
 mode is finished and frozen as a control. viv continues as a research
 vehicle for package-manager design, one measured chapter at a time;
 [`docs/research.md`](docs/research.md) has the programme and the current
-chapter, a lock format that does not conflict in git.
+chapter.
 
 ## Try it
 
