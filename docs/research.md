@@ -80,3 +80,29 @@ time, disk use, and framework compatibility?
 Not started. Depends on nothing in chapter 1. The two shims decide whether
 real projects keep working, so the measurement is the compat corpus booting,
 not only the install time.
+
+## Candidate chapters
+
+Opportunities that open once the contract is "a working project managed by
+viv" rather than byte-identical output. Each is a chapter waiting for a
+question and a measurement; none is scheduled.
+
+- **Autoload as a store property.** Each immutable package version in the
+  store carries its precomputed classmap and PSR map, so install is a
+  concatenation and only the root package is ever scanned. The performance
+  finding behind it (#269, the `-o` root scan) becomes a design rather than
+  a cache.
+- **A lock that describes the whole install.** Chapter 1's format extended
+  with content-addressed hashes of the extracted trees, the full resolved
+  graph and a platform snapshot, so an offline install needs no mirror and
+  reproducibility is checked against the trees, not the dist URLs.
+- **Lock-seeded solving by default.** Start the pool from the locked
+  versions and widen only on conflict, so an `update` that changes little
+  costs little. Measured against the closure and solve phases the profile
+  already logs.
+- **A declared extension model.** The native adapters show that most
+  Composer plugins are path mapping, file scaffolding and patching. A
+  manifest that declares those directly replaces emulating plugin execution,
+  and the adapter list becomes the migration table.
+- **Workspaces.** Several `composer.json` files sharing one lock and one
+  store, which Composer lacks. Depends on chapter 1's per-record lock.
