@@ -30,6 +30,9 @@ use anyhow::{Context, Result, bail};
 use futures::stream::{FuturesUnordered, StreamExt};
 use regex::Regex;
 use reqwest::Url;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -226,29 +229,29 @@ fn string_field(obj: &Map<String, Value>, key: &str) -> Result<String> {
         .with_context(|| format!("provider version entry missing {key:?}"))
 }
 
-/// `version`/`version_normalized`, shared between [`PackageVersion::from_owned_value`]
-/// (the whole-object parse) and [`DeltaKey::from_delta`] (#176's cheap
-/// pre-acceptance read of the same two fields straight off a minified
-/// delta, before it's ever merged into a full object): both are present on
-/// every entry a minified provider file ships, never inherited, so reading
-/// them off the delta directly is exactly as correct as reading them off
-/// the fully expanded object.
-fn version_fields(obj: &Map<String, Value>) -> Result<(String, String)> {
-    let version = string_field(obj, "version")?;
-    // `version_normalized === VersionParser::DEFAULT_BRANCH_ALIAS` (a
-    // literal "9999999-dev") or missing entirely both mean: recompute
-    // it (`ComposerRepository.php:1327-1330`).
-    let version_normalized = obj
-        .get("version_normalized")
-        .and_then(Value::as_str)
-        .filter(|v| *v != "9999999-dev")
-        .map(str::to_string);
-    let version_normalized = if let Some(v) = version_normalized {
-        v
+/// `version_normalized === VersionParser::DEFAULT_BRANCH_ALIAS` (a literal
+/// "9999999-dev") or missing entirely both mean: recompute it
+/// (`ComposerRepository.php:1327-1330`). Shared by [`version_fields`] (the
+/// whole-object parse) and [`DeltaKey::header_fields`] (#268's raw-slice
+/// decode), so the recompute rule can't drift between the two readers of
+/// the same two keys.
+fn resolve_version_normalized(version: &str, version_normalized: Option<&str>) -> Result<String> {
+    let version_normalized = version_normalized.filter(|v| *v != "9999999-dev");
+    if let Some(v) = version_normalized {
+        Ok(v.to_string())
     } else {
         VERSION_NORMALIZE_CALLS.fetch_add(1, Ordering::Relaxed);
-        crate::version::normalize(&version)?
-    };
+        crate::version::normalize(version)
+    }
+}
+
+/// `version`/`version_normalized`, read off a fully expanded object
+/// (`PackageVersion::from_owned_value`'s own use, and a non-minified v1
+/// entry, which already stands alone).
+fn version_fields(obj: &Map<String, Value>) -> Result<(String, String)> {
+    let version = string_field(obj, "version")?;
+    let version_normalized = obj.get("version_normalized").and_then(Value::as_str);
+    let version_normalized = resolve_version_normalized(&version, version_normalized)?;
     Ok((version, version_normalized))
 }
 
@@ -303,9 +306,25 @@ fn expand_minified(versions: Vec<Value>) -> Vec<Value> {
     expanded.into_iter().map(Value::Object).collect()
 }
 
+/// [`DeltaKey::header_fields`]'s decode target: only the handful of keys a
+/// delta's own acceptance screen needs (#268, `bench/results/profile.md`
+/// §9's `json_parse` split), so `serde_json` never has to allocate a `Value`
+/// for the `description`/`autoload`/`require`/... fields most deltas carry
+/// and [`DeltaKey`] never reads. `extra` stays a generic `Value` -- it's
+/// either a small `{"branch-alias": {...}}` object or the literal string
+/// `"__unset"`, both cheap, and typing it further would just re-litigate
+/// [`branch_alias_field`]'s own shape.
+#[derive(Deserialize)]
+struct DeltaKeyHeader {
+    version: Option<String>,
+    version_normalized: Option<String>,
+    #[serde(default)]
+    extra: Option<Value>,
+}
+
 /// #176: [`is_version_loaded`]'s pre-acceptance screen, read straight off a
 /// minified delta with no merge/clone against the running chain --
-/// [`version_fields`]/[`branch_alias_field`]'s cheap half.
+/// [`DeltaKey::header_fields`]'s cheap half.
 #[derive(Clone)]
 struct DeltaKey {
     version: String,
@@ -314,15 +333,30 @@ struct DeltaKey {
 }
 
 impl DeltaKey {
-    /// A non-minified (v1) entry: every one stands alone, so
-    /// `branch_alias_field` reading straight off it is exactly the fully
-    /// expanded value, not a simplification.
-    fn from_delta(delta: &Value) -> Result<DeltaKey> {
-        let obj = delta
-            .as_object()
-            .context("provider version entry is not an object")?;
-        let (version, version_normalized) = version_fields(obj)?;
-        let branch_alias = branch_alias_field(obj);
+    /// Decodes [`DeltaKeyHeader`] off a delta's raw JSON text: shared by
+    /// [`DeltaKey::from_delta`] and [`DeltaKey::from_minified_chain`], the
+    /// version-recompute rule the only part [`version_fields`] and this
+    /// share, since `extra`'s inheritance differs between a standalone (v1)
+    /// entry and a minified chain (see `from_minified_chain`'s own doc).
+    fn header_fields(delta: &RawValue) -> Result<DeltaKeyHeader> {
+        serde_json::from_str(delta.get()).context("provider version entry is not an object")
+    }
+
+    /// A non-minified (v1) entry: every one stands alone, so reading
+    /// `extra.branch-alias` straight off it is exactly the fully expanded
+    /// value, not a simplification.
+    fn from_delta(delta: &RawValue) -> Result<DeltaKey> {
+        let header = DeltaKey::header_fields(delta)?;
+        let version = header
+            .version
+            .with_context(|| "provider version entry missing \"version\"".to_string())?;
+        let version_normalized =
+            resolve_version_normalized(&version, header.version_normalized.as_deref())?;
+        let branch_alias = header
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("branch-alias"))
+            .cloned();
         Ok(DeltaKey {
             version,
             version_normalized,
@@ -336,23 +370,25 @@ impl DeltaKey {
     /// `MetadataMinifier`'s own inheritance rule same as any other field:
     /// omitted from a delta entirely once it stops changing, not just
     /// `"__unset"`. A dev branch whose `extra` matches the version before
-    /// it therefore carries no `extra` key at all, and reading
-    /// `branch_alias_field` straight off that delta would wrongly read "no
-    /// alias". Tracks the running `extra` value forward instead: carried
-    /// unchanged when a delta omits `extra`, replaced when a delta carries
-    /// one, cleared on the literal `"__unset"` -- one shallow lookup per
-    /// delta, not a clone of the merged object.
-    fn from_minified_chain(deltas: &[Value]) -> Result<Vec<DeltaKey>> {
+    /// it therefore carries no `extra` key at all, and reading it straight
+    /// off that delta would wrongly read "no alias". Tracks the running
+    /// `extra` value forward instead: carried unchanged when a delta omits
+    /// `extra`, replaced when a delta carries one, cleared on the literal
+    /// `"__unset"` -- one shallow lookup per delta, not a clone of the
+    /// merged object.
+    fn from_minified_chain(deltas: &[Box<RawValue>]) -> Result<Vec<DeltaKey>> {
         let mut keys = Vec::with_capacity(deltas.len());
         let mut current_extra: Option<Value> = None;
         for delta in deltas {
-            let obj = delta
-                .as_object()
-                .context("provider version entry is not an object")?;
-            let (version, version_normalized) = version_fields(obj)?;
-            match obj.get("extra") {
+            let header = DeltaKey::header_fields(delta)?;
+            let version = header
+                .version
+                .with_context(|| "provider version entry missing \"version\"".to_string())?;
+            let version_normalized =
+                resolve_version_normalized(&version, header.version_normalized.as_deref())?;
+            match header.extra {
                 Some(value) if value == "__unset" => current_extra = None,
-                Some(value) => current_extra = Some(value.clone()),
+                Some(value) => current_extra = Some(value),
                 None => {}
             }
             let branch_alias = current_extra
@@ -369,23 +405,40 @@ impl DeltaKey {
     }
 }
 
+/// Cheap sniff for whether a delta's raw JSON text is an object, standing
+/// in for `Value::is_object` now that a delta is [`RawValue`] text rather
+/// than an already-parsed tree (#268): well-formed JSON never has
+/// insignificant characters before its first token, so the first
+/// non-whitespace byte alone tells object apart from array/scalar without
+/// paying for a parse. A malformed delta still surfaces its own error --
+/// from [`DeltaKey::header_fields`] for one that sniffs as an object, or
+/// (non-minified only) from [`DeltaChain::expand`]'s own parse -- this only
+/// replaces `expand_minified`'s silent drop of a non-object entry.
+fn raw_is_object(raw: &RawValue) -> bool {
+    raw.get().trim_start().starts_with('{')
+}
+
 /// One `"composer"` source's own provider-file fetch for a name (a lazy
 /// `metadata_url` fetch or a hash-verified `providers-url` one), expansion
 /// deferred until a version is actually accepted (#176,
 /// `bench/results/profile.md` §7): `expand_minified`'s `next.clone()` used
 /// to run once per version regardless of whether `is_version_loaded` ever
 /// wanted it -- 13,996 times on `bench/laravel`, only 3,175 ever accepted.
-/// `deltas` is the parsed list exactly as the provider file shipped it (for
-/// `minified: true`, filtered down to the object entries `expand_minified`
-/// itself would have kept, dropping the rest the same way it silently did);
-/// `keys` is each surviving delta's own [`DeltaKey`], read once up front
-/// (cheap: two-to-three field reads, not a clone of the whole merged
-/// object) so `is_version_loaded` never has to pay for expansion just to
-/// screen a version out.
+/// `deltas` is each entry's own raw JSON text, never parsed into a `Value`
+/// tree until [`DeltaChain::expand`]/[`DeltaChain::expand_all`] actually
+/// need it (#268, `bench/results/profile.md` §9: the outer provider-file
+/// parse alone was 157 ms summed across threads on `bench/laravel`, most of
+/// it building trees for versions [`is_version_loaded`] immediately
+/// discards); for `minified: true`, filtered down to the object entries
+/// `expand_minified` itself would have kept, dropping the rest the same way
+/// it silently did. `keys` is each surviving delta's own [`DeltaKey`], read
+/// once up front (cheap: two-to-three field reads, not a clone of the whole
+/// merged object) so `is_version_loaded` never has to pay for expansion
+/// just to screen a version out.
 #[derive(Clone)]
 struct DeltaChain {
     minified: bool,
-    deltas: Vec<Value>,
+    deltas: Vec<Box<RawValue>>,
     keys: Vec<DeltaKey>,
     notify_url: Option<String>,
     /// Memoised running state for [`DeltaChain::expand`]: the last index
@@ -400,15 +453,15 @@ struct DeltaChain {
 }
 
 impl DeltaChain {
-    fn from_deltas(deltas: Vec<Value>, minified: bool) -> Result<DeltaChain> {
+    fn from_deltas(deltas: Vec<Box<RawValue>>, minified: bool) -> Result<DeltaChain> {
         // `expand_minified`'s own `let Value::Object(diff) = version else {
         // continue }`: a non-object entry in a minified chain is silently
         // dropped, never merged and never converted. A non-minified (v1)
         // list has no such quirk -- every entry stands alone, so a
         // malformed one must still surface as the same error
         // `PackageVersion::from_owned_value` would have raised on it today.
-        let deltas: Vec<Value> = if minified {
-            deltas.into_iter().filter(Value::is_object).collect()
+        let deltas: Vec<Box<RawValue>> = if minified {
+            deltas.into_iter().filter(|d| raw_is_object(d)).collect()
         } else {
             deltas
         };
@@ -417,7 +470,7 @@ impl DeltaChain {
         } else {
             deltas
                 .iter()
-                .map(DeltaKey::from_delta)
+                .map(|delta| DeltaKey::from_delta(delta))
                 .collect::<Result<Vec<_>>>()?
         };
         Ok(DeltaChain {
@@ -466,7 +519,10 @@ impl DeltaChain {
     /// `Map` (`MetadataMinifier::expand` semantics: `"__unset"` removes a
     /// key), continuing from the last replay when `index` is at or after
     /// it, and pays the one deep clone this type exists to avoid only for
-    /// `index` itself.
+    /// `index` itself. Each delta in the replayed range is parsed from its
+    /// raw text on demand (#268) rather than upfront, so the timing below
+    /// now covers that parse too, not just the merge -- still `STAGE_EXPAND_NS`,
+    /// since it's still expansion work, just moved later.
     ///
     /// Costs ~12.3 us/call, ~9.5 us of it the `map.clone()` below:
     /// measured and attributed in #210, which records why that clone
@@ -474,9 +530,8 @@ impl DeltaChain {
     fn expand(&mut self, index: usize) -> Result<PackageVersion> {
         if !self.minified {
             let expand_started = Instant::now();
-            let Value::Object(map) = self.deltas[index].clone() else {
-                unreachable!("non-object entries error at construction for a non-minified chain")
-            };
+            let map: Map<String, Value> = serde_json::from_str(self.deltas[index].get())
+                .context("provider version entry is not an object")?;
             STAGE_EXPAND_NS.fetch_add(elapsed_ns(expand_started.elapsed()), Ordering::Relaxed);
             return DeltaChain::finalize(self.notify_url.as_deref(), map);
         }
@@ -486,7 +541,7 @@ impl DeltaChain {
             _ => (0, None),
         };
         for delta in &self.deltas[start..=index] {
-            let Value::Object(diff) = delta.clone() else {
+            let Ok(diff) = serde_json::from_str::<Map<String, Value>>(delta.get()) else {
                 // `from_deltas` already filtered these out for a minified
                 // chain; defensive only.
                 continue;
@@ -514,16 +569,23 @@ impl DeltaChain {
     /// Every consumer that still wants the whole name's versions up front
     /// (`Repository::load_package`'s public contract: `require.rs`/`new.rs`/
     /// `show.rs` and the test below all read the full list) rather than
-    /// screening by constraint first: replays every index the same way
-    /// [`expand_minified`] always did, so behaviour is unchanged even
-    /// though, unlike [`DeltaChain::expand`], it doesn't skip a single one.
+    /// screening by constraint first: parses every raw delta (nothing left
+    /// to skip, unlike [`DeltaChain::expand`]) and replays them the same way
+    /// [`expand_minified`] always did, so behaviour is unchanged.
     fn expand_all(self) -> Result<Vec<PackageVersion>> {
         let notify_url = self.notify_url;
         let expand_started = Instant::now();
+        let parsed: Vec<Value> = self
+            .deltas
+            .iter()
+            .map(|delta| {
+                serde_json::from_str(delta.get()).context("provider version entry is not an object")
+            })
+            .collect::<Result<_>>()?;
         let expanded = if self.minified {
-            expand_minified(self.deltas)
+            expand_minified(parsed)
         } else {
-            self.deltas
+            parsed
         };
         STAGE_EXPAND_NS.fetch_add(elapsed_ns(expand_started.elapsed()), Ordering::Relaxed);
         expanded
@@ -882,7 +944,7 @@ impl ComposerSource {
         // the profile shows fetch time separately from everything else that
         // span used to lump in.
         let fetch_started = Instant::now();
-        let (root, outcome) = match get_cached_json(
+        let (root, outcome) = match get_cached_json::<Value, T>(
             transport,
             &packages_url,
             &packages_cache_path,
@@ -1323,7 +1385,7 @@ async fn load_provider_listing<T: Transport>(
                 .with_context(|| format!("invalid provider-includes path {path:?}"))?;
             let cache_key = include.replace("%hash%", "").replace('$', "");
             let cache_path = cache_dir.join(&cache_key);
-            let data = get_hash_verified_json(
+            let data: Value = get_hash_verified_json(
                 transport,
                 requests,
                 &url,
@@ -1452,20 +1514,20 @@ impl std::error::Error for ProviderFileNotFound {}
 /// front (unlike `get_cached_json`'s `Last-Modified` revalidation), so a
 /// cache hit needs no transport call at all, and a miss is an unconditional
 /// GET (`if_modified_since: None`) rather than a conditional one.
-async fn get_hash_verified_json<T: Transport>(
+async fn get_hash_verified_json<D: DeserializeOwned + Send + 'static, T: Transport>(
     transport: &T,
     requests: &AtomicUsize,
     url: &Url,
     cache_path: &Path,
     expected_hash: &str,
     kind: HashKind,
-) -> Result<Value> {
+) -> Result<D> {
     if let Ok(bytes) = fs_err::read(cache_path) {
         let context = format!("{}: cached file is not valid JSON", cache_path.display());
         let verify = |bytes: &[u8]| {
             digest_hex(bytes, kind)
                 .eq_ignore_ascii_case(expected_hash)
-                .then(|| serde_json::from_slice::<Value>(bytes))
+                .then(|| serde_json::from_slice::<D>(bytes))
         };
         let verified = if bytes.len() <= INLINE_PARSE_MAX_BYTES {
             verify(&bytes)
@@ -1474,7 +1536,7 @@ async fn get_hash_verified_json<T: Transport>(
             tokio::task::spawn_blocking(move || {
                 digest_hex(&bytes, kind)
                     .eq_ignore_ascii_case(&expected_hash)
-                    .then(|| serde_json::from_slice::<Value>(&bytes))
+                    .then(|| serde_json::from_slice::<D>(&bytes))
             })
             .await
             .context("cache verify task panicked")?
@@ -2415,36 +2477,97 @@ fn parse_inline_versions(name: &str, inline: &Value) -> Result<Vec<PackageVersio
     versions.values().map(PackageVersion::from_value).collect()
 }
 
-/// `data` is a freshly deserialized `Value` from [`get_cached_json`]/
-/// [`get_hash_verified_json`] with no other reference to it anywhere
-/// (every call re-reads and re-parses; #120), so every version entry it
-/// holds is moved into a [`SourceVersions`] rather than cloned out of a
-/// borrowed `data`.
+/// A provider file's outer shape, decoded without building a `Value` tree
+/// for the per-version entries a name's own [`DeltaChain`] would otherwise
+/// discard unread (#268, `bench/results/profile.md` §9): `packages`' one
+/// (occasionally handful of) name(s) stay [`RawValue`] text until
+/// [`parse_provider_versions_sync`] knows which shape they're in, and every
+/// other top-level key this crate never reads off a provider file directly
+/// (a per-file `security-advisories` block, seen on real Packagist p2
+/// files, is the one recorded case) is kept verbatim in `rest` so
+/// [`write_cache_file`] round-trips a fresh fetch to disk without silently
+/// dropping it.
+#[derive(Deserialize, Serialize)]
+struct ProviderFile {
+    #[serde(default)]
+    packages: HashMap<String, Box<RawValue>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    minified: Option<String>,
+    #[serde(
+        rename = "last-modified",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    last_modified: Option<String>,
+    #[serde(flatten)]
+    rest: Map<String, Value>,
+}
+
+impl CachedDoc for ProviderFile {
+    fn last_modified(&self) -> Option<&str> {
+        self.last_modified.as_deref()
+    }
+
+    fn stamp_last_modified(&mut self, value: String) {
+        self.last_modified = Some(value);
+    }
+}
+
+/// One name's raw `packages[name]` entry, sniffed rather than dispatched
+/// through a `#[serde(untagged)]` enum: an untagged variant has to buffer
+/// the whole value into serde's own generic `Content` tree before it can
+/// try each arm, which on a `laravel/framework.json`-sized list costs
+/// almost as much as parsing straight to `Value` -- measured in the #268
+/// gate (untagged: 14.15 ms/iter over the 108-file corpus; this sniff:
+/// 9.87 ms/iter, `Value` baseline: 29.94 ms/iter), so the untagged shape
+/// this issue's own design named would give back a third of the win.
+/// Well-formed JSON never has insignificant characters before its first
+/// token, so peeking the first non-whitespace byte tells a list (`[`) from
+/// a v1 keyed object (anything else, matching `Value::is_object`'s own
+/// shape check) without parsing either.
+enum ProviderEntry {
+    List(Vec<Box<RawValue>>),
+    Keyed(Map<String, Value>),
+}
+
+impl ProviderEntry {
+    fn from_raw(name: &str, raw: &RawValue) -> Result<ProviderEntry> {
+        let text = raw.get();
+        let result = if text.trim_start().starts_with('[') {
+            serde_json::from_str::<Vec<Box<RawValue>>>(text).map(ProviderEntry::List)
+        } else {
+            serde_json::from_str::<Map<String, Value>>(text).map(ProviderEntry::Keyed)
+        };
+        result.with_context(|| format!("{name}: provider entry is not a list or object"))
+    }
+}
+
+/// `data` is a freshly deserialized [`ProviderFile`] from
+/// [`get_cached_json`]/[`get_hash_verified_json`] with no other reference to
+/// it anywhere (every call re-reads and re-parses; #120), so every version
+/// entry it holds is moved into a [`SourceVersions`] rather than cloned out
+/// of a borrowed `data`.
 ///
 /// The one seam every source's lazy/v1 branch funnels through
 /// (`ComposerSource::fetch_lazy`, `ComposerSource::load_versions_deferred`'s
 /// `Provider::Providers` arm) to turn a provider file into a
-/// [`SourceVersions`]: a v1, keyed-by-version-label file (`Value::Object`)
+/// [`SourceVersions`]: a v1, keyed-by-version-label file ([`ProviderEntry::Keyed`])
 /// stands each entry alone already, so it's converted and wrapped `Ready`
 /// straight away, same cost as before (#176 never touches this shape); a
-/// list (`Value::Array`, minified or not) becomes a [`DeltaChain`] instead —
-/// [`DeltaChain::from_deltas`]'s own key-extraction pass is real CPU work on
-/// a big provider file (laravel/framework.json's ~1000 versions), so this
-/// whole function still runs on the blocking pool (`spawn_blocking`) rather
-/// than inline on the single-threaded fetch loop.
-async fn parse_provider_versions(data: Value, name: &str) -> Result<Vec<SourceVersions>> {
+/// list ([`ProviderEntry::List`], minified or not) becomes a [`DeltaChain`]
+/// instead — [`DeltaChain::from_deltas`]'s own key-extraction pass is real
+/// CPU work on a big provider file (laravel/framework.json's ~1000
+/// versions), so this whole function still runs on the blocking pool
+/// (`spawn_blocking`) rather than inline on the single-threaded fetch loop.
+async fn parse_provider_versions(data: ProviderFile, name: &str) -> Result<Vec<SourceVersions>> {
     let name = name.to_string();
     tokio::task::spawn_blocking(move || parse_provider_versions_sync(data, &name))
         .await
         .context("provider parse task panicked")?
 }
 
-fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<SourceVersions>> {
-    let Some(entry) = data
-        .get_mut("packages")
-        .and_then(Value::as_object_mut)
-        .and_then(|packages| packages.remove(name))
-    else {
+fn parse_provider_versions_sync(mut data: ProviderFile, name: &str) -> Result<Vec<SourceVersions>> {
+    let Some(raw_entry) = data.packages.remove(name) else {
         return Ok(Vec::new());
     };
     // A v1 (non-minified) provider file, wpackagist's included, keys each
@@ -2454,26 +2577,50 @@ fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<Sourc
     // is only needed because JSON objects and arrays aren't interchangeable
     // in Rust). Never the #176 bottleneck (no minified chain to defer), so
     // converted eagerly and wrapped `Ready`.
-    if let Value::Object(versions) = entry {
-        let convert_started = Instant::now();
-        let result: Result<Vec<PackageVersion>> = versions
-            .into_values()
-            .map(PackageVersion::from_owned_value)
-            .collect();
-        STAGE_CONVERT_NS.fetch_add(elapsed_ns(convert_started.elapsed()), Ordering::Relaxed);
-        let versions = result?;
-        VERSIONS_PRODUCED.fetch_add(versions.len(), Ordering::Relaxed);
-        return Ok(vec![SourceVersions::Ready(versions)]);
+    match ProviderEntry::from_raw(name, &raw_entry)? {
+        ProviderEntry::Keyed(versions) => {
+            let convert_started = Instant::now();
+            let result: Result<Vec<PackageVersion>> = versions
+                .into_values()
+                .map(PackageVersion::from_owned_value)
+                .collect();
+            STAGE_CONVERT_NS.fetch_add(elapsed_ns(convert_started.elapsed()), Ordering::Relaxed);
+            let versions = result?;
+            VERSIONS_PRODUCED.fetch_add(versions.len(), Ordering::Relaxed);
+            Ok(vec![SourceVersions::Ready(versions)])
+        }
+        ProviderEntry::List(list) => {
+            let minified = data.minified.as_deref() == Some("composer/2.0");
+            let from_deltas_started = Instant::now();
+            let chain = DeltaChain::from_deltas(list, minified)?;
+            FROM_DELTAS_NS.fetch_add(elapsed_ns(from_deltas_started.elapsed()), Ordering::Relaxed);
+            FROM_DELTAS_CALLS.fetch_add(1, Ordering::Relaxed);
+            Ok(vec![SourceVersions::Deferred(chain)])
+        }
     }
-    let Value::Array(list) = entry else {
-        bail!("{name}: provider entry is not a list");
-    };
-    let minified = data.get("minified").and_then(Value::as_str) == Some("composer/2.0");
-    let from_deltas_started = Instant::now();
-    let chain = DeltaChain::from_deltas(list, minified)?;
-    FROM_DELTAS_NS.fetch_add(elapsed_ns(from_deltas_started.elapsed()), Ordering::Relaxed);
-    FROM_DELTAS_CALLS.fetch_add(1, Ordering::Relaxed);
-    Ok(vec![SourceVersions::Deferred(chain)])
+}
+
+/// Every shape [`get_cached_json`]/[`read_cache_file`] can decode carries
+/// its own `last-modified` value the same way (merged in by
+/// [`write_cache_file`], read back to send as `If-Modified-Since`): a plain
+/// `Value`'s is a loose object key, [`ProviderFile`]'s is a typed field --
+/// this is the seam that lets both share the read/cache/revalidate dance
+/// without either paying for the other's shape.
+trait CachedDoc {
+    fn last_modified(&self) -> Option<&str>;
+    fn stamp_last_modified(&mut self, value: String);
+}
+
+impl CachedDoc for Value {
+    fn last_modified(&self) -> Option<&str> {
+        self.get("last-modified").and_then(Value::as_str)
+    }
+
+    fn stamp_last_modified(&mut self, value: String) {
+        if let Value::Object(obj) = self {
+            obj.insert("last-modified".to_string(), Value::String(value));
+        }
+    }
 }
 
 /// The other big-body CPU still on the fetch loop after `parse_provider_versions`:
@@ -2482,7 +2629,10 @@ fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<Sourc
 /// itself, and a provider file the size of `laravel/framework.json` (990 KB)
 /// makes that real work. One `spawn_blocking` here, called from
 /// [`read_cache_file`], [`get_cached_json`] and [`get_hash_verified_json`],
-/// covers every one of them.
+/// covers every one of them. Generic over the decode target (`Value` for
+/// `packages.json`/provider-includes, [`ProviderFile`] for the per-package
+/// files #268 is about) so this shared read/cache plumbing doesn't force
+/// every caller into the shape only one of them needs to be fast.
 /// Below this, `spawn_blocking`'s own thread-hop costs more than the parse it
 /// would hide: most provider files are a few KB (`bench/laravel`'s median is
 /// ~20 KB) and inlining those, rather than queuing every one of them onto the
@@ -2492,7 +2642,10 @@ fn parse_provider_versions_sync(mut data: Value, name: &str) -> Result<Vec<Sourc
 /// profile ever shows a file just above it still worth deferring.
 const INLINE_PARSE_MAX_BYTES: usize = 64 * 1024;
 
-async fn parse_json_blocking(bytes: Vec<u8>, context: String) -> Result<Value> {
+async fn parse_json_blocking<T: DeserializeOwned + Send + 'static>(
+    bytes: Vec<u8>,
+    context: String,
+) -> Result<T> {
     if bytes.len() <= INLINE_PARSE_MAX_BYTES {
         let started = Instant::now();
         let parsed = serde_json::from_slice(&bytes);
@@ -2501,7 +2654,7 @@ async fn parse_json_blocking(bytes: Vec<u8>, context: String) -> Result<Value> {
     }
     tokio::task::spawn_blocking(move || {
         let started = Instant::now();
-        let parsed = serde_json::from_slice::<Value>(&bytes);
+        let parsed = serde_json::from_slice::<T>(&bytes);
         STAGE_JSON_PARSE_NS.fetch_add(elapsed_ns(started.elapsed()), Ordering::Relaxed);
         parsed
     })
@@ -2544,8 +2697,11 @@ fn elapsed_ns(elapsed: std::time::Duration) -> u64 {
 /// Reads a cache file written by [`write_cache_file`]: the raw provider
 /// JSON with a `last-modified` key merged in, mirroring Composer's own
 /// `Cache` format for this file (`ComposerRepository.php:1793-1797`) so the
-/// value can be sent back as `If-Modified-Since` next time.
-async fn read_cache_file(path: &Path) -> Result<Option<(Value, Option<String>)>> {
+/// value can be sent back as `If-Modified-Since` next time. Generic over
+/// `D` the same way [`parse_json_blocking`] is (`Value` or [`ProviderFile`]).
+async fn read_cache_file<D: DeserializeOwned + CachedDoc + Send + 'static>(
+    path: &Path,
+) -> Result<Option<(D, Option<String>)>> {
     let read_started = Instant::now();
     let read = fs_err::read(path);
     STAGE_READ_NS.fetch_add(elapsed_ns(read_started.elapsed()), Ordering::Relaxed);
@@ -2553,15 +2709,12 @@ async fn read_cache_file(path: &Path) -> Result<Option<(Value, Option<String>)>>
         Ok(bytes) => {
             CACHE_FILES_PARSED.fetch_add(1, Ordering::Relaxed);
             CACHE_BYTES_PARSED.fetch_add(bytes.len(), Ordering::Relaxed);
-            let data = parse_json_blocking(
+            let data: D = parse_json_blocking(
                 bytes,
                 format!("{}: cached file is not valid JSON", path.display()),
             )
             .await?;
-            let last_modified = data
-                .get("last-modified")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let last_modified = data.last_modified().map(str::to_string);
             Ok(Some((data, last_modified)))
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -2576,7 +2729,14 @@ fn warn_out(message: &str) {
     let _ = writeln!(std::io::stderr().lock(), "{message}");
 }
 
-fn write_cache_file(path: &Path, data: &Value) -> Result<()> {
+/// Re-serialises `data` rather than writing a fetch's original bytes back
+/// out: for a plain `Value` this was already true; for a [`ProviderFile`]
+/// the per-version entries stay [`RawValue`] text either way (`Serialize`
+/// writes it back verbatim), so the only thing this loses versus the raw
+/// bytes is top-level key order across a file with more than one `packages`
+/// name -- real provider files never have more than one, so not worth a
+/// second, bytes-preserving write path.
+fn write_cache_file<D: Serialize>(path: &Path, data: &D) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs_err::create_dir_all(parent)?;
     }
@@ -2587,9 +2747,9 @@ fn write_cache_file(path: &Path, data: &Value) -> Result<()> {
 /// [`get_cached_json`]'s outcome: either the resource doesn't exist (a 404;
 /// the caller decides what that means for it), or its current body, from the
 /// network or the disk cache.
-enum CachedJson {
+enum CachedJson<D> {
     NotFound,
-    Data(Value),
+    Data(D),
 }
 
 /// #190's debug line wants to say more than `CachedJson` does about how the
@@ -2631,12 +2791,15 @@ const PACKAGES_JSON_MAX_AGE: Duration = Duration::from_secs(600);
 /// other callers that pass no `$rootMaxAge`. Either way, a 304 bumps the
 /// cached file's own mtime to now, so a configured window counts from the
 /// last confirmation, not the last full download.
-async fn get_cached_json<T: Transport>(
+async fn get_cached_json<
+    D: DeserializeOwned + CachedDoc + Serialize + Send + 'static,
+    T: Transport,
+>(
     transport: &T,
     url: &Url,
     cache_path: &Path,
     max_age: Option<Duration>,
-) -> Result<(CachedJson, CacheOutcome)> {
+) -> Result<(CachedJson<D>, CacheOutcome)> {
     if let Some(max_age) = max_age
         && let Ok(metadata) = fs_err::metadata(cache_path)
         && let Ok(modified) = metadata.modified()
@@ -2670,9 +2833,9 @@ async fn get_cached_json<T: Transport>(
             body,
             last_modified,
         } => {
-            let mut data = parse_json_blocking(body, format!("{url}: not valid JSON")).await?;
-            if let (Some(lm), Value::Object(obj)) = (&last_modified, &mut data) {
-                obj.insert("last-modified".to_string(), Value::String(lm.clone()));
+            let mut data: D = parse_json_blocking(body, format!("{url}: not valid JSON")).await?;
+            if let Some(lm) = &last_modified {
+                data.stamp_last_modified(lm.clone());
             }
             write_cache_file(cache_path, &data)?;
             Ok((CachedJson::Data(data), CacheOutcome::Fetched))
@@ -2686,6 +2849,17 @@ mod tests {
 
     fn v(value: Value) -> Value {
         value
+    }
+
+    /// Test-only: builds the [`Box<RawValue>`] deltas [`DeltaChain::from_deltas`]
+    /// now takes, from the same `serde_json::json!` fixtures the tests wrote
+    /// before #268 -- a mechanical adjustment to the new input type, not a
+    /// change in what's being checked.
+    fn raws(values: &[Value]) -> Vec<Box<RawValue>> {
+        values
+            .iter()
+            .map(|v| serde_json::value::to_raw_value(v).unwrap())
+            .collect()
     }
 
     #[test]
@@ -2723,7 +2897,7 @@ mod tests {
             serde_json::json!({"version": "1.1.0", "version_normalized": "1.1.0.0", "foo": "__unset"}),
             serde_json::json!({"version": "1.2.0", "version_normalized": "1.2.0.0"}),
         ];
-        let mut chain = DeltaChain::from_deltas(deltas, true).unwrap();
+        let mut chain = DeltaChain::from_deltas(raws(&deltas), true).unwrap();
         // Index 1 (the one carrying the "__unset") is never expanded on its
         // own -- only index 2, the one that actually gets accepted.
         let accepted = chain.expand(2).unwrap();
@@ -2744,7 +2918,7 @@ mod tests {
             serde_json::json!({"version": "1.3.0", "version_normalized": "1.3.0.0", "extra": {"foo": "bar"}}),
         ];
         let reference = expand_minified(deltas.clone());
-        let mut chain = DeltaChain::from_deltas(deltas, true).unwrap();
+        let mut chain = DeltaChain::from_deltas(raws(&deltas), true).unwrap();
         for &i in &[2, 0, 3, 1, 3, 0] {
             let expanded = chain.expand(i).unwrap();
             assert_eq!(expanded.raw, reference[i], "index {i}");
@@ -2769,7 +2943,7 @@ mod tests {
             // `MetadataMinifier` never restates it.
             serde_json::json!({"version": "dev-develop", "version_normalized": "dev-develop"}),
         ];
-        let chain = DeltaChain::from_deltas(deltas, true).unwrap();
+        let chain = DeltaChain::from_deltas(raws(&deltas), true).unwrap();
         let key = chain.key(1);
         let constraint = Arc::new(semver::parse_constraint("^3.0").unwrap());
         assert!(
@@ -2804,7 +2978,7 @@ mod tests {
                 "extra": "__unset"
             }),
         ];
-        let chain = DeltaChain::from_deltas(deltas, true).unwrap();
+        let chain = DeltaChain::from_deltas(raws(&deltas), true).unwrap();
         let key = chain.key(1);
         assert!(key.branch_alias.is_none());
         let constraint = Arc::new(semver::parse_constraint("^3.0").unwrap());
@@ -2857,7 +3031,7 @@ mod tests {
                 } else {
                     list.clone()
                 };
-                let mut chain = DeltaChain::from_deltas(list.clone(), minified).unwrap();
+                let mut chain = DeltaChain::from_deltas(raws(list), minified).unwrap();
                 assert_eq!(chain.len(), reference.len(), "{path:?} {name}: entry count");
                 for (i, expected) in reference.iter().enumerate() {
                     let expanded = chain.expand(i).unwrap();
@@ -2870,6 +3044,32 @@ mod tests {
             checked > 1000,
             "expected thousands of versions checked, got {checked}"
         );
+    }
+
+    /// #268: `ProviderEntry::from_raw`'s sniff must still route a v1,
+    /// keyed-by-version-label provider file (wpackagist's shape, no
+    /// `DeltaChain` involved) to `SourceVersions::Ready`, same as the
+    /// `Value`-based `Value::Object` branch did before this task.
+    #[test]
+    fn provider_file_v1_keyed_object_produces_ready_versions() {
+        let text = serde_json::json!({
+            "packages": {
+                "acme/keyed": {
+                    "1.0.0": {"name": "acme/keyed", "version": "1.0.0", "version_normalized": "1.0.0.0"},
+                    "dev-main": {"name": "acme/keyed", "version": "dev-main", "version_normalized": "dev-main"}
+                }
+            }
+        })
+        .to_string();
+        let data: ProviderFile = serde_json::from_str(&text).unwrap();
+        let chains = parse_provider_versions_sync(data, "acme/keyed").unwrap();
+        assert_eq!(chains.len(), 1);
+        let SourceVersions::Ready(versions) = &chains[0] else {
+            panic!("v1 keyed-object entry must not defer");
+        };
+        assert_eq!(versions.len(), 2);
+        assert!(versions.iter().any(|v| v.version == "1.0.0"));
+        assert!(versions.iter().any(|v| v.version == "dev-main"));
     }
 
     fn collect_json_files(dir: &Path, out: &mut Vec<PathBuf>) {
