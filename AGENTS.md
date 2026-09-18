@@ -8,9 +8,11 @@ vivace (`viv`) is a byte-compatible reimplementation of Composer: it solves
 `composer.json` into a `composer.lock` and installs a lock into a `vendor/`
 directory that is a drop-in for Composer's. Read `ARCHITECTURE.md` for the
 pipeline and `docs/composer-contract.md` for the exact output rules.
-Since 0.14 the compat mode is frozen as a control and new work follows
-`docs/research.md`: one chapter at a time, behind a flag, measured
-against compat mode.
+The question the project started with, whether a person directing coding
+agents can build a faster drop-in Composer, is answered. The compatible
+mode is frozen as the control; new work follows `docs/research.md`, one
+chapter at a time. Read the "Research chapters" section below before
+picking up any issue.
 `JOURNAL.md` is a public engineering log: append an entry at the end of every
 working session.
 
@@ -70,8 +72,33 @@ cp tests/fixtures/monolog/vendor/composer/*.php tests/fixtures/monolog/expected/
 
 Red/green TDD. Copy or write the failing test first (a golden from
 `tests/fixtures/composer/`, a table, or a snapshot), run it red, implement the
-smallest change to green, commit. Byte differences against Composer output are
-bugs, not style.
+smallest change to green, commit. In the compatible mode, byte differences
+against Composer output are bugs, not style. Behaviour behind a research
+flag is judged against its chapter's spec in `docs/research.md` instead.
+
+## Research chapters
+
+Work is evaluated by chapter, not by ticket count. A chapter is a section
+of `docs/research.md` with a question, a hypothesis, the control (the
+compatible mode), a measurement, and a write-up. Its issues live in a
+milestone named `research N: <theme>`.
+
+- The question and hypothesis are written in `docs/research.md` before code.
+- New behaviour sits behind a flag or manifest setting; the default path
+  stays byte-compatible and `composer.lock` stays exportable. A chapter that
+  breaks the compatible mode is not finished, whatever it measured.
+- The measurement is reproducible from a clean checkout and lands in
+  `bench/results/`, with the corpus and commit range recorded, the way
+  `bench/results/profile.md` does for performance work.
+- The write-up is the deliverable. "Measured, not worth it" with the
+  evidence is a complete chapter; a landed feature without the measurement
+  is not.
+- Performance work is done only where it serves the current chapter.
+
+Compatibility-fidelity bugs are fixed on demand: an issue needs a real
+project's `composer.json` and lock that hit it, and it goes in the
+`compat: on demand` milestone. No new plugin adapters or Composer commands
+are planned.
 
 ## Layout
 
@@ -109,8 +136,8 @@ not against an assumption of what HEAD looks like.
 
 ## Performance rule
 
-No change may make `viv` slower. A feature that touches the install path is
-benchmarked before it lands (`make bench`, or `bench/run.sh bench/laravel
+No change may make the compatible mode slower. A feature that touches the
+install path is benchmarked before it lands (`make bench`, or `bench/run.sh bench/laravel
 viv` with an isolated cache on the same filesystem as `vendor/`) and
 compared with `bench/results/`. Warm and no-op times must be at or below the
 recorded numbers within noise; cold is recorded but not gated, because
@@ -127,10 +154,15 @@ downloads the `baseline-candidate-<project>` artifact from a green CI run and co
 as `bench/results/baseline.json`. Run `make bench-check` to reproduce the same
 check locally against the committed baseline.
 
+A research flag's own path is measured against the compatible mode as its
+control and the numbers recorded in its chapter; it is not gated until it
+has a baseline of its own.
+
 ## Before a release
 
 1. Refresh the docs against the code: `README.md`, `ARCHITECTURE.md`,
-   `AGENTS.md`, `docs/*.md`, `compat/README.md`, `bench/results/README.md`
+   `AGENTS.md`, `docs/*.md` including the chapter's status in
+   `docs/research.md`, `compat/README.md`, `bench/results/README.md`
    (command list, flags, numbers table, install snippet tag, scope in/out).
    Read `README.md` end to end after the corpus run and the sweep, not
    before: every claim in "Speed", "Is it safe to try" and "Reasons not to
@@ -149,9 +181,11 @@ check locally against the committed baseline.
    a pre-release with the changelog's issue list as a placeholder body).
 6. Write the release notes to the standard of a PR description and set them
    with `gh release edit <tag> --notes-file`: a short Highlights list of
-   one-line key points first, then what changes for a user of `viv` in
-   plain language, then evidence (the compat sweep's identical/differs counts
-   and refuse line from `compat/results/<tag>.md`, the bench gate result),
+   one-line key points first, the chapter's result among them when one
+   landed, then what changes for a user of `viv` in plain language, then
+   evidence (the compat sweep's identical/differs counts and refuse line
+   from `compat/results/<tag>.md`, the bench gate result, the chapter's
+   measurement),
    how to upgrade (`make install`, `make install-shim`, packages), known
    gaps still open, and the issues as `#N (title)`. Plain language, British
    English, no attribution footer.
@@ -161,8 +195,9 @@ check locally against the committed baseline.
 1. Reinstall the binary you run locally (`make install`); a stale `viv`
    refuses plugins the release already adapts.
 2. Triage the milestones with the `triage-milestones` skill
-   (`.claude/skills/triage-milestones/`): prune the current one to its
-   theme and seed the next.
+   (`.claude/skills/triage-milestones/`): prune the current research
+   milestone to its chapter, seed the next chapter's, and leave
+   `compat: on demand` alone unless a real project reported something.
 3. Refresh the bench baseline from at least ten runs, not from one (#183).
    Download the `bench-results-<project>` artifact from ten or more recent CI runs on
    `main` into sibling directories, then take the per-scenario median:
