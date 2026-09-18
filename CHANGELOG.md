@@ -5,13 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.14.0] - 2026-09-18
 ### Added
 - `viv validate --fix` applies the findings that have one answer — a package in both `require` and `require-dev`, a `provide`/`replace` entry for a package the root also requires, `scripts-descriptions`/`scripts-aliases` entries for scripts that don't exist, a self-require, a name that isn't lower-cased-with-dashes, and a stale lock `content-hash` — writes `composer.json` through the normaliser, and re-validates. Without `--fix`, a plain `viv validate` says after Composer's findings how many of them `--fix` would handle; the findings themselves stay byte-identical to Composer's ([#262](https://github.com/svandragt/vivace/issues/262))
+- A GitHub Actions setup action, `svandragt/vivace/action@v0`, puts `viv` and the `composer` shim on a runner from one `uses:` line; it downloads the release tarball for the runner's OS and architecture and checks it against the release's `SHA256SUMS`. `with: { version: vX.Y.Z }` pins a release, `shim: false` skips the shim ([#263](https://github.com/svandragt/vivace/issues/263))
+- The Homebrew formula is back in the release workflow and publishes to the `svandragt/homebrew-tap` tap on every tag ([#222](https://github.com/svandragt/vivace/issues/222))
+- Every tag is published to crates.io, so `cargo install vivace` and `cargo binstall vivace` work as an install and update path ([#166](https://github.com/svandragt/vivace/issues/166))
+- Issue templates, `SECURITY.md`, and a Support page on the site that says what maintenance to expect ([#264](https://github.com/svandragt/vivace/issues/264))
 
 ### Fixed
 - A lock `dist.url` carrying Composer's `%package%`, `%version%`, `%prettyVersion%`, `%reference%` or `%type%` placeholders is expanded before the download instead of requested literally; BookStack's Codeberg dist failed on it ([#257](https://github.com/svandragt/vivace/issues/257))
 - A root requirement that a locked package satisfies through `replace` or `provide` counts as present in the lock; HumHub's `codeception/phpunit-wrapper`, replaced by `codeception/codeception`, was reported as a merge-conflict lock ([#258](https://github.com/svandragt/vivace/issues/258))
 - `autoload_files.php` orders packages the way Composer's install transaction does, including on a `requires` cycle, and a package's declared `bin` gets its execute bits; akaunting's `vendor/` differed on both ([#259](https://github.com/svandragt/vivace/issues/259))
+- A partial update (`viv update <package>`) failed when a held, unlisted dependency was locked at a dev branch such as `dev-main`. The branch's `extra.branch-alias` is now loaded as a second package beside the base, the way Composer does and the full update already did, so a caret requirement on the held package matches. Before this every held package requiring the branch by version was reported as a typo ([#267](https://github.com/svandragt/vivace/issues/267))
+- An inferred stability flag equal to `minimum-stability` was dropped, so a `dev-*` require under `minimum-stability: dev` wrote an empty `stability-flags` map where Composer writes `20`. The lock is now byte-identical ([#261](https://github.com/svandragt/vivace/issues/261))
+
+### Changed
+- Offline `viv update` is faster: on the Laravel bench lock, 215 ms to 131 ms (hyperfine, 10 runs). Provider-file versions stay raw JSON until a delta is replayed, and a version's merged object is only materialised when something reads it. The lock written is byte-identical ([#268](https://github.com/svandragt/vivace/issues/268))
 
 ## [0.13.0] - 2026-09-15
 ### Changed

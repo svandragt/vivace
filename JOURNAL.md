@@ -1302,3 +1302,30 @@ chapter at a time, behind a flag, measured against compat mode, written
 up. Chapter 1 is a lock format that does not conflict in git, measured by
 replaying historical merges. Chapter 2, autoload from the store without a
 vendor tree, is sketched.
+
+## 2026-09-18, afternoon: 0.14.0 and chapter 3
+
+**Chapter 3 scoped.** Workspaces: one lock and one solve for a repository
+with several `composer.json` roots, the thing npm, pnpm, Cargo and uv have
+and Composer does not. Control is compat mode run once per member. Four
+issues (#276 to #279); only the shared lock waits on chapter 1's record
+format.
+
+**0.14.0.** The last release before the research chapters change what
+`viv` writes. Sweep: 20 of 20 pinned rows identical, 10 of 10 pinned locks
+identical, 0 differ. The random sample drew six projects Composer itself
+cannot install (dev-master under a stable `minimum-stability`, a private
+dependency, a guzzle 6 blocked by advisories), so 12 skipped rows against
+last release's 6; the sweep records why per row.
+
+**A gate that never gated.** `make bench-check` passed only `viv.json` to
+`compare.py`, so the ratio had no Composer denominator and every scenario
+reported `skip`, which the target treats as success. CI passes all five
+files and has been the real gate since #159. Fixed the target. Run
+properly on this machine it fails warm: 9 ms against the 3.6 ms the
+baseline ratio allows here, because Composer's warm install on this box
+is 0.72 s and the ratio was set on runners where it is 2.5 s. A ratio
+cancels machine speed only while both numbers are far from the floor; a
+100-file hardlink pass is not. CI on the same commit passes warm at the
+baseline ratio exactly, so the release cites CI. A virus scan was running
+during the local run as well; noise, but not the cause.

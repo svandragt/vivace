@@ -119,8 +119,8 @@ written outside the project and the cache.
 viv's contract is that its output matches Composer's byte for byte. Before
 every release, a compatibility sweep installs a mix of pinned popular
 projects and a random sample of Packagist packages with both Composer and
-viv, then compares the results.[^2] The v0.13.0 sweep: 34 rows identical, 0 differ, 6
-skipped, and all 10 pinned projects resolve the same `composer.lock` as
+viv, then compares the results.[^2] The v0.14.0 sweep: 28 rows identical, 0 differ, 12
+skipped (all in the random sample, where Composer itself failed), and all 10 pinned projects resolve the same `composer.lock` as
 Composer as well as installing the same `vendor/`.[^3]
 
 One pinned project still needs `--no-plugins`, for a plugin viv refuses by
@@ -211,7 +211,7 @@ In GitHub Actions, one step installs viv and puts the shim first on `PATH`, so a
 - run: composer install --no-dev
 ```
 
-The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.13.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim. Cache viv's store with `actions/cache` on `~/.cache/vivace`, keyed on `composer.lock`.
+The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.14.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim. Cache viv's store with `actions/cache` on `~/.cache/vivace`, keyed on `composer.lock`.
 
 A command or flag the shim doesn't understand falls back to the real
 Composer with a note on stderr naming what wasn't understood, so a migration
@@ -249,7 +249,7 @@ Two things differ from the `composer:2` stage it replaces:
   the shim doesn't understand hard-errors there instead of silently running
   Composer, the way it would on a machine that still has Composer installed.
 
-Tags are `:0.13`, `:0.13.0` and `:0`. There is no `:latest`: a moving tag
+Tags are `:0.14`, `:0.14.0` and `:0`. There is no `:latest`: a moving tag
 that silently resolves to nothing breaks scripted installs, which is the
 mistake that kept `releases/latest` returning 404 for ten releases.
 

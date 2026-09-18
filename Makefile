@@ -41,7 +41,7 @@ bench:
 
 bench-check:
 	devbox run -- bench/run.sh tests/fixtures/monolog composer viv
-	python3 bench/compare.py bench/results/viv.json --baseline bench/results/baseline.json
+	python3 bench/compare.py bench/results/viv.json bench/results/viv-update.json bench/results/viv-update-offline.json bench/results/composer.json bench/results/composer-update.json --baseline bench/results/baseline.json
 
 # #106: same cold/warm/noop/update-warm scenarios as `bench`, across the
 # whole pinned compat corpus (compat/corpus.toml) instead of just Laravel.
