@@ -12,11 +12,12 @@
 //! Skipped: every other Composer VCS driver (GitLab, Bitbucket, Forgejo,
 //! Mercurial, Perforce, Fossil, SVN — `"vcs"` only ever autodetects GitHub
 //! or falls back to the generic git driver here), GitHub Enterprise (a
-//! custom `github-domains` host), a private repository's SSH fallback
-//! (`GitHubDriver::generateSshUrl` — a 404/403 falls back to the *same*
-//! (https) URL over the git driver instead), `funding`/`abandoned`/
-//! `support.issues` (`support.source` is filled in, matching the design
-//! brief), the GitHub API's `Link`-header pagination (a single
+//! custom `github-domains` host), the SSH swap in the 404/403 clone
+//! fallback (`GitHubDriver::attemptCloneFallback` — that path still falls
+//! back to the https URL over the git driver, since this crate has no SSH
+//! auth of its own; the API path does emit a private repo's SSH URL),
+//! `funding`/`abandoned`/`support.issues` (`support.source` is filled in,
+//! matching the design brief), the GitHub API's `Link`-header pagination (a single
 //! `per_page=100` page; [`crate::repository::Transport`]/[`crate::fetch::Conditional`]
 //! don't expose response headers), and `VersionParser::parseConstraints`'s
 //! extra branch-name validation (a branch whose name breaks constraint
@@ -983,6 +984,7 @@ struct GitHubDriver {
     tags: Vec<RefEntry>,
     branches: Vec<RefEntry>,
     root_identifier: String,
+    private: bool,
 }
 
 const GITHUB_API: &str = "https://api.github.com";
@@ -1006,6 +1008,10 @@ impl GitHubDriver {
             .and_then(Value::as_str)
             .unwrap_or("master")
             .to_string();
+        let private = repo_data
+            .get("private")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let tags_url = format!("{GITHUB_API}/repos/{owner}/{repo}/tags?per_page=100");
         let Some(tags_data) = api_get(transport, requests, &tags_url).await? else {
@@ -1060,6 +1066,7 @@ impl GitHubDriver {
             tags,
             branches,
             root_identifier,
+            private,
         }))
     }
 
@@ -1139,10 +1146,18 @@ impl GitHubDriver {
         }))
     }
 
+    /// `Vcs\GitHubDriver::getSource`: a private repo (`repoData.private`
+    /// from the API) gets the SSH remote, because a deploy key clones it
+    /// and an anonymous HTTPS URL can't. Public repos keep the HTTPS URL.
     fn source(&self, identifier: &str) -> Value {
+        let url = if self.private {
+            format!("git@github.com:{}/{}.git", self.owner, self.repo)
+        } else {
+            format!("https://github.com/{}/{}.git", self.owner, self.repo)
+        };
         json!({
             "type": "git",
-            "url": format!("https://github.com/{}/{}.git", self.owner, self.repo),
+            "url": url,
             "reference": identifier,
         })
     }
@@ -1247,9 +1262,32 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        base64_decode, collapse_branch_wildcard, format_unix_utc, local_repo_path,
+        GitHubDriver, base64_decode, collapse_branch_wildcard, format_unix_utc, local_repo_path,
         parse_github_url, slugify, strip_git_dir_suffix, strip_normalized_dev, strip_trailing_dev,
     };
+
+    fn driver(private: bool) -> GitHubDriver {
+        GitHubDriver {
+            owner: "acme".to_string(),
+            repo: "widget".to_string(),
+            tags: Vec::new(),
+            branches: Vec::new(),
+            root_identifier: "main".to_string(),
+            private,
+        }
+    }
+
+    #[test]
+    fn source_uses_ssh_url_for_private_repos_only() {
+        assert_eq!(
+            driver(true).source("abc123")["url"],
+            "git@github.com:acme/widget.git"
+        );
+        assert_eq!(
+            driver(false).source("abc123")["url"],
+            "https://github.com/acme/widget.git"
+        );
+    }
 
     #[test]
     fn format_unix_utc_matches_composers_date_rfc3339() {
