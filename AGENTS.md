@@ -76,6 +76,14 @@ smallest change to green, commit. In the compatible mode, byte differences
 against Composer output are bugs, not style. Behaviour behind a research
 flag is judged against its chapter's spec in `docs/research.md` instead.
 
+## Landing work
+
+This repository uses no pull requests. Work on a topic branch, then merge it
+into `main` yourself with `git merge --no-ff -m "merge: <what landed>"` and
+push. CI runs on pushes to `main` and nowhere else, so a branch that is only
+pushed is never checked by CI — `make check` must pass locally before you
+merge.
+
 ## Research chapters
 
 Work is evaluated by chapter, not by ticket count. A chapter is a section
