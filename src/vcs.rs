@@ -12,15 +12,13 @@
 //! Skipped: every other Composer VCS driver (GitLab, Bitbucket, Forgejo,
 //! Mercurial, Perforce, Fossil, SVN — `"vcs"` only ever autodetects GitHub
 //! or falls back to the generic git driver here), GitHub Enterprise (a
-//! custom `github-domains` host), a private repository's SSH fallback
-//! (`GitHubDriver::generateSshUrl` — a 404/403 falls back to the *same*
-//! (https) URL over the git driver instead), `funding`/`abandoned`/
-//! `support.issues` (`support.source` is filled in, matching the design
-//! brief), the GitHub API's `Link`-header pagination (a single
-//! `per_page=100` page; [`crate::repository::Transport`]/[`crate::fetch::Conditional`]
-//! don't expose response headers), and `VersionParser::parseConstraints`'s
-//! extra branch-name validation (a branch whose name breaks constraint
-//! syntax isn't rejected).
+//! custom `github-domains` host), `funding`/`abandoned`/`support.issues`
+//! (`support.source` is filled in, matching the design brief), the GitHub
+//! API's `Link`-header pagination (a single `per_page=100` page;
+//! [`crate::repository::Transport`]/[`crate::fetch::Conditional`] don't
+//! expose response headers), and `VersionParser::parseConstraints`'s extra
+//! branch-name validation (a branch whose name breaks constraint syntax
+//! isn't rejected).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -81,14 +79,27 @@ impl VcsSource {
             _ => parse_github_url(url),
         };
 
-        let driver = match github_repo {
+        let driver = match &github_repo {
             Some((owner, repo)) => {
-                match GitHubDriver::load(&owner, &repo, transport, &requests).await? {
-                    Some(driver) => Driver::GitHub(driver),
+                if let Some(driver) = GitHubDriver::load(owner, repo, transport, &requests).await? {
+                    Driver::GitHub(driver)
+                } else {
                     // GitHub API returned 404/403 listing tags/branches/repo
-                    // data: `GitHubDriver::attemptCloneFallback`, minus the
-                    // SSH URL swap (this crate has no SSH auth of its own).
-                    None => Driver::Git(GitDriver::load(url, cache_root)?),
+                    // data: `GitHubDriver::attemptCloneFallback` treats the
+                    // repo as private and clones its SSH remote instead
+                    // (`generateSshUrl`) — `sync_mirror`'s `git` CLI call
+                    // authenticates with whatever SSH key/agent the caller
+                    // has, so no SSH support of viv's own is needed. A
+                    // failed SSH clone is the same hard error Composer's
+                    // fallback raises, not a further HTTPS retry.
+                    let clone_url = ssh_clone_url(owner, repo);
+                    Driver::Git(GitDriver::load(&clone_url, cache_root).with_context(|| {
+                        format!(
+                            "{owner}/{repo}: GitHub API access failed (404/403) and cloning \
+                             {clone_url} over SSH also failed; set up a GitHub token or an SSH \
+                             key with access to this repository"
+                        )
+                    })?)
                 }
             }
             None => Driver::Git(GitDriver::load(url, cache_root)?),
@@ -983,6 +994,7 @@ struct GitHubDriver {
     tags: Vec<RefEntry>,
     branches: Vec<RefEntry>,
     root_identifier: String,
+    private: bool,
 }
 
 const GITHUB_API: &str = "https://api.github.com";
@@ -1006,6 +1018,10 @@ impl GitHubDriver {
             .and_then(Value::as_str)
             .unwrap_or("master")
             .to_string();
+        let private = repo_data
+            .get("private")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let tags_url = format!("{GITHUB_API}/repos/{owner}/{repo}/tags?per_page=100");
         let Some(tags_data) = api_get(transport, requests, &tags_url).await? else {
@@ -1060,6 +1076,7 @@ impl GitHubDriver {
             tags,
             branches,
             root_identifier,
+            private,
         }))
     }
 
@@ -1139,10 +1156,18 @@ impl GitHubDriver {
         }))
     }
 
+    /// `Vcs\GitHubDriver::getSource`: a private repo (`repoData.private`
+    /// from the API) gets the SSH remote, because a deploy key clones it
+    /// and an anonymous HTTPS URL can't. Public repos keep the HTTPS URL.
     fn source(&self, identifier: &str) -> Value {
+        let url = if self.private {
+            format!("git@github.com:{}/{}.git", self.owner, self.repo)
+        } else {
+            format!("https://github.com/{}/{}.git", self.owner, self.repo)
+        };
         json!({
             "type": "git",
-            "url": format!("https://github.com/{}/{}.git", self.owner, self.repo),
+            "url": url,
             "reference": identifier,
         })
     }
@@ -1200,6 +1225,12 @@ fn parse_github_url(url: &str) -> Option<(String, String)> {
     Some((caps[1].to_string(), caps[2].to_string()))
 }
 
+/// `Vcs\GitHubDriver::generateSshUrl`, restricted to github.com (the only
+/// host [`parse_github_url`] recognises).
+fn ssh_clone_url(owner: &str, repo: &str) -> String {
+    format!("git@github.com:{owner}/{repo}.git")
+}
+
 /// Minimal base64 (RFC 4648, standard alphabet, `=` padding) decoder for
 /// the GitHub contents API's file bodies — mirrors `auth.rs`'s own
 /// minimal encoder; no base64 crate is a dependency of this workspace.
@@ -1247,9 +1278,33 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        base64_decode, collapse_branch_wildcard, format_unix_utc, local_repo_path,
-        parse_github_url, slugify, strip_git_dir_suffix, strip_normalized_dev, strip_trailing_dev,
+        GitHubDriver, base64_decode, collapse_branch_wildcard, format_unix_utc, local_repo_path,
+        parse_github_url, slugify, ssh_clone_url, strip_git_dir_suffix, strip_normalized_dev,
+        strip_trailing_dev,
     };
+
+    fn driver(private: bool) -> GitHubDriver {
+        GitHubDriver {
+            owner: "acme".to_string(),
+            repo: "widget".to_string(),
+            tags: Vec::new(),
+            branches: Vec::new(),
+            root_identifier: "main".to_string(),
+            private,
+        }
+    }
+
+    #[test]
+    fn source_uses_ssh_url_for_private_repos_only() {
+        assert_eq!(
+            driver(true).source("abc123")["url"],
+            "git@github.com:acme/widget.git"
+        );
+        assert_eq!(
+            driver(false).source("abc123")["url"],
+            "https://github.com/acme/widget.git"
+        );
+    }
 
     #[test]
     fn format_unix_utc_matches_composers_date_rfc3339() {
@@ -1297,6 +1352,14 @@ mod tests {
         assert_eq!(
             slugify("https://github.com/a/b.git"),
             "https---github.com-a-b.git"
+        );
+    }
+
+    #[test]
+    fn ssh_clone_url_matches_composers_generate_ssh_url() {
+        assert_eq!(
+            ssh_clone_url("acme", "widget"),
+            "git@github.com:acme/widget.git"
         );
     }
 
