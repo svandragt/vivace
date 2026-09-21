@@ -165,14 +165,14 @@ fn require_produces_a_lock_and_vendor() {
     assert!(project.join("composer.lock").is_file());
     assert!(project.join("vendor/psr/log").is_dir());
 
-    let composer = std::process::Command::new("composer")
+    let composer = common::scrubbed_command("composer")
         .arg("--version")
         .output();
     if composer.is_err() {
         eprintln!("skipping composer validate: composer not on PATH (run through devbox)");
         return;
     }
-    let status = std::process::Command::new("composer")
+    let status = common::scrubbed_command("composer")
         .args(["validate", "--no-check-publish"])
         .current_dir(project)
         .status()

@@ -11,9 +11,10 @@
     reason = "skip messages are the point of this test, not a lint violation"
 )]
 
+mod common;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use reqwest::Url;
 use serde_json::{Value, json};
@@ -25,7 +26,7 @@ use vivace::repository::{DevAcceptance, Repository, Transport};
 // ---------------------------------------------------------------------
 
 fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = common::git_command()
         .args(args)
         .current_dir(dir)
         .status()
@@ -183,11 +184,15 @@ async fn vcs_repository_lists_tags_and_branches() {
 /// one local vcs repository).
 #[tokio::test]
 async fn vcs_update_matches_composer_byte_for_byte() {
-    if Command::new("composer").arg("--version").output().is_err() {
+    if common::scrubbed_command("composer")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping vcs_update_matches_composer_byte_for_byte: composer is not on PATH");
         return;
     }
-    if Command::new("git").arg("--version").output().is_err() {
+    if common::git_command().arg("--version").output().is_err() {
         eprintln!("skipping vcs_update_matches_composer_byte_for_byte: git is not on PATH");
         return;
     }
@@ -201,7 +206,7 @@ async fn vcs_update_matches_composer_byte_for_byte() {
     fs_err::write(project_dir.path().join("composer.json"), &composer_json).unwrap();
     let composer_home = tempfile::tempdir().unwrap();
 
-    let status = Command::new("composer")
+    let status = common::scrubbed_command("composer")
         .args(["update", "--no-install", "--no-plugins"])
         .current_dir(project_dir.path())
         .env("COMPOSER_HOME", composer_home.path())

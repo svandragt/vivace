@@ -146,7 +146,7 @@ fn laravel_skeleton_matches_composer() {
         );
         return;
     }
-    if std::process::Command::new("composer")
+    if common::scrubbed_command("composer")
         .arg("--version")
         .output()
         .is_err()
@@ -166,7 +166,7 @@ fn laravel_skeleton_matches_composer() {
         .success();
 
     let composer_dir = project.join("demo-composer");
-    let create = std::process::Command::new("composer")
+    let create = common::scrubbed_command("composer")
         .args([
             "create-project",
             "laravel/laravel",
@@ -180,7 +180,7 @@ fn laravel_skeleton_matches_composer() {
         .expect("run composer create-project");
     assert!(create.success(), "composer create-project failed");
 
-    let install = std::process::Command::new("composer")
+    let install = common::scrubbed_command("composer")
         .args(["install", "--no-scripts"])
         .current_dir(&composer_dir)
         .status()

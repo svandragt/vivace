@@ -10,7 +10,6 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use common::TestContext;
 
@@ -36,7 +35,7 @@ fn copy_tree(from: &Path, to: &Path) {
 /// on a CI runner with no GPG/SSH signing key as on a developer's machine
 /// with `commit.gpgsign`/`tag.gpgsign` turned on globally.
 fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = common::git_command()
         .args(args)
         .current_dir(dir)
         .env("GIT_AUTHOR_NAME", "vivace")
@@ -63,7 +62,7 @@ fn init_repo(project: &Path) {
 }
 
 fn head_commit(project: &Path) -> String {
-    let output = Command::new("git")
+    let output = common::git_command()
         .args(["rev-parse", "HEAD"])
         .current_dir(project)
         .output()
@@ -149,6 +148,46 @@ fn tag_detached_head_reads_the_tag_name() {
     let installed = root_block(project);
     assert!(installed.contains("'pretty_version' => '1.2.0',"));
     assert!(installed.contains("'version' => '1.2.0.0',"));
+    assert!(installed.contains(&format!("'reference' => '{commit}',")));
+}
+
+/// A caller that is itself a git process (`pre-commit`, `git rebase -x`)
+/// leaves its own `GIT_DIR`/`GIT_INDEX_FILE` in the environment `viv`
+/// inherits. Without scrubbing those before every `git` spawn, root-version
+/// guessing reads the *caller's* repository instead of the project being
+/// installed — the same shape of bug that made the test suite's own `git
+/// commit` calls land in whatever repository a running `pre-commit` hook's
+/// `GIT_DIR` pointed at.
+#[test]
+fn root_version_ignores_an_inherited_git_dir() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    init_repo(project);
+    let commit = head_commit(project);
+
+    // A second, unrelated repo on a differently-named branch: without the
+    // fix, `viv`'s git subprocess reads this one's refs instead of
+    // `project`'s, since an inherited `GIT_DIR`/`GIT_INDEX_FILE` wins over
+    // `current_dir(project)`.
+    let decoy = tempfile::tempdir().unwrap();
+    git(decoy.path(), &["init", "-q", "-b", "decoy-branch"]);
+    git(decoy.path(), &["config", "commit.gpgsign", "false"]);
+    fs::write(decoy.path().join("decoy.txt"), "decoy\n").unwrap();
+    git(decoy.path(), &["add", "-A"]);
+    git(decoy.path(), &["commit", "-q", "-m", "decoy"]);
+
+    ctx.viv()
+        .env("GIT_DIR", decoy.path().join(".git"))
+        .env("GIT_INDEX_FILE", decoy.path().join(".git/index"))
+        .arg("install")
+        .assert()
+        .success();
+
+    let installed = root_block(project);
+    assert!(
+        installed.contains("'pretty_version' => 'dev-main',"),
+        "root version leaked the caller's inherited GIT_DIR: {installed}"
+    );
     assert!(installed.contains(&format!("'reference' => '{commit}',")));
 }
 

@@ -236,7 +236,7 @@ fn default_name(project_dir: &std::path::Path) -> String {
 }
 
 fn git_user_name() -> Option<String> {
-    let output = std::process::Command::new("git")
+    let output = crate::vcs::git_command()
         .args(["config", "user.name"])
         .output()
         .ok()?;

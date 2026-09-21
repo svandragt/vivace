@@ -20,7 +20,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -373,14 +372,14 @@ fn previous_hash(lock_path: &Path) -> Option<String> {
 /// (see the module doc), so a check or apply failure is `Patcher::applyPatch`
 /// returning `false` for every patcher, i.e. the plugin's own exception.
 fn apply_git(install_path: &Path, patch: &Ready) -> Result<()> {
-    if Command::new("git").arg("--version").output().is_err() {
+    if crate::vcs::git_command().arg("--version").output().is_err() {
         bail!("No patchers available.");
     }
     let depth = patch.meta.depth.unwrap_or(1);
     let temp = tempfile::NamedTempFile::new()?;
     fs_err::write(temp.path(), &patch.bytes)?;
 
-    let init = Command::new("git")
+    let init = crate::vcs::git_command()
         .arg("-C")
         .arg(install_path)
         .arg("init")
@@ -389,7 +388,7 @@ fn apply_git(install_path: &Path, patch: &Ready) -> Result<()> {
     let mut applied = init.status.success();
 
     if applied {
-        let check = Command::new("git")
+        let check = crate::vcs::git_command()
             .arg("-C")
             .arg(install_path)
             .args(["apply", "--check", "--verbose", &format!("-p{depth}")])
@@ -403,7 +402,7 @@ fn apply_git(install_path: &Path, patch: &Ready) -> Result<()> {
     }
 
     if applied {
-        let apply = Command::new("git")
+        let apply = crate::vcs::git_command()
             .arg("-C")
             .arg(install_path)
             .args(["apply", &format!("-p{depth}"), "--verbose"])

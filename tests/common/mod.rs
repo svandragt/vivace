@@ -17,6 +17,39 @@ pub(crate) fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packagist/repo.packagist.org")
 }
 
+/// Mirrors `vivace::vcs::git_command`'s scrub for the fixture-building
+/// `git` calls this test binary makes itself (that constructor is
+/// `pub(crate)`, unreachable from an integration test's own crate): a test
+/// that builds a throwaway fixture repo is just as exposed to a
+/// `pre-commit` hook's inherited `GIT_DIR`/`GIT_INDEX_FILE` as `viv` is, and
+/// would otherwise commit into the real repository being committed to
+/// instead of the `tempfile::tempdir()` it meant.
+pub(crate) fn git_command() -> std::process::Command {
+    scrubbed_command("git")
+}
+
+/// The same scrub for any other tool a test spawns that shells out to
+/// `git` itself — `composer` above all. viv's own constructor cannot help
+/// there: the inherited variables reach the child process, and Composer
+/// obeys them exactly as `git` does.
+pub(crate) fn scrubbed_command(program: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_PREFIX",
+        "GIT_CEILING_DIRECTORIES",
+    ] {
+        command.env_remove(var);
+    }
+    command
+}
+
 /// Reads `lock`'s `packages`/`packages-dev` entries into a lowercased
 /// name -> entry map, the shape `solve_partial_update` wants for its
 /// already-locked packages, shared by `tests/require.rs`/`tests/update.rs`.
