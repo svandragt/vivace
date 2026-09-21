@@ -406,7 +406,7 @@ mod tests {
         // `devbox run -- composer show --platform` prints the bundled
         // `composer-plugin-api`'s version; if a Composer upgrade in
         // devbox.json bumps it, this constant must move too.
-        let Ok(output) = std::process::Command::new("composer")
+        let Ok(output) = crate::vcs::scrubbed_command("composer")
             .args(["show", "--platform", "--no-ansi"])
             .current_dir(std::env::temp_dir())
             .output()

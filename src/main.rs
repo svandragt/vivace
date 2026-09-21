@@ -19,6 +19,7 @@ use vivace::solver::problem::SolverError;
 use vivace::tool::{self, ExecArgs, RunArgs, XArgs};
 use vivace::update::{self, UpdateArgs};
 use vivace::validate::{self, ValidateArgs};
+use vivace::workspace::{self, WorkspaceArgs};
 
 #[derive(Parser)]
 #[command(
@@ -144,6 +145,9 @@ enum Command {
     /// cache, auth sources (names only), PHP/git/Composer, platform
     /// packages and the plugin decision per lock entry.
     Diagnose(DiagnoseArgs),
+    /// Chapter 3's `extra.viv.workspace` (#276): discover members from the
+    /// root composer.json and report inter-member requirements.
+    Workspace(WorkspaceArgs),
 }
 
 fn main() -> ExitCode {
@@ -280,6 +284,13 @@ fn main() -> ExitCode {
             }
         },
         Command::Diagnose(args) => match diagnose::run(&args, cli.cache_dir.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::Workspace(args) => match workspace::run(&args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 err_out(&format!("{err:#}"));

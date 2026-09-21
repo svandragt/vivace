@@ -29,7 +29,6 @@ mod common;
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use common::{FixtureTransport, TestContext, fixtures_root};
 use serde_json::{Map, Value};
@@ -202,7 +201,11 @@ fn viv_require_matches_composer_and_validates() {
         );
         return;
     }
-    if Command::new("composer").arg("--version").output().is_err() {
+    if common::scrubbed_command("composer")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping viv_require_matches_composer_and_validates: composer is not on PATH");
         return;
     }
@@ -256,7 +259,7 @@ fn viv_require_matches_composer_and_validates() {
         "viv require's lock differs"
     );
 
-    let validate = Command::new("composer")
+    let validate = common::scrubbed_command("composer")
         .args(["validate", "--strict", "--no-check-publish"])
         .current_dir(project)
         .output()
@@ -279,7 +282,11 @@ fn viv_remove_matches_composer_and_validates() {
         );
         return;
     }
-    if Command::new("composer").arg("--version").output().is_err() {
+    if common::scrubbed_command("composer")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping viv_remove_matches_composer_and_validates: composer is not on PATH");
         return;
     }
@@ -329,7 +336,7 @@ fn viv_remove_matches_composer_and_validates() {
         "viv remove's lock differs"
     );
 
-    let validate = Command::new("composer")
+    let validate = common::scrubbed_command("composer")
         .args(["validate", "--strict", "--no-check-publish"])
         .current_dir(project)
         .output()

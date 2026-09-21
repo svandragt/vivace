@@ -7,7 +7,6 @@
 //! archives.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use sha1::Digest as _;
@@ -254,7 +253,7 @@ fn checkout_to_commit(checkout: &Path, reference: &str, pretty_version: &str) ->
 /// [`run_git`], a non-zero exit here is an expected outcome to try a
 /// fallback on, not an error, so stderr is discarded rather than surfaced.
 fn try_git<'a>(dir: &Path, args: impl IntoIterator<Item = &'a str>) -> bool {
-    Command::new("git")
+    crate::vcs::git_command()
         .args(args)
         .current_dir(dir)
         .stdout(std::process::Stdio::null())
@@ -280,7 +279,7 @@ fn sync_mirror(url: &str, mirror: &Path, reference: &str) -> Result<()> {
 }
 
 fn has_commit(repo: &Path, reference: &str) -> Result<bool> {
-    Ok(Command::new("git")
+    Ok(crate::vcs::git_command()
         .args(["-C", path_str(repo)?, "cat-file", "-e"])
         .arg(format!("{reference}^{{commit}}"))
         .status()
@@ -296,7 +295,7 @@ fn path_str(path: &Path) -> Result<&str> {
 /// Run `git <args>` (optionally with a working dir), erroring with its
 /// stderr on a non-zero exit.
 fn run_git<'a>(dir: Option<&Path>, args: impl IntoIterator<Item = &'a str>) -> Result<()> {
-    let mut command = Command::new("git");
+    let mut command = crate::vcs::git_command();
     command.args(args);
     if let Some(dir) = dir {
         command.current_dir(dir);
@@ -314,8 +313,6 @@ fn run_git<'a>(dir: Option<&Path>, args: impl IntoIterator<Item = &'a str>) -> R
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-
     use crate::lock::{Dist, Package, Source, TransportOptions};
 
     use super::*;
@@ -478,7 +475,7 @@ mod tests {
     }
 
     fn git_available() -> bool {
-        Command::new("git").arg("--version").output().is_ok()
+        crate::vcs::git_command().arg("--version").output().is_ok()
     }
 
     /// A local, hookless git repo: the global `core.hooksPath` a developer
@@ -486,7 +483,7 @@ mod tests {
     /// not leak into a test fixture repo.
     fn init_repo(dir: &Path) {
         let run = |args: &[&str]| {
-            let status = Command::new("git")
+            let status = crate::vcs::git_command()
                 .args(["-c", "core.hooksPath=/dev/null"])
                 .args(args)
                 .current_dir(dir)
@@ -506,7 +503,7 @@ mod tests {
 
     fn head(dir: &Path) -> String {
         String::from_utf8(
-            Command::new("git")
+            crate::vcs::git_command()
                 .args(["-C"])
                 .arg(dir)
                 .args(["rev-parse", "HEAD"])
@@ -562,7 +559,7 @@ mod tests {
 
     fn remote_url(dir: &Path, name: &str) -> String {
         String::from_utf8(
-            Command::new("git")
+            crate::vcs::git_command()
                 .args(["-C"])
                 .arg(dir)
                 .args(["remote", "get-url", name])
@@ -577,7 +574,7 @@ mod tests {
 
     fn branch_name(dir: &Path) -> Option<String> {
         let name = String::from_utf8(
-            Command::new("git")
+            crate::vcs::git_command()
                 .args(["-C"])
                 .arg(dir)
                 .args(["symbolic-ref", "--short", "-q", "HEAD"])

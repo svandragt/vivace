@@ -1154,7 +1154,11 @@ fn viv_update_matches_composer_and_validates() {
         );
         return;
     }
-    if Command::new("composer").arg("--version").output().is_err() {
+    if common::scrubbed_command("composer")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping viv_update_matches_composer_and_validates: composer is not on PATH");
         return;
     }
@@ -1181,7 +1185,7 @@ fn viv_update_matches_composer_and_validates() {
     for dir in ["src", "lib"] {
         copy_tree(&fixture.join(dir), &composer_project.path().join(dir));
     }
-    let composer = Command::new("composer")
+    let composer = common::scrubbed_command("composer")
         .args(["update", "--no-install", "--no-scripts", "--no-plugins"])
         .current_dir(composer_project.path())
         .output()
@@ -1196,7 +1200,7 @@ fn viv_update_matches_composer_and_validates() {
     let want = fs_err::read_to_string(composer_project.path().join("composer.lock")).unwrap();
     assert_eq!(got, want, "viv update's lock differs from Composer's");
 
-    let validate = Command::new("composer")
+    let validate = common::scrubbed_command("composer")
         .args(["validate", "--strict", "--no-check-publish"])
         .current_dir(project)
         .output()
@@ -1211,14 +1215,14 @@ fn viv_update_matches_composer_and_validates() {
     // `install --dry-run` only reports "nothing to do" once something is
     // actually installed; real Composer, not `viv install`, so this is
     // Composer's own dist fetch (network, already gated above).
-    let install = Command::new("composer")
+    let install = common::scrubbed_command("composer")
         .args(["install", "--no-interaction"])
         .current_dir(project)
         .status()
         .unwrap();
     assert!(install.success(), "composer install failed");
 
-    let dry_run = Command::new("composer")
+    let dry_run = common::scrubbed_command("composer")
         .args(["install", "--dry-run"])
         .current_dir(project)
         .output()
@@ -1234,7 +1238,7 @@ fn viv_update_matches_composer_and_validates() {
     );
 
     let before = fs_err::read(project.join("composer.lock")).unwrap();
-    Command::new("composer")
+    common::scrubbed_command("composer")
         .args(["update", "--lock"])
         .current_dir(project)
         .status()
@@ -1823,7 +1827,11 @@ async fn viv_update_reproduces_composers_lock_against_real_wpackagist() {
         );
         return;
     }
-    if Command::new("composer").arg("--version").output().is_err() {
+    if common::scrubbed_command("composer")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!(
             "skipping viv_update_reproduces_composers_lock_against_real_wpackagist: composer \
              is not on PATH"
@@ -1844,7 +1852,7 @@ async fn viv_update_reproduces_composers_lock_against_real_wpackagist() {
     fs_err::write(project_dir.path().join("composer.json"), &composer_json).unwrap();
     let composer_home = tempfile::tempdir().unwrap();
 
-    let status = Command::new("composer")
+    let status = common::scrubbed_command("composer")
         .args(["update", "--no-install", "--no-plugins"])
         .current_dir(project_dir.path())
         .env("COMPOSER_HOME", composer_home.path())

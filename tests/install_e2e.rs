@@ -711,11 +711,11 @@ fn install_never_touches_composer_json() {
 /// git hooks/config a developer machine may have (`core.hooksPath` rewrites
 /// commit messages on this machine, for instance).
 fn git_available() -> bool {
-    Command::new("git").arg("--version").output().is_ok()
+    common::git_command().arg("--version").output().is_ok()
 }
 
 fn git_run(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = common::git_command()
         .args(["-c", "core.hooksPath=/dev/null"])
         .args(args)
         .current_dir(dir)
@@ -729,7 +729,7 @@ fn git_run(dir: &Path, args: &[&str]) {
 }
 
 fn git_head(dir: &Path) -> String {
-    let output = Command::new("git")
+    let output = common::git_command()
         .arg("-C")
         .arg(dir)
         .args(["rev-parse", "HEAD"])
@@ -866,7 +866,11 @@ fn preferred_install_source_matches_composer_git_config() {
         eprintln!("skipping preferred_install_source_matches_composer_git_config: git not on PATH");
         return;
     }
-    if Command::new("composer").arg("--version").output().is_err() {
+    if common::scrubbed_command("composer")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!(
             "skipping preferred_install_source_matches_composer_git_config: composer is not on \
              PATH"
@@ -906,7 +910,7 @@ fn preferred_install_source_matches_composer_git_config() {
         .unwrap(),
     )
     .unwrap();
-    let install = Command::new("composer")
+    let install = common::scrubbed_command("composer")
         .args(["install", "--no-interaction"])
         .current_dir(composer_project.path())
         .output()
@@ -1594,7 +1598,6 @@ mod composer_patches {
     use std::fs;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::{Path, PathBuf};
-    use std::process::Command;
 
     use crate::common::TestContext;
 
@@ -1621,7 +1624,11 @@ mod composer_patches {
     }
 
     fn skip_without_git() -> bool {
-        if Command::new("git").arg("--version").output().is_err() {
+        if crate::common::git_command()
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             eprintln!("skipping composer_patches test: git not on PATH");
             return true;
         }

@@ -36,7 +36,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
@@ -394,7 +393,7 @@ fn resolve_location(project_dir: &Path, declared: Option<&String>) -> Result<Pat
 }
 
 fn git_is_repository(dir: &Path) -> bool {
-    Command::new("git")
+    crate::vcs::git_command()
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(dir)
         .output()
@@ -402,7 +401,7 @@ fn git_is_repository(dir: &Path) -> bool {
 }
 
 fn git_check_ignore(dir: &Path, path: &Path) -> bool {
-    Command::new("git")
+    crate::vcs::git_command()
         .arg("check-ignore")
         .arg(path)
         .current_dir(dir)
@@ -411,7 +410,7 @@ fn git_check_ignore(dir: &Path, path: &Path) -> bool {
 }
 
 fn git_check_tracked(dir: &Path, path: &Path) -> bool {
-    Command::new("git")
+    crate::vcs::git_command()
         .args(["ls-files", "--error-unmatch"])
         .arg(path)
         .current_dir(dir)

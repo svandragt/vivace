@@ -498,7 +498,7 @@ impl GitDriver {
     }
 
     fn composer_json(&self, identifier: &str) -> Result<Option<Value>> {
-        let output = Command::new("git")
+        let output = git_command()
             .args(["show", &format!("{identifier}:composer.json")])
             .current_dir(&self.repo_dir)
             .output()
@@ -513,7 +513,7 @@ impl GitDriver {
     }
 
     fn commit_time(&self, identifier: &str) -> Result<Option<String>> {
-        let output = Command::new("git")
+        let output = git_command()
             .args(["log", "-1", "--format=%at", identifier])
             .current_dir(&self.repo_dir)
             .output()
@@ -566,6 +566,50 @@ pub(crate) fn slugify(url: &str) -> String {
         .collect()
 }
 
+/// Every `git` subprocess viv spawns is about some *other* repository — a
+/// mirror clone, a store checkout, a patch sandbox — never the caller's.
+/// But a caller that is itself a git process (a `pre-commit` hook, `git
+/// rebase -x`, `git filter-branch`) leaves its own repository-location
+/// variables in the environment, and `git` obeys an inherited `GIT_DIR`
+/// over `--git-dir`/`current_dir()` regardless of which one the caller
+/// meant. Route every `git` spawn through this constructor instead of
+/// guarding each call site so none of them can silently operate on the
+/// caller's repository instead of the one viv meant (a `pre-commit` hook
+/// running `viv`'s own test suite did exactly that, deleting the repository
+/// tree it was committing to).
+///
+/// Clears every variable `git help environment` documents as redirecting a
+/// subprocess to a different repository, index or object store:
+/// `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`,
+/// `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`,
+/// `GIT_PREFIX`, `GIT_CEILING_DIRECTORIES`. Leaves everything else (author/
+/// committer identity, `GIT_SSH`, tracing, pager, ...) alone — none of that
+/// points a command at the wrong repository, only these do.
+pub(crate) fn git_command() -> Command {
+    scrubbed_command("git")
+}
+
+/// The same scrub for another tool viv spawns that shells out to `git`
+/// itself. The inherited variables reach the grandchild process too, so a
+/// scrubbed `git` is not enough on its own.
+pub(crate) fn scrubbed_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_PREFIX",
+        "GIT_CEILING_DIRECTORIES",
+    ] {
+        command.env_remove(var);
+    }
+    command
+}
+
 /// `GitUtil::syncMirror`: a fresh `git clone --mirror` if the cache
 /// directory isn't a git repo yet, otherwise `git remote update --prune`
 /// (a `HEAD` file at the top of the directory is `--mirror`'s own
@@ -585,7 +629,7 @@ fn sync_mirror(url: &str, dir: &Path) -> Result<()> {
     let dir_str = dir
         .to_str()
         .context("cache directory path is not valid UTF-8")?;
-    let output = Command::new("git")
+    let output = git_command()
         .args(["clone", "--mirror", "--", url, dir_str])
         .output()
         .with_context(|| format!("running git clone --mirror {url}"))?;
@@ -599,7 +643,7 @@ fn sync_mirror(url: &str, dir: &Path) -> Result<()> {
 }
 
 fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(args)
         .current_dir(dir)
         .output()
@@ -622,7 +666,7 @@ static TAG_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([0-9a-f]{40}) refs/tags/(.+?)(\^\{\})?$").unwrap());
 
 fn git_tags(dir: &Path) -> Result<Vec<RefEntry>> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(["show-ref", "--tags", "--dereference"])
         .current_dir(dir)
         .output()
@@ -652,7 +696,7 @@ static BRANCH_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:\* )? *(\S+) *([0-9a-f]+)(?: .*)?$").unwrap());
 
 fn git_branches(dir: &Path) -> Result<Vec<RefEntry>> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(["branch", "--no-color", "--no-abbrev", "-v"])
         .current_dir(dir)
         .output()
@@ -684,7 +728,7 @@ fn git_branches(dir: &Path) -> Result<Vec<RefEntry>> {
 /// out — both are exactly `git symbolic-ref --short HEAD`. Falls back to
 /// `"master"` (Composer's own default) if that fails.
 fn detect_default_branch(dir: &Path) -> String {
-    let output = Command::new("git")
+    let output = git_command()
         .args(["symbolic-ref", "--short", "HEAD"])
         .current_dir(dir)
         .output();
@@ -750,7 +794,7 @@ pub fn guess_root_version(project_dir: &Path) -> Option<RootVersion> {
     if !project_dir.join(".git").exists() {
         return None;
     }
-    let output = Command::new("git")
+    let output = git_command()
         .args(["branch", "-a", "--no-color", "--no-abbrev", "-v"])
         .current_dir(project_dir)
         .output()
@@ -887,7 +931,7 @@ fn guess_feature_version(
         if candidate.as_str() == branch || is_feature_branch(&candidate_version) {
             continue;
         }
-        let Ok(output) = Command::new("git")
+        let Ok(output) = git_command()
             .args(["rev-list", &format!("{candidate}..{branch}")])
             .current_dir(project_dir)
             .output()
@@ -955,7 +999,7 @@ fn natural_cmp_ci(a: &str, b: &str) -> std::cmp::Ordering {
 /// `VersionGuesser::versionFromGitTags`: `git describe --exact-match --tags`,
 /// only successful when `HEAD` is exactly a tag.
 fn version_from_git_tags(project_dir: &Path) -> Option<(String, String)> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(["describe", "--exact-match", "--tags"])
         .current_dir(project_dir)
         .output()
@@ -973,7 +1017,7 @@ fn version_from_git_tags(project_dir: &Path) -> Option<(String, String)> {
 /// line at all (a repository with no commits yet never gets this far, since
 /// `rev-parse HEAD` fails there too).
 fn rev_parse_head(project_dir: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(["rev-parse", "HEAD"])
         .current_dir(project_dir)
         .output()

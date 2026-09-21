@@ -1,0 +1,10 @@
+{
+    "name": "acme/workspace-root",
+    "extra": {
+        "viv": {
+            "workspace": {
+                "members": ["packages/*"]
+            }
+        }
+    }
+}
