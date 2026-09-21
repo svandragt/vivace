@@ -143,16 +143,27 @@ boot_check() {
   fi
 }
 
-# inode and directory-entry counts of $1/vendor. Dentries: every path under
-# vendor/ (files and directories). Inodes: distinct inode numbers — under
-# the default hardlink mode most files share their inode with the store, so
-# this is not a proxy for bytes (see the chapter and this script's header).
+# What $1/vendor costs on disk beyond what the store already pays.
+#
+# Dentries: every path under vendor/ — the directory entries the tree needs
+# whether or not its bytes are shared. Counting *distinct inodes* instead
+# would be the same number, since each path under vendor/ resolves to one
+# inode however many links it has; that is why this counts link counts
+# rather than inode identity.
+#
+# Owned: paths whose bytes vendor/ actually pays for — directories (never
+# hardlinked) plus regular files with a link count of 1. Shared: regular
+# files with a link count above 1, one inode held jointly with the store,
+# costing a directory entry and no data blocks. Under the default hardlink
+# mode almost every file is shared, which is exactly why a bytes figure
+# would report a saving that isn't there (see the chapter).
 count_vendor() {
   local dir=$1
-  local dentries inodes
+  local dentries owned shared
   dentries=$(find "$dir/vendor" | wc -l)
-  inodes=$(find "$dir/vendor" -printf '%i\n' | sort -u | wc -l)
-  echo "$dentries|$inodes"
+  owned=$(find "$dir/vendor" \( -type d -o \( -type f -links 1 \) \) | wc -l)
+  shared=$(find "$dir/vendor" -type f -links +1 | wc -l)
+  echo "$dentries|$owned|$shared"
 }
 
 # `linkat` call count for one warm install (cache populated, vendor/ freshly
@@ -262,7 +273,7 @@ run_entry() {
   fi
 
   local cold_json="$out/viv.json"
-  local cold warm boot_result boot_state boot_note counts dentries inodes linkat
+  local cold warm boot_result boot_state boot_note counts dentries owned shared linkat
   cold=$(mean_for "$cold_json" "viv cold")
   warm=$(mean_for "$cold_json" "viv warm")
   local installed_dir="$work/bench/viv"
@@ -273,7 +284,7 @@ run_entry() {
     [ -n "$reason" ] || reason=$(last_line "$run_out")
     footnotes+=("$name: install failed: $(redact <<< "$reason")")
     problem=1
-    echo "| $name | $packages | n/a | n/a | n/a | fail: install failed | n/a | n/a |" >> "$report"
+    echo "| $name | $packages | n/a | n/a | n/a | fail: install failed | n/a | n/a | n/a |" >> "$report"
     flush_footnotes
     return
   fi
@@ -282,13 +293,17 @@ run_entry() {
   boot_state=${boot_result%%|*}
   boot_note=${boot_result#*|}
 
-  counts=$(count_vendor "$installed_dir")
-  dentries=${counts%%|*}
-  inodes=${counts#*|}
-
+  # Order matters: bench/run.sh built $installed_dir/vendor against its own
+  # cache, which can sit on another filesystem and so fall back to copies
+  # (every file link count 1, "shared" 0 — the copy mode's disk cost, not
+  # the default hardlink mode's). measure_linkat rebuilds vendor/ against
+  # the isolated same-filesystem store, so count what it leaves behind.
   linkat=$(measure_linkat "$installed_dir")
 
-  echo "| $name | $packages | $(fmt "$cold") | $(fmt "$warm") | $boot_state: $boot_note | $linkat | $dentries | $inodes |" \
+  counts=$(count_vendor "$installed_dir")
+  IFS='|' read -r dentries owned shared <<< "$counts"
+
+  echo "| $name | $packages | $(fmt "$cold") | $(fmt "$warm") | $boot_state: $boot_note | $linkat | $dentries | $owned | $shared |" \
     >> "$report"
   if [ "$boot_state" = "fail" ]; then
     footnotes+=("$name: boot failed: $boot_note")
@@ -307,8 +322,8 @@ ver_from() { "$@" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | he
     "compat/corpus.toml's own control flags), $runs runs each, from a local mirror" \
     "(bench/mirror.sh, no real network in any timed scenario)."
   echo ""
-  echo "| Project | Packages | Cold | Warm | Boot | linkat (warm) | vendor/ dentries | vendor/ inodes |"
-  echo "|---|---|---|---|---|---|---|---|"
+  echo "| Project | Packages | Cold | Warm | Boot | linkat (warm) | vendor/ dentries | vendor/ owned | vendor/ shared |"
+  echo "|---|---|---|---|---|---|---|---|---|"
 } >> "$report"
 
 while IFS='|' read -r name repo commit version _path; do
