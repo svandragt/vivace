@@ -27,6 +27,11 @@ or a manifest setting so the default path stays byte-compatible, and
 Compat-fidelity items are worked only when a real user hits one; they sit in
 the `compat: on demand` milestone.
 
+The CI and bench harness the chapters run on is not itself a chapter: it
+asks no question and measures nothing of its own. That work sits in the
+`research tooling` milestone, and a chapter blocked on it says so in its
+**Work** list.
+
 ## Chapter 1: a conflict-less lock
 
 **Question.** Can a lock file be designed so that git merges of two branches
@@ -73,13 +78,84 @@ the existing lock writer.
 ## Chapter 2: autoload from the store, no vendor tree (planned)
 
 **Question.** If `vendor/` is a generated autoloader plus the
-`installed.json` and `InstalledVersions.php` shims that frameworks read,
-and classes load straight from the shared store, what happens to install
-time, disk use, and framework compatibility?
+`installed.json` and `installed.php` shims that frameworks read, and
+classes load straight from the shared store, what happens to install time,
+disk use, and framework compatibility?
 
-Not started. Depends on nothing in chapter 1. The two shims decide whether
-real projects keep working, so the measurement is the compat corpus booting,
-not only the install time.
+**Why Composer needs a tree.** `vendor/` is not only where files land.
+Four things resolve by path into it:
+
+- PSR-4 and PSR-0 prefixes map a namespace to a directory, so every prefix
+  needs a directory whose layout matches the namespace.
+- `autoload.files` entries are `require`d at boot by path.
+- A package's own relative includes and `__DIR__` walks assume the package
+  sits at the depth Composer put it at. `__DIR__ . '/../../autoload.php'`
+  is the standard way a vendored script finds the autoloader.
+- `vendor/bin` proxies resolve their target relative to themselves.
+
+Only the first two are the autoloader's own business, and viv already
+writes both as generated path strings (`$vendorDir . '/...'` in the plain
+maps, a baked absolute path in `autoload_static.php`). Pointing them at
+`archive-v0/<hash>/` instead of `vendor/<name>/` is a change of value, not
+of format. The last two are the risk.
+
+**What the prize actually is.** The 2026-09-18 phase split
+(`bench/results/profile.md` §9) bounds it before any code is written:
+
+- Warm install is 43 ms, of which `link_tree` is 19 ms — 7746 `linkat`
+  calls, 42.5% of syscall time. This is the prize, and it is warm-install
+  only.
+- Cold install is 2.11 s, of which linking is 33 ms. Fetch is 95%. A
+  chapter that removes the tree does not make a cold install measurably
+  faster, and should not claim to.
+- Disk is the counter-intuitive one. Under the default hardlink mode
+  `vendor/` already shares inodes with the store, so it costs directory
+  entries and inodes, not data blocks. Real duplication only exists under
+  `--link-mode copy` and on filesystems that cannot hardlink. The disk
+  claim has to be measured as inode and dentry count, not bytes, or it
+  will look like a win it isn't.
+
+**Hypothesis.** A project can boot from a `vendor/` that holds only the
+generated autoloader, the two shims and `bin` proxies, with every package
+path pointing into the store, and this removes the link phase from a warm
+install (19 of 43 ms) without breaking the compat corpus. The failures,
+where they happen, are concentrated in packages that walk out of their own
+directory expecting to land in the project, not in class loading.
+
+**Design sketch.** Behind a flag, so compat mode is untouched. The
+generated maps take store paths; `autoload_static.php` already bakes an
+absolute path at generation time, so it needs no new mechanism.
+`installed.json` and `installed.php` carry `install-path` relative to
+`vendor/composer`, so a store path makes them long relative paths or
+absolute ones — which form frameworks tolerate is a finding, not a
+decision to take up front. `vendor/bin` stays a real directory of
+proxies, since the depth a proxy resolves from is exactly what the store
+breaks.
+
+One consequence is structural rather than cosmetic: the store stops being
+a cache. Today `prune` may delete an archive while a project keeps
+working, because the hardlinked inode survives. With no tree, pruning an
+archive breaks a live project, so the store needs to know which archives
+a project loads from. That reference-keeping is part of the chapter, not
+an afterthought.
+
+**Control.** Compat mode on the same lock and the same warm store: the
+linked `vendor/` tree, its phase split already recorded in
+`bench/results/profile.md`.
+
+**Measurement.** Per corpus project: warm and cold install wall time,
+`linkat` count under `strace -c -f`, inode and directory-entry count of
+`vendor/`, and — the one that decides the chapter — whether the project
+boots. Booting means the compat corpus running its own test suite or
+console entry point, not a successful install. A project that installs
+and cannot boot is the result. Results land in
+`bench/results/storeload.md`.
+
+**Work.** Store-path autoload maps behind a flag (#284), the minimum
+`vendor/` with `bin` proxies and the two shims (#285), store references
+so `prune` cannot delete a live archive (#286), corpus boot harness and
+measurement (#287). Depends on nothing in chapter 1. The boot harness is
+worth building first: it decides whether the rest is worth writing.
 
 ## Chapter 3: workspaces (planned)
 
@@ -153,7 +229,9 @@ question and a measurement; none is scheduled.
   store carries its precomputed classmap and PSR map, so install is a
   concatenation and only the root package is ever scanned. The performance
   finding behind it (#269, the `-o` root scan) becomes a design rather than
-  a cache.
+  a cache. Separable from chapter 2: that chapter changes where the paths
+  point, this one changes who computes the map, and either works without
+  the other.
 - **A lock that describes the whole install.** Chapter 1's format extended
   with content-addressed hashes of the extracted trees, the full resolved
   graph and a platform snapshot, so an offline install needs no mirror and
