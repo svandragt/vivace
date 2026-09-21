@@ -10,6 +10,7 @@ pub mod install;
 pub mod link;
 pub mod lock;
 pub mod lock_writer;
+pub mod native_lock;
 pub mod new;
 pub mod normalize;
 pub mod plan;

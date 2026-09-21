@@ -178,7 +178,7 @@ fn main() -> ExitCode {
             Err(err) => resolver_error(&err),
         },
         Command::UpdateLock(mut args) => {
-            args.lock = true;
+            args.lock = Some("self".to_string());
             match update::run(&args, cli.cache_dir.as_deref(), offline) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(err) => resolver_error(&err),

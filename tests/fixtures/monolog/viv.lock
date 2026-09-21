@@ -1,0 +1,23 @@
+[[package]]
+name = "monolog/monolog"
+version = "3.11.0"
+dist-url = "https://api.github.com/repos/Seldaek/monolog/zipball/147f303310f06334f03f409e49d7ad1e275ff05a"
+source-ref = "147f303310f06334f03f409e49d7ad1e275ff05a"
+dev = false
+root-requirement = "^3.0"
+
+[[package]]
+name = "psr/container"
+version = "2.0.2"
+dist-url = "https://api.github.com/repos/php-fig/container/zipball/c71ecc56dfe541dbd90c5360474fbc405f8d5963"
+source-ref = "c71ecc56dfe541dbd90c5360474fbc405f8d5963"
+dev = true
+root-requirement = "^2.0"
+
+[[package]]
+name = "psr/log"
+version = "3.0.2"
+dist-url = "https://api.github.com/repos/php-fig/log/zipball/f16e1d5863e37f8d8c2a01719f5b34baa2b714d3"
+source-ref = "f16e1d5863e37f8d8c2a01719f5b34baa2b714d3"
+dev = false
+root-requirement = "^3.0"

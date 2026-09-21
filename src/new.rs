@@ -197,7 +197,7 @@ fn run_from_package(
                 with_dependencies: false,
                 with_all_dependencies: false,
                 minimal_changes: false,
-                lock: false,
+                lock: None,
                 no_dev: args.no_dev,
                 prefer_lowest: false,
                 prefer_stable: false,
