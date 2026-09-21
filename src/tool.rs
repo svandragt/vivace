@@ -127,7 +127,7 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
             with_dependencies: false,
             with_all_dependencies: false,
             minimal_changes: false,
-            lock: false,
+            lock: None,
             no_dev: false,
             prefer_lowest: false,
             prefer_stable: false,

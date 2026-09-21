@@ -71,10 +71,13 @@ pub struct UpdateArgs {
     /// below).
     #[arg(long)]
     pub minimal_changes: bool,
-    /// Re-derive `composer.lock` from itself (content-hash, key order,
-    /// `fixupJsonDataType`) without solving: `composer update --lock`.
-    #[arg(long)]
-    pub lock: bool,
+    /// Bare `--lock` re-derives `composer.lock` from itself (content-hash,
+    /// key order, `fixupJsonDataType`) without solving: `composer update
+    /// --lock`. `--lock native` solves normally, still writes
+    /// `composer.lock` unchanged, and additionally writes `viv.lock`
+    /// beside it (chapter 1's research format, #272, `docs/research.md`).
+    #[arg(long, num_args = 0..=1, default_missing_value = "self")]
+    pub lock: Option<String>,
     /// Solve without `require-dev`, but still resolve and record dev
     /// packages in the lock (`composer update --no-dev`'s actual behaviour:
     /// only `install`'s package selection skips them, not the lock).
@@ -215,11 +218,18 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
     let mut composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root: Value = serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let lock_path = project_dir.join("composer.lock");
+    let write_native_lock = match args.lock.as_deref() {
+        None | Some("self") => false,
+        Some("native") => true,
+        Some(other) => bail!("--lock: unknown mode {other:?} (expected nothing or `native`)"),
+    };
 
-    // `--lock` re-derives the lock from itself (no solving, so nothing to
-    // dispatch `pre-update-cmd`/`post-update-cmd` around, and no install to
-    // chain into either).
-    if args.lock {
+    // Bare `--lock` re-derives the lock from itself (no solving, so nothing
+    // to dispatch `pre-update-cmd`/`post-update-cmd` around, and no install
+    // to chain into either). `--lock native` falls through to a normal
+    // solve below, since chapter 1's `viv.lock` is a second serialisation
+    // of that same resolution, not a replacement for it (#272).
+    if args.lock.as_deref() == Some("self") {
         let lock = lock_only(&lock_path, &composer_json)?;
         if args.dry_run {
             write!(std::io::stdout().lock(), "{lock}")?;
@@ -327,6 +337,18 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
     }
 
     fs_err::write(&lock_path, lock)?;
+
+    if write_native_lock {
+        // Re-parsed from `composer_json`, not the earlier `root`: a
+        // `bump-after-update` run above may have rewritten and re-read
+        // `composer_json` since `root` was parsed, and each record's root
+        // requirement must match what is on disk right now, not what it was
+        // before the bump.
+        let current_root: Value =
+            serde_json::from_slice(&composer_json).context("parsing composer.json")?;
+        let native = crate::native_lock::write(&result.non_dev, &result.dev, &current_root)?;
+        fs_err::write(project_dir.join("viv.lock"), native)?;
+    }
 
     if !args.no_install {
         let install_args = InstallArgs {

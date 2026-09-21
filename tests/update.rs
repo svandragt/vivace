@@ -149,6 +149,68 @@ async fn update_reproduces_the_monolog_lock() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// Same solve as `update_lock`, but resolved once and handed back so both
+/// `viv.lock` tests below can serialise it without a second, redundant
+/// `solve_update` call.
+async fn solve_monolog_fixture() -> (Vec<u8>, Value, solver::UpdateResult) {
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
+    let root: Value = serde_json::from_slice(&composer_json).unwrap();
+    let result = solver::solve_update(&repo, &root, false, false)
+        .await
+        .unwrap();
+    (composer_json, root, result)
+}
+
+/// Chapter 1's `viv.lock` (#272, `docs/research.md`): golden test for the
+/// record format, same fixture and solve as `update_reproduces_the_monolog_lock`.
+#[tokio::test]
+async fn native_lock_reproduces_the_monolog_viv_lock() {
+    let (_composer_json, root, result) = solve_monolog_fixture().await;
+    let got = vivace::native_lock::write(&result.non_dev, &result.dev, &root).unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    assert_matches_expected(&got, &fixture.join("viv.lock"));
+}
+
+/// The hard constraint `--lock native` must satisfy (`AGENTS.md`, #272):
+/// writing `viv.lock` never changes `composer.lock`'s own bytes.
+/// `native_lock::write` only takes shared references into the same solve
+/// `lock_writer::write` already consumed, so calling it between two
+/// `lock_writer::write` calls on that same result must not change the
+/// second call's output.
+#[tokio::test]
+async fn writing_the_native_lock_does_not_change_composer_lock() {
+    let (composer_json, root, result) = solve_monolog_fixture().await;
+    let options = vivace::lock_writer::LockOptions {
+        minimum_stability: result.minimum_stability,
+        stability_flags: &result.stability_flags,
+        prefer_stable: result.prefer_stable,
+        prefer_lowest: result.prefer_lowest,
+        platform_reqs: &result.platform_reqs,
+        platform_dev_reqs: &result.platform_dev_reqs,
+        platform_overrides: &result.platform_overrides,
+        aliases: &result.aliases,
+    };
+    let before =
+        vivace::lock_writer::write(&result.non_dev, Some(&result.dev), &options, &composer_json)
+            .unwrap();
+    vivace::native_lock::write(&result.non_dev, &result.dev, &root).unwrap();
+    let after =
+        vivace::lock_writer::write(&result.non_dev, Some(&result.dev), &options, &composer_json)
+            .unwrap();
+    assert_eq!(
+        before, after,
+        "writing viv.lock changed composer.lock's own output"
+    );
+}
+
 /// #191: a second `viv update` inside `--metadata-ttl`'s window must write
 /// the exact same lock a fully revalidated run would, byte for byte -- the
 /// short-circuit only skips asking the server something already known,

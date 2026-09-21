@@ -56,11 +56,48 @@ tool to resolve by taking the union of records and re-solving only the
 divergent names, either on `install` when it sees conflict markers or in a
 git merge driver.
 
-**Format sketch.** One record per package: name, version, dist URL and
-hash, source ref, dev flag, and the root requirement that selected it.
-Staleness is per record (the recorded requirement no longer matches
-`composer.json`) rather than a file-wide hash. TOML blocks or one JSON
-object per line; blocks read better in diffs.
+**Format.** `viv update --lock native` writes `viv.lock` beside
+`composer.lock`, unchanged, from the same resolution (`src/native_lock.rs`).
+A TOML document holding one `[[package]]` block per resolved package,
+sorted by name. Each record holds exactly:
+
+- `name` and `version` (pretty, as the resolver picked it).
+- `dist-url` and `dist-hash`, when the resolution has them (`dist-hash` is
+  omitted, not written empty, when the provider file's own `shasum` is
+  blank).
+- `source-ref`, when the resolution has a source entry.
+- `dev`, the record's own `true`/`false`: this is what the two-list
+  `packages`/`packages-dev` split in `composer.lock` carries instead, so a
+  dev move is one field flip, not a delete in one list and an insert in
+  another.
+- `root-requirement`, the constraint string root `composer.json`'s own
+  `require`/`require-dev` states for that package's name, omitted when
+  absent. This is the only honest source for "the root requirement that
+  selected it": the solver keeps no per-package reason trail
+  (`docs/resolver-design.md`), so a transitively pulled package — never
+  named by root — carries no `root-requirement` field, rather than one
+  guessed at.
+
+Deliberately absent: `content-hash`, `plugin-api-version` and `platform`,
+the file-level fields that change on every requirements edit and are why
+this chapter exists; and the `packages`/`packages-dev` split, which `dev`
+already carries. Staleness is per record — a record is stale when its
+`root-requirement` no longer matches what `composer.json` currently states
+for that name — rather than the file-wide `content-hash`; the staleness
+check itself is later work (#274), not this one.
+
+**What staleness cannot yet answer.** Only records root names directly
+carry a `root-requirement`, so only those can be judged stale this way. On
+`bench/laravel` that is roughly 30 of 109 resolved packages; the rest say
+nothing about their own freshness. Since #274 and #275 both re-solve "only
+the divergent names", the rule as it stands can reason about the minority.
+Closing that needs either a provenance trail through the solver or a
+derived rule for transitive records, and which one is worth it should be
+decided from #273's conflict counts rather than up front (#290).
+
+This chunk is the writer only. Reading `viv.lock` back into `install`/
+`update` is separate work, and so is the merge behaviour this format is
+meant to earn (`Measurement` below).
 
 **Control.** `composer.lock` as Composer 2.10 writes it, produced by the
 same resolution.
