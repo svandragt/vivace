@@ -1,0 +1,7 @@
+{
+    "name": "acme/bar",
+    "version": "1.2.0",
+    "require": {
+        "acme/foo": "^1.0"
+    }
+}

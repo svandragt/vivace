@@ -28,3 +28,4 @@ pub mod update;
 pub mod validate;
 pub mod vcs;
 pub mod version;
+pub mod workspace;

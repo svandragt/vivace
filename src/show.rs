@@ -571,7 +571,7 @@ fn print_list_text(
     Ok(())
 }
 
-fn pad(s: &str, width: usize) -> String {
+pub(crate) fn pad(s: &str, width: usize) -> String {
     let len = s.chars().count();
     if len >= width {
         s.to_string()

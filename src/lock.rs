@@ -317,7 +317,7 @@ impl AllowPlugins {
 /// including the no-op path, and `Regex::new` compiling a fresh NFA per
 /// package there was measurable (~20ms on a 101-package lock, `bench/laravel`
 /// noop) next to everything else that run does.
-fn glob_match(pattern: &str, name: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, name: &str) -> bool {
     let pattern = pattern.to_lowercase();
     let name = name.to_lowercase();
     let mut segments = pattern.split('*');
