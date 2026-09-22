@@ -151,15 +151,27 @@ fn detect_format(path: &Path) -> Result<Format> {
 /// `viv lock merge <base> <ours> <theirs> -d DIR`: 0 when the result is
 /// written clean (a re-solve included), 1 when it still holds conflict
 /// markers a human must resolve.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the three merge-driver paths plus --no-resolve/--as-of/--cache-dir/--offline"
+)]
 pub fn run(
     base: &Path,
     ours: &Path,
     theirs: &Path,
     project_dir: &Path,
     no_resolve: bool,
+    as_of: Option<&str>,
     cache_dir: Option<&Path>,
     offline: bool,
 ) -> Result<u8> {
+    let as_of = as_of
+        .map(|value| {
+            lock_writer::parse_time_to_epoch(value)
+                .with_context(|| format!("--as-of {value:?} is not a recognised timestamp"))
+        })
+        .transpose()?;
+
     let base_format =
         detect_format(base).with_context(|| format!("detecting {}'s format", base.display()))?;
     for (label, path) in [("ours", ours), ("theirs", theirs)] {
@@ -182,6 +194,7 @@ pub fn run(
             theirs,
             project_dir,
             no_resolve,
+            as_of,
             cache_dir,
             offline,
         ),
@@ -217,12 +230,17 @@ fn has_conflict_markers(content: &[u8]) -> bool {
         .any(|line| line.starts_with(b"<<<<<<<") || line.starts_with(b">>>>>>>"))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors run's own --no-resolve/--as-of/--cache-dir/--offline, plus the three paths"
+)]
 fn merge_composer_lock(
     base: &Path,
     ours: &Path,
     theirs: &Path,
     project_dir: &Path,
     no_resolve: bool,
+    as_of: Option<i64>,
     cache_dir: Option<&Path>,
     offline: bool,
 ) -> Result<u8> {
@@ -254,6 +272,7 @@ fn merge_composer_lock(
             &divergent,
             &composer_json,
             project_dir,
+            as_of,
             cache_dir,
             offline,
         ) {
@@ -340,6 +359,11 @@ fn locked_by_name_from_merge(merged: &BTreeMap<String, Entry<Value>>) -> HashMap
 /// that excludes root-required names from the closure could hand back a
 /// lock that doesn't satisfy its own manifest on the tail) against `root`,
 /// leaving every other locked name exactly as `locked_by_name` states it.
+/// `as_of` is `--as-of`'s parsed cutoff (epoch seconds UTC), threaded
+/// straight to [`solver::solve_partial_update_as_of`]; `None` reproduces
+/// [`solver::solve_partial_update`]'s own behaviour exactly (that function
+/// is `solve_partial_update_as_of`'s own base case, not called here
+/// separately, so there is only one code path to keep in sync with it).
 /// `pub`, generic over [`Transport`]: `merge_composer_lock` always builds a
 /// real `HttpTransport` repository, but a test can drive this directly
 /// with a fixture-backed one instead (`tests/update.rs`'s own pattern).
@@ -354,8 +378,9 @@ pub async fn resolve_divergent_closure<T: Transport>(
     prefer_stable: bool,
     locked_by_name: &HashMap<String, Value>,
     allow_list: &[String],
+    as_of: Option<i64>,
 ) -> Result<solver::UpdateResult> {
-    solver::solve_partial_update(
+    solver::solve_partial_update_as_of(
         repo,
         root,
         prefer_stable,
@@ -363,6 +388,7 @@ pub async fn resolve_divergent_closure<T: Transport>(
         locked_by_name,
         allow_list,
         UpdateAllowMode::WithTransitiveDeps,
+        as_of,
     )
     .await
 }
@@ -396,6 +422,7 @@ fn try_resolve_composer_lock(
     divergent: &BTreeSet<String>,
     composer_json: &[u8],
     project_dir: &Path,
+    as_of: Option<i64>,
     cache_dir: Option<&Path>,
     offline: bool,
 ) -> Result<String> {
@@ -419,9 +446,15 @@ fn try_resolve_composer_lock(
         let fetcher = update::build_fetcher(project_dir, &root, offline)?;
         let metadata_ttl = update::metadata_ttl(None, offline);
         let repo = update::build_repository(&root, &cache_dir, &fetcher, metadata_ttl).await?;
-        let resolved =
-            resolve_divergent_closure(&repo, &root, prefer_stable, &locked_by_name, &allow_list)
-                .await;
+        let resolved = resolve_divergent_closure(
+            &repo,
+            &root,
+            prefer_stable,
+            &locked_by_name,
+            &allow_list,
+            as_of,
+        )
+        .await;
         update::forget_repo(repo);
         write_resolved_lock(&resolved?, composer_json)
     })

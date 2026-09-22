@@ -377,10 +377,19 @@ pub(crate) fn dump_package(raw: &Value) -> Result<Value> {
 /// with no zone (taken as UTC, like `ArrayLoader`), and a bare unix
 /// timestamp. Returns `None` for anything else, matching `ArrayLoader`'s
 /// `catch` leaving the release date, and so the dumped `time` key, unset.
-#[allow(clippy::many_single_char_names)]
 fn normalize_time(value: &str) -> Option<String> {
+    Some(format_utc(parse_time_to_epoch(value)?))
+}
+
+/// `normalize_time`'s own parse, minus the final `format_utc` step: the
+/// epoch-seconds (UTC) value itself, for a caller that needs to compare two
+/// timestamps rather than render one (`lock_merge`'s `--as-of`, #275, put
+/// against a provider file's per-version `time`). Same accepted shapes,
+/// same `None` for anything else.
+#[allow(clippy::many_single_char_names)]
+pub(crate) fn parse_time_to_epoch(value: &str) -> Option<i64> {
     if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
-        return Some(format_utc(value.parse().ok()?));
+        return value.parse().ok();
     }
     let (date, rest) = value.split_once(['T', ' '])?;
     let mut parts = date.splitn(3, '-');
@@ -418,8 +427,7 @@ fn normalize_time(value: &str) -> Option<String> {
             sign * (oh * 3600 + om * 60)
         }
     };
-    let total = days_from_civil(y, m, d) * 86_400 + h * 3600 + mi * 60 + s - offset_seconds;
-    Some(format_utc(total))
+    Some(days_from_civil(y, m, d) * 86_400 + h * 3600 + mi * 60 + s - offset_seconds)
 }
 
 /// Renders epoch seconds as `DATE_RFC3339`'s `Y-m-d\TH:i:sP`, always

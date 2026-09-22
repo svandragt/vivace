@@ -71,6 +71,16 @@ pub enum LockCommand {
         /// and offline use, where a network re-solve isn't wanted at all.
         #[arg(long)]
         no_resolve: bool,
+        /// Resolve the divergent closure as the registry stood at this
+        /// RFC 3339 timestamp: a released version Packagist's own `time`
+        /// puts later than this is dropped from the pool, so a version that
+        /// did not exist yet cannot be chosen. `dev-*` branch versions are
+        /// never filtered this way — Packagist serves only a branch's
+        /// current head, not a historical revision of one, so they always
+        /// resolve to today's. Composer.lock only (no effect merging
+        /// viv.lock inputs, which never re-solve in this chunk).
+        #[arg(long, value_name = "TIMESTAMP")]
+        as_of: Option<String>,
     },
 }
 
@@ -89,12 +99,14 @@ pub fn run(args: &LockArgs, cache_dir: Option<&Path>, offline: bool) -> Result<u
             theirs,
             project_dir,
             no_resolve,
+            as_of,
         } => crate::lock_merge::run(
             base,
             ours,
             theirs,
             project_dir,
             *no_resolve,
+            as_of.as_deref(),
             cache_dir,
             offline,
         ),

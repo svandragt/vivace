@@ -349,6 +349,7 @@ pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
         preferred,
         advisories,
         cache_dir,
+        None,
     )
     .await
 }
@@ -461,6 +462,7 @@ pub async fn build_partial<T: Transport>(
         &HashMap::new(),
         None,
         None,
+        None,
     )
     .await
 }
@@ -476,7 +478,9 @@ pub async fn build_partial<T: Transport>(
 /// optimizer's own duplicate-version collapse
 /// (`PoolOptimizer::optimize`'s `selectPreferredPackages` call,
 /// `PoolOptimizer.php:247`) can discard the pinned version as a "duplicate"
-/// before the solver ever sees it (#61).
+/// before the solver ever sees it (#61). `as_of` is threaded straight to
+/// `push_package_version` (its own doc comment has the filter); every
+/// caller here but `lock_merge --as-of` (#275) passes `None`.
 #[expect(
     clippy::implicit_hasher,
     reason = "internal API, only ever called with the default hasher"
@@ -484,7 +488,7 @@ pub async fn build_partial<T: Transport>(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors build_partial plus one seed slice, the minimal-changes pin set, the \
-              advisory pool filter, and the platform-probe cache dir"
+              advisory pool filter, the platform-probe cache dir, and lock_merge's --as-of cutoff"
 )]
 pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -497,6 +501,7 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     preferred: &HashMap<String, semver::NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
+    as_of: Option<i64>,
 ) -> Result<BuildResult> {
     let require = string_map(root, "require");
     let require_dev = string_map(root, "require-dev");
@@ -673,6 +678,7 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
                 &stability_flags,
                 &root_aliases,
                 &mut constraint_cache,
+                as_of,
             )?;
         }
     }
@@ -1064,6 +1070,20 @@ fn parse_links(
 /// additionally pushes a root-alias wrapper. Order matters here: it fixes
 /// each pushed package's pool id, and pool id is `Solver`/`DefaultPolicy`'s
 /// final tie-break.
+///
+/// `as_of` is `lock_merge --as-of`'s cutoff (#275), epoch seconds UTC: a
+/// released version (`stability != "dev"`) whose provider `time` parses
+/// (`lock_writer::parse_time_to_epoch`) to later than this is dropped
+/// before it can ever reach the pool, the same way an unacceptable
+/// stability already is above. A version with no `time`, or a `time` this
+/// crate's own parser doesn't recognise, is kept -- this is a floor a
+/// contemporaneous developer's own resolve had, not a strict historical
+/// replay, so an unparseable date should never make a version disappear
+/// that a real solve would have offered. `dev-*` versions are never
+/// filtered: Packagist serves only a branch's current head, so there is no
+/// historical revision of one to fall back to. `None` (every caller but
+/// `lock merge --as-of`) is a complete no-op -- the check short-circuits on
+/// `as_of` before it even touches `pv.time`.
 fn push_package_version(
     packages: &mut Vec<Package>,
     pv: PackageVersion,
@@ -1071,12 +1091,22 @@ fn push_package_version(
     stability_flags: &HashMap<String, &'static str>,
     root_aliases: &HashMap<String, Vec<(String, String, String)>>,
     cache: &mut ConstraintCache,
+    as_of: Option<i64>,
 ) -> Result<()> {
     let name = pv.name.to_ascii_lowercase();
     let version = semver::normalize(&pv.version)?;
     let stability = semver::stability(version.as_str());
 
     if !is_acceptable(&name, stability, acceptable, stability_flags) {
+        return Ok(());
+    }
+
+    if let Some(as_of) = as_of
+        && stability != "dev"
+        && let Some(time) = pv.time.as_deref()
+        && let Some(released) = crate::lock_writer::parse_time_to_epoch(time)
+        && released > as_of
+    {
         return Ok(());
     }
 
