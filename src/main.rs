@@ -222,7 +222,7 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Command::Lock(args) => match native_lock::run(&args) {
+        Command::Lock(args) => match native_lock::run(&args, cli.cache_dir.as_deref(), offline) {
             Ok(status) => ExitCode::from(status),
             Err(err) => {
                 err_out(&format!("{err:#}"));

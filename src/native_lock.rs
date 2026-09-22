@@ -48,8 +48,8 @@ pub enum LockCommand {
     },
     /// A git merge driver for `composer.lock`/`viv.lock` (#275): merges the
     /// three inputs by name-keyed package record instead of by text line,
-    /// writes the result over `<ours>`, and exits 1 when a package changed
-    /// on both sides to a different result (a human decision, not this
+    /// writes the result over `<ours>`, and exits 1 when a divergent
+    /// name's own re-solve doesn't finish (a human decision then, not this
     /// chunk's job — see `docs/research.md` chapter 1). Git's merge-driver
     /// convention: `%O %A %B` (`git help gitattributes`'s "Defining a
     /// custom merge driver").
@@ -61,13 +61,20 @@ pub enum LockCommand {
         /// The other side's version (`%B`).
         theirs: PathBuf,
         /// Project directory whose composer.json supplies the root
-        /// requirements and the `content-hash` (composer.lock only).
+        /// requirements, the `content-hash` and (composer.lock only) the
+        /// repositories a divergent name's re-solve fetches against.
         #[arg(short = 'd', long = "project-dir", default_value = ".")]
         project_dir: PathBuf,
+        /// Skip the re-solve and go straight to chunk 1's conflict markers
+        /// for any divergent name (composer.lock only; viv.lock always
+        /// does this in chunk 2, see `lock_merge`'s module docs). For tests
+        /// and offline use, where a network re-solve isn't wanted at all.
+        #[arg(long)]
+        no_resolve: bool,
     },
 }
 
-pub fn run(args: &LockArgs) -> Result<u8> {
+pub fn run(args: &LockArgs, cache_dir: Option<&Path>, offline: bool) -> Result<u8> {
     match &args.command {
         LockCommand::Convert {
             project_dir,
@@ -81,7 +88,16 @@ pub fn run(args: &LockArgs) -> Result<u8> {
             ours,
             theirs,
             project_dir,
-        } => crate::lock_merge::run(base, ours, theirs, project_dir),
+            no_resolve,
+        } => crate::lock_merge::run(
+            base,
+            ours,
+            theirs,
+            project_dir,
+            *no_resolve,
+            cache_dir,
+            offline,
+        ),
     }
 }
 

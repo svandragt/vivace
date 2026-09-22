@@ -682,7 +682,9 @@ fn warn_no_normalize_is_a_noop(command: &str) {
 /// `solver::solve_partial_update`'s view of "everything currently locked",
 /// merging both arrays the way `Request::getLockedPackages` merges a single
 /// `LockArrayRepository` built from both (`Locker::getLockedRepository`).
-fn locked_packages_by_name(lock: &Value) -> HashMap<String, Value> {
+/// `pub(crate)`: `lock_merge` (#275 chunk 2) builds the same shape from a
+/// merge's non-divergent records to re-solve the divergent closure against.
+pub(crate) fn locked_packages_by_name(lock: &Value) -> HashMap<String, Value> {
     let mut by_name = HashMap::new();
     for key in ["packages", "packages-dev"] {
         let Some(entries) = lock.get(key).and_then(Value::as_array) else {

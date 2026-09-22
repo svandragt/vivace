@@ -16,10 +16,11 @@ merge under two formats and classifies the result:
                  same `git merge-file` on the converted trio.
 
 "Real conflicts" are computed once from the composer.lock JSON, independent
-of format: packages whose version or source reference differ between
-base->ours AND base->theirs, with ours and theirs landing on different
-results. That is the control -- a textual conflict a format removes is a
-win only if it was not a real one.
+of format: packages whose identity (version, source reference, dev flag --
+`docs/research.md` chapter 1's own three fields, matching `viv lock
+merge`'s `Identity`) differs between base->ours AND base->theirs, with
+ours and theirs landing on different results. That is the control -- a
+textual conflict a format removes is a win only if it was not a real one.
 
 `viv lock convert` doesn't exist on main yet (#272's sibling work); this
 script probes for the subcommand once and prints "n/a (viv lock convert
@@ -181,18 +182,27 @@ def qualifying_merges(repo_dir: Path, cap: int) -> tuple[list[Merge], list[str],
 # --- classification -------------------------------------------------
 
 
-def lock_index(raw: bytes) -> dict[str, tuple[str | None, str | None]] | None:
+def lock_index(raw: bytes) -> dict[str, tuple[str | None, str | None, bool]] | None:
+    """name -> (version, source-reference, dev): the same three-field
+    identity `docs/research.md` chapter 1 and `viv lock merge`'s own
+    `Identity` use, not just (version, reference). A two-field index made
+    "Merges with real conflicts" undercount relative to the driver: a
+    package whose dev classification differs between `ours`/`theirs` while
+    its version/reference matches `base` on one side looked *unchanged* on
+    that side (same 2-tuple), even though it genuinely changed too, hiding
+    a real three-way divergence whenever the other side also changed the
+    package (#275 chunk 2's 88-vs-82 finding)."""
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return None
-    idx: dict[str, tuple[str | None, str | None]] = {}
-    for key in ("packages", "packages-dev"):
+    idx: dict[str, tuple[str | None, str | None, bool]] = {}
+    for key, dev in (("packages", False), ("packages-dev", True)):
         for pkg in data.get(key) or []:
             name = pkg.get("name")
             if not name:
                 continue
-            idx[name] = (pkg.get("version"), (pkg.get("source") or {}).get("reference"))
+            idx[name] = (pkg.get("version"), (pkg.get("source") or {}).get("reference"), dev)
     return idx
 
 
@@ -260,8 +270,9 @@ class PackageResolution:
 def classify_resolution(
     m: tuple | None, o: tuple | None, t: tuple | None
 ) -> tuple[str, str | None]:
-    """m/o/t are (version, source-reference) tuples from the merge commit's,
-    ours', and theirs' composer.lock (or None when the package is absent)."""
+    """m/o/t are (version, source-reference, dev) tuples from the merge
+    commit's, ours', and theirs' composer.lock (or None when the package is
+    absent)."""
     if m is None:
         return "removed", None
     if m == o:
@@ -412,15 +423,178 @@ def probe_driver(viv_bin: str) -> bool:
     return result.returncode == 0
 
 
+def summarize_resolve_failure(stderr: str) -> str:
+    """A one-line reason for a failed re-solve. The solver's own
+    `SolverError` (`src/solver/problem.rs`'s `Display`) is a `  Problem N`
+    report, each with a `    - ` bullet list, followed by a fixed
+    "Potential causes ... Read <troubleshooting>" tail when any problem
+    named a package that doesn't exist at all -- so neither the first nor
+    the last line of the whole message is the reason. Categorising by the
+    *head* bullet ("Root composer.json requires X ^N -> satisfiable by
+    X[v]", always the request that started the chain, never the cause) is
+    what misled an earlier pass of this harness into calling 61 client
+    footnotes "platform anachronism": one, checked by hand, actually said
+    "Y dev-latest conflicts with X 9.6.31" two lines further down. The
+    *leaf* -- Problem 1's last `- ` bullet -- is the one that names the
+    actual failure ("conflicts with", "is missing from your platform",
+    "does not satisfy", "no matching package"). "Could not be found in any
+    version" (a package that doesn't exist) is checked first regardless of
+    position: it's already a leaf, a dead end with nothing to walk further,
+    so there's no head/leaf distinction to get wrong for it. Falls back to
+    the previous head-based heuristic, then the first non-empty line, for
+    stderr with no `Problem` block at all (a network error, a repository
+    type viv doesn't support, a JSON parse error)."""
+    lines = [line.strip() for line in stderr.splitlines()]
+    stripped = [line for line in lines if line]
+    if not stripped:
+        return "no stderr"
+    for line in stripped:
+        if "could not be found in any version" in line:
+            return line
+
+    bullets: list[str] = []
+    in_problem_1 = False
+    for line in lines:
+        if line == "Problem 1":
+            in_problem_1 = True
+            continue
+        if not in_problem_1:
+            continue
+        if not line.startswith("-"):
+            break
+        bullets.append(line)
+    if bullets:
+        return bullets[-1]
+
+    for line in stripped:
+        if line.startswith("- ") and "Root composer.json requires" in line:
+            return line
+    return stripped[0]
+
+
+def _php_floor(constraint: str) -> str | None:
+    """The highest `major.minor` mentioned in a version constraint string,
+    as `<major>.<minor>.99`: a bare major (`^7`) is read as `<major>.0`, so
+    `^5.6|^7` picks `7` over `5.6` (major wins), giving `7.0.99`. No
+    constraint parser -- this is a floor for `declare_contemporaneous_platform`,
+    not a real evaluator, and it is deliberately wrong for an
+    upper-bound-exclusive constraint like `>=7.4 <8.3` (picks `8.3.99`,
+    which then fails `<8.3`); that merge stays footnoted, honestly."""
+    tokens = re.findall(r"\d+(?:\.\d+)*", constraint)
+    if not tokens:
+        return None
+
+    def key(token: str) -> tuple[int, int]:
+        parts = token.split(".")
+        return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+
+    major, minor = max((key(t) for t in tokens))
+    return f"{major}.{minor}.99"
+
+
+def _platform_constraints_in_lock(lock_bytes: bytes) -> dict[str, list[str]]:
+    """Every `ext-*`/`lib-*` name in any package's own `require`, across
+    `packages`+`packages-dev`, mapped to every constraint string seen for
+    it: a lock entry's `require` is that package's real transitive
+    requirement as of that commit, so this is the platform a
+    contemporaneous resolve actually walked -- not just what the root
+    manifest names directly (`ext-ffi`, needed by `jcupitt/vips` three
+    levels under a root require, is invisible to the manifest alone but
+    present in every lock that ever resolved it)."""
+    try:
+        data = json.loads(lock_bytes)
+    except json.JSONDecodeError:
+        return {}
+    constraints: dict[str, list[str]] = {}
+    for key in ("packages", "packages-dev"):
+        for pkg in data.get(key) or []:
+            for name, constraint in (pkg.get("require") or {}).items():
+                if name.startswith(("ext-", "lib-")):
+                    constraints.setdefault(name, []).append(str(constraint))
+    return constraints
+
+
+def declare_contemporaneous_platform(composer_json: bytes, ours_lock: bytes, theirs_lock: bytes) -> bytes:
+    """The replay re-solves a historical manifest against today's
+    Packagist on today's platform; a contemporaneous developer's PHP
+    satisfied their own manifest by definition, so this declares a
+    platform that does too, the same way a project pins its own target --
+    via `config.platform`, the mechanism `pool_builder` already reads
+    (`src/lock_merge.rs`'s own investigation), not a `--ignore-platform-reqs`
+    viv's solver does not implement yet (#242). Derives a `php` floor from
+    the manifest's own `require.php` (`_php_floor`'s heuristic and known
+    failure case above); every `ext-*`/`lib-*` name in `require`/
+    `require-dev`, plus every such name `_platform_constraints_in_lock`
+    finds in `ours_lock`/`theirs_lock` (the transitive closure as of that
+    commit, `ours`/`theirs` rather than `base` since either side's own
+    resolve is a real historical platform, closer to the merge than the
+    common ancestor), gets its *own* floor from every constraint string
+    ever seen for that name, not the php one: PECL extensions version
+    independently of PHP (`ext-zip`'s `^1.14.0` has nothing to do with PHP
+    8.4), so reusing the php floor for it fails its own constraint outright.
+    Falls back to the php floor only when none of a name's constraints
+    contain a digit (`*`, or an implicit `ext-foo` with no version at all).
+    `setdefault` throughout, so a name the manifest's own `config.platform`
+    already sets keeps its override. Leaves `php` (and so everything else)
+    untouched when there is no `require.php` to derive a floor from.
+    Malformed JSON is left as-is; that merge's footnote is `viv lock
+    merge`'s own parse error, not this rewrite's."""
+    try:
+        data = json.loads(composer_json)
+    except json.JSONDecodeError:
+        return composer_json
+
+    require = data.get("require") or {}
+    php_floor = _php_floor(require["php"]) if "php" in require else None
+    if php_floor is None:
+        return composer_json
+
+    config = data.setdefault("config", {})
+    platform = config.setdefault("platform", {})
+    platform.setdefault("php", php_floor)
+
+    constraints: dict[str, list[str]] = {}
+    for links in (require, data.get("require-dev") or {}):
+        for name, constraint in links.items():
+            if name.startswith(("ext-", "lib-")):
+                constraints.setdefault(name, []).append(str(constraint))
+    for lock_bytes in (ours_lock, theirs_lock):
+        for name, values in _platform_constraints_in_lock(lock_bytes).items():
+            constraints.setdefault(name, []).extend(values)
+
+    for name, values in constraints.items():
+        floor = _php_floor(" ".join(values)) or php_floor
+        platform.setdefault(name, floor)
+
+    return json.dumps(data).encode()
+
+
 def driver_conflict(
-    viv_bin: str, work: Path, composer_json: bytes | None, base: bytes, ours: bytes, theirs: bytes
+    viv_bin: str, work: Path, cache_dir: Path, composer_json: bytes | None,
+    base: bytes, ours: bytes, theirs: bytes,
 ) -> tuple[bool | None, str | None]:
     """`viv lock merge` on the composer.lock trio, run from a directory
-    holding the merge commit's own (already-resolved) composer.json: exit 0
-    is clean, exit 1 is a real (divergent) conflict. Returns (None, error)
-    on anything else (a crash, or composer.json missing at that revision)."""
+    holding the merge commit's own composer.json with its platform
+    declared contemporaneous (`declare_contemporaneous_platform`): exit 0
+    is clean (a divergent name's own re-solve finished, chunk 2), exit 1 is
+    a name that stayed divergent -- either no re-solve was attempted (no
+    divergence at all) or it was and didn't finish, in which case
+    `summarize_resolve_failure` pulls the reason (dead package, abandoned
+    repo URL, constraint conflict, no network) out of stderr for the caller
+    to footnote as an honest result, not a harness gap. `cache_dir` is
+    reused across every merge in a repo so a warm re-solve isn't repaying
+    the same Packagist metadata fetch each time; `--cache-dir` (not the
+    real `~/.cache/vivace`), same isolation rule as `bench/run.sh`.
+    Declaring the platform changes the `content-hash` `viv lock merge`
+    would write, so this only ever looks at the exit code and stderr, never
+    the lock it produced -- a byte comparison against the merge commit's
+    own composer.lock would be comparing apples to a platform that was
+    never real.
+    Returns (None, error) on anything else (a crash, or composer.json
+    missing at that revision)."""
     if composer_json is None:
         return None, "composer.json missing at the merge commit"
+    composer_json = declare_contemporaneous_platform(composer_json, ours, theirs)
     tmpdir = work / "driver-src"
     tmpdir.mkdir(exist_ok=True)
     (tmpdir / "composer.json").write_bytes(composer_json)
@@ -430,14 +604,17 @@ def driver_conflict(
         p.write_bytes(content)
         paths[label] = p
     result = subprocess.run(
-        [viv_bin, "lock", "merge", str(paths["base"]), str(paths["ours"]), str(paths["theirs"]),
-         "-d", str(tmpdir)],
+        [viv_bin, "--cache-dir", str(cache_dir), "lock", "merge",
+         str(paths["base"]), str(paths["ours"]), str(paths["theirs"]), "-d", str(tmpdir)],
         capture_output=True,
     )
     if result.returncode not in (0, 1):
         stderr = result.stderr.decode(errors="replace").strip()
-        return None, (stderr.splitlines()[-1] if stderr else f"viv lock merge crashed ({result.returncode})")
-    return result.returncode == 1, None
+        return None, (summarize_resolve_failure(stderr) if stderr else f"viv lock merge crashed ({result.returncode})")
+    if result.returncode == 1:
+        stderr = result.stderr.decode(errors="replace").strip()
+        return True, (summarize_resolve_failure(stderr) if stderr else None)
+    return False, None
 
 
 def native_lock_text(viv_bin: str, work: Path, composer_json: bytes | None, composer_lock: bytes) -> tuple[bytes | None, str | None]:
@@ -519,6 +696,7 @@ def run_repo(
 
     with tempfile.TemporaryDirectory(prefix="lockmerge-") as tmp:
         work = Path(tmp)
+        driver_cache = work / "driver-cache"
         for m in merges:
             base_lock = blob(repo_dir, m.base, "composer.lock")
             ours_lock = blob(repo_dir, m.ours, "composer.lock")
@@ -570,8 +748,12 @@ def run_repo(
             if driver_available:
                 merge_json = blob(repo_dir, m.sha, "composer.json")
                 driver_conflicted, driver_err = driver_conflict(
-                    viv_bin, work, merge_json, base_lock, ours_lock, theirs_lock
+                    viv_bin, work, driver_cache, merge_json, base_lock, ours_lock, theirs_lock
                 )
+                if driver_conflicted and driver_err:
+                    report.footnotes.append(
+                        f"{m.sha[:12]}: viv lock merge re-solve did not finish: {driver_err}"
+                    )
 
             report.merges.append(MergeOutcome(
                 m.sha, composer_conflicts, native_conflicts, native_error, real,

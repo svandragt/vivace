@@ -396,3 +396,451 @@ No lock-only merge becomes a source conflict after normalisation.
 | 1 | 1 | 0 | 0 |
 
 No lock-only merge becomes a source conflict after normalisation.
+
+## 2026-09-22T14:52:53Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `./target/release/viv` (viv 0.14.0, commit `5ebcf036f522bed59a9682c8d682ea91c15278fd`).
+
+### flarum/flarum
+
+Skipped: no committed composer.lock at HEAD.
+
+### monicahq/monica
+
+Examined `no qualifying merge found (no merge had both parents touch composer.lock)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 0 | 0 | n/a | n/a | 0 | n/a | 0 | n/a |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 3 | 25 | 5 | 4 | 3 |
+
+- eae2dafcacd7: viv lock merge re-solve did not finish: - Root composer.json requires pragmarx/google2fa, it could not be found in any version, there may be a typo in the package name.
+- 35285b73a30b: viv lock merge re-solve did not finish: - Root composer.json requires pragmarx/google2fa, it could not be found in any version, there may be a typo in the package name.
+- 58520bca2aa1: viv lock merge re-solve did not finish: - Root composer.json requires intervention/image-driver-vips ^1.0 -> satisfiable by intervention/image-driver-vips[1.0.10].
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 3 | 25 | 5 | 4 | 3 |
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+## 2026-09-22T15:21:26Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `./target/release/viv` (viv 0.14.0, commit `34e51677cc29ad6f47d0c1750762560db06af931`).
+
+### flarum/flarum
+
+Skipped: no committed composer.lock at HEAD.
+
+### monicahq/monica
+
+Examined `no qualifying merge found (no merge had both parents touch composer.lock)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 0 | 0 | n/a | n/a | 0 | n/a | 0 | n/a |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 3 | 25 | 5 | 4 | 3 |
+
+- eae2dafcacd7: viv lock merge re-solve did not finish: - Root composer.json requires pragmarx/google2fa, it could not be found in any version, there may be a typo in the package name.
+- 35285b73a30b: viv lock merge re-solve did not finish: - Root composer.json requires pragmarx/google2fa, it could not be found in any version, there may be a typo in the package name.
+- 58520bca2aa1: viv lock merge re-solve did not finish: - Root composer.json requires intervention/image-driver-vips ^1.0 -> satisfiable by intervention/image-driver-vips[1.0.10].
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 3 | 25 | 5 | 4 | 3 |
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+## 2026-09-22T15:29:05Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `./target/release/viv` (viv 0.14.0, commit `b1dd848d7d66576d1d8262a009cc1680b7eb4347`).
+
+### flarum/flarum
+
+Skipped: no committed composer.lock at HEAD.
+
+### monicahq/monica
+
+Examined `no qualifying merge found (no merge had both parents touch composer.lock)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 0 | 0 | n/a | n/a | 0 | n/a | 0 | n/a |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 3 | 25 | 5 | 4 | 3 |
+
+- eae2dafcacd7: viv lock merge re-solve did not finish: - Root composer.json requires pragmarx/google2fa, it could not be found in any version, there may be a typo in the package name.
+- 35285b73a30b: viv lock merge re-solve did not finish: - Root composer.json requires pragmarx/google2fa, it could not be found in any version, there may be a typo in the package name.
+- 58520bca2aa1: viv lock merge re-solve did not finish: - Root composer.json requires spatie/laravel-backup ^9.2.9 -> satisfiable by spatie/laravel-backup[9.3.6].
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 3 | 25 | 5 | 4 | 3 |
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+## 2026-09-22T15:35:58Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `./target/release/viv` (viv 0.14.0, commit `f83f95c6f081747ebf0e47c86ff1f5b63e5245bf`).
+
+### flarum/flarum
+
+Skipped: no committed composer.lock at HEAD.
+
+### monicahq/monica
+
+Examined `no qualifying merge found (no merge had both parents touch composer.lock)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 0 | 0 | n/a | n/a | 0 | n/a | 0 | n/a |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 2 | 25 | 5 | 4 | 3 |
+
+- eae2dafcacd7: viv lock merge re-solve did not finish: - Root composer.json requires pragmarx/google2fa, it could not be found in any version, there may be a typo in the package name.
+- 35285b73a30b: viv lock merge re-solve did not finish: - Root composer.json requires pragmarx/google2fa, it could not be found in any version, there may be a typo in the package name.
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 2 | 25 | 5 | 4 | 3 |
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+## 2026-09-22T16:00:42Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `./target/release/viv` (viv 0.14.0, commit `53e40ad1d48a7a73c08999b18ed2a59dda9e59a2`).
+
+### flarum/flarum
+
+Skipped: no committed composer.lock at HEAD.
+
+### monicahq/monica
+
+Examined `no qualifying merge found (no merge had both parents touch composer.lock)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 0 | 0 | n/a | n/a | 0 | n/a | 0 | n/a |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 2 | 25 | 5 | 4 | 3 |
+
+- eae2dafcacd7: viv lock merge re-solve did not finish: - Root composer.json requires pragmarx/google2fa, it could not be found in any version, there may be a typo in the package name.
+- 35285b73a30b: viv lock merge re-solve did not finish: - Root composer.json requires pragmarx/google2fa, it could not be found in any version, there may be a typo in the package name.
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 2 | 25 | 5 | 4 | 3 |
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
