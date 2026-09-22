@@ -1,0 +1,38 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "8cfe2fa815dc4b1c4243502a5c2f74ac",
+    "packages": [
+        {
+            "name": "acme/gadget",
+            "version": "1.0.0",
+            "dist": {
+                "type": "zip",
+                "url": "https://example.com/dist/acme/gadget-1.0.0.zip"
+            },
+            "type": "library"
+        },
+        {
+            "name": "acme/widget",
+            "version": "1.0.0",
+            "dist": {
+                "type": "zip",
+                "url": "https://example.com/dist/acme/widget-1.0.0.zip",
+                "reference": "abc123"
+            },
+            "type": "library"
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}
