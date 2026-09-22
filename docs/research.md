@@ -141,20 +141,20 @@ result; it matters only for how the re-solve decides what is divergent.
 and re-solves the divergent closure against the merged `composer.json`,
 falling back to markers on those names only when the solve cannot finish.
 On the same 355 client merges: `composer.lock` 228 conflicting, `viv.lock`
-92, record merge 88, record merge with re-solve **61**, 17%. On the public
-corpus the driver reaches the two merges whose package no longer exists
-and stops.
+92, record merge 88, record merge with re-solve **61**, 17%; with inline `package`
+repositories solvable (#294), **52**, 15%. On the public corpus the
+driver reaches the two merges whose package no longer exists and stops.
 
-The 61 are the replay's floor rather than the driver's. Thirty are `dev-*`
+The 61 are the replay's floor rather than the driver's. Thirty-seven are `dev-*`
 branches whose current head declares a conflict the historical head did
 not; Packagist serves only today's head, so no replay recovers them, and a
-developer merging today gets the head they want. Sixteen are inline
-`package` repositories viv refuses (#294). Six are the harness's platform
+developer merging today gets the head they want. Six are the harness's platform
 heuristic. Four packages are gone, four chains may be genuine, one
 manifest is malformed. `--as-of`, resolving against the registry as it
 stood at the commit, changed nothing, which is the confirmation: the
 residue is branches, not releases. Excluding what a replay cannot
-reproduce, the driver-attributable residue is about 9 of 355, under 3%.
+reproduce, the driver-attributable residue is four constraint chains of 355, about 1%,
+which #296 targets.
 
 So, for a project viv can solve: the format alone takes a dependency
 merge from a 62% chance of conflict to 25%, and the driver takes it to a
@@ -162,8 +162,7 @@ few percent, with what remains being the conflicts no tool can decide.
 
 **Work.** Format and writer (#272), merge replay harness (#273), marker
 tolerance in `install` (#274), merge driver (#275). Done: #272, #273,
-#275. Queued, in order: inline `package` repositories so the driver can
-solve the projects it currently refuses (#294); re-solving `viv.lock` by
+#275, #294. Queued, in order: re-solving `viv.lock` by
 fetching the pinned set's requires, so the format reaches the same ~3%
 as `composer.lock` with the driver (#295); escalating the re-solve scope
 to a full solve that prefers every locked version, so only what the
