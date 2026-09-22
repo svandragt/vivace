@@ -49,3 +49,41 @@ Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
 | Merges examined | Textual conflicts (composer.lock) | Textual conflicts (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
 |---|---|---|---|---|
 | 26 | 25 | 5 | 4 | 3 |
+
+## 2026-09-22T10:55:16Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `/home/sander/dev/rust/vivace/.claude/worktrees/agent-ae9ffe51eb0a07055/target/release/viv` (viv 0.14.0, commit `fe0c6aeff73626f5394a71f57577269082d7dfab`).
+
+### flarum/flarum
+
+Skipped: no committed composer.lock at HEAD.
+
+### monicahq/monica
+
+Examined `no qualifying merge found (no merge had both parents touch composer.lock)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 0 | 0 | n/a | 0 | n/a | 0 | n/a |
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 25 | 5 | 4 | 3 |
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 25 | 5 | 4 | 3 |
