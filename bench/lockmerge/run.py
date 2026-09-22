@@ -445,12 +445,69 @@ def summarize_resolve_failure(stderr: str) -> str:
     return lines[0]
 
 
+def _php_floor(constraint: str) -> str | None:
+    """The highest `major.minor` mentioned in a version constraint string,
+    as `<major>.<minor>.99`: a bare major (`^7`) is read as `<major>.0`, so
+    `^5.6|^7` picks `7` over `5.6` (major wins), giving `7.0.99`. No
+    constraint parser -- this is a floor for `declare_contemporaneous_platform`,
+    not a real evaluator, and it is deliberately wrong for an
+    upper-bound-exclusive constraint like `>=7.4 <8.3` (picks `8.3.99`,
+    which then fails `<8.3`); that merge stays footnoted, honestly."""
+    tokens = re.findall(r"\d+(?:\.\d+)*", constraint)
+    if not tokens:
+        return None
+
+    def key(token: str) -> tuple[int, int]:
+        parts = token.split(".")
+        return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+
+    major, minor = max((key(t) for t in tokens))
+    return f"{major}.{minor}.99"
+
+
+def declare_contemporaneous_platform(composer_json: bytes) -> bytes:
+    """The replay re-solves a historical manifest against today's
+    Packagist on today's platform; a contemporaneous developer's PHP
+    satisfied their own manifest by definition, so this declares a
+    platform that does too, the same way a project pins its own target --
+    via `config.platform`, the mechanism `pool_builder` already reads
+    (`src/lock_merge.rs`'s own investigation), not a `--ignore-platform-reqs`
+    viv's solver does not implement yet (#242). Derives a `php` floor from
+    the manifest's own `require.php` (`_php_floor`'s heuristic and known
+    failure case above) and reuses it for every `ext-*`/`lib-*` name in
+    `require`/`require-dev`, skipping any platform name the manifest's own
+    `config.platform` already sets (its override wins). Leaves `php`
+    (and so everything else) untouched when there is no `require.php` to
+    derive a floor from. Malformed JSON is left as-is; that merge's
+    footnote is `viv lock merge`'s own parse error, not this rewrite's."""
+    try:
+        data = json.loads(composer_json)
+    except json.JSONDecodeError:
+        return composer_json
+
+    require = data.get("require") or {}
+    php_floor = _php_floor(require["php"]) if "php" in require else None
+    if php_floor is None:
+        return composer_json
+
+    config = data.setdefault("config", {})
+    platform = config.setdefault("platform", {})
+    platform.setdefault("php", php_floor)
+    for links in (require, data.get("require-dev") or {}):
+        for name in links:
+            if name.startswith(("ext-", "lib-")):
+                platform.setdefault(name, php_floor)
+
+    return json.dumps(data).encode()
+
+
 def driver_conflict(
     viv_bin: str, work: Path, cache_dir: Path, composer_json: bytes | None,
     base: bytes, ours: bytes, theirs: bytes,
 ) -> tuple[bool | None, str | None]:
     """`viv lock merge` on the composer.lock trio, run from a directory
-    holding the merge commit's own (already-resolved) composer.json: exit 0
+    holding the merge commit's own composer.json with its platform
+    declared contemporaneous (`declare_contemporaneous_platform`): exit 0
     is clean (a divergent name's own re-solve finished, chunk 2), exit 1 is
     a name that stayed divergent -- either no re-solve was attempted (no
     divergence at all) or it was and didn't finish, in which case
@@ -459,14 +516,17 @@ def driver_conflict(
     to footnote as an honest result, not a harness gap. `cache_dir` is
     reused across every merge in a repo so a warm re-solve isn't repaying
     the same Packagist metadata fetch each time; `--cache-dir` (not the
-    real `~/.cache/vivace`), same isolation rule as `bench/run.sh`. A real
-    `php` on `PATH` (`devbox run --`) matters here in a way chunk 1 never
-    needed: the re-solve's platform check otherwise assumes no extensions
-    at all and every project requiring one manufactures a false conflict.
+    real `~/.cache/vivace`), same isolation rule as `bench/run.sh`.
+    Declaring the platform changes the `content-hash` `viv lock merge`
+    would write, so this only ever looks at the exit code and stderr, never
+    the lock it produced -- a byte comparison against the merge commit's
+    own composer.lock would be comparing apples to a platform that was
+    never real.
     Returns (None, error) on anything else (a crash, or composer.json
     missing at that revision)."""
     if composer_json is None:
         return None, "composer.json missing at the merge commit"
+    composer_json = declare_contemporaneous_platform(composer_json)
     tmpdir = work / "driver-src"
     tmpdir.mkdir(exist_ok=True)
     (tmpdir / "composer.json").write_bytes(composer_json)
