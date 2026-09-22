@@ -215,11 +215,10 @@ pub(crate) fn read(path: &Path) -> Result<Vec<Record>> {
 /// record carries no `require`/`autoload`/metadata, which
 /// `installed.json`/`installed.php` need — so `composer.lock` stays the
 /// source of each package's full entry, matched by name and identity.
-/// Narrows `lock.packages` to exactly the records that match; a record with
-/// no matching entry (name absent, or version/ref/dev differ) refuses
-/// rather than installing from a record alone, since silently picking one
-/// side would make `viv.lock` a fork of `composer.lock` instead of a
-/// companion to it (`docs/research.md` chapter 1).
+/// Refuses unless the two files name the same set with the same identities
+/// (a record with no matching entry, or an entry with no record), since
+/// silently picking one side would make `viv.lock` a fork of `composer.lock`
+/// instead of a companion to it (`docs/research.md` chapter 1).
 pub fn reconcile(lock: &mut lock::Lock, viv_lock_path: &Path) -> Result<()> {
     let records = read(viv_lock_path)?;
     let by_name: HashMap<&str, &Package> = lock
@@ -253,11 +252,26 @@ pub fn reconcile(lock: &mut lock::Lock, viv_lock_path: &Path) -> Result<()> {
             )),
         }
     }
+    // The other direction matters as much: a package `composer.lock`
+    // gained (a Composer `require`, say) that `viv.lock` never saw would
+    // otherwise vanish from vendor/ without a word.
+    for package in &lock.packages {
+        if !keep.contains(&package.name) {
+            mismatches.push(format!(
+                "{}: composer.lock has {}, absent from viv.lock",
+                package.name,
+                identity(
+                    &package.version,
+                    package.source.as_ref().and_then(|s| s.reference.as_deref()),
+                    package.dev
+                )
+            ));
+        }
+    }
     if !mismatches.is_empty() {
         mismatches.push("run `viv update --lock native` to bring them back in step".to_string());
         bail!(mismatches.join("\n"));
     }
-    lock.packages.retain(|package| keep.contains(&package.name));
     Ok(())
 }
 

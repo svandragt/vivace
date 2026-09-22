@@ -88,6 +88,42 @@ fn install_refuses_a_viv_lock_version_mismatch_and_writes_nothing() {
 /// `viv.lock` with no `composer.lock` beside it is not a standalone format
 /// (`docs/research.md` chapter 1): `install` refuses and names the fix,
 /// never falling back to a registry fetch.
+/// The reverse direction: a package `composer.lock` names that `viv.lock`
+/// lacks (a stale `viv.lock` after Composer's own `require`) must refuse
+/// too, not silently drop the package from vendor/.
+#[test]
+fn install_refuses_a_composer_lock_package_missing_from_viv_lock() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+
+    ctx.viv().arg("lock").arg("convert").assert().success();
+    let viv_lock = fs::read_to_string(project.join("viv.lock")).unwrap();
+    let start = viv_lock.find("[[package]]\nname = \"acme/hello\"").unwrap();
+    let end = viv_lock[start + 1..]
+        .find("[[package]]")
+        .map_or(viv_lock.len(), |offset| start + 1 + offset);
+    let mut edited = viv_lock.clone();
+    edited.replace_range(start..end, "");
+    assert_ne!(
+        edited, viv_lock,
+        "the acme/hello record must have been removed"
+    );
+    fs::write(project.join("viv.lock"), edited).unwrap();
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "acme/hello: composer.lock has version 1.0.0, dev=false, absent from viv.lock",
+        ));
+    assert!(
+        !project.join("vendor").exists(),
+        "vendor/ must not be written"
+    );
+}
+
 #[test]
 fn install_refuses_a_viv_lock_with_no_composer_lock() {
     let ctx = TestContext::new();
