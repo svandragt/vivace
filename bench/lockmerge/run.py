@@ -34,7 +34,10 @@ that) or only the lock diverged (lock-only, a driver's target), which side
 each real-conflict package's resolution matches (ours/theirs/neither/
 removed) and whether the chosen side was the higher version, and how many
 packages outside the real-conflict set the resolution dragged along
-(cascade) -- sizing how mechanical a merge driver's job would be.
+(cascade) -- sizing how mechanical a merge driver's job would be. It also
+re-runs the composer.json merge with each side's file put through
+`viv normalize` first, to size how many of the source conflicts a
+canonical key order would have prevented on its own.
 
 Usage:
     bench/lockmerge/run.py [project-name,...]
@@ -278,12 +281,30 @@ def classify_resolution(
     return outcome, higher
 
 
+def normalize_composer_json(viv_bin: str, content: bytes) -> tuple[bytes | None, str | None]:
+    """`viv normalize -d <tmpdir>` rewrites composer.json in place; no
+    --stdout, so write, run, read back."""
+    with tempfile.TemporaryDirectory(prefix="lockmerge-normalize-") as td:
+        path = Path(td) / "composer.json"
+        path.write_bytes(content)
+        try:
+            result = subprocess.run([viv_bin, "normalize", "-d", td], capture_output=True)
+        except FileNotFoundError:
+            return None, f"viv binary not found at {viv_bin}"
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace").strip()
+            return None, (stderr.splitlines()[-1] if stderr else "viv normalize failed")
+        return path.read_bytes(), None
+
+
 @dataclass
 class ArchOutcome:
     sha: str
     source_conflict: bool
     packages: list[PackageResolution]
     cascade: int
+    normalized_conflict: bool | None  # None: normalize failed or errored, see normalize_error
+    normalize_error: str | None
 
 
 def compute_archaeology(
@@ -294,6 +315,7 @@ def compute_archaeology(
     base_idx: dict,
     ours_idx: dict,
     theirs_idx: dict,
+    viv_bin: str,
     footnotes: list[str],
 ) -> ArchOutcome | None:
     base_json = blob(repo_dir, m.base, "composer.json")
@@ -325,7 +347,22 @@ def compute_archaeology(
         if m_idx.get(name) != ours_idx.get(name) and m_idx.get(name) != theirs_idx.get(name)
     )
 
-    return ArchOutcome(m.sha, json_conflicts > 0, packages, cascade)
+    norm_ours, e1 = normalize_composer_json(viv_bin, ours_json)
+    norm_base, e2 = normalize_composer_json(viv_bin, base_json)
+    norm_theirs, e3 = normalize_composer_json(viv_bin, theirs_json)
+    norm_err = e1 or e2 or e3
+    if norm_err:
+        footnotes.append(f"{m.sha[:12]}: viv normalize failed, archaeology's normalized column is n/a: {norm_err}")
+        normalized_conflict, normalize_error = None, norm_err
+    else:
+        norm_conflicts, err = merge_file_conflicts(work, norm_ours, norm_base, norm_theirs)
+        if err:
+            footnotes.append(f"{m.sha[:12]}: normalized composer.json merge: {err}, archaeology's normalized column is n/a")
+            normalized_conflict, normalize_error = None, err
+        else:
+            normalized_conflict, normalize_error = norm_conflicts > 0, None
+
+    return ArchOutcome(m.sha, json_conflicts > 0, packages, cascade, normalized_conflict, normalize_error)
 
 
 def merge_file_conflicts(work: Path, ours: bytes, base: bytes, theirs: bytes) -> tuple[int | None, str | None]:
@@ -460,7 +497,7 @@ def run_repo(project: Project, cache_root: Path, cap: int, viv_bin: str, native_
 
             if real_names:
                 arch = compute_archaeology(
-                    repo_dir, work, m, real_names, base_idx, ours_idx, theirs_idx, report.footnotes
+                    repo_dir, work, m, real_names, base_idx, ours_idx, theirs_idx, viv_bin, report.footnotes
                 )
                 if arch is not None:
                     report.archaeology.append(arch)
@@ -500,8 +537,9 @@ def fmt_n(v: int | None) -> str:
 
 
 def render_archaeology(items: list[ArchOutcome]) -> list[str]:
-    """Three compact tables classifying the human resolutions git history
-    already holds, for every merge with a real conflict."""
+    """Four compact tables classifying the human resolutions git history
+    already holds, for every merge with a real conflict, plus whether
+    `viv normalize` would have prevented the source conflicts among them."""
     lines = ["### Resolution archaeology", ""]
     n = len(items)
     if n == 0:
@@ -536,6 +574,26 @@ def render_archaeology(items: list[ArchOutcome]) -> list[str]:
     lines.append("| Median cascade | Max cascade |")
     lines.append("|---|---|")
     lines.append(f"| {statistics.median(cascades):g} | {max(cascades)} |")
+    lines.append("")
+
+    source_items = [a for a in items if a.source_conflict]
+    remaining = sum(1 for a in source_items if a.normalized_conflict is True)
+    prevented = sum(1 for a in source_items if a.normalized_conflict is False)
+    norm_na = sum(1 for a in source_items if a.normalized_conflict is None)
+    lines.append(
+        "| Source conflicts (as committed) | Remaining after normalisation | "
+        "Prevented by normalisation | n/a (normalize failed) |"
+    )
+    lines.append("|---|---|---|---|")
+    lines.append(f"| {len(source_items)} | {remaining} | {prevented} | {norm_na} |")
+    lines.append("")
+
+    regressed = sum(1 for a in items if not a.source_conflict and a.normalized_conflict is True)
+    lines.append(
+        f"{regressed} lock-only merge(s) become a source conflict after normalisation."
+        if regressed
+        else "No lock-only merge becomes a source conflict after normalisation."
+    )
     lines.append("")
     return lines
 
@@ -718,15 +776,23 @@ def self_test() -> int:
         def lock(pkgs):
             return json.dumps({"packages": pkgs, "packages-dev": []}, indent=4).encode() + b"\n"
 
-        def commit(msg, pkgs):
+        def commit(msg, pkgs, composer_json=None):
+            if composer_json is not None:
+                (repo / "composer.json").write_bytes(composer_json)
+                git(repo, "add", "composer.json")
             (repo / "composer.lock").write_bytes(lock(pkgs))
             git(repo, "add", "composer.lock")
             git(repo, "commit", "--quiet", "-m", msg)
             return git(repo, "rev-parse", "HEAD").stdout.strip()
 
-        # composer.json never changes across branches, so archaeology's
-        # source-vs-lock-only split has a lock-only case to classify.
-        (repo / "composer.json").write_bytes(b'{"name": "test/test"}\n')
+        # base's require is unsorted (vvv/v before bbb/b); ours2 and theirs2
+        # each add one dependency below, colliding on the same line as
+        # committed -- and viv normalize's key sort separates them (table 4).
+        base_composer_json = (
+            b'{\n    "name": "t/t",\n    "require": {\n'
+            b'        "vvv/v": "^1.0",\n        "bbb/b": "^1.0"\n    }\n}\n'
+        )
+        (repo / "composer.json").write_bytes(base_composer_json)
         git(repo, "add", "composer.json")
 
         base_pkgs = [
@@ -757,17 +823,31 @@ def self_test() -> int:
             {"name": "a/a", "version": "1.2.0", "source": {"reference": "aa2"}},
             {"name": "b/b", "version": "1.1.0", "source": {"reference": "bb1"}},
         ]
-        commit("ours2 bumps a and b", conflict_pkgs)
+        ours_composer_json = (
+            b'{\n    "name": "t/t",\n    "require": {\n        "aaa/a": "^1.0",\n'
+            b'        "vvv/v": "^1.0",\n        "bbb/b": "^1.0"\n    }\n}\n'
+        )
+        commit("ours2 bumps a and b", conflict_pkgs, ours_composer_json)
         git(repo, "checkout", "--quiet", "-b", "theirs2", "theirs")
         theirs2_pkgs = [
             {"name": "a/a", "version": "1.3.0", "source": {"reference": "aa3"}},
             {"name": "b/b", "version": "2.0.1", "source": {"reference": "bb3"}},
         ]
-        commit("theirs2 bumps b further", theirs2_pkgs)
+        theirs_composer_json = (
+            b'{\n    "name": "t/t",\n    "require": {\n        "zzz/z": "^1.0",\n'
+            b'        "vvv/v": "^1.0",\n        "bbb/b": "^1.0"\n    }\n}\n'
+        )
+        commit("theirs2 bumps b further", theirs2_pkgs, theirs_composer_json)
         git(repo, "checkout", "--quiet", "main")
         merge_sha_before = git(repo, "rev-parse", "HEAD").stdout.strip()
         git(repo, "checkout", "--quiet", "-b", "merge-target", "ours2")
         r = subprocess.run(["git", "merge", "--no-ff", "-m", "two-parent merge", "theirs2"], cwd=repo, capture_output=True)
+        # composer.json conflicts too (both add a line at the same spot);
+        # its resolved content doesn't matter to archaeology, which reads
+        # only each side's blob, not the merge's own.
+        if (repo / "composer.json").exists():
+            git(repo, "checkout", "--quiet", "--ours", "composer.json")
+            git(repo, "add", "composer.json")
         # a real merge conflict is expected on composer.lock; resolve it the
         # way a human would -- keep ours for a/a, take theirs (the higher
         # version) for b/b -- so archaeology has one of each to classify.
@@ -796,15 +876,18 @@ def self_test() -> int:
         work = Path(tmp) / "work"
         work.mkdir()
 
-        arch = compute_archaeology(repo, work, m, real_names, base_idx, ours_idx, theirs_idx, [])
+        viv_bin = os.environ.get("VIV", str(ROOT / "target/release/viv"))
+        arch = compute_archaeology(repo, work, m, real_names, base_idx, ours_idx, theirs_idx, viv_bin, [])
         assert arch is not None, "expected archaeology to classify the resolved merge"
-        assert arch.source_conflict is False, "composer.json never changed, expected lock-only"
+        assert arch.source_conflict is True, "unsorted require additions should collide as committed"
         by_name = {p.name: p for p in arch.packages}
         assert by_name["a/a"].outcome == "ours", f"expected a/a resolved to ours, got {by_name['a/a']}"
         assert by_name["b/b"].outcome == "theirs" and by_name["b/b"].higher == "higher", (
             f"expected b/b resolved to theirs and higher, got {by_name['b/b']}"
         )
         assert arch.cascade == 0, f"expected no dragged-along packages, got {arch.cascade}"
+        assert arch.normalize_error is None, f"expected viv normalize to succeed, got {arch.normalize_error}"
+        assert arch.normalized_conflict is False, "sorted require keys should separate the two additions"
         assert compare_versions("1.10.0", "1.9.0") == 1, "1.10.0 should compare above 1.9.0 numerically"
         assert compare_versions("dev-main", "1.0.0") is None, "dev branches are incomparable"
         conflicts, err = merge_file_conflicts(work, ours_lock, base_lock, theirs_lock)
