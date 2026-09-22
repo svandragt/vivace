@@ -1324,6 +1324,42 @@ fn viv_update_matches_composer_and_validates() {
     );
 }
 
+/// #297: once `viv.lock` exists beside `composer.lock`, a bare `update`
+/// (no `--lock` at all) still writes it — the flag is only there for a
+/// project's first adoption, not every run after. Real Packagist, gated
+/// like the test above.
+#[test]
+fn update_writes_viv_lock_when_it_already_exists_without_the_flag() {
+    if std::env::var("VIVACE_TEST_NETWORK").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping update_writes_viv_lock_when_it_already_exists_without_the_flag: set \
+             VIVACE_TEST_NETWORK=1 to resolve against real Packagist"
+        );
+        return;
+    }
+
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &project.join(dir));
+    }
+
+    // A project that already adopted the format: `viv.lock` present, but
+    // garbage — presence alone must trigger the implied write, and this
+    // run's own output is what proves it, not whatever was here before.
+    fs_err::write(project.join("viv.lock"), "not a real lock").unwrap();
+
+    ctx.viv().arg("update").assert().success();
+
+    let viv_lock = fs_err::read_to_string(project.join("viv.lock")).unwrap();
+    assert!(
+        viv_lock.contains("[[package]]") && viv_lock.contains("name = \"monolog/monolog\""),
+        "bare `update` did not rewrite viv.lock even though it already existed: {viv_lock}"
+    );
+}
+
 /// `viv update --lock`: re-derives the lock from itself with no solving
 /// (`update::lock_only`, never reaches `Repository::load`), so this needs
 /// no network and no recorded Packagist fixture. The monolog fixture's

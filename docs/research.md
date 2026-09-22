@@ -78,6 +78,13 @@ sorted by name. Each record holds exactly:
   named by root — carries no `root-requirement` field, rather than one
   guessed at.
 
+`viv.lock` is a companion to `composer.lock`, never a replacement — a record
+carries no `require`/autoload/metadata, which `installed.json`/
+`installed.php` need — so `install`/`update` (#297) read both and refuse,
+naming every package, when a record's `(version, source-ref, dev)` disagrees
+with `composer.lock`'s own entry for that name, rather than installing from
+one side alone.
+
 Deliberately absent: `content-hash`, `plugin-api-version` and `platform`,
 the file-level fields that change on every requirements edit and are why
 this chapter exists; and the `packages`/`packages-dev` split, which `dev`
@@ -95,9 +102,9 @@ Closing that needs either a provenance trail through the solver or a
 derived rule for transitive records, and which one is worth it should be
 decided from #273's conflict counts rather than up front (#290).
 
-This chunk is the writer only. Reading `viv.lock` back into `install`/
-`update` is separate work, and so is the merge behaviour this format is
-meant to earn (`Measurement` below).
+This chunk is the writer and, since #297, the reader: `install`/`update`
+accept `viv.lock` as a companion to `composer.lock`. The merge behaviour
+this format is meant to earn is `Measurement` below.
 
 **Control.** `composer.lock` as Composer 2.10 writes it, produced by the
 same resolution.
@@ -162,20 +169,16 @@ few percent, with what remains being the conflicts no tool can decide.
 
 **Work.** Format and writer (#272), merge replay harness (#273), marker
 tolerance in `install` (#274), merge driver (#275). Done: #272, #273,
-#275, #294; #290 closed as superseded, the driver decides divergence by
-three-way identity and never reads staleness. Queued, in order: `install`
-and `update` reading `viv.lock`, without which the format is write-only
-and nobody can use it (#297); re-solving `viv.lock` by
-fetching the pinned set's requires, so the format reaches the same ~3%
-as `composer.lock` with the driver (#295); escalating the re-solve scope
-to a full solve that prefers every locked version, so only what the
-merge forces moves and the lock reaches 0% with every remaining human
-decision living in `composer.json` (#296). Not a full update: that would
-move packages neither branch touched. Marker tolerance in `install`
-(#274) stays as the fallback for a lock that arrives already conflicted,
-behind the three above. The format comes first:
-it should remove most conflicts on its own and is a small change on top of
-the existing lock writer.
+#275, #294, #297; #290 closed as superseded, the driver decides divergence
+by three-way identity and never reads staleness. Queued, in order:
+re-solving `viv.lock` by fetching the pinned set's requires, so the format
+reaches the same ~3% as `composer.lock` with the driver (#295); escalating
+the re-solve scope to a full solve that prefers every locked version, so
+only what the merge forces moves and the lock reaches 0% with every
+remaining human decision living in `composer.json` (#296). Not a full
+update: that would move packages neither branch touched. Marker tolerance
+in `install` (#274) stays as the fallback for a lock that arrives already
+conflicted, behind the two above.
 
 ## Chapter 2: autoload from the store, no vendor tree (measured, not pursued)
 

@@ -310,7 +310,22 @@ fn run_impl(
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
 
     let lock_path = project_dir.join("composer.lock");
+    // #297: `viv.lock` is a companion to `composer.lock`, never a
+    // replacement (`docs/research.md` chapter 1) — a record carries no
+    // `require`/`autoload`, which `installed.json`/`installed.php` need.
+    // The absent case (almost every install, until the format sees
+    // adoption) must cost nothing beyond this one metadata call: no
+    // parsing, no allocation past the path join itself
+    // (`AGENTS.md`'s Performance rule).
+    let viv_lock_path = project_dir.join("viv.lock");
+    let viv_lock_present = viv_lock_path.is_file();
     if !lock_path.is_file() {
+        if viv_lock_present {
+            bail!(
+                "viv.lock is a companion to composer.lock, not a standalone format, and \
+                 composer.lock is missing; run `viv update --lock native` to write both"
+            );
+        }
         bail!(
             "composer.lock not found; viv installs from an existing composer.lock, run \
              `viv update` to create one"
@@ -337,6 +352,9 @@ fn run_impl(
         elapsed_ms = read_lock_started.elapsed().as_millis(),
         "read and parsed composer.lock"
     );
+    if viv_lock_present {
+        crate::native_lock::reconcile(&mut lock, &viv_lock_path)?;
+    }
     let dev = !args.no_dev;
 
     let plugins_started = Instant::now();

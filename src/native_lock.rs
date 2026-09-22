@@ -5,10 +5,11 @@
 //! "Chapter 1" section; this module is the implementation of that spec, not
 //! a second source of truth for it.
 //!
-//! Reading `viv.lock` back (`install`/`update` accepting it in place of
-//! `composer.lock`) is a separate piece of work, not implemented here; the
-//! `read`/`Record` this module does export are for `lock_merge` (#275),
-//! which needs the parsed record shape, not a resolved package.
+//! `read`/`Record` are the shape `lock_merge` (#275) parses a lock into;
+//! `reconcile` (#297) is `install`'s own use of the same reader: `viv.lock`
+//! stays a companion to `composer.lock`, never a replacement, so `install`
+//! reads both and refuses on any mismatch rather than installing from a
+//! record's own (incomplete) fields.
 //!
 //! `viv lock convert` (#273) is the other direction: an existing
 //! `composer.lock`, translated into this format without re-solving, for
@@ -17,7 +18,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -207,6 +208,85 @@ pub(crate) fn read(path: &Path) -> Result<Vec<Record>> {
     let content = fs_err::read_to_string(path).context("reading viv.lock")?;
     let doc: Document = toml::from_str(&content).context("parsing viv.lock")?;
     Ok(doc.package)
+}
+
+/// `install`'s adapter onto the #275 reader (#297): `viv.lock` decides the
+/// locked set and each record's own `(version, source-ref, dev)`, but a
+/// record carries no `require`/`autoload`/metadata, which
+/// `installed.json`/`installed.php` need — so `composer.lock` stays the
+/// source of each package's full entry, matched by name and identity.
+/// Refuses unless the two files name the same set with the same identities
+/// (a record with no matching entry, or an entry with no record), since
+/// silently picking one side would make `viv.lock` a fork of `composer.lock`
+/// instead of a companion to it (`docs/research.md` chapter 1).
+pub fn reconcile(lock: &mut lock::Lock, viv_lock_path: &Path) -> Result<()> {
+    let records = read(viv_lock_path)?;
+    let by_name: HashMap<&str, &Package> = lock
+        .packages
+        .iter()
+        .map(|package| (package.name.as_str(), package))
+        .collect();
+
+    let mut mismatches = Vec::new();
+    let mut keep = std::collections::HashSet::with_capacity(records.len());
+    for record in &records {
+        let name = record.name.to_ascii_lowercase();
+        match by_name.get(name.as_str()) {
+            Some(package) if identity_matches(record, package) => {
+                keep.insert(name);
+            }
+            Some(package) => mismatches.push(format!(
+                "{}: viv.lock has {}, composer.lock has {}",
+                record.name,
+                identity(&record.version, record.source_ref.as_deref(), record.dev),
+                identity(
+                    &package.version,
+                    package.source.as_ref().and_then(|s| s.reference.as_deref()),
+                    package.dev
+                )
+            )),
+            None => mismatches.push(format!(
+                "{}: viv.lock has {}, absent from composer.lock",
+                record.name,
+                identity(&record.version, record.source_ref.as_deref(), record.dev)
+            )),
+        }
+    }
+    // The other direction matters as much: a package `composer.lock`
+    // gained (a Composer `require`, say) that `viv.lock` never saw would
+    // otherwise vanish from vendor/ without a word.
+    for package in &lock.packages {
+        if !keep.contains(&package.name) {
+            mismatches.push(format!(
+                "{}: composer.lock has {}, absent from viv.lock",
+                package.name,
+                identity(
+                    &package.version,
+                    package.source.as_ref().and_then(|s| s.reference.as_deref()),
+                    package.dev
+                )
+            ));
+        }
+    }
+    if !mismatches.is_empty() {
+        mismatches.push("run `viv update --lock native` to bring them back in step".to_string());
+        bail!(mismatches.join("\n"));
+    }
+    Ok(())
+}
+
+fn identity_matches(record: &Record, package: &Package) -> bool {
+    record.version == package.version
+        && record.source_ref.as_deref()
+            == package.source.as_ref().and_then(|s| s.reference.as_deref())
+        && record.dev == package.dev
+}
+
+fn identity(version: &str, source_ref: Option<&str>, dev: bool) -> String {
+    match source_ref {
+        Some(reference) => format!("version {version}, ref {reference}, dev={dev}"),
+        None => format!("version {version}, dev={dev}"),
+    }
 }
 
 /// Serialises already-built [`Record`]s as-is, no resolution or
