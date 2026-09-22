@@ -1,7 +1,7 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install install-shim build test check bench bench-check bench-corpus profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
+.PHONY: install install-shim build test check bench bench-check bench-smoke bench-ab bench-corpus profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
 
 install:
 	cargo install --path . --locked --bin viv
@@ -40,8 +40,22 @@ bench:
 	scripts/keep-awake.sh "bench: laravel" devbox run -- bench/run.sh bench/laravel composer riff viv vivacity
 
 bench-check:
+	devbox run -- bench/run.sh bench/laravel composer viv
+	python3 bench/compare.py bench/results/viv.json bench/results/viv-update.json bench/results/viv-update-offline.json bench/results/composer.json bench/results/composer-update.json --project laravel --baseline bench/results/baseline.json
+
+# Fast smoke test on a runner-sized project (#293): monolog's own warm/noop
+# times are too small for the 5ms absolute-slack floor to mean anything, so
+# it no longer gates the merge (bench-check does, on bench/laravel) but it's
+# still useful as a quick sanity check.
+bench-smoke:
 	devbox run -- bench/run.sh tests/fixtures/monolog composer viv
 	python3 bench/compare.py bench/results/viv.json bench/results/viv-update.json bench/results/viv-update-offline.json bench/results/composer.json bench/results/composer-update.json --baseline bench/results/baseline.json
+
+# Pre-merge viv-against-viv check (#293): the spanning set (bench/ab.sh)
+# compared with bench/compare.py --ab, no Composer denominator.
+# Usage: make bench-ab BEFORE=<binary> AFTER=<binary>
+bench-ab:
+	devbox run -- bench/ab.sh $(BEFORE) $(AFTER)
 
 # #106: same cold/warm/noop/update-warm scenarios as `bench`, across the
 # whole pinned compat corpus (compat/corpus.toml) instead of just Laravel.
