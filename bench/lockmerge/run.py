@@ -425,24 +425,51 @@ def probe_driver(viv_bin: str) -> bool:
 
 def summarize_resolve_failure(stderr: str) -> str:
     """A one-line reason for a failed re-solve. The solver's own
-    `SolverError` is a multi-line `Problem N: ...` report followed by a
-    fixed "Potential causes ... Read <troubleshooting>" tail (`main.rs`'s
-    `resolver_error`), so the *last* line is always that same boilerplate,
-    not the reason -- pull out the first named problem instead: a "could
-    not be found in any version" line (dead package) if there is one,
-    otherwise the first "Root composer.json requires" bullet, otherwise
-    just the first non-empty line (a one-line error like the network one
-    `try_resolve_composer_lock` raises for an unreachable Packagist)."""
-    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-    if not lines:
+    `SolverError` (`src/solver/problem.rs`'s `Display`) is a `  Problem N`
+    report, each with a `    - ` bullet list, followed by a fixed
+    "Potential causes ... Read <troubleshooting>" tail when any problem
+    named a package that doesn't exist at all -- so neither the first nor
+    the last line of the whole message is the reason. Categorising by the
+    *head* bullet ("Root composer.json requires X ^N -> satisfiable by
+    X[v]", always the request that started the chain, never the cause) is
+    what misled an earlier pass of this harness into calling 61 client
+    footnotes "platform anachronism": one, checked by hand, actually said
+    "Y dev-latest conflicts with X 9.6.31" two lines further down. The
+    *leaf* -- Problem 1's last `- ` bullet -- is the one that names the
+    actual failure ("conflicts with", "is missing from your platform",
+    "does not satisfy", "no matching package"). "Could not be found in any
+    version" (a package that doesn't exist) is checked first regardless of
+    position: it's already a leaf, a dead end with nothing to walk further,
+    so there's no head/leaf distinction to get wrong for it. Falls back to
+    the previous head-based heuristic, then the first non-empty line, for
+    stderr with no `Problem` block at all (a network error, a repository
+    type viv doesn't support, a JSON parse error)."""
+    lines = [line.strip() for line in stderr.splitlines()]
+    stripped = [line for line in lines if line]
+    if not stripped:
         return "no stderr"
-    for line in lines:
+    for line in stripped:
         if "could not be found in any version" in line:
             return line
+
+    bullets: list[str] = []
+    in_problem_1 = False
     for line in lines:
+        if line == "Problem 1":
+            in_problem_1 = True
+            continue
+        if not in_problem_1:
+            continue
+        if not line.startswith("-"):
+            break
+        bullets.append(line)
+    if bullets:
+        return bullets[-1]
+
+    for line in stripped:
         if line.startswith("- ") and "Root composer.json requires" in line:
             return line
-    return lines[0]
+    return stripped[0]
 
 
 def _php_floor(constraint: str) -> str | None:
