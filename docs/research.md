@@ -161,7 +161,13 @@ merge from a 62% chance of conflict to 25%, and the driver takes it to a
 few percent, with what remains being the conflicts no tool can decide.
 
 **Work.** Format and writer (#272), merge replay harness (#273), marker
-tolerance in `install` (#274), merge driver (#275). The format comes first:
+tolerance in `install` (#274), merge driver (#275). Done: #272, #273,
+#275. Queued, in order: inline `package` repositories so the driver can
+solve the projects it currently refuses (#294); re-solving `viv.lock` by
+fetching the pinned set's requires, so the format reaches the same ~3%
+as `composer.lock` with the driver (#295); escalating the re-solve scope
+to a full update before ever falling back to markers, so the lock reaches
+0% and every remaining human decision lives in `composer.json` (#296). The format comes first:
 it should remove most conflicts on its own and is a small change on top of
 the existing lock writer.
 
