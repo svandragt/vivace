@@ -162,13 +162,18 @@ few percent, with what remains being the conflicts no tool can decide.
 
 **Work.** Format and writer (#272), merge replay harness (#273), marker
 tolerance in `install` (#274), merge driver (#275). Done: #272, #273,
-#275, #294. Queued, in order: re-solving `viv.lock` by
+#275, #294; #290 closed as superseded, the driver decides divergence by
+three-way identity and never reads staleness. Queued, in order: `install`
+and `update` reading `viv.lock`, without which the format is write-only
+and nobody can use it (#297); re-solving `viv.lock` by
 fetching the pinned set's requires, so the format reaches the same ~3%
 as `composer.lock` with the driver (#295); escalating the re-solve scope
 to a full solve that prefers every locked version, so only what the
 merge forces moves and the lock reaches 0% with every remaining human
 decision living in `composer.json` (#296). Not a full update: that would
-move packages neither branch touched. The format comes first:
+move packages neither branch touched. Marker tolerance in `install`
+(#274) stays as the fallback for a lock that arrives already conflicted,
+behind the three above. The format comes first:
 it should remove most conflicts on its own and is a small change on top of
 the existing lock writer.
 
