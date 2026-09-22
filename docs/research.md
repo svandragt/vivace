@@ -117,9 +117,23 @@ conflicts, both sides changing the same package to different results, were
 count: what the format leaves is what no format can merge. 139 merges that
 someone resolved by hand at the time would have merged clean.
 
-That sizes the second half. Marker tolerance (#274) and the merge driver
-(#275) now have a known target, the 25% of merges whose conflicts are real
-and need the divergent names re-solved. The format's win needed no
+That sizes the second half, and the archaeology on those 96 merges
+(`bench/results/lockmerge.md`, "Resolution archaeology") says what it is.
+Ten conflict only in the record format's adjacency, no package changed on
+both sides. Sixty-five are real conflicts with a `composer.json` that
+merged clean: the lock diverged, the source agreed, and re-solving the
+divergent names against the merged manifest re-derives the answer.
+Seventeen are source conflicts, both sides editing the same constraint,
+which no lock format touches; normalising `composer.json` on all three
+sides first prevents two of them and never creates one. So the driver
+(#275) can reach 15 of 355 merges, 4.2%, from `composer.lock`'s 62%.
+
+The human resolutions rule out a heuristic. Among orderable picks people
+took the higher version 75% of the time overall but 47% and 52% in two of
+the four projects, and 8% of the time chose a version neither side had.
+There was no rule; re-solving is the rule. Resolutions dragged a median of
+0 and a maximum of 14 other packages along, so the driver re-solves the
+closure of the divergent names, not the names alone. The format's win needed no
 staleness rule at all, so the coverage gap in #290 does not touch this
 result; it matters only for how the re-solve decides what is divergent.
 
