@@ -207,6 +207,21 @@ def merge_file_conflicts(work: Path, ours: bytes, base: bytes, theirs: bytes) ->
     return result.returncode, None
 
 
+def viv_bin_commit(viv_bin: str) -> str | None:
+    """The git commit that produced `viv_bin`, when it sits under a
+    `target/{release,debug}/viv` of a checked-out git repo -- so a run whose
+    native column comes from a branch binary (#273: `viv lock convert`
+    landed on origin/273-lock-convert ahead of main) records exactly which
+    commit, not just the version string every build of 0.14.0 shares."""
+    try:
+        repo_root = Path(viv_bin).resolve().parents[2]
+    except IndexError:
+        return None
+    if not (repo_root / ".git").exists():
+        return None
+    return git_or_none(repo_root, "rev-parse", "HEAD")
+
+
 def probe_native(viv_bin: str) -> bool:
     try:
         result = subprocess.run([viv_bin, "lock", "convert", "--help"], capture_output=True)
@@ -338,14 +353,18 @@ def fmt_n(v: int | None) -> str:
     return "n/a" if v is None else str(v)
 
 
-def render(reports: list[RepoReport], cap: int, viv_bin: str, viv_version: str, native_available: bool) -> str:
+def render(
+    reports: list[RepoReport], cap: int, viv_bin: str, viv_version: str,
+    native_available: bool, viv_commit: str | None,
+) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    commit_note = f", commit `{viv_commit}`" if viv_commit else ""
     lines = [
         "",
         f"## {now}",
         "",
         f"Cap: {cap} most recent qualifying merges per repository. "
-        f"viv binary: `{viv_bin}` ({viv_version}).",
+        f"viv binary: `{viv_bin}` ({viv_version}{commit_note}).",
     ]
     if not native_available:
         lines.append(
@@ -455,6 +474,7 @@ def main() -> int:
     v = subprocess.run([viv_bin, "--version"], capture_output=True, text=True)
     if v.returncode == 0:
         viv_version = v.stdout.strip()
+    viv_commit = viv_bin_commit(viv_bin)
     log(f"native (viv lock convert) available: {native_available}")
 
     projects = parse_corpus(corpus_path)
@@ -471,7 +491,7 @@ def main() -> int:
         else:
             update_corpus_note(corpus_path, project.name, f'examined = "{r.range_note}"')
 
-    section = render(reports, cap, viv_bin, viv_version, native_available)
+    section = render(reports, cap, viv_bin, viv_version, native_available, viv_commit)
     if not report_path.exists():
         report_path.write_text(HEADER)
     with open(report_path, "a") as f:

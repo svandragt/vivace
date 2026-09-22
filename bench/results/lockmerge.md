@@ -12,9 +12,9 @@ control for whether a format's win was a real one).
 Corpus and the range actually swept: `bench/lockmerge/corpus.toml`. Harness:
 `bench/lockmerge/run.py`.
 
-## 2026-09-22T10:35:13Z
+## 2026-09-22T10:41:09Z
 
-Cap: 200 most recent qualifying merges per repository. viv binary: `/tmp/claude-1000/-home-sander-dev-rust-vivace/ce937e0b-be19-473c-89d9-aebb80828688/scratchpad/lockmerge-conv/target/release/viv` (viv 0.14.0).
+Cap: 200 most recent qualifying merges per repository. viv binary: `/tmp/claude-1000/-home-sander-dev-rust-vivace/ce937e0b-be19-473c-89d9-aebb80828688/scratchpad/lockmerge-conv/target/release/viv` (viv 0.14.0, commit `299d8f8d8c86227f640e0847a7376aaf4720c73c`).
 
 ### flarum/flarum
 
