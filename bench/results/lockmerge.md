@@ -269,3 +269,44 @@ No lock-only merge becomes a source conflict after normalisation.
 | 1 | 1 | 0 | 0 |
 
 No lock-only merge becomes a source conflict after normalisation.
+
+### Client corpus, resolution archaeology (2026-09-22)
+
+Same four projects, same harness, `viv` at `f08c5b7`/`7ca7a0c`. Counts only.
+
+| Project | Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|---|
+| A | 46 | 7 | 39 |
+| B | 23 | 7 | 16 |
+| C | 11 | 2 | 9 |
+| D | 2 | 1 | 1 |
+| **Client total** | **82** | **17** | **65** |
+
+Ten further merges conflict under `viv.lock` with no package changed on
+both sides: adjacency in the record format, no re-solve needed.
+
+| Project | Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|---|
+| A | 56 | 81 | 11 | 8 | 91/112 (81%) | 25 |
+| B | 25 | 17 | 3 | 0 | 8/17 (47%) | 25 |
+| C | 5 | 24 | 0 | 3 | 12/23 (52%) | 6 |
+| D | 10 | 2 | 6 | 0 | 12/12 (100%) | 0 |
+| **Client total** | **96** | **124** | **20** | **11** | **123/164 (75%)** | **56** |
+
+| Project | Median cascade | Max cascade |
+|---|---|---|
+| A | 0 | 12 |
+| B | 0 | 5 |
+| C | 0 | 1 |
+| D | 7 | 14 |
+| **Client total** | **0** | **14** |
+
+| Project | Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation |
+|---|---|---|---|
+| A | 7 | 7 | 0 |
+| B | 7 | 5 | 2 |
+| C | 2 | 2 | 0 |
+| D | 1 | 1 | 0 |
+| **Client total** | **17** | **15** | **2** |
+
+No lock-only merge becomes a source conflict after normalisation.
