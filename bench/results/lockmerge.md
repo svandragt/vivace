@@ -87,3 +87,25 @@ Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
 | Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
 |---|---|---|---|---|---|---|
 | 26 | 7 | 4 | 25 | 5 | 4 | 3 |
+
+## Client corpus, anonymised (2026-09-22)
+
+Four client projects with long `composer.lock` histories, replayed from
+local clones with the same harness and the same `viv` binary as the public
+run above. Names, commit ranges and paths are held outside the repository;
+the table is reproducible by the maintainer from a scratch corpus and by
+nobody else, and is included because the public corpus turned out to hold
+almost no lock-conflicting history to replay.
+
+| Project | Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| A | 200 (capped) | 126 | 52 | 1220 | 185 | 171 | 74 |
+| B | 89 | 57 | 25 | 243 | 49 | 45 | 32 |
+| C | 41 | 32 | 12 | 286 | 37 | 32 | 20 |
+| D | 25 | 13 | 3 | 137 | 21 | 18 | 10 |
+| **Client total** | **355** | **228** | **92** | **1886** | **292** | **266** | **136** |
+
+With the public run: 379 merges, 235 conflicting under `composer.lock`
+(62%), 96 under `viv.lock` (25%), 1911 hunks against 297, 270 real. In
+every one of the five repositories `viv.lock`'s hunk count sits within 10%
+of its real-conflict count.
