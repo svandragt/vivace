@@ -1,0 +1,31 @@
+# Corpus for the merge-replay harness (#273): public applications with a
+# committed composer.lock and a long merge history (docs/research.md
+# chapter 1's measurement). `bench/lockmerge/run.py` clones each repo with
+# --filter=blob:none (commit graph only; blobs fetch on demand) under
+# $BENCH_CACHE/lockmerge/<safe name>, walks merge commits newest-first, and
+# rewrites this file's `examined` (or `skip`) line after each run so the
+# corpus and the range actually swept live in one place, the way
+# `make compat-refresh` rewrites compat/corpus.toml's pins.
+#
+# Anonymised client projects from #273 are out of scope here (not public,
+# not available to this harness) -- see the ticket.
+
+[[project]]
+name = "flarum/flarum"
+repo = "https://github.com/flarum/flarum.git"
+skip = "no committed composer.lock at HEAD"
+
+[[project]]
+name = "monicahq/monica"
+repo = "https://github.com/monicahq/monica.git"
+examined = "no qualifying merge found (no merge had both parents touch composer.lock)"
+
+[[project]]
+name = "koel/koel"
+repo = "https://github.com/koel/koel.git"
+examined = "0ad670ffff00..fd5f79ee6392 (2 qualifying merges)"
+
+[[project]]
+name = "pixelfed/pixelfed"
+repo = "https://github.com/pixelfed/pixelfed.git"
+examined = "4aa5454067c6..8b6eee19cf85 (24 qualifying merges)"
