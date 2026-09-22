@@ -933,3 +933,24 @@ No lock-only merge becomes a source conflict after normalisation.
 | 1 | 1 | 0 | 0 |
 
 No lock-only merge becomes a source conflict after normalisation.
+
+### Client corpus, `viv lock merge` (2026-09-22)
+
+Same four projects, driver at `5e020d0` with the platform declaration and
+`--as-of` the merge commit's date. Counts only.
+
+| Project | Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) |
+|---|---|---|---|---|
+| A | 200 (capped) | 126 | 52 | 32 |
+| B | 89 | 57 | 25 | 21 |
+| C | 41 | 32 | 12 | 7 |
+| D | 25 | 13 | 3 | 1 |
+| **Client total** | **355** | **228** | **92** | **61** |
+
+Without re-solving (record merge only) the driver column is 88. The 61
+by leaf cause: 30 `dev-*` branches whose current head conflicts where the
+historical head did not (unreplayable: Packagist serves only today's
+head); 16 inline `package` repositories viv refuses (#294); 6 the
+platform heuristic declaring php too low; 4 packages gone from Packagist;
+4 constraint chains that may be genuine; 1 malformed historical manifest.
+`--as-of` changed nothing: the residue is branches, not releases.
