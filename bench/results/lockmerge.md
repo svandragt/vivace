@@ -1046,3 +1046,29 @@ Resolved rung 1 (closure): 1, rung 3 (seeded): 2. 1 merge(s) moved ≥1 package 
 | 1 | 1 | 0 | 0 |
 
 No lock-only merge becomes a source conflict after normalisation.
+
+## Client corpus, anonymised, after #296 and #297 (2026-09-23)
+
+Same four projects, same 355 merges, `viv` at main `e197d67` (three
+escalation rungs, #296; `viv.lock` as a companion to `composer.lock`,
+#297). Counts only, as above.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts |
+|---|---|---|---|---|---|---|
+| 355 | 228 | 92 | 51 | 1886 | 292 | 268 |
+
+Resolved: rung 1 (closure) 36, rung 3 (seeded) 1; 2 merges moved a
+package outside the divergent set. Rung 2 never finished a merge that
+rung 1 could not.
+
+Leaf cause of the 51 the driver still cannot finish:
+
+| Leaf cause | Merges |
+|---|---|
+| A `dev-*` branch whose current head conflicts with a pinned release (the registry serves only today's head) | 43 |
+| Root requires a package Packagist no longer lists | 7 |
+| Malformed `composer.json` (trailing comma) | 1 |
+
+None of the 51 is a constraint chain or the harness's platform heuristic
+any more: the deeper rungs push those to a `dev-*` or missing-package
+leaf, which no replay can reproduce.

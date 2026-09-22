@@ -149,19 +149,22 @@ and re-solves the divergent closure against the merged `composer.json`,
 falling back to markers on those names only when the solve cannot finish.
 On the same 355 client merges: `composer.lock` 228 conflicting, `viv.lock`
 92, record merge 88, record merge with re-solve **61**, 17%; with inline `package`
-repositories solvable (#294), **52**, 15%. On the public corpus the
-driver reaches the two merges whose package no longer exists and stops.
+repositories solvable (#294), **52**, 15%; with the three escalation rungs
+(#296), **51**, 14%. On the public corpus the driver finishes every real
+conflict, one at rung 1 and two at rung 3.
 
-The 61 are the replay's floor rather than the driver's. Thirty-seven are `dev-*`
-branches whose current head declares a conflict the historical head did
-not; Packagist serves only today's head, so no replay recovers them, and a
-developer merging today gets the head they want. Six are the harness's platform
-heuristic. Four packages are gone, four chains may be genuine, one
-manifest is malformed. `--as-of`, resolving against the registry as it
-stood at the commit, changed nothing, which is the confirmation: the
-residue is branches, not releases. Excluding what a replay cannot
-reproduce, the driver-attributable residue is four constraint chains of 355, about 1%,
-which #296 targets.
+The 51 are the replay's floor rather than the driver's. Forty-three are
+`dev-*` branches whose current head declares a conflict the historical
+head did not; Packagist serves only today's head, so no replay recovers
+them, and a developer merging today gets the head they want. Seven require
+a package Packagist no longer lists, one manifest is malformed. The
+constraint chains and platform-heuristic cases of the earlier run are
+gone: rung 3 either finishes them or pushes them to a `dev-*` leaf.
+`--as-of`, resolving against the registry as it stood at the commit,
+changed nothing, which is the confirmation: the residue is branches, not
+releases. Excluding what a replay cannot reproduce, the
+driver-attributable residue is zero of 355 (`bench/results/lockmerge.md`,
+2026-09-23 section).
 
 So, for a project viv can solve: the format alone takes a dependency
 merge from a 62% chance of conflict to 25%, and the driver takes it to a
@@ -178,11 +181,16 @@ error a leftover marker used to produce. #295 gave `viv.lock`'s re-solve
 its pinned set's requires from the sibling `composer.lock` a record never
 carries, so the format reaches the driver's same closure re-solve
 `composer.lock` gets, falling back to markers (with the reason) when that
-sibling file is missing. Queued: escalating the re-solve scope to a full
-solve that prefers every locked version, so only what the merge forces
-moves and the lock reaches 0% with every remaining human decision living
-in `composer.json` (#296). Not a full update: that would move packages
-neither branch touched.
+sibling file is missing. #296 escalates the re-solve in three rungs, the
+divergent closure, then pinned packages that directly require it, then a
+full solve seeded with every non-divergent locked version as `preferred`
+(`--max-scope` caps it), and reports the rung reached and every package
+that moved outside the divergent set. Not a full update: `preferred`
+keeps every package the merge does not force. #297 makes `viv.lock` a
+companion `install` and `update` read: `install` refuses when the two
+files disagree in either direction, `update` implies `--lock native` once
+`viv.lock` exists. Nothing queued; the chapter's open question is
+adoption, not mechanism.
 
 ## Chapter 2: autoload from the store, no vendor tree (measured, not pursued)
 
