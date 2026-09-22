@@ -27,7 +27,7 @@
 //! measured. `composer.lock` is the primary target; teaching `viv.lock` the
 //! same trick needs its own richer record, not a guess here.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::Path;
 
@@ -41,23 +41,80 @@ use crate::repository::{Repository, Transport};
 use crate::solver::{self, pool_builder::UpdateAllowMode, transaction::ResolvedPackage};
 use crate::update;
 
+/// `--max-scope` (#296): how far a divergent re-solve may escalate before
+/// giving up on markers. Declaration order is rung order — `derive(Ord)`
+/// makes `scope <= max_scope` the cap check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum Scope {
+    /// Rung 1: the divergent names plus their own locked transitive
+    /// closure, everything else pinned hard (chunk 2's original behaviour).
+    Closure,
+    /// Rung 2: rung 1 plus any pinned package that directly requires a
+    /// name in the closure.
+    Dependents,
+    /// Rung 3: a full solve over the merged manifest with every
+    /// non-divergent locked version passed as `--minimal-changes`'s
+    /// `preferred` pin set. Never a plain update: nothing is pinned hard,
+    /// but a satisfying solution that keeps a preferred version is always
+    /// preferred over one that doesn't.
+    Seeded,
+}
+
+impl Scope {
+    fn name(self) -> &'static str {
+        match self {
+            Scope::Closure => "closure",
+            Scope::Dependents => "dependents",
+            Scope::Seeded => "seeded",
+        }
+    }
+
+    fn rung(self) -> u8 {
+        match self {
+            Scope::Closure => 1,
+            Scope::Dependents => 2,
+            Scope::Seeded => 3,
+        }
+    }
+}
+
+/// One package outside the divergent set whose resolved identity differs
+/// from both branches (`docs/research.md`/#296's "say what moved"):
+/// normally empty for a rung-1 resolution, which only ever produces the
+/// divergent names themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    pub name: String,
+    /// Both branches' version when they agreed on one differing from the
+    /// result, `"ours X, theirs Y"` when only one side had changed it
+    /// (still not divergent — see `merge`'s own doc), or `"new"` when
+    /// neither branch had this name locked at all.
+    pub before: String,
+    pub after: String,
+}
+
 /// A locked package's comparable identity for merge purposes
 /// (`docs/research.md` chapter 1): two records with the same identity are
 /// the same resolution, whatever else differs in how they're stored.
+/// `pub`: [`escalate_resolve`]'s own `ours`/`theirs` parameters are keyed by
+/// this, and a test builds them directly (`tests/lock_merge.rs`'s own
+/// pattern, mirroring [`resolve_divergent_closure`]'s existing exposure).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Identity {
-    version: String,
-    source_ref: Option<String>,
-    dev: bool,
+pub struct Identity {
+    pub version: String,
+    pub source_ref: Option<String>,
+    pub dev: bool,
 }
 
 /// One side's view of a name: its identity, plus enough payload to write it
 /// back out untouched when it wins (the full `composer.lock` entry, or a
-/// parsed `viv.lock` [`native_lock::Record`]).
+/// parsed `viv.lock` `native_lock::Record`). `pub` for the same reason as
+/// [`Identity`].
 #[derive(Debug, Clone)]
-struct Entry<T> {
-    identity: Identity,
-    payload: T,
+pub struct Entry<T> {
+    pub identity: Identity,
+    pub payload: T,
 }
 
 /// The record merge, format-independent: for every name in the union of
@@ -68,8 +125,10 @@ struct Entry<T> {
 /// changed on both sides differently (divergent, returned by name so the
 /// caller can render markers). A winning identity is never synthesised:
 /// the record itself is reused from whichever of `ours`/`theirs`/`base`
-/// (in that order) actually carries it.
-fn merge<T: Clone>(
+/// (in that order) actually carries it. `pub`: a test builds `merged`/
+/// `divergent` for [`escalate_resolve`] the same way `merge_composer_lock`
+/// itself does, rather than duplicating this logic.
+pub fn merge<T: Clone>(
     base: &BTreeMap<String, Entry<T>>,
     ours: &BTreeMap<String, Entry<T>>,
     theirs: &BTreeMap<String, Entry<T>>,
@@ -153,7 +212,8 @@ fn detect_format(path: &Path) -> Result<Format> {
 /// markers a human must resolve.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the three merge-driver paths plus --no-resolve/--as-of/--cache-dir/--offline"
+    reason = "the three merge-driver paths plus --no-resolve/--as-of/--cache-dir/--offline/\
+              --max-scope"
 )]
 pub fn run(
     base: &Path,
@@ -164,6 +224,7 @@ pub fn run(
     as_of: Option<&str>,
     cache_dir: Option<&Path>,
     offline: bool,
+    max_scope: Scope,
 ) -> Result<u8> {
     let as_of = as_of
         .map(|value| {
@@ -197,12 +258,16 @@ pub fn run(
             as_of,
             cache_dir,
             offline,
+            max_scope,
         ),
         Format::VivLock => merge_viv_lock(base, ours, theirs),
     }
 }
 
-fn composer_entries(lock: &Lock) -> BTreeMap<String, Entry<Value>> {
+/// `pub`: a test builds `ours`/`theirs` for [`escalate_resolve`] straight
+/// off a fixture `composer.lock`'s own [`lock::read_lock`], the same way
+/// `merge_composer_lock` itself does.
+pub fn composer_entries(lock: &Lock) -> BTreeMap<String, Entry<Value>> {
     lock.packages
         .iter()
         .map(|package| {
@@ -232,7 +297,8 @@ fn has_conflict_markers(content: &[u8]) -> bool {
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors run's own --no-resolve/--as-of/--cache-dir/--offline, plus the three paths"
+    reason = "mirrors run's own --no-resolve/--as-of/--cache-dir/--offline/--max-scope, plus the \
+              three paths"
 )]
 fn merge_composer_lock(
     base: &Path,
@@ -243,6 +309,7 @@ fn merge_composer_lock(
     as_of: Option<i64>,
     cache_dir: Option<&Path>,
     offline: bool,
+    max_scope: Scope,
 ) -> Result<u8> {
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path)
@@ -270,14 +337,18 @@ fn merge_composer_lock(
         match try_resolve_composer_lock(
             &merged,
             &divergent,
+            &ours_entries,
+            &theirs_entries,
             &composer_json,
             project_dir,
             as_of,
             cache_dir,
             offline,
+            max_scope,
         ) {
-            Ok(text) => {
+            Ok((text, scope, moved)) => {
                 fs_err::write(ours, text)?;
+                print_resolution(&divergent, scope, &moved);
                 return Ok(0);
             }
             Err(err) => {
@@ -393,6 +464,232 @@ pub async fn resolve_divergent_closure<T: Transport>(
     .await
 }
 
+/// Rung 2's allow-list addition (#296): every pinned (non-divergent, not
+/// already in `closure`) name whose own locked `require` names something in
+/// `closure` — read straight off the record already in hand, never
+/// re-fetched. `closure` itself is [`solver::pool_builder::expand_allow_list`]'s
+/// own computation (`UpdateAllowMode::WithTransitiveDeps`) over
+/// `divergent`, recomputed here rather than threaded out of rung 1's own
+/// solve, since it is cheap (no network) and keeps this function free of a
+/// second return value on [`resolve_divergent_closure`].
+fn direct_dependents(
+    merged: &BTreeMap<String, Entry<Value>>,
+    root: &Value,
+    divergent: &[String],
+) -> BTreeSet<String> {
+    let locked_requires: HashMap<String, Vec<String>> = merged
+        .iter()
+        .map(|(name, entry)| {
+            let requires = entry
+                .payload
+                .get("require")
+                .and_then(Value::as_object)
+                .map(|m| m.keys().map(|k| k.to_ascii_lowercase()).collect())
+                .unwrap_or_default();
+            (name.to_ascii_lowercase(), requires)
+        })
+        .collect();
+    let root_require_names: HashSet<String> = root
+        .get("require")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|m| m.keys())
+        .chain(
+            root.get("require-dev")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|m| m.keys()),
+        )
+        .map(|k| k.to_ascii_lowercase())
+        .collect();
+    let allow_list: Vec<String> = divergent.iter().map(|n| n.to_ascii_lowercase()).collect();
+    let closure = solver::pool_builder::expand_allow_list(
+        &allow_list,
+        &locked_requires,
+        &root_require_names,
+        UpdateAllowMode::WithTransitiveDeps,
+    );
+
+    merged
+        .iter()
+        .filter(|(name, _)| !closure.contains(&name.to_ascii_lowercase()))
+        .filter(|(_, entry)| {
+            entry
+                .payload
+                .get("require")
+                .and_then(Value::as_object)
+                .is_some_and(|requires| {
+                    requires
+                        .keys()
+                        .any(|k| closure.contains(&k.to_ascii_lowercase()))
+                })
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// Every package outside `divergent` whose resolved identity in `result`
+/// differs from both `ours` and `theirs` (#296's "say what moved"): a
+/// plain rung-1 resolution never produces one of these, since nothing
+/// outside the divergent names is ever unlocked at that rung.
+fn moved_packages(
+    result: &solver::UpdateResult,
+    divergent: &BTreeSet<String>,
+    ours: &BTreeMap<String, Entry<Value>>,
+    theirs: &BTreeMap<String, Entry<Value>>,
+) -> Vec<Moved> {
+    let mut moved = Vec::new();
+    for resolved in result.non_dev.iter().chain(result.dev.iter()) {
+        if divergent.contains(&resolved.name) {
+            continue;
+        }
+        let o = ours
+            .get(&resolved.name)
+            .map(|e| e.identity.version.as_str());
+        let t = theirs
+            .get(&resolved.name)
+            .map(|e| e.identity.version.as_str());
+        if o == Some(resolved.pretty_version.as_str())
+            || t == Some(resolved.pretty_version.as_str())
+        {
+            continue;
+        }
+        let before = match (o, t) {
+            (Some(a), Some(b)) if a == b => a.to_string(),
+            (Some(a), Some(b)) => format!("ours {a}, theirs {b}"),
+            (Some(a), None) => a.to_string(),
+            (None, Some(b)) => b.to_string(),
+            (None, None) => "new".to_string(),
+        };
+        moved.push(Moved {
+            name: resolved.name.clone(),
+            before,
+            after: resolved.pretty_version.clone(),
+        });
+    }
+    moved.sort_by(|a, b| a.name.cmp(&b.name));
+    moved
+}
+
+/// One escalation's outcome: the resolved lock, the rung that finished it,
+/// and every package `moved_packages` found outside the divergent set.
+pub struct EscalatedResolve {
+    pub result: solver::UpdateResult,
+    pub scope: Scope,
+    pub moved: Vec<Moved>,
+}
+
+/// #296: rung 1 ([`resolve_divergent_closure`]), then rung 2 (rung 1's
+/// allow list plus `direct_dependents`), then rung 3 (a full solve,
+/// [`solver::solve_update_seeded`], with every non-divergent locked
+/// version as `preferred` — never a plain update, since `preferred` is
+/// non-empty and every locked name is in it). Stops and returns the
+/// failure as soon as `max_scope` caps it short of finishing; the caller
+/// turns that into markers, same as any other resolve failure.
+/// `pub`, generic over [`Transport`] like [`resolve_divergent_closure`]:
+/// the CLI path always builds a real `HttpTransport`, a test can drive
+/// this directly against a fixture-backed one.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the merge's own pinned/ours/theirs maps, the resolve inputs (root/prefer_stable/\
+              as_of/cache_dir), and the --max-scope cap"
+)]
+pub async fn escalate_resolve<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    merged: &BTreeMap<String, Entry<Value>>,
+    divergent: &BTreeSet<String>,
+    ours: &BTreeMap<String, Entry<Value>>,
+    theirs: &BTreeMap<String, Entry<Value>>,
+    as_of: Option<i64>,
+    cache_dir: Option<&Path>,
+    max_scope: Scope,
+) -> Result<EscalatedResolve> {
+    let locked_by_name = locked_by_name_from_merge(merged);
+    let divergent_list: Vec<String> = divergent.iter().cloned().collect();
+
+    let (result, scope) = match resolve_divergent_closure(
+        repo,
+        root,
+        prefer_stable,
+        &locked_by_name,
+        &divergent_list,
+        as_of,
+    )
+    .await
+    {
+        Ok(result) => (result, Scope::Closure),
+        Err(rung1_err) if max_scope == Scope::Closure => {
+            return Err(
+                rung1_err.context(format!("capped at --max-scope={}", Scope::Closure.name()))
+            );
+        }
+        Err(_rung1_err) => {
+            let dependents = direct_dependents(merged, root, &divergent_list);
+            let mut allow_list = divergent_list.clone();
+            allow_list.extend(dependents);
+            match resolve_divergent_closure(
+                repo,
+                root,
+                prefer_stable,
+                &locked_by_name,
+                &allow_list,
+                as_of,
+            )
+            .await
+            {
+                Ok(result) => (result, Scope::Dependents),
+                Err(rung2_err) if max_scope == Scope::Dependents => {
+                    return Err(rung2_err.context(format!(
+                        "capped at --max-scope={}",
+                        Scope::Dependents.name()
+                    )));
+                }
+                Err(_) => {
+                    let preferred = update::preferred_versions(&locked_by_name, &[])?;
+                    let seed: Vec<String> = locked_by_name.keys().cloned().collect();
+                    match solver::solve_update_seeded::<T, crate::audit::NoAdvisories>(
+                        repo,
+                        root,
+                        prefer_stable,
+                        false,
+                        &seed,
+                        preferred,
+                        None,
+                        cache_dir,
+                    )
+                    .await
+                    {
+                        Ok(result) => (result, Scope::Seeded),
+                        Err(err) => {
+                            let reason = if err
+                                .downcast_ref::<solver::problem::SolverError>()
+                                .is_some()
+                            {
+                                "the merged composer.json is unsatisfiable even at rung 3 \
+                                 (seeded): this is a manifest problem, not a lock one"
+                            } else {
+                                "re-solving at rung 3 (seeded) did not finish; the registry may \
+                                 be unreachable (cached metadata was tried first via \
+                                 --cache-dir)"
+                            };
+                            return Err(err.context(reason));
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    let moved = moved_packages(&result, divergent, ours, theirs);
+    Ok(EscalatedResolve {
+        result,
+        scope,
+        moved,
+    })
+}
+
 /// [`solver::UpdateResult`] -> the final `composer.lock` text, the same
 /// `LockOptions` shape `update.rs`'s own full-update write uses.
 fn write_resolved_lock(result: &solver::UpdateResult, composer_json: &[u8]) -> Result<String> {
@@ -411,24 +708,30 @@ fn write_resolved_lock(result: &solver::UpdateResult, composer_json: &[u8]) -> R
 
 /// The CLI path's re-solve attempt: builds the same fetcher/repository
 /// sequence `update.rs`'s own `solve` does (`build_fetcher`,
-/// `build_repository`, `default_cache_dir`), then
-/// [`resolve_divergent_closure`] over it. Any failure here — no network, a
-/// package no longer resolvable, a genuine constraint conflict in the
-/// merged manifest — is the caller's cue to fall back to conflict markers,
-/// so this never itself decides that markers are fine; it only reports why
-/// the resolve didn't happen.
+/// `build_repository`, `default_cache_dir`), then [`escalate_resolve`] over
+/// it. Any failure here — no network, a package no longer resolvable, a
+/// genuine constraint conflict in the merged manifest even at
+/// `--max-scope`'s cap — is the caller's cue to fall back to conflict
+/// markers, so this never itself decides that markers are fine; it only
+/// reports why the resolve didn't happen.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors merge_composer_lock's own --as-of/--cache-dir/--offline/--max-scope, plus \
+              the ours/theirs maps escalate_resolve's moved-package report needs"
+)]
 fn try_resolve_composer_lock(
     merged: &BTreeMap<String, Entry<Value>>,
     divergent: &BTreeSet<String>,
+    ours: &BTreeMap<String, Entry<Value>>,
+    theirs: &BTreeMap<String, Entry<Value>>,
     composer_json: &[u8],
     project_dir: &Path,
     as_of: Option<i64>,
     cache_dir: Option<&Path>,
     offline: bool,
-) -> Result<String> {
+    max_scope: Scope,
+) -> Result<(String, Scope, Vec<Moved>)> {
     let root: Value = serde_json::from_slice(composer_json).context("parsing composer.json")?;
-    let locked_by_name = locked_by_name_from_merge(merged);
-    let allow_list: Vec<String> = divergent.iter().cloned().collect();
     let prefer_stable = root
         .get("prefer-stable")
         .and_then(Value::as_bool)
@@ -446,18 +749,44 @@ fn try_resolve_composer_lock(
         let fetcher = update::build_fetcher(project_dir, &root, offline)?;
         let metadata_ttl = update::metadata_ttl(None, offline);
         let repo = update::build_repository(&root, &cache_dir, &fetcher, metadata_ttl).await?;
-        let resolved = resolve_divergent_closure(
+        let resolved = escalate_resolve(
             &repo,
             &root,
             prefer_stable,
-            &locked_by_name,
-            &allow_list,
+            merged,
+            divergent,
+            ours,
+            theirs,
             as_of,
+            Some(&cache_dir),
+            max_scope,
         )
         .await;
         update::forget_repo(repo);
-        write_resolved_lock(&resolved?, composer_json)
+        let resolved = resolved?;
+        let text = write_resolved_lock(&resolved.result, composer_json)?;
+        Ok((text, resolved.scope, resolved.moved))
     })
+}
+
+/// #296's "say what moved": the rung reached and the divergent names it
+/// resolved, then one line per [`Moved`] package. A rung-1 resolution
+/// prints nothing beyond the first line, matching `docs/research.md`'s own
+/// wording.
+fn print_resolution(divergent: &BTreeSet<String>, scope: Scope, moved: &[Moved]) {
+    let names: Vec<&str> = divergent.iter().map(String::as_str).collect();
+    warn_out(&format!(
+        "viv lock merge: resolved via rung {} ({}): {}",
+        scope.rung(),
+        scope.name(),
+        names.join(", ")
+    ));
+    for m in moved {
+        warn_out(&format!(
+            "viv lock merge: {} moved outside the divergent set: {} -> {}",
+            m.name, m.before, m.after
+        ));
+    }
 }
 
 /// One divergent name's marker block, `ours`' entry then `theirs`',

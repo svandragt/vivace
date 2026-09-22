@@ -82,6 +82,15 @@ pub enum LockCommand {
         /// viv.lock inputs, which never re-solve in this chunk).
         #[arg(long, value_name = "TIMESTAMP")]
         as_of: Option<String>,
+        /// How far a divergent name's re-solve may escalate before giving
+        /// up on markers (#296, composer.lock only): `closure` is chunk 2's
+        /// original scope (the divergent names plus their own locked
+        /// closure), `dependents` adds pinned packages that directly
+        /// require one of those, `seeded` (the default) is a full solve
+        /// that prefers every non-divergent locked version but pins none
+        /// of them hard.
+        #[arg(long, value_enum, default_value = "seeded")]
+        max_scope: crate::lock_merge::Scope,
     },
 }
 
@@ -101,6 +110,7 @@ pub fn run(args: &LockArgs, cache_dir: Option<&Path>, offline: bool) -> Result<u
             project_dir,
             no_resolve,
             as_of,
+            max_scope,
         } => crate::lock_merge::run(
             base,
             ours,
@@ -110,6 +120,7 @@ pub fn run(args: &LockArgs, cache_dir: Option<&Path>, offline: bool) -> Result<u
             as_of.as_deref(),
             cache_dir,
             offline,
+            *max_scope,
         ),
     }
 }

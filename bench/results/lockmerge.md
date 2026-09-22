@@ -972,3 +972,77 @@ clean, seven through to `dev-*` branches whose heads have moved. Leaf
 causes of the 52: 37 `dev-*` heads moved (unreplayable); 6 the platform
 heuristic's php floor; 4 packages gone from Packagist; 4 constraint chains
 (#296's target); 1 malformed historical manifest.
+
+## 2026-09-22T22:54:00Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `/home/sander/dev/rust/vivace/.claude/worktrees/agent-a917d73785f4a8b39/target/release/viv` (viv 0.14.0, commit `e314829cbd04ae3fcbfb2e08021c80cf1a52ae0b`).
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 0 | 25 | 5 | 4 | 3 |
+
+Resolved rung 1 (closure): 1, rung 3 (seeded): 2. 1 merge(s) moved ≥1 package outside the divergent set.
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 0 | 25 | 5 | 4 | 3 |
+
+Resolved rung 1 (closure): 1, rung 3 (seeded): 2. 1 merge(s) moved ≥1 package outside the divergent set.
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.

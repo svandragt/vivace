@@ -10,6 +10,7 @@
 //! `FixtureTransport` the same way `tests/update.rs` does, since the CLI
 //! path always builds a real `HttpTransport`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -18,7 +19,8 @@ use std::time::Duration;
 mod common;
 
 use common::{FixtureTransport, TestContext, fixtures_root};
-use serde_json::Value;
+use serde_json::{Value, json};
+use vivace::lock_merge::{Entry, Identity, Moved, Scope, escalate_resolve};
 use vivace::repository::Repository;
 
 fn fixtures() -> PathBuf {
@@ -264,4 +266,260 @@ fn a_one_sided_change_merges_clean_and_exits_0() {
     let got = fs::read_to_string(dir.join("ours.lock")).unwrap();
     assert!(!got.contains("<<<<<<<"));
     assert!(got.contains("\"version\": \"3.0.99\""), "ours' change wins");
+}
+
+/// #296's escalation rungs, over a small hand-authored dependency chain
+/// (`d/dep` -> `e/dependent` -> `f/chain`, `g/untouched` off to the side;
+/// `tests/fixtures/packagist/repo.packagist.org/p2/{d,e,f,g}`), the same
+/// idiom as `tests/update.rs`'s own `a/x`/`b/y`/`c/z`: the real
+/// monolog/psr-log fixture has no version whose own metadata blocks a
+/// resolve the way this needs.
+fn pinned(name: &str, version: &str, require: &Value) -> Entry<Value> {
+    Entry {
+        identity: Identity {
+            version: version.to_string(),
+            source_ref: None,
+            dev: false,
+        },
+        payload: json!({"name": name, "version": version, "require": require}),
+    }
+}
+
+/// `d/dep` is the one divergent name (ours 2.0.0, theirs 2.0.1). Root wants
+/// `d/dep` `^2.0`, but `e/dependent` is pinned at 1.0.0 on both sides, whose
+/// own locked `require` is `d/dep ^1.0` — rung 1 (the divergent closure
+/// alone) cannot satisfy both at once. `e/dependent` directly requires
+/// `d/dep`, so rung 2 unlocks it too; its only registry version compatible
+/// with `d/dep ^2.0` is 2.0.0, so it moves.
+#[tokio::test]
+async fn rung_2_resolves_when_a_pinned_direct_dependent_blocks_the_closure() {
+    let root = json!({"require": {"d/dep": "^2.0", "e/dependent": "^1.0 || ^2.0"}});
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let cache = tempfile::tempdir().unwrap();
+    let repo =
+        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
+            .await
+            .unwrap();
+
+    let e_dependent = pinned(
+        "e/dependent",
+        "1.0.0",
+        &json!({"php": ">=7.4.0", "d/dep": "^1.0"}),
+    );
+    let mut merged = BTreeMap::new();
+    merged.insert("e/dependent".to_string(), e_dependent.clone());
+
+    let mut divergent = BTreeSet::new();
+    divergent.insert("d/dep".to_string());
+
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    ours.insert("e/dependent".to_string(), e_dependent.clone());
+
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.1", &json!({"php": ">=7.4.0"})),
+    );
+    theirs.insert("e/dependent".to_string(), e_dependent);
+
+    let resolved = escalate_resolve(
+        &repo,
+        &root,
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Seeded,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        resolved.scope,
+        Scope::Dependents,
+        "rung 1 alone cannot satisfy e/dependent's own pinned require"
+    );
+    assert_eq!(
+        resolved.moved,
+        vec![Moved {
+            name: "e/dependent".to_string(),
+            before: "1.0.0".to_string(),
+            after: "2.0.0".to_string(),
+        }],
+        "e/dependent, a direct dependent of the divergent closure, must be reported as moved"
+    );
+}
+
+/// `--max-scope closure` on the same case as above: rung 1 fails and the
+/// cap forbids rung 2, so the caller (not exercised here — this is the
+/// library seam) must fall back to markers. The returned error names the
+/// cap so `merge_composer_lock`'s own fallback message can say why.
+#[tokio::test]
+async fn max_scope_closure_caps_before_rung_2_and_names_the_cap() {
+    let root = json!({"require": {"d/dep": "^2.0", "e/dependent": "^1.0 || ^2.0"}});
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let cache = tempfile::tempdir().unwrap();
+    let repo =
+        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
+            .await
+            .unwrap();
+
+    let e_dependent = pinned(
+        "e/dependent",
+        "1.0.0",
+        &json!({"php": ">=7.4.0", "d/dep": "^1.0"}),
+    );
+    let mut merged = BTreeMap::new();
+    merged.insert("e/dependent".to_string(), e_dependent.clone());
+
+    let mut divergent = BTreeSet::new();
+    divergent.insert("d/dep".to_string());
+
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    ours.insert("e/dependent".to_string(), e_dependent.clone());
+
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.1", &json!({"php": ">=7.4.0"})),
+    );
+    theirs.insert("e/dependent".to_string(), e_dependent);
+
+    let result = escalate_resolve(
+        &repo,
+        &root,
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Closure,
+    )
+    .await;
+
+    let Err(err) = result else {
+        panic!("rung 1 alone must fail on this fixture, and --max-scope=closure must not escalate");
+    };
+    assert!(
+        format!("{err:#}").contains("--max-scope=closure"),
+        "error must name the cap: {err:#}"
+    );
+}
+
+/// A second hop: `f/chain` (pinned 1.0.0, requires `e/dependent ^1.0`) is
+/// not a *direct* dependent of `d/dep`, so rung 2's one-hop expansion never
+/// unlocks it, and rung 2 fails exactly as rung 1 did. Only rung 3 (a full
+/// solve, nothing pinned hard) can move `f/chain` and `e/dependent`
+/// together. `g/untouched`, pinned 1.0.0 with a newer 1.5.0 available and
+/// no connection to the conflict at all, must stay at 1.0.0: that is
+/// `preferred` at work, and the fact that it does not move is what proves
+/// rung 3 is not a plain update.
+#[tokio::test]
+async fn rung_3_moves_a_two_hop_dependent_and_leaves_an_unrelated_package_pinned() {
+    let root = json!({
+        "require": {"d/dep": "^2.0", "f/chain": "^1.0 || ^2.0", "g/untouched": "^1.0"},
+    });
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let cache = tempfile::tempdir().unwrap();
+    let repo =
+        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
+            .await
+            .unwrap();
+
+    let e_dependent = pinned(
+        "e/dependent",
+        "1.0.0",
+        &json!({"php": ">=7.4.0", "d/dep": "^1.0"}),
+    );
+    let f_chain = pinned(
+        "f/chain",
+        "1.0.0",
+        &json!({"php": ">=7.4.0", "e/dependent": "^1.0"}),
+    );
+    let g_untouched = pinned("g/untouched", "1.0.0", &json!({"php": ">=7.4.0"}));
+
+    let mut merged = BTreeMap::new();
+    merged.insert("e/dependent".to_string(), e_dependent.clone());
+    merged.insert("f/chain".to_string(), f_chain.clone());
+    merged.insert("g/untouched".to_string(), g_untouched.clone());
+
+    let mut divergent = BTreeSet::new();
+    divergent.insert("d/dep".to_string());
+
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    ours.insert("e/dependent".to_string(), e_dependent.clone());
+    ours.insert("f/chain".to_string(), f_chain.clone());
+    ours.insert("g/untouched".to_string(), g_untouched.clone());
+
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.1", &json!({"php": ">=7.4.0"})),
+    );
+    theirs.insert("e/dependent".to_string(), e_dependent);
+    theirs.insert("f/chain".to_string(), f_chain);
+    theirs.insert("g/untouched".to_string(), g_untouched);
+
+    let resolved = escalate_resolve(
+        &repo,
+        &root,
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Seeded,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        resolved.scope,
+        Scope::Seeded,
+        "a two-hop dependent is outside rung 2's one-hop expansion"
+    );
+    let mut moved_names: Vec<&str> = resolved.moved.iter().map(|m| m.name.as_str()).collect();
+    moved_names.sort_unstable();
+    assert_eq!(
+        moved_names,
+        vec!["e/dependent", "f/chain"],
+        "only the packages the conflict actually forces should move: {:?}",
+        resolved.moved
+    );
+
+    let untouched = resolved
+        .result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "g/untouched")
+        .expect("g/untouched must still be in the result");
+    assert_eq!(
+        untouched.pretty_version, "1.0.0",
+        "preferred must keep an unrelated package at its locked version, not update it to 1.5.0"
+    );
 }
