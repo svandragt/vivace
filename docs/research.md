@@ -32,7 +32,7 @@ asks no question and measures nothing of its own. That work sits in the
 `research tooling` milestone, and a chapter blocked on it says so in its
 **Work** list.
 
-## Chapter 1: a conflict-less lock
+## Chapter 1: a conflict-less lock (format measured, holds)
 
 **Question.** Can a lock file be designed so that git merges of two branches
 that both changed dependencies almost never conflict, and so the tool can
@@ -106,6 +106,22 @@ same resolution.
 public applications with long `composer.lock` histories, with the lock
 translated into the new format, and count textual and real conflicts under
 both. Results land in `bench/results/lockmerge.md`.
+
+**Result, 2026-09-22.** The format half holds. Across 379 merges in five
+repositories where both sides changed dependencies
+(`bench/results/lockmerge.md`: one public project, four client projects
+anonymised), `composer.lock` conflicted on 235 merges, 62%. `viv.lock`
+conflicted on 96, 25%. Conflict hunks fell from 1911 to 297. Real
+conflicts, both sides changing the same package to different results, were
+270, and in every repository `viv.lock`'s hunks sit within 10% of that
+count: what the format leaves is what no format can merge. 139 merges that
+someone resolved by hand at the time would have merged clean.
+
+That sizes the second half. Marker tolerance (#274) and the merge driver
+(#275) now have a known target, the 25% of merges whose conflicts are real
+and need the divergent names re-solved. The format's win needed no
+staleness rule at all, so the coverage gap in #290 does not touch this
+result; it matters only for how the re-solve decides what is divergent.
 
 **Work.** Format and writer (#272), merge replay harness (#273), marker
 tolerance in `install` (#274), merge driver (#275). The format comes first:
