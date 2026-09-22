@@ -133,6 +133,28 @@ fn install_warns_when_the_lock_is_stale() {
     viv_snapshot!(ctx, cmd);
 }
 
+/// #273: `--stdout` prints the translated lock instead of writing it, so
+/// `viv.lock` must never appear in the project directory.
+#[test]
+fn lock_convert_stdout_writes_nothing_to_disk() {
+    let ctx = TestContext::new();
+    copy_monolog_sources(ctx.project.path());
+    let mut cmd = ctx.viv();
+    cmd.args(["lock", "convert", "--stdout"]);
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("[[package]]"),
+        "expected the translated lock on stdout"
+    );
+    assert!(
+        !ctx.project.path().join("viv.lock").exists(),
+        "--stdout must not write viv.lock to disk"
+    );
+}
+
 /// #33: a requirement entirely absent from the lock is fatal
 /// (`ERROR_LOCK_FILE_INVALID` in Composer), unlike a stale hash.
 #[test]

@@ -194,8 +194,14 @@ pub fn read_lock(path: &Path) -> Result<Lock> {
     let mut packages = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for (key, dev) in [("packages", false), ("packages-dev", true)] {
-        for entry in raw.get(key).and_then(Value::as_array).into_iter().flatten() {
-            let package = parse_package(entry, dev, path)?;
+        for (index, entry) in raw
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let package = parse_package(entry, dev, key, index, path)?;
             if !seen.insert(package.name.clone()) {
                 bail!(
                     "{}: package \"{}\" appears more than once in packages/packages-dev",
@@ -229,14 +235,20 @@ pub fn read_lock(path: &Path) -> Result<Lock> {
     })
 }
 
-fn parse_package(raw: &Value, dev: bool, lock_path: &Path) -> Result<Package> {
+fn parse_package(
+    raw: &Value,
+    dev: bool,
+    key: &str,
+    index: usize,
+    lock_path: &Path,
+) -> Result<Package> {
     let name = raw
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("<unknown>");
     let mut package: Package = serde_json::from_value(raw.clone()).with_context(|| {
         format!(
-            "parsing composer.lock package entry \"{name}\" in {}",
+            "parsing composer.lock package entry \"{name}\" ({key}[{index}]) in {}",
             lock_path.display()
         )
     })?;
