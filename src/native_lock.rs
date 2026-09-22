@@ -6,7 +6,9 @@
 //! a second source of truth for it.
 //!
 //! Reading `viv.lock` back (`install`/`update` accepting it in place of
-//! `composer.lock`) is a separate piece of work, not implemented here.
+//! `composer.lock`) is a separate piece of work, not implemented here; the
+//! `read`/`Record` this module does export are for `lock_merge` (#275),
+//! which needs the parsed record shape, not a resolved package.
 //!
 //! `viv lock convert` (#273) is the other direction: an existing
 //! `composer.lock`, translated into this format without re-solving, for
@@ -17,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::lock::{self, Package};
@@ -44,14 +46,42 @@ pub enum LockCommand {
         #[arg(long)]
         stdout: bool,
     },
+    /// A git merge driver for `composer.lock`/`viv.lock` (#275): merges the
+    /// three inputs by name-keyed package record instead of by text line,
+    /// writes the result over `<ours>`, and exits 1 when a package changed
+    /// on both sides to a different result (a human decision, not this
+    /// chunk's job — see `docs/research.md` chapter 1). Git's merge-driver
+    /// convention: `%O %A %B` (`git help gitattributes`'s "Defining a
+    /// custom merge driver").
+    Merge {
+        /// The common ancestor's version of the lock (`%O`).
+        base: PathBuf,
+        /// This side's version (`%A`); overwritten with the merge result.
+        ours: PathBuf,
+        /// The other side's version (`%B`).
+        theirs: PathBuf,
+        /// Project directory whose composer.json supplies the root
+        /// requirements and the `content-hash` (composer.lock only).
+        #[arg(short = 'd', long = "project-dir", default_value = ".")]
+        project_dir: PathBuf,
+    },
 }
 
-pub fn run(args: &LockArgs) -> Result<()> {
+pub fn run(args: &LockArgs) -> Result<u8> {
     match &args.command {
         LockCommand::Convert {
             project_dir,
             stdout,
-        } => run_convert(project_dir, *stdout),
+        } => {
+            run_convert(project_dir, *stdout)?;
+            Ok(0)
+        }
+        LockCommand::Merge {
+            base,
+            ours,
+            theirs,
+            project_dir,
+        } => crate::lock_merge::run(base, ours, theirs, project_dir),
     }
 }
 
@@ -100,7 +130,7 @@ fn resolved(package: &Package) -> ResolvedPackage {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Document {
     package: Vec<Record>,
 }
@@ -109,21 +139,22 @@ struct Document {
 /// `composer.lock` keeps at the file level (`content-hash`,
 /// `plugin-api-version`, `platform`) and the `packages`/`packages-dev`
 /// split (`dev` carries that instead): see `docs/research.md` chapter 1 for
-/// why.
-#[derive(Serialize)]
+/// why. `pub(crate)`/fields `pub(crate)`: `lock_merge` (#275) reads and
+/// carries these whole, rather than a narrower type just for that path.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "kebab-case")]
-struct Record {
-    name: String,
-    version: String,
+pub(crate) struct Record {
+    pub(crate) name: String,
+    pub(crate) version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    dist_url: Option<String>,
+    pub(crate) dist_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    dist_hash: Option<String>,
+    pub(crate) dist_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    source_ref: Option<String>,
-    dev: bool,
+    pub(crate) source_ref: Option<String>,
+    pub(crate) dev: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    root_requirement: Option<String>,
+    pub(crate) root_requirement: Option<String>,
 }
 
 /// `viv.lock`'s body: one record per resolved package (`non_dev` and `dev`
@@ -139,7 +170,26 @@ pub fn write(non_dev: &[ResolvedPackage], dev: &[ResolvedPackage], root: &Value)
         )
         .collect();
     records.sort_by(|a, b| a.name.cmp(&b.name));
-    toml::to_string_pretty(&Document { package: records }).context("serialising viv.lock")
+    write_records(&records)
+}
+
+/// Reads `viv.lock`'s `[[package]]` blocks back into [`Record`]s (#275):
+/// no reader existed before this, chapter 1 having shipped the writer only.
+pub(crate) fn read(path: &Path) -> Result<Vec<Record>> {
+    let content = fs_err::read_to_string(path).context("reading viv.lock")?;
+    let doc: Document = toml::from_str(&content).context("parsing viv.lock")?;
+    Ok(doc.package)
+}
+
+/// Serialises already-built [`Record`]s as-is, no resolution or
+/// `root-requirement` derivation: `write`'s own tail, and `lock_merge`'s
+/// clean (non-divergent) path, which already has the winning side's
+/// records and needs only [`Document`]'s sort/shape, not a fresh solve.
+pub(crate) fn write_records(records: &[Record]) -> Result<String> {
+    toml::to_string_pretty(&Document {
+        package: records.to_vec(),
+    })
+    .context("serialising viv.lock")
 }
 
 /// One record: `dist`/`source` come off `ResolvedPackage::raw`, the same
@@ -263,5 +313,18 @@ mod tests {
         };
         assert_eq!(by_name("acme/prod")["dev"].as_bool(), Some(false));
         assert_eq!(by_name("acme/dev")["dev"].as_bool(), Some(true));
+    }
+
+    /// #275's reader requirement: reading the committed fixture and writing
+    /// it straight back must reproduce it byte-for-byte, or `lock_merge`'s
+    /// clean path (read three, merge, write one) would drift from what
+    /// chapter 1's writer itself produces.
+    #[test]
+    fn viv_lock_round_trips_through_read_and_write() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog/viv.lock");
+        let original = fs_err::read_to_string(&path).unwrap();
+        let records = read(&path).unwrap();
+        let rewritten = write_records(&records).unwrap();
+        assert_eq!(rewritten, original);
     }
 }

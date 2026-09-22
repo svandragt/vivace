@@ -714,68 +714,13 @@ pub(crate) fn lock_only(lock_path: &Path, composer_json: &[u8]) -> Result<String
         None
     };
 
-    let stability_flags: HashMap<String, u8> = lock
-        .get("stability-flags")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .filter_map(|(name, rank)| u8::try_from(rank.as_u64()?).ok().map(|r| (name.clone(), r)))
-        .collect();
-    let aliases: Vec<crate::solver::transaction::AliasEntry> = lock
-        .get("aliases")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            Some(crate::solver::transaction::AliasEntry {
-                package: entry.get("package")?.as_str()?.to_string(),
-                version: entry.get("version")?.as_str()?.to_string(),
-                alias: entry.get("alias")?.as_str()?.to_string(),
-                alias_normalized: entry.get("alias_normalized")?.as_str()?.to_string(),
-            })
-        })
-        .collect();
-    let minimum_stability = match lock.get("minimum-stability").and_then(Value::as_str) {
-        Some("dev") => "dev",
-        Some("alpha") => "alpha",
-        Some("beta") => "beta",
-        Some("RC") => "RC",
-        _ => "stable",
-    };
-    let empty_map = serde_json::Map::new();
-    let platform_reqs = lock
-        .get("platform")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_else(|| empty_map.clone());
-    let platform_dev_reqs = lock
-        .get("platform-dev")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_else(|| empty_map.clone());
-    let platform_overrides = lock
-        .get("platform-overrides")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or(empty_map);
-
-    let options = crate::lock_writer::LockOptions {
-        minimum_stability,
-        stability_flags: &stability_flags,
-        prefer_stable: lock
-            .get("prefer-stable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        prefer_lowest: lock
-            .get("prefer-lowest")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        platform_reqs: &platform_reqs,
-        platform_dev_reqs: &platform_dev_reqs,
-        platform_overrides: &platform_overrides,
-        aliases: &aliases,
-    };
-    crate::lock_writer::write(&non_dev, dev.as_deref(), &options, composer_json)
+    let aggregates = crate::lock_writer::LockAggregates::from_lock_value(&lock);
+    crate::lock_writer::write(
+        &non_dev,
+        dev.as_deref(),
+        &aggregates.as_options(),
+        composer_json,
+    )
 }
 
 fn resolved_packages(lock: &Value, key: &str) -> Vec<ResolvedPackage> {
