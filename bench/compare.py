@@ -4,6 +4,7 @@
 Usage:
     bench/compare.py <hyperfine-json>... --baseline bench/results/baseline.json [--tolerance 0.15] [--write-baseline]
     bench/compare.py --merge-runs <run-dir>... --project <name> --baseline bench/results/baseline.json
+    bench/compare.py --ab <before-dir> <after-dir> [--tolerance 0.15]
     bench/compare.py --self-test
 
 GitHub runners vary 30-45% run to run on identical code (Laravel warm: 64 ms
@@ -41,6 +42,22 @@ project or under `<run-dir>/<project>/` for any other), computes each run's
 ratios the same way --write-baseline does, and writes the per-scenario
 MEDIAN across runs as the baseline -- see bench/results/README.md for how
 to regenerate it from downloaded CI artifacts.
+
+--ab answers a different question: "did my change make viv slower", on one
+machine, minutes apart, with no Composer denominator at all -- the ratio
+mode is the right instrument for CI, where it cancels a runner's speed out
+of the number, but that's the wrong tool for a merge check on a single
+machine, where Composer's own run-to-run noise (and any regression in
+Composer itself) would leak into viv's grade for no reason. Each side is a
+directory holding one subdirectory per project, itself holding the viv-only
+hyperfine JSON `bench/run.sh` writes (`viv.json`, `viv-update.json`,
+`viv-update-offline.json`) -- the layout `bench/ab.sh` produces. For every
+project present on both sides, warm and noop (CHECKED_SCENARIOS again) are
+graded against each other directly: a regression passes if it's within
+tolerance, or if it's smaller than the two runs' combined stddev (hyperfine
+already reports this per scenario, so a wobble neither run can tell apart
+from noise is not a failure). Cold and update-warm/update-offline stay
+informational, for the same reasons as the ratio mode.
 """
 import argparse
 import json
@@ -103,6 +120,22 @@ def means_from_hyperfine(paths, tool):
     return means
 
 
+def stddevs_from_hyperfine(paths, tool):
+    """Return {scenario: stddev_seconds} for `tool`'s commands, same lookup as
+    means_from_hyperfine but for hyperfine's stddev -- --ab uses this to show
+    each side's noise next to its median."""
+    stddevs = {}
+    for path in paths:
+        with open(path) as f:
+            data = json.load(f)
+        for result in data["results"]:
+            parts = result["command"].split()
+            if len(parts) != 2 or parts[0] != tool or parts[1] not in SCENARIOS:
+                continue
+            stddevs[parts[1]] = result["stddev"]
+    return stddevs
+
+
 def ratios_for_run(paths):
     """Return {scenario: ratio} for one run's hyperfine JSON paths, the same
     computation --write-baseline uses for a single run."""
@@ -159,6 +192,50 @@ def compare(viv_means, composer_means, baseline, tolerance):
     return ok, rows
 
 
+def ab_compare(before_means, after_means, before_stddevs, after_stddevs, tolerance):
+    """Return (ok, rows) for one project's viv-against-viv comparison, no
+    Composer denominator (#293). rows is a list of (scenario, before, after,
+    delta, before_stddev, after_stddev, status).
+
+    A checked scenario (CHECKED_SCENARIOS, same as the ratio mode) passes if
+    `after` is within tolerance of `before`, or if the regression is smaller
+    than the two runs' combined stddev -- a wobble neither run can tell
+    apart from its own noise is not a failure. Cold and the update
+    scenarios are informational only, for the same reasons the ratio mode
+    treats them that way.
+    """
+    ok = True
+    rows = []
+    for scenario in SCENARIOS:
+        before = before_means.get(scenario)
+        after = after_means.get(scenario)
+        if before is None or after is None:
+            continue
+        delta = after - before
+        before_sd = before_stddevs.get(scenario, 0.0)
+        after_sd = after_stddevs.get(scenario, 0.0)
+        if scenario not in CHECKED_SCENARIOS:
+            rows.append((scenario, before, after, delta, before_sd, after_sd, "info"))
+            continue
+        limit = before * (1 + tolerance)
+        if after <= limit or delta < (before_sd + after_sd):
+            rows.append((scenario, before, after, delta, before_sd, after_sd, "ok"))
+        else:
+            ok = False
+            rows.append((scenario, before, after, delta, before_sd, after_sd, "FAIL"))
+    return ok, rows
+
+
+def print_ab_table(project, rows, tolerance):
+    print(f"bench/compare.py --ab: {project} (tolerance {tolerance:.0%})")
+    print(f"{'scenario':<15} {'before':>14} {'after':>14} {'delta':>10} {'status':>6}")
+    for scenario, before, after, delta, before_sd, after_sd, status in rows:
+        before_str = f"{before * 1000:.1f}+/-{before_sd * 1000:.1f}ms"
+        after_str = f"{after * 1000:.1f}+/-{after_sd * 1000:.1f}ms"
+        delta_str = f"{delta * 1000:+.1f}ms"
+        print(f"{scenario:<15} {before_str:>14} {after_str:>14} {delta_str:>10} {status:>6}")
+
+
 def print_table(project, rows, tolerance):
     print(f"bench/compare.py: {project} (tolerance {tolerance:.0%})")
     print(f"{'scenario':<15} {'viv':>10} {'composer':>10} {'ratio':>8} {'baseline':>10} {'status':>6}")
@@ -185,11 +262,42 @@ def main(argv):
         help="bench-results run directories to merge into --project's baseline "
         "entry as the per-scenario median across runs",
     )
+    parser.add_argument(
+        "--ab",
+        nargs=2,
+        metavar=("BEFORE_DIR", "AFTER_DIR"),
+        help="same-machine viv-vs-viv comparison: each dir holds one <project>/*.json "
+        "of viv's own hyperfine exports (the layout bench/ab.sh writes)",
+    )
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
     if args.self_test:
         return self_test()
+
+    if args.ab:
+        before_dir, after_dir = (Path(d) for d in args.ab)
+        before_projects = {p.name for p in before_dir.iterdir() if p.is_dir()}
+        after_projects = {p.name for p in after_dir.iterdir() if p.is_dir()}
+        projects = sorted(before_projects & after_projects)
+        if not projects:
+            print(f"bench/compare.py --ab: no project present in both {before_dir} and {after_dir}", file=sys.stderr)
+            return 1
+        ok = True
+        for project in projects:
+            before_paths = sorted((before_dir / project).glob("*.json"))
+            after_paths = sorted((after_dir / project).glob("*.json"))
+            before_means = means_from_hyperfine(before_paths, "viv")
+            after_means = means_from_hyperfine(after_paths, "viv")
+            before_stddevs = stddevs_from_hyperfine(before_paths, "viv")
+            after_stddevs = stddevs_from_hyperfine(after_paths, "viv")
+            project_ok, rows = ab_compare(before_means, after_means, before_stddevs, after_stddevs, args.tolerance)
+            print_ab_table(project, rows, args.tolerance)
+            ok = ok and project_ok
+        if not ok:
+            print(f"bench/compare.py --ab: regression beyond {args.tolerance:.0%} tolerance and noise", file=sys.stderr)
+            return 1
+        return 0
 
     if args.merge_runs:
         base_dirs = [
@@ -370,6 +478,28 @@ def self_test():
     merged = median_ratios([{"warm": 0.10, "noop": 0.20}, {"warm": 0.12}, {"warm": 0.14, "noop": 0.24}])
     assert merged["warm"] == 0.12
     assert merged["noop"] == 0.22, "a run missing a scenario must not pull its median toward zero"
+
+    # --ab (#293): faster or unchanged after passes.
+    ok, rows = ab_compare({"warm": 0.040}, {"warm": 0.039}, {"warm": 0.001}, {"warm": 0.001}, 0.15)
+    assert ok, "a faster or equal after must pass"
+
+    # A regression beyond tolerance and beyond the combined stddev fails.
+    ok, rows = ab_compare({"warm": 0.040}, {"warm": 0.060}, {"warm": 0.001}, {"warm": 0.001}, 0.15)
+    assert not ok, "a regression beyond tolerance and noise must fail"
+    statuses = {r[0]: r[6] for r in rows}
+    assert statuses["warm"] == "FAIL"
+
+    # The same regression is noise, not a failure, when it's smaller than
+    # the two runs' combined stddev.
+    ok, rows = ab_compare({"warm": 0.040}, {"warm": 0.050}, {"warm": 0.006}, {"warm": 0.006}, 0.15)
+    assert ok, "a regression within the combined stddev must pass"
+
+    # Cold and the update scenarios stay informational under --ab too, never
+    # failing however large the swing.
+    ok, rows = ab_compare({"cold": 0.1}, {"cold": 10.0}, {"cold": 0.01}, {"cold": 0.01}, 0.15)
+    assert ok, "cold must never fail --ab"
+    statuses = {r[0]: r[6] for r in rows}
+    assert statuses["cold"] == "info"
 
     print("bench/compare.py: self-test ok")
     return 0

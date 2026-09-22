@@ -152,6 +152,15 @@ recorded numbers within noise; cold is recorded but not gated, because
 GitHub throttles repeated cold runs. If a feature regresses, optimise it
 back before committing, or do not commit.
 
+Before merging an install-path change, build both `main` and the branch,
+keep the two binaries, and run `make bench-ab BEFORE=<main-binary>
+AFTER=<branch-binary>` (`bench/ab.sh` under the hood). It benchmarks
+laravel, drupal/recommended-project and symfony/demo — corpus extremes on
+file count, package count and the one project with a historical baseline
+(#293) — and grades warm and no-op with `bench/compare.py --ab`, viv
+against itself with no Composer denominator, which is the right question
+for a merge where the CI ratio gate below is answering a different one.
+
 CI enforces the warm/no-op half of this rule on every push and pull request:
 the `bench` job runs `bench/run.sh` on `tests/fixtures/monolog` (a runner-sized
 project, unlike the local `bench/laravel` numbers above) and
