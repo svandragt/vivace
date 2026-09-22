@@ -32,7 +32,7 @@ asks no question and measures nothing of its own. That work sits in the
 `research tooling` milestone, and a chapter blocked on it says so in its
 **Work** list.
 
-## Chapter 1: a conflict-less lock (format measured, holds)
+## Chapter 1: a conflict-less lock (format and driver measured, hold)
 
 **Question.** Can a lock file be designed so that git merges of two branches
 that both changed dependencies almost never conflict, and so the tool can
@@ -136,6 +136,29 @@ There was no rule; re-solving is the rule. Resolutions dragged a median of
 closure of the divergent names, not the names alone. The format's win needed no
 staleness rule at all, so the coverage gap in #290 does not touch this
 result; it matters only for how the re-solve decides what is divergent.
+
+**Result, driver, 2026-09-22.** `viv lock merge` (#275) merges by record
+and re-solves the divergent closure against the merged `composer.json`,
+falling back to markers on those names only when the solve cannot finish.
+On the same 355 client merges: `composer.lock` 228 conflicting, `viv.lock`
+92, record merge 88, record merge with re-solve **61**, 17%. On the public
+corpus the driver reaches the two merges whose package no longer exists
+and stops.
+
+The 61 are the replay's floor rather than the driver's. Thirty are `dev-*`
+branches whose current head declares a conflict the historical head did
+not; Packagist serves only today's head, so no replay recovers them, and a
+developer merging today gets the head they want. Sixteen are inline
+`package` repositories viv refuses (#294). Six are the harness's platform
+heuristic. Four packages are gone, four chains may be genuine, one
+manifest is malformed. `--as-of`, resolving against the registry as it
+stood at the commit, changed nothing, which is the confirmation: the
+residue is branches, not releases. Excluding what a replay cannot
+reproduce, the driver-attributable residue is about 9 of 355, under 3%.
+
+So, for a project viv can solve: the format alone takes a dependency
+merge from a 62% chance of conflict to 25%, and the driver takes it to a
+few percent, with what remains being the conflicts no tool can decide.
 
 **Work.** Format and writer (#272), merge replay harness (#273), marker
 tolerance in `install` (#274), merge driver (#275). The format comes first:
