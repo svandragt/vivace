@@ -465,25 +465,26 @@ def _php_floor(constraint: str) -> str | None:
     return f"{major}.{minor}.99"
 
 
-def _platform_names_in_lock(lock_bytes: bytes) -> set[str]:
+def _platform_constraints_in_lock(lock_bytes: bytes) -> dict[str, list[str]]:
     """Every `ext-*`/`lib-*` name in any package's own `require`, across
-    `packages`+`packages-dev`: a lock entry's `require` is that package's
-    real transitive requirement as of that commit, so this is the platform
-    a contemporaneous resolve actually walked -- not just what the root
+    `packages`+`packages-dev`, mapped to every constraint string seen for
+    it: a lock entry's `require` is that package's real transitive
+    requirement as of that commit, so this is the platform a
+    contemporaneous resolve actually walked -- not just what the root
     manifest names directly (`ext-ffi`, needed by `jcupitt/vips` three
     levels under a root require, is invisible to the manifest alone but
     present in every lock that ever resolved it)."""
     try:
         data = json.loads(lock_bytes)
     except json.JSONDecodeError:
-        return set()
-    names = set()
+        return {}
+    constraints: dict[str, list[str]] = {}
     for key in ("packages", "packages-dev"):
         for pkg in data.get(key) or []:
-            for name in pkg.get("require") or {}:
+            for name, constraint in (pkg.get("require") or {}).items():
                 if name.startswith(("ext-", "lib-")):
-                    names.add(name)
-    return names
+                    constraints.setdefault(name, []).append(str(constraint))
+    return constraints
 
 
 def declare_contemporaneous_platform(composer_json: bytes, ours_lock: bytes, theirs_lock: bytes) -> bytes:
@@ -495,16 +496,22 @@ def declare_contemporaneous_platform(composer_json: bytes, ours_lock: bytes, the
     (`src/lock_merge.rs`'s own investigation), not a `--ignore-platform-reqs`
     viv's solver does not implement yet (#242). Derives a `php` floor from
     the manifest's own `require.php` (`_php_floor`'s heuristic and known
-    failure case above) and reuses it for every `ext-*`/`lib-*` name in
-    `require`/`require-dev`, plus every such name `_platform_names_in_lock`
+    failure case above); every `ext-*`/`lib-*` name in `require`/
+    `require-dev`, plus every such name `_platform_constraints_in_lock`
     finds in `ours_lock`/`theirs_lock` (the transitive closure as of that
     commit, `ours`/`theirs` rather than `base` since either side's own
     resolve is a real historical platform, closer to the merge than the
-    common ancestor), skipping any platform name the manifest's own
-    `config.platform` already sets (its override wins). Leaves `php`
-    (and so everything else) untouched when there is no `require.php` to
-    derive a floor from. Malformed JSON is left as-is; that merge's
-    footnote is `viv lock merge`'s own parse error, not this rewrite's."""
+    common ancestor), gets its *own* floor from every constraint string
+    ever seen for that name, not the php one: PECL extensions version
+    independently of PHP (`ext-zip`'s `^1.14.0` has nothing to do with PHP
+    8.4), so reusing the php floor for it fails its own constraint outright.
+    Falls back to the php floor only when none of a name's constraints
+    contain a digit (`*`, or an implicit `ext-foo` with no version at all).
+    `setdefault` throughout, so a name the manifest's own `config.platform`
+    already sets keeps its override. Leaves `php` (and so everything else)
+    untouched when there is no `require.php` to derive a floor from.
+    Malformed JSON is left as-is; that merge's footnote is `viv lock
+    merge`'s own parse error, not this rewrite's."""
     try:
         data = json.loads(composer_json)
     except json.JSONDecodeError:
@@ -519,12 +526,18 @@ def declare_contemporaneous_platform(composer_json: bytes, ours_lock: bytes, the
     platform = config.setdefault("platform", {})
     platform.setdefault("php", php_floor)
 
-    names = {name for name in require if name.startswith(("ext-", "lib-"))}
-    names |= {name for name in (data.get("require-dev") or {}) if name.startswith(("ext-", "lib-"))}
-    names |= _platform_names_in_lock(ours_lock)
-    names |= _platform_names_in_lock(theirs_lock)
-    for name in names:
-        platform.setdefault(name, php_floor)
+    constraints: dict[str, list[str]] = {}
+    for links in (require, data.get("require-dev") or {}):
+        for name, constraint in links.items():
+            if name.startswith(("ext-", "lib-")):
+                constraints.setdefault(name, []).append(str(constraint))
+    for lock_bytes in (ours_lock, theirs_lock):
+        for name, values in _platform_constraints_in_lock(lock_bytes).items():
+            constraints.setdefault(name, []).extend(values)
+
+    for name, values in constraints.items():
+        floor = _php_floor(" ".join(values)) or php_floor
+        platform.setdefault(name, floor)
 
     return json.dumps(data).encode()
 
