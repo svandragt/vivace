@@ -109,3 +109,163 @@ With the public run: 379 merges, 235 conflicting under `composer.lock`
 (62%), 96 under `viv.lock` (25%), 1911 hunks against 297, 270 real. In
 every one of the five repositories `viv.lock`'s hunk count sits within 10%
 of its real-conflict count.
+
+## 2026-09-22T12:01:24Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `target/release/viv` (viv 0.14.0, commit `0c234e5fdbd3dfeb4a14a092b838c8ab70f4eb76`).
+
+### flarum/flarum
+
+Skipped: no committed composer.lock at HEAD.
+
+### monicahq/monica
+
+Examined `no qualifying merge found (no merge had both parents touch composer.lock)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 0 | 0 | n/a | 0 | n/a | 0 | n/a |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 25 | 5 | 4 | 3 |
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 25 | 5 | 4 | 3 |
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+## 2026-09-22T12:18:51Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `target/release/viv` (viv 0.14.0, commit `f08c5b76dda58d4544ba5c4e5a09bebbf73e8eb9`).
+
+### flarum/flarum
+
+Skipped: no committed composer.lock at HEAD.
+
+### monicahq/monica
+
+Examined `no qualifying merge found (no merge had both parents touch composer.lock)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 0 | 0 | n/a | 0 | n/a | 0 | n/a |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 25 | 5 | 4 | 3 |
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 25 | 5 | 4 | 3 |
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
