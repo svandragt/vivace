@@ -166,8 +166,10 @@ tolerance in `install` (#274), merge driver (#275). Done: #272, #273,
 solve the projects it currently refuses (#294); re-solving `viv.lock` by
 fetching the pinned set's requires, so the format reaches the same ~3%
 as `composer.lock` with the driver (#295); escalating the re-solve scope
-to a full update before ever falling back to markers, so the lock reaches
-0% and every remaining human decision lives in `composer.json` (#296). The format comes first:
+to a full solve that prefers every locked version, so only what the
+merge forces moves and the lock reaches 0% with every remaining human
+decision living in `composer.json` (#296). Not a full update: that would
+move packages neither branch touched. The format comes first:
 it should remove most conflicts on its own and is a small change on top of
 the existing lock writer.
 
