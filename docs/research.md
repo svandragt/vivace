@@ -169,16 +169,18 @@ few percent, with what remains being the conflicts no tool can decide.
 
 **Work.** Format and writer (#272), merge replay harness (#273), marker
 tolerance in `install` (#274), merge driver (#275). Done: #272, #273,
-#275, #294, #297; #290 closed as superseded, the driver decides divergence
-by three-way identity and never reads staleness. Queued, in order:
-re-solving `viv.lock` by fetching the pinned set's requires, so the format
-reaches the same ~3% as `composer.lock` with the driver (#295); escalating
-the re-solve scope to a full solve that prefers every locked version, so
-only what the merge forces moves and the lock reaches 0% with every
-remaining human decision living in `composer.json` (#296). Not a full
-update: that would move packages neither branch touched. Marker tolerance
-in `install` (#274) stays as the fallback for a lock that arrives already
-conflicted, behind the two above.
+#274, #275, #294, #297; #290 closed as superseded, the driver decides
+divergence by three-way identity and never reads staleness. #274 refuses
+`install` when `composer.lock` or `viv.lock` still carries git conflict
+markers, naming the file, the first marker's line and the packages in
+conflict, and pointing at `viv lock merge`, instead of the raw parse
+error a leftover marker used to produce. Queued, in order: re-solving
+`viv.lock` by fetching the pinned set's requires, so the format reaches
+the same ~3% as `composer.lock` with the driver (#295); escalating the
+re-solve scope to a full solve that prefers every locked version, so only
+what the merge forces moves and the lock reaches 0% with every remaining
+human decision living in `composer.json` (#296). Not a full update: that
+would move packages neither branch touched.
 
 ## Chapter 2: autoload from the store, no vendor tree (measured, not pursued)
 
