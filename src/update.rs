@@ -76,6 +76,9 @@ pub struct UpdateArgs {
     /// --lock`. `--lock native` solves normally, still writes
     /// `composer.lock` unchanged, and additionally writes `viv.lock`
     /// beside it (chapter 1's research format, #272, `docs/research.md`).
+    /// Implied (as `native`) when `viv.lock` already exists beside
+    /// `composer.lock` and this flag is omitted entirely, so a project that
+    /// adopted the format doesn't have to keep passing it (#297).
     #[arg(long, num_args = 0..=1, default_missing_value = "self")]
     pub lock: Option<String>,
     /// Solve without `require-dev`, but still resolve and record dev
@@ -218,7 +221,13 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
     let mut composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root: Value = serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let lock_path = project_dir.join("composer.lock");
+    let viv_lock_path = project_dir.join("viv.lock");
+    // #297: once a project has adopted the format, the flag is implied
+    // rather than remembered on every `update` — but only when it's
+    // omitted outright; an explicit bare `--lock` still means "self", the
+    // no-solve re-derive.
     let write_native_lock = match args.lock.as_deref() {
+        None if viv_lock_path.is_file() => true,
         None | Some("self") => false,
         Some("native") => true,
         Some(other) => bail!("--lock: unknown mode {other:?} (expected nothing or `native`)"),
@@ -347,7 +356,7 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
         let current_root: Value =
             serde_json::from_slice(&composer_json).context("parsing composer.json")?;
         let native = crate::native_lock::write(&result.non_dev, &result.dev, &current_root)?;
-        fs_err::write(project_dir.join("viv.lock"), native)?;
+        fs_err::write(&viv_lock_path, native)?;
     }
 
     if !args.no_install {

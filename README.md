@@ -187,7 +187,7 @@ viv diagnose              # environment/config report to paste into a bug report
 viv lock convert          # translate an existing composer.lock into viv.lock
 viv lock merge base ours theirs   # git merge driver for composer.lock/viv.lock
 viv workspace list        # list a workspace's members and their inter-requirements
-viv update --lock native  # resolves normally, also writes viv.lock beside composer.lock
+viv update --lock native  # resolves normally, also writes viv.lock beside composer.lock (implied once viv.lock exists)
 ```
 
 `install` runs your project's setup scripts, the same way Composer does,
