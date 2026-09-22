@@ -346,14 +346,16 @@ fn run_impl(
         serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let root = lock::root_from_value(&composer_json_value).context("parsing composer.json")?;
     let read_lock_started = Instant::now();
-    let mut lock = read_lock(&lock_path)?;
+    let mut lock = read_lock(&lock_path)
+        .map_err(|err| with_marker_hint("composer.lock", &lock_path, "\"name\": \"", err))?;
     tracing::debug!(
         packages = lock.packages.len(),
         elapsed_ms = read_lock_started.elapsed().as_millis(),
         "read and parsed composer.lock"
     );
     if viv_lock_present {
-        crate::native_lock::reconcile(&mut lock, &viv_lock_path)?;
+        crate::native_lock::reconcile(&mut lock, &viv_lock_path)
+            .map_err(|err| with_marker_hint("viv.lock", &viv_lock_path, "name = \"", err))?;
     }
     let dev = !args.no_dev;
 
@@ -1561,6 +1563,77 @@ fn log_composer_noop_flags(no_interaction: bool, prefer_dist: bool, no_suggest: 
     if no_suggest {
         tracing::debug!("ignoring --no-suggest, viv prints no suggestions");
     }
+}
+
+/// #274: `read_lock`/`native_lock::reconcile` fail with a plain JSON/TOML
+/// parse error when the lock still carries git conflict markers from an
+/// unresolved merge (the shape `viv lock merge` itself writes — see
+/// `lock_merge.rs`'s `render_composer_marker`/`render_viv_marker`). Only
+/// called after that parse has already failed, so a clean file pays
+/// nothing beyond this one extra read (`AGENTS.md`'s performance rule).
+/// Replaces the raw parse error with one naming the file, the first
+/// marker's line and the packages in conflict; passes the original error
+/// through unchanged when no markers are present, so every other failure
+/// (a genuinely malformed lock, a `viv.lock`/`composer.lock` mismatch)
+/// keeps its own message.
+fn with_marker_hint(
+    label: &str,
+    path: &Path,
+    name_prefix: &str,
+    err: anyhow::Error,
+) -> anyhow::Error {
+    match marker_conflict_message(label, path, name_prefix) {
+        Some(message) => anyhow::anyhow!(message),
+        None => err,
+    }
+}
+
+/// Scans `path` for `<<<<<<<`/`=======`/`>>>>>>>` marker blocks. `name_prefix`
+/// picks out each side's package name line (`"name": "` for `composer.lock`'s
+/// JSON, `name = "` for `viv.lock`'s TOML) — always the first field of a
+/// package entry (`lock_writer::KEY_ORDER`, `native_lock::Record`), so the
+/// first match inside each half of a block is that side's name, not a
+/// nested one (an author's `"name"`, say).
+fn marker_conflict_message(label: &str, path: &Path, name_prefix: &str) -> Option<String> {
+    let content = fs_err::read_to_string(path).ok()?;
+    let mut first_line = None;
+    let mut in_half = false;
+    let mut found_name_this_half = false;
+    let mut names: Vec<String> = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+        if line.starts_with("<<<<<<<") {
+            first_line.get_or_insert(index);
+            in_half = true;
+            found_name_this_half = false;
+        } else if line == "=======" {
+            in_half = true;
+            found_name_this_half = false;
+        } else if line.starts_with(">>>>>>>") {
+            in_half = false;
+        } else if in_half
+            && !found_name_this_half
+            && let Some(name) = line.trim_start().strip_prefix(name_prefix)
+        {
+            let name = name.trim_end_matches(['"', ',']);
+            if !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
+            found_name_this_half = true;
+        }
+    }
+    let first_line = first_line?;
+    let mut message = format!(
+        "{label} has unresolved merge conflict markers (first at line {})",
+        first_line + 1
+    );
+    if !names.is_empty() {
+        let _ = write!(message, "\npackages: {}", names.join(", "));
+    }
+    message.push('\n');
+    message.push_str(
+        "run `viv lock merge <base> <ours> <theirs>` or resolve the markers by hand, then retry",
+    );
+    Some(message)
 }
 
 /// `--adopt`'s TTY confirmation: `y`/`yes` (any case) continues, anything
