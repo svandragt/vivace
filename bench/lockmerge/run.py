@@ -423,6 +423,26 @@ def probe_driver(viv_bin: str) -> bool:
     return result.returncode == 0
 
 
+_RUNG_RE = re.compile(r"resolved via rung (\d+) \((\w+)\):")
+_MOVED_RE = re.compile(r"^viv lock merge: \S+ moved outside the divergent set: ")
+
+
+def parse_resolution(stderr: str) -> tuple[int | None, int]:
+    """`viv lock merge`'s own "say what moved" lines (#296): the rung
+    reached (`None` when nothing printed one -- a merge with no divergence
+    at all never calls the escalation path) and how many packages it named
+    as moved outside the divergent set."""
+    rung: int | None = None
+    moved = 0
+    for line in stderr.splitlines():
+        match = _RUNG_RE.search(line)
+        if match:
+            rung = int(match.group(1))
+        elif _MOVED_RE.match(line):
+            moved += 1
+    return rung, moved
+
+
 def summarize_resolve_failure(stderr: str) -> str:
     """A one-line reason for a failed re-solve. The solver's own
     `SolverError` (`src/solver/problem.rs`'s `Display`) is a `  Problem N`
@@ -572,7 +592,7 @@ def declare_contemporaneous_platform(composer_json: bytes, ours_lock: bytes, the
 def driver_conflict(
     viv_bin: str, work: Path, cache_dir: Path, repo_dir: Path, sha: str,
     composer_json: bytes | None, base: bytes, ours: bytes, theirs: bytes,
-) -> tuple[bool | None, str | None]:
+) -> tuple[bool | None, str | None, int | None, int]:
     """`viv lock merge` on the composer.lock trio, run from a directory
     holding the merge commit's own composer.json with its platform
     declared contemporaneous (`declare_contemporaneous_platform`) and
@@ -601,10 +621,14 @@ def driver_conflict(
     produced -- a byte comparison against the merge commit's own
     composer.lock would be comparing apples to a platform, and now a
     registry state, that was never real.
-    Returns (None, error) on anything else (a crash, or composer.json
-    missing at that revision)."""
+    Returns (None, error, None, 0) on anything else (a crash, or
+    composer.json missing at that revision). The third and fourth values
+    are `parse_resolution`'s own (#296): the rung a successful resolve
+    reached, and how many packages it named as moved outside the divergent
+    set -- both `None`/0 on a conflict or a crash, since neither prints
+    that pair."""
     if composer_json is None:
-        return None, "composer.json missing at the merge commit"
+        return None, "composer.json missing at the merge commit", None, 0
     composer_json = declare_contemporaneous_platform(composer_json, ours, theirs)
     tmpdir = work / "driver-src"
     tmpdir.mkdir(exist_ok=True)
@@ -624,11 +648,13 @@ def driver_conflict(
     result = subprocess.run(command, capture_output=True)
     if result.returncode not in (0, 1):
         stderr = result.stderr.decode(errors="replace").strip()
-        return None, (summarize_resolve_failure(stderr) if stderr else f"viv lock merge crashed ({result.returncode})")
+        return None, (summarize_resolve_failure(stderr) if stderr else f"viv lock merge crashed ({result.returncode})"), None, 0
     if result.returncode == 1:
         stderr = result.stderr.decode(errors="replace").strip()
-        return True, (summarize_resolve_failure(stderr) if stderr else None)
-    return False, None
+        return True, (summarize_resolve_failure(stderr) if stderr else None), None, 0
+    stderr = result.stderr.decode(errors="replace").strip()
+    rung, moved = parse_resolution(stderr)
+    return False, None, rung, moved
 
 
 def native_lock_text(viv_bin: str, work: Path, composer_json: bytes | None, composer_lock: bytes) -> tuple[bytes | None, str | None]:
@@ -659,6 +685,8 @@ class MergeOutcome:
     real: int
     driver_conflict: bool | None = None
     driver_error: str | None = None
+    driver_rung: int | None = None
+    driver_moved: int = 0
 
 
 @dataclass
@@ -759,9 +787,11 @@ def run_repo(
 
             driver_conflicted: bool | None = None
             driver_err: str | None = None
+            driver_rung: int | None = None
+            driver_moved = 0
             if driver_available:
                 merge_json = blob(repo_dir, m.sha, "composer.json")
-                driver_conflicted, driver_err = driver_conflict(
+                driver_conflicted, driver_err, driver_rung, driver_moved = driver_conflict(
                     viv_bin, work, driver_cache, repo_dir, m.sha,
                     merge_json, base_lock, ours_lock, theirs_lock,
                 )
@@ -772,7 +802,7 @@ def run_repo(
 
             report.merges.append(MergeOutcome(
                 m.sha, composer_conflicts, native_conflicts, native_error, real,
-                driver_conflicted, driver_err,
+                driver_conflicted, driver_err, driver_rung, driver_moved,
             ))
 
     return report
@@ -876,6 +906,21 @@ def render(
     total_merges = total_composer = total_native = total_real = total_wins = 0
     total_composer_conflicting = total_native_conflicting = total_driver_conflicting = 0
     native_seen_anywhere = driver_seen_anywhere = False
+    total_rung_counts: dict[int, int] = {}
+    total_moved_merges = 0
+
+    def rung_line(merges: list[MergeOutcome]) -> str | None:
+        """#296: how many merges each rung resolved, and how many moved a
+        package outside the divergent set -- `None` when this repo has no
+        driver data at all (skipped, or `viv lock merge` unavailable)."""
+        rungs = [m.driver_rung for m in merges if m.driver_rung is not None]
+        if not rungs:
+            return None
+        counts = {n: rungs.count(n) for n in sorted(set(rungs))}
+        names = {1: "closure", 2: "dependents", 3: "seeded"}
+        rung_text = ", ".join(f"rung {n} ({names.get(n, n)}): {c}" for n, c in counts.items())
+        moved_merges = sum(1 for m in merges if m.driver_moved > 0)
+        return f"Resolved {rung_text}. {moved_merges} merge(s) moved ≥1 package outside the divergent set."
 
     header = (
         "| Merges examined | Merges conflicting (composer.lock) | "
@@ -919,6 +964,16 @@ def render(
         )
         lines.append("")
 
+        repo_rung_line = rung_line(r.merges)
+        if repo_rung_line:
+            lines.append(repo_rung_line)
+            lines.append("")
+            for m in r.merges:
+                if m.driver_rung is not None:
+                    total_rung_counts[m.driver_rung] = total_rung_counts.get(m.driver_rung, 0) + 1
+                if m.driver_moved > 0:
+                    total_moved_merges += 1
+
         total_merges += n
         total_composer += composer_sum
         total_composer_conflicting += composer_conflicting
@@ -952,6 +1007,16 @@ def render(
         f"{fmt_n(total_wins) if native_seen_anywhere else 'n/a'} |"
     )
     lines.append("")
+    if total_rung_counts:
+        names = {1: "closure", 2: "dependents", 3: "seeded"}
+        rung_text = ", ".join(
+            f"rung {n} ({names.get(n, n)}): {c}" for n, c in sorted(total_rung_counts.items())
+        )
+        lines.append(
+            f"Resolved {rung_text}. {total_moved_merges} merge(s) moved "
+            "≥1 package outside the divergent set."
+        )
+        lines.append("")
 
     all_archaeology = [a for r in reports for a in r.archaeology]
     lines.extend(render_archaeology(all_archaeology))
@@ -1167,6 +1232,15 @@ def self_test() -> int:
         assert real_conflicts(
             {"x": ("1.0", None)}, {"x": ("1.0", None)}, {"x": ("2.0", None)}
         ) == 0, "one-sided change is not a real conflict"
+
+        # #296: parse_resolution reads viv lock merge's own "say what
+        # moved" lines off stderr.
+        rung, moved = parse_resolution(
+            "viv lock merge: resolved via rung 2 (dependents): d/dep\n"
+            "viv lock merge: e/dependent moved outside the divergent set: 1.0.0 -> 2.0.0\n"
+        )
+        assert (rung, moved) == (2, 1), f"expected rung 2 with 1 moved package, got {(rung, moved)}"
+        assert parse_resolution("") == (None, 0), "no stderr means no rung to report"
 
     print("lockmerge: self-test OK")
     return 0

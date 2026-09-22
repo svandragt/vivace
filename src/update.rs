@@ -601,7 +601,7 @@ fn read_locked_by_name(lock_path: &Path) -> Result<HashMap<String, Value>> {
 /// too, but never show up here: they come from the lock's separate
 /// `aliases` array, not its `packages`/`packages-dev` entries that
 /// `locked_by_name` is built from.
-fn preferred_versions(
+pub(crate) fn preferred_versions(
     locked_by_name: &HashMap<String, Value>,
     allow_list: &[String],
 ) -> Result<HashMap<String, crate::semver::NormalizedVersion>> {
