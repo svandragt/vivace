@@ -465,7 +465,28 @@ def _php_floor(constraint: str) -> str | None:
     return f"{major}.{minor}.99"
 
 
-def declare_contemporaneous_platform(composer_json: bytes) -> bytes:
+def _platform_names_in_lock(lock_bytes: bytes) -> set[str]:
+    """Every `ext-*`/`lib-*` name in any package's own `require`, across
+    `packages`+`packages-dev`: a lock entry's `require` is that package's
+    real transitive requirement as of that commit, so this is the platform
+    a contemporaneous resolve actually walked -- not just what the root
+    manifest names directly (`ext-ffi`, needed by `jcupitt/vips` three
+    levels under a root require, is invisible to the manifest alone but
+    present in every lock that ever resolved it)."""
+    try:
+        data = json.loads(lock_bytes)
+    except json.JSONDecodeError:
+        return set()
+    names = set()
+    for key in ("packages", "packages-dev"):
+        for pkg in data.get(key) or []:
+            for name in pkg.get("require") or {}:
+                if name.startswith(("ext-", "lib-")):
+                    names.add(name)
+    return names
+
+
+def declare_contemporaneous_platform(composer_json: bytes, ours_lock: bytes, theirs_lock: bytes) -> bytes:
     """The replay re-solves a historical manifest against today's
     Packagist on today's platform; a contemporaneous developer's PHP
     satisfied their own manifest by definition, so this declares a
@@ -475,7 +496,11 @@ def declare_contemporaneous_platform(composer_json: bytes) -> bytes:
     viv's solver does not implement yet (#242). Derives a `php` floor from
     the manifest's own `require.php` (`_php_floor`'s heuristic and known
     failure case above) and reuses it for every `ext-*`/`lib-*` name in
-    `require`/`require-dev`, skipping any platform name the manifest's own
+    `require`/`require-dev`, plus every such name `_platform_names_in_lock`
+    finds in `ours_lock`/`theirs_lock` (the transitive closure as of that
+    commit, `ours`/`theirs` rather than `base` since either side's own
+    resolve is a real historical platform, closer to the merge than the
+    common ancestor), skipping any platform name the manifest's own
     `config.platform` already sets (its override wins). Leaves `php`
     (and so everything else) untouched when there is no `require.php` to
     derive a floor from. Malformed JSON is left as-is; that merge's
@@ -493,10 +518,13 @@ def declare_contemporaneous_platform(composer_json: bytes) -> bytes:
     config = data.setdefault("config", {})
     platform = config.setdefault("platform", {})
     platform.setdefault("php", php_floor)
-    for links in (require, data.get("require-dev") or {}):
-        for name in links:
-            if name.startswith(("ext-", "lib-")):
-                platform.setdefault(name, php_floor)
+
+    names = {name for name in require if name.startswith(("ext-", "lib-"))}
+    names |= {name for name in (data.get("require-dev") or {}) if name.startswith(("ext-", "lib-"))}
+    names |= _platform_names_in_lock(ours_lock)
+    names |= _platform_names_in_lock(theirs_lock)
+    for name in names:
+        platform.setdefault(name, php_floor)
 
     return json.dumps(data).encode()
 
@@ -526,7 +554,7 @@ def driver_conflict(
     missing at that revision)."""
     if composer_json is None:
         return None, "composer.json missing at the merge commit"
-    composer_json = declare_contemporaneous_platform(composer_json)
+    composer_json = declare_contemporaneous_platform(composer_json, ours, theirs)
     tmpdir = work / "driver-src"
     tmpdir.mkdir(exist_ok=True)
     (tmpdir / "composer.json").write_bytes(composer_json)
