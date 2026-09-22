@@ -954,3 +954,21 @@ head); 16 inline `package` repositories viv refuses (#294); 6 the
 platform heuristic declaring php too low; 4 packages gone from Packagist;
 4 constraint chains that may be genuine; 1 malformed historical manifest.
 `--as-of` changed nothing: the residue is branches, not releases.
+
+### Client corpus, `viv lock merge` with package repositories (2026-09-22)
+
+Same four projects, driver at `6fadb8d` (#294 landed). Counts only.
+
+| Project | Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) |
+|---|---|---|---|---|
+| A | 200 (capped) | 126 | 52 | 29 |
+| B | 89 | 57 | 25 | 15 |
+| C | 41 | 32 | 12 | 7 |
+| D | 25 | 13 | 3 | 1 |
+| **Client total** | **355** | **228** | **92** | **52** |
+
+The sixteen merges blocked on `package` repositories now solve: nine
+clean, seven through to `dev-*` branches whose heads have moved. Leaf
+causes of the 52: 37 `dev-*` heads moved (unreplayable); 6 the platform
+heuristic's php floor; 4 packages gone from Packagist; 4 constraint chains
+(#296's target); 1 malformed historical manifest.
