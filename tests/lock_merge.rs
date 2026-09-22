@@ -92,6 +92,7 @@ async fn lock_merge_resolves_the_divergent_closure_against_a_fixture_transport()
         false,
         &locked_by_name,
         &allow_list,
+        None,
     )
     .await
     .unwrap();
@@ -134,6 +135,103 @@ async fn lock_merge_resolves_the_divergent_closure_against_a_fixture_transport()
     assert!(
         !lock_text.contains("<<<<<<<"),
         "a re-solved lock has no markers"
+    );
+}
+
+/// `--as-of` (#275): `psr/log` 3.0.2 released 2024-09-11T13:17:53Z, 3.0.1
+/// released 2024-08-21T13:31:24Z (`tests/fixtures/packagist/.../p2/psr/log.json`).
+/// An `as_of` between the two must resolve the older one; without it (or
+/// with a cutoff after both) the newer one wins, same as any other solve.
+#[tokio::test]
+async fn resolve_divergent_closure_declines_a_version_released_after_as_of() {
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let cache = tempfile::tempdir().unwrap();
+    let root: Value = serde_json::json!({"require": {"psr/log": "^3.0"}});
+    let repo =
+        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
+            .await
+            .unwrap();
+    let locked_by_name = std::collections::HashMap::new();
+    let allow_list = vec!["psr/log".to_string()];
+
+    let latest = vivace::lock_merge::resolve_divergent_closure(
+        &repo,
+        &root,
+        false,
+        &locked_by_name,
+        &allow_list,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        latest
+            .non_dev
+            .iter()
+            .find(|p| p.name == "psr/log")
+            .unwrap()
+            .pretty_version,
+        "3.0.2",
+        "no cutoff: today's latest matching version"
+    );
+
+    // 2024-09-01T00:00:00Z, between 3.0.1's and 3.0.2's release: computed
+    // once (`date -u -d @1725148800` -> that instant) rather than adding a
+    // date-parsing call to this test just to produce its own fixture input.
+    let as_of = 1_725_148_800;
+    let older = vivace::lock_merge::resolve_divergent_closure(
+        &repo,
+        &root,
+        false,
+        &locked_by_name,
+        &allow_list,
+        Some(as_of),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        older
+            .non_dev
+            .iter()
+            .find(|p| p.name == "psr/log")
+            .unwrap()
+            .pretty_version,
+        "3.0.1",
+        "as_of before 3.0.2's release: the last version that existed then"
+    );
+}
+
+/// `lock_merge::run`'s own `--as-of` parse, via the CLI so the error path
+/// (`lock_writer::parse_time_to_epoch` returning `None`) is exercised the
+/// way a real invocation hits it, before any lock or format is even read.
+#[test]
+fn an_unparseable_as_of_is_a_clear_error() {
+    let ctx = TestContext::new();
+    let dir = ctx.project.path();
+    for name in ["composer.json", "base.lock", "ours.lock", "theirs.lock"] {
+        fs::copy(fixtures().join(name), dir.join(name)).unwrap();
+    }
+
+    let output = ctx
+        .viv()
+        .args(["lock", "merge"])
+        .arg(dir.join("base.lock"))
+        .arg(dir.join("ours.lock"))
+        .arg(dir.join("theirs.lock"))
+        .arg("-d")
+        .arg(dir)
+        .arg("--as-of")
+        .arg("not-a-timestamp")
+        .output()
+        .expect("failed to run viv");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not-a-timestamp") && stderr.contains("not a recognised timestamp"),
+        "stderr: {stderr}"
     );
 }
 

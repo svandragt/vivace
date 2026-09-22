@@ -236,6 +236,92 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
 ) -> Result<UpdateResult> {
+    solve_partial_update_seeded_inner(
+        repo,
+        root,
+        prefer_stable,
+        prefer_lowest,
+        locked_by_name,
+        allow_list,
+        mode,
+        seed,
+        preferred,
+        advisories,
+        cache_dir,
+        None,
+    )
+    .await
+}
+
+/// `lock_merge --as-of`'s own entry point (#275): same pipeline as
+/// [`solve_partial_update`], with `as_of` (epoch seconds UTC) threaded to
+/// `pool_builder::push_package_version`'s own filter through the private
+/// `solve_partial_update_seeded_inner` — a new function rather than a new
+/// parameter on [`solve_partial_update`]/[`solve_partial_update_seeded`]
+/// themselves, so `update.rs`/`require.rs`'s existing calls need no change
+/// at all (they still can't set this; only `lock_merge` ever does).
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, only ever called with the default hasher"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors solve_partial_update plus lock_merge's --as-of cutoff"
+)]
+pub async fn solve_partial_update_as_of<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    prefer_lowest: bool,
+    locked_by_name: &HashMap<String, Value>,
+    allow_list: &[String],
+    mode: pool_builder::UpdateAllowMode,
+    as_of: Option<i64>,
+) -> Result<UpdateResult> {
+    solve_partial_update_seeded_inner::<T, crate::audit::NoAdvisories>(
+        repo,
+        root,
+        prefer_stable,
+        prefer_lowest,
+        locked_by_name,
+        allow_list,
+        mode,
+        &[],
+        HashMap::new(),
+        None,
+        None,
+        as_of,
+    )
+    .await
+}
+
+/// The shared body [`solve_partial_update_seeded`] and
+/// [`solve_partial_update_as_of`] both call, `as_of` (`None` from every
+/// caller but the latter) threaded straight to
+/// [`pool_builder::build_partial_seeded`]. Not `pub`, so `implicit_hasher`
+/// (which only ever suggests genericising a *public* signature) has
+/// nothing to say about its own `&HashMap<String, Value>` — only the two
+/// public callers above carry that lint's `#[expect]`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors solve_partial_update plus one seed slice, the minimal-changes pin set, \
+              the advisory pool filter, the platform-probe cache dir, and lock_merge's --as-of \
+              cutoff"
+)]
+async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    prefer_lowest: bool,
+    locked_by_name: &HashMap<String, Value>,
+    allow_list: &[String],
+    mode: pool_builder::UpdateAllowMode,
+    seed: &[String],
+    preferred: HashMap<String, NormalizedVersion>,
+    advisories: Option<AdvisoryFilter<'_, A>>,
+    cache_dir: Option<&Path>,
+    as_of: Option<i64>,
+) -> Result<UpdateResult> {
     let locked_requires: HashMap<String, Vec<String>> = locked_by_name
         .iter()
         .map(|(name, entry)| {
@@ -275,6 +361,7 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
         &preferred,
         advisories,
         cache_dir,
+        as_of,
     )
     .await?;
     resolve(built, root, prefer_stable, prefer_lowest, preferred)

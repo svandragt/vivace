@@ -570,26 +570,37 @@ def declare_contemporaneous_platform(composer_json: bytes, ours_lock: bytes, the
 
 
 def driver_conflict(
-    viv_bin: str, work: Path, cache_dir: Path, composer_json: bytes | None,
-    base: bytes, ours: bytes, theirs: bytes,
+    viv_bin: str, work: Path, cache_dir: Path, repo_dir: Path, sha: str,
+    composer_json: bytes | None, base: bytes, ours: bytes, theirs: bytes,
 ) -> tuple[bool | None, str | None]:
     """`viv lock merge` on the composer.lock trio, run from a directory
     holding the merge commit's own composer.json with its platform
-    declared contemporaneous (`declare_contemporaneous_platform`): exit 0
-    is clean (a divergent name's own re-solve finished, chunk 2), exit 1 is
-    a name that stayed divergent -- either no re-solve was attempted (no
-    divergence at all) or it was and didn't finish, in which case
-    `summarize_resolve_failure` pulls the reason (dead package, abandoned
-    repo URL, constraint conflict, no network) out of stderr for the caller
-    to footnote as an honest result, not a harness gap. `cache_dir` is
-    reused across every merge in a repo so a warm re-solve isn't repaying
-    the same Packagist metadata fetch each time; `--cache-dir` (not the
-    real `~/.cache/vivace`), same isolation rule as `bench/run.sh`.
-    Declaring the platform changes the `content-hash` `viv lock merge`
-    would write, so this only ever looks at the exit code and stderr, never
-    the lock it produced -- a byte comparison against the merge commit's
-    own composer.lock would be comparing apples to a platform that was
-    never real.
+    declared contemporaneous (`declare_contemporaneous_platform`) and
+    `--as-of` set to the merge commit's own committer date: the replay
+    re-solves a historical manifest against today's Packagist, but a
+    contemporaneous developer's `composer update` could only ever pick a
+    version that existed by the time they ran it, so this drops anything
+    Packagist dates later than the merge itself, the same way the platform
+    declaration accounts for the machine instead of guessing at it with a
+    flag viv's solver doesn't have. `dev-*` branches remain today's heads
+    regardless (`--as-of`'s own doc comment) and are footnoted like any
+    other failure when that's what a re-solve actually hits.
+
+    Exit 0 is clean (a divergent name's own re-solve finished, chunk 2),
+    exit 1 is a name that stayed divergent -- either no re-solve was
+    attempted (no divergence at all) or it was and didn't finish, in which
+    case `summarize_resolve_failure` pulls the reason (dead package,
+    abandoned repo URL, constraint conflict, no network) out of stderr for
+    the caller to footnote as an honest result, not a harness gap.
+    `cache_dir` is reused across every merge in a repo so a warm re-solve
+    isn't repaying the same Packagist metadata fetch each time;
+    `--cache-dir` (not the real `~/.cache/vivace`), same isolation rule as
+    `bench/run.sh`. Declaring the platform (and now the registry's own
+    moment) changes the `content-hash` `viv lock merge` would write, so
+    this only ever looks at the exit code and stderr, never the lock it
+    produced -- a byte comparison against the merge commit's own
+    composer.lock would be comparing apples to a platform, and now a
+    registry state, that was never real.
     Returns (None, error) on anything else (a crash, or composer.json
     missing at that revision)."""
     if composer_json is None:
@@ -603,11 +614,14 @@ def driver_conflict(
         p = tmpdir / f"{label}.lock"
         p.write_bytes(content)
         paths[label] = p
-    result = subprocess.run(
-        [viv_bin, "--cache-dir", str(cache_dir), "lock", "merge",
-         str(paths["base"]), str(paths["ours"]), str(paths["theirs"]), "-d", str(tmpdir)],
-        capture_output=True,
-    )
+    command = [
+        viv_bin, "--cache-dir", str(cache_dir), "lock", "merge",
+        str(paths["base"]), str(paths["ours"]), str(paths["theirs"]), "-d", str(tmpdir),
+    ]
+    committer_date = git_or_none(repo_dir, "show", "-s", "--format=%cI", sha)
+    if committer_date:
+        command += ["--as-of", committer_date]
+    result = subprocess.run(command, capture_output=True)
     if result.returncode not in (0, 1):
         stderr = result.stderr.decode(errors="replace").strip()
         return None, (summarize_resolve_failure(stderr) if stderr else f"viv lock merge crashed ({result.returncode})")
@@ -748,7 +762,8 @@ def run_repo(
             if driver_available:
                 merge_json = blob(repo_dir, m.sha, "composer.json")
                 driver_conflicted, driver_err = driver_conflict(
-                    viv_bin, work, driver_cache, merge_json, base_lock, ours_lock, theirs_lock
+                    viv_bin, work, driver_cache, repo_dir, m.sha,
+                    merge_json, base_lock, ours_lock, theirs_lock,
                 )
                 if driver_conflicted and driver_err:
                     report.footnotes.append(
