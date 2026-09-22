@@ -357,8 +357,8 @@ Commands that stay with Composer: `search`, `config`, `global`,
 ### Works with
 
 - Repositories: Packagist, Private Packagist and Satis, including a local
-  `file://` mirror, `path`, `vcs`, git and GitHub sources; redirects are
-  followed.
+  `file://` mirror, `path`, `vcs`, git, GitHub and `package` (inline
+  declarations) sources; redirects are followed.
 - Packages: zip and tar dists, a git checkout when there is no dist,
   `preferred-install: source`, sha1 checks, credentials from `auth.json`
   and `COMPOSER_AUTH`.

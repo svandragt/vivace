@@ -1493,12 +1493,14 @@ impl ComposerSource {
     }
 }
 
-/// One entry from `composer.json`'s `repositories[]`, loaded: either a
-/// `"composer"`-type [`ComposerSource`], or a `"vcs"`/`"git"`/`"github"`
+/// One entry from `composer.json`'s `repositories[]`, loaded: a
+/// `"composer"`-type [`ComposerSource`], a `"vcs"`/`"git"`/`"github"`
 /// [`vcs::VcsSource`] (one package, whose name is resolved lazily —
 /// [`Source::load_versions`] asks the VCS source for `name`'s versions and
 /// gets back an empty list until `name` matches the package the VCS repo
-/// actually holds).
+/// actually holds), or a `"package"`-type [`PackageSource`] (#294, one or
+/// more packages declared inline in `composer.json` itself, no fetch at
+/// all).
 struct Source {
     filters: RepoFilters,
     kind: SourceKind,
@@ -1507,6 +1509,61 @@ struct Source {
 enum SourceKind {
     Composer(ComposerSource),
     Vcs(vcs::VcsSource),
+    Package(PackageSource),
+}
+
+/// `Repository\PackageRepository`: the `"package"` repository's declared
+/// packages (its `package` key, one object or an array of them), loaded
+/// through the same [`PackageVersion::from_owned_value`] extraction a
+/// Packagist provider entry or a VCS ref's `composer.json` goes through
+/// (`ArrayLoader::load` upstream, one loader for all three), grouped by
+/// lowercased name the same way [`Provider::Eager`]'s inline `packages` map
+/// is: a `"package"` repository is exactly a one-off Satis file with the
+/// metadata inlined in `composer.json` instead of fetched. No network, no
+/// cache, nothing under `repo-v0` — the metadata is already in hand.
+struct PackageSource {
+    packages: HashMap<String, Vec<PackageVersion>>,
+}
+
+impl PackageSource {
+    fn load(entries: &[Value]) -> Result<PackageSource> {
+        let mut packages: HashMap<String, Vec<PackageVersion>> = HashMap::new();
+        for entry in entries {
+            // `parse_package_entries` already checked this is an object
+            // with a "name" and a "version"; cloning it here (rather than
+            // consuming `entries`) keeps `RepoKind::Package` the single
+            // owner of the declared JSON, same as every other `RepoKind`
+            // variant only ever borrows from `RepoEntry`.
+            let mut obj = entry
+                .as_object()
+                .context("package repository entry is not an object")?
+                .clone();
+            // `ArrayLoader::load`: `$data['type'] = !empty($data['type']) ?
+            // ... : 'library'` — a hand-written `package` declaration often
+            // omits `type` the same way a VCS repository's `composer.json`
+            // does ([`vcs::finish_version`]'s own copy of this default).
+            if obj
+                .get("type")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                obj.insert("type".to_string(), Value::String("library".to_string()));
+            }
+            let version = PackageVersion::from_owned_value(Value::Object(obj))?;
+            packages
+                .entry(version.name.to_ascii_lowercase())
+                .or_default()
+                .push(version);
+        }
+        Ok(PackageSource { packages })
+    }
+
+    /// True only for a name this source actually declared: unlike a VCS
+    /// source (always worth asking, since it resolves its one package
+    /// lazily), a `package` repository's declared names are known up front.
+    fn allows(&self, name: &str) -> bool {
+        self.packages.contains_key(name)
+    }
 }
 
 impl Source {
@@ -1515,7 +1572,7 @@ impl Source {
         cache_root: &Path,
         transport: &T,
         // #191: only a `"composer"` source's `/p2/` provider files honour
-        // this; a VCS source has no such fetch to skip.
+        // this; a VCS or `package` source has no such fetch to skip.
         metadata_ttl: Duration,
     ) -> Result<Source> {
         let kind = match &entry.kind {
@@ -1525,6 +1582,7 @@ impl Source {
             RepoKind::Vcs { repo_type } => SourceKind::Vcs(
                 vcs::VcsSource::load(&entry.url, repo_type, cache_root, transport).await?,
             ),
+            RepoKind::Package(entries) => SourceKind::Package(PackageSource::load(entries)?),
         };
         Ok(Source {
             filters: entry.filters,
@@ -1535,9 +1593,10 @@ impl Source {
     /// Whether this source is worth asking about `name` (already lowercased)
     /// at all: `only`/`exclude` (`RepoFilters`), layered with a `"composer"`
     /// source's own `available-packages`/`available-package-patterns`
-    /// (`ComposerSource::allows`, #119). A VCS source has neither of the
-    /// latter — it's always worth asking, since it only ever holds the one
-    /// package it was configured for.
+    /// (`ComposerSource::allows`, #119) or a `"package"` source's own
+    /// declared names ([`PackageSource::allows`]). A VCS source has neither
+    /// of those — it's always worth asking, since it only ever holds the
+    /// one package it was configured for.
     fn allows(&self, name: &str) -> bool {
         if !self.filters.allows(name) {
             return false;
@@ -1545,6 +1604,7 @@ impl Source {
         match &self.kind {
             SourceKind::Composer(source) => source.allows(name),
             SourceKind::Vcs(_) => true,
+            SourceKind::Package(source) => source.allows(name),
         }
     }
 
@@ -1552,30 +1612,31 @@ impl Source {
     /// (#182). Not gated by `filters`: `RepositorySet::getSecurityAdvisoriesForConstraints`
     /// loops over every repository regardless of its own `only`/`exclude`/
     /// `canonical` config — those only ever gate which source answers for a
-    /// *package*, never whether a source is asked for advisories. A VCS
-    /// source never advertises (`ComposerRepository` is the only
+    /// *package*, never whether a source is asked for advisories. A VCS or
+    /// `package` source never advertises (`ComposerRepository` is the only
     /// `AdvisoryProviderInterface` implementation upstream).
     fn security_advisories_api_url(&self) -> Option<&str> {
         match &self.kind {
             SourceKind::Composer(source) => source.security_advisories_api_url.as_deref(),
-            SourceKind::Vcs(_) => None,
+            SourceKind::Vcs(_) | SourceKind::Package(_) => None,
         }
     }
 
     /// Provider files this source served straight from its `metadata_ttl`
-    /// window (#191), no request at all: a VCS source never has one.
+    /// window (#191), no request at all: a VCS or `package` source never
+    /// has one.
     fn metadata_fresh_count(&self) -> usize {
         match &self.kind {
             SourceKind::Composer(source) => source.metadata_fresh.load(Ordering::Relaxed),
-            SourceKind::Vcs(_) => 0,
+            SourceKind::Vcs(_) | SourceKind::Package(_) => 0,
         }
     }
 
     /// This source's versions for `name` (already lowercased); `dev` only
     /// affects a `"composer"` source (`ComposerSource::load_versions`'s own
-    /// doc comment). A VCS source ignores it: it has no separate dev file,
-    /// and returns either the one package it holds (every version) or
-    /// nothing, depending on whether `name` matches that package.
+    /// doc comment). A VCS or `package` source ignores it: neither has a
+    /// separate dev file, and each returns either the versions it holds for
+    /// `name` or nothing.
     async fn load_versions<T: Transport>(
         &self,
         transport: &T,
@@ -1588,15 +1649,19 @@ impl Source {
                 source.load_versions(transport, requests, name, dev).await
             }
             SourceKind::Vcs(source) => source.load_versions(transport, requests, name).await,
+            SourceKind::Package(source) => {
+                Ok(source.packages.get(name).cloned().unwrap_or_default())
+            }
         }
     }
 
     /// [`Source::load_versions`], but expansion deferred (#176): only
     /// [`Repository::load_closure_seeded`]'s `ClosureWalk` calls this, since
     /// it's the one caller that screens versions by constraint before
-    /// needing them expanded at all. A VCS source has nothing to defer --
-    /// its one package's one ref was never the bottleneck this exists for --
-    /// so it's wrapped `Ready`, same as [`Source::load_versions`] returns it.
+    /// needing them expanded at all. A VCS or `package` source has nothing
+    /// to defer — a `package` source's metadata is already fully parsed,
+    /// same as `ComposerSource`'s own eager `packages.json` — so it's
+    /// wrapped `Ready`, same as [`Source::load_versions`] returns it.
     async fn load_versions_deferred<T: Transport>(
         &self,
         transport: &T,
@@ -1612,6 +1677,9 @@ impl Source {
             }
             SourceKind::Vcs(source) => Ok(vec![SourceVersions::Ready(
                 source.load_versions(transport, requests, name).await?,
+            )]),
+            SourceKind::Package(source) => Ok(vec![SourceVersions::Ready(
+                source.packages.get(name).cloned().unwrap_or_default(),
             )]),
         }
     }
@@ -1825,7 +1893,10 @@ async fn get_hash_verified_json<D: DeserializeOwned + Send + 'static, T: Transpo
 
 /// One `composer.json` `repositories[]` entry, resolved to a supported
 /// `type` and its filters: `packagist.org` defaulting/disabling is settled
-/// by [`parse_repositories`] before this is built.
+/// by [`parse_repositories`] before this is built. `url` is only meaningful
+/// for [`RepoKind::Composer`]/[`RepoKind::Vcs`] — a `"package"` repository
+/// has no URL of its own (its `package` key carries the metadata directly),
+/// so [`parse_repo_entry`] leaves it empty for that kind.
 #[derive(Debug)]
 struct RepoEntry {
     url: String,
@@ -1834,15 +1905,19 @@ struct RepoEntry {
 }
 
 /// Which loader a [`RepoEntry`] needs: a `"composer"`-type `packages.json`
-/// source, or a VCS one, keyed by the `type` string as written in
+/// source, a VCS one, keyed by the `type` string as written in
 /// `composer.json` (`"vcs"`, `"git"` or `"github"`) since that's what
 /// decides which driver [`vcs::VcsSource::load`] picks — `"git"`/`"github"`
 /// force a driver outright the way Composer's own `$this->drivers[$type]`
-/// does, `"vcs"` autodetects.
+/// does, `"vcs"` autodetects — or a `"package"` one, holding its declared
+/// `package` entries (one object, or the elements of an array) already
+/// validated as objects with a `name` and a `version`
+/// ([`parse_package_entries`]).
 #[derive(Debug)]
 enum RepoKind {
     Composer,
     Vcs { repo_type: String },
+    Package(Vec<Value>),
 }
 
 /// `RepositoryFactory::createRepos` + `Config::merge`'s `repositories`
@@ -1913,14 +1988,26 @@ fn parse_repo_entry(name: &str, repo: &Value) -> Result<RepoEntry> {
         .get("type")
         .and_then(Value::as_str)
         .with_context(|| format!("repository {name:?} must have a \"type\""))?;
+    // A `"package"` repository has no `url` — its metadata is the `package`
+    // key itself — so it's parsed and returned before the `url`/filters
+    // handling every other kind shares below.
+    if repo_type == "package" {
+        let entries = parse_package_entries(name, obj)?;
+        let filters = RepoFilters::parse(obj, name)?;
+        return Ok(RepoEntry {
+            url: String::new(),
+            filters,
+            kind: RepoKind::Package(entries),
+        });
+    }
     let kind = match repo_type {
         "composer" => RepoKind::Composer,
         "vcs" | "git" | "github" => RepoKind::Vcs {
             repo_type: repo_type.to_string(),
         },
         _ => bail!(
-            "repository {name:?}: type {repo_type:?} is not supported (composer, vcs and git \
-             repositories are)"
+            "repository {name:?}: type {repo_type:?} is not supported (composer, package, vcs \
+             and git repositories are)"
         ),
     };
     let url = obj
@@ -1930,6 +2017,43 @@ fn parse_repo_entry(name: &str, repo: &Value) -> Result<RepoEntry> {
         .to_string();
     let filters = RepoFilters::parse(obj, &url)?;
     Ok(RepoEntry { url, filters, kind })
+}
+
+/// `RepoKind::Package`'s own validation: `composer.json`'s `package` key,
+/// one declared package object or an array of them
+/// (`PackageRepository::__construct`'s `isset($repoConfig['package'][0]) ?
+/// ... : [$repoConfig['package']]`). Only the two fields
+/// `PackageRepository::initialize` can't do without — `name` and
+/// `version` — are checked here, naming the repository and the element's
+/// index on failure; everything else (defaults, normalisation) is left to
+/// [`PackageSource::load`]'s `PackageVersion::from_owned_value`, the same
+/// extraction a Packagist provider entry goes through.
+fn parse_package_entries(name: &str, obj: &Map<String, Value>) -> Result<Vec<Value>> {
+    let package = obj.get("package").with_context(|| {
+        format!("repository {name:?} (type \"package\") must have a \"package\"")
+    })?;
+    let entries: Vec<Value> = match package {
+        Value::Object(_) => vec![package.clone()],
+        Value::Array(items) => items.clone(),
+        _ => bail!(
+            "repository {name:?} (type \"package\"): \"package\" must be an object or an array \
+             of objects"
+        ),
+    };
+    for (index, entry) in entries.iter().enumerate() {
+        let entry_obj = entry.as_object().with_context(|| {
+            format!("repository {name:?} (type \"package\"): package[{index}] must be an object")
+        })?;
+        if !entry_obj.get("name").is_some_and(Value::is_string) {
+            bail!("repository {name:?} (type \"package\"): package[{index}] must have a \"name\"");
+        }
+        if !entry_obj.contains_key("version") {
+            bail!(
+                "repository {name:?} (type \"package\"): package[{index}] must have a \"version\""
+            );
+        }
+    }
+    Ok(entries)
 }
 
 /// A loaded set of repositories: one or more `composer`-type sources,
@@ -3494,5 +3618,67 @@ mod tests {
         ));
         // packagist.org is still appended last, unaffected by a vcs entry.
         assert!(matches!(entries[3].kind, RepoKind::Composer));
+    }
+
+    #[test]
+    fn parse_repositories_accepts_package_repository_as_object_or_array() {
+        let root = serde_json::json!({
+            "repositories": [
+                {"type": "package", "package": {"name": "acme/single", "version": "1.0.0"}},
+                {"type": "package", "package": [
+                    {"name": "acme/first", "version": "1.0.0"},
+                    {"name": "acme/second", "version": "2.0.0"},
+                ]},
+            ],
+        });
+        let entries = parse_repositories(&root).unwrap();
+        let RepoKind::Package(single) = &entries[0].kind else {
+            panic!("expected RepoKind::Package, got {:?}", entries[0].kind);
+        };
+        assert_eq!(single.len(), 1);
+        let RepoKind::Package(array) = &entries[1].kind else {
+            panic!("expected RepoKind::Package, got {:?}", entries[1].kind);
+        };
+        assert_eq!(array.len(), 2);
+        // no url required for a "package" repository.
+        assert_eq!(entries[0].url, "");
+    }
+
+    #[test]
+    fn parse_repositories_rejects_package_entry_missing_name_or_version() {
+        let missing_name = serde_json::json!({
+            "repositories": [{"type": "package", "package": {"version": "1.0.0"}}],
+        });
+        let err = parse_repositories(&missing_name).unwrap_err().to_string();
+        assert!(
+            err.contains("package[0]") && err.contains("\"name\""),
+            "{err}"
+        );
+
+        let missing_version = serde_json::json!({
+            "repositories": [{"type": "package", "package": {"name": "acme/pkg"}}],
+        });
+        let err = parse_repositories(&missing_version)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("package[0]") && err.contains("\"version\""),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn package_source_load_defaults_type_and_groups_by_lowercased_name() {
+        let entries = vec![serde_json::json!({
+            "name": "Acme/Widget",
+            "version": "1.0.0",
+            "dist": {"type": "zip", "url": "https://example.com/widget.zip"},
+        })];
+        let source = PackageSource::load(&entries).unwrap();
+        assert!(source.allows("acme/widget"));
+        assert!(!source.allows("acme/other"));
+        let versions = &source.packages["acme/widget"];
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].raw().get("type").unwrap(), "library");
     }
 }

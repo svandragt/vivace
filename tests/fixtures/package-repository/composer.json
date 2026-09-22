@@ -1,0 +1,43 @@
+{
+    "name": "vivace/fixture-package-repository",
+    "repositories": [
+        {"packagist.org": false},
+        {
+            "type": "package",
+            "package": {
+                "name": "acme/widget",
+                "version": "1.0.0",
+                "dist": {
+                    "type": "zip",
+                    "url": "https://example.com/dist/acme/widget-1.0.0.zip",
+                    "reference": "abc123"
+                }
+            }
+        },
+        {
+            "type": "package",
+            "package": [
+                {
+                    "name": "acme/gadget",
+                    "version": "1.0.0",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.com/dist/acme/gadget-1.0.0.zip"
+                    }
+                },
+                {
+                    "name": "acme/gizmo",
+                    "version": "2.0.0",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.com/dist/acme/gizmo-2.0.0.zip"
+                    }
+                }
+            ]
+        }
+    ],
+    "require": {
+        "acme/widget": "1.0.0",
+        "acme/gadget": "1.0.0"
+    }
+}
