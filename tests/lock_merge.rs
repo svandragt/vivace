@@ -523,3 +523,294 @@ async fn rung_3_moves_a_two_hop_dependent_and_leaves_an_unrelated_package_pinned
         "preferred must keep an unrelated package at its locked version, not update it to 1.5.0"
     );
 }
+
+/// #295's own seam, `lock_merge::viv_lock_payloads`: `d/dep` is the one
+/// divergent name (ours 2.0.0, theirs 2.0.1, `d/dep.json`'s own available
+/// versions), `g/untouched` is the pinned non-divergent set whose `require`
+/// a `viv.lock` record never carries — sourced instead from a hand-built
+/// `composer.lock` `Value`, exactly as the sibling file supplies it in
+/// production. Since nothing pins a require against `d/dep`, rung 1 alone
+/// must resolve it, and the write-back through `native_lock::write` /
+/// `lock_writer::write` must produce a pair `native_lock::reconcile`
+/// accepts.
+#[tokio::test]
+async fn viv_lock_rung_1_resolve_writes_a_reconcilable_viv_lock_and_composer_lock() {
+    let root = json!({"require": {"d/dep": "^2.0", "g/untouched": "^1.0"}});
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let cache = tempfile::tempdir().unwrap();
+    let repo =
+        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
+            .await
+            .unwrap();
+
+    let composer_lock = json!({
+        "packages": [{"name": "g/untouched", "version": "1.0.0", "require": {"php": ">=7.4.0"}}],
+        "packages-dev": [],
+    });
+    let mut merged_identities = BTreeMap::new();
+    merged_identities.insert(
+        "g/untouched".to_string(),
+        Identity {
+            version: "1.0.0".to_string(),
+            source_ref: None,
+            dev: false,
+        },
+    );
+    let merged = vivace::lock_merge::viv_lock_payloads(&merged_identities, &composer_lock).unwrap();
+
+    let g_untouched = pinned("g/untouched", "1.0.0", &json!({"php": ">=7.4.0"}));
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    ours.insert("g/untouched".to_string(), g_untouched.clone());
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.1", &json!({"php": ">=7.4.0"})),
+    );
+    theirs.insert("g/untouched".to_string(), g_untouched);
+
+    let mut divergent = BTreeSet::new();
+    divergent.insert("d/dep".to_string());
+
+    let resolved = escalate_resolve(
+        &repo,
+        &root,
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Seeded,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        resolved.scope,
+        Scope::Closure,
+        "d/dep alone, with no pinned require blocking it, resolves at rung 1"
+    );
+    assert!(
+        resolved.moved.is_empty(),
+        "rung 1 must not move anything outside the divergent name: {:?}",
+        resolved.moved
+    );
+    let untouched = resolved
+        .result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "g/untouched")
+        .unwrap();
+    assert_eq!(
+        untouched.pretty_version, "1.0.0",
+        "g/untouched's payload, sourced from composer.lock via viv_lock_payloads, must pin it"
+    );
+
+    let viv_text =
+        vivace::native_lock::write(&resolved.result.non_dev, &resolved.result.dev, &root).unwrap();
+    let options = vivace::lock_writer::LockOptions {
+        minimum_stability: resolved.result.minimum_stability,
+        stability_flags: &resolved.result.stability_flags,
+        prefer_stable: resolved.result.prefer_stable,
+        prefer_lowest: resolved.result.prefer_lowest,
+        platform_reqs: &resolved.result.platform_reqs,
+        platform_dev_reqs: &resolved.result.platform_dev_reqs,
+        platform_overrides: &resolved.result.platform_overrides,
+        aliases: &resolved.result.aliases,
+    };
+    let composer_json = serde_json::to_vec(&root).unwrap();
+    let composer_text = vivace::lock_writer::write(
+        &resolved.result.non_dev,
+        Some(&resolved.result.dev),
+        &options,
+        &composer_json,
+    )
+    .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let viv_lock_path = dir.path().join("viv.lock");
+    let composer_lock_path = dir.path().join("composer.lock");
+    fs::write(&viv_lock_path, viv_text).unwrap();
+    fs::write(&composer_lock_path, composer_text).unwrap();
+
+    let mut lock = vivace::lock::read_lock(&composer_lock_path).unwrap();
+    vivace::native_lock::reconcile(&mut lock, &viv_lock_path)
+        .expect("the re-solved viv.lock and composer.lock must carry matching identities");
+}
+
+/// A minimal `viv.lock` body of one or more records, built through
+/// `native_lock::write` itself (the same writer `viv lock convert` uses)
+/// rather than hand-typed TOML, so a malformed fixture can't hide a real
+/// bug.
+fn viv_lock_body(records: &[(&str, &str)]) -> String {
+    let packages: Vec<vivace::solver::transaction::ResolvedPackage> = records
+        .iter()
+        .map(
+            |&(name, version)| vivace::solver::transaction::ResolvedPackage {
+                name: name.to_string(),
+                pretty_version: version.to_string(),
+                raw: json!({}),
+            },
+        )
+        .collect();
+    vivace::native_lock::write(&packages, &[], &json!({})).unwrap()
+}
+
+/// `--max-scope closure` (#296) threaded through the `viv.lock` path
+/// (#295), over the CLI's own real `HttpTransport` path: a `"package"`-type
+/// `repositories[]` entry (`tests/package_repository.rs`'s own #294
+/// pattern) needs no network at all, so the fixture below reuses
+/// `d/dep`/`e/dependent`'s exact shape from
+/// [`rung_2_resolves_when_a_pinned_direct_dependent_blocks_the_closure`]:
+/// `d/dep` diverges (ours 2.0.0, theirs 2.0.1), `e/dependent` is pinned at
+/// 1.0.0 requiring `d/dep ^1.0` (from the sibling `composer.lock`), so rung
+/// 1 alone cannot satisfy root's `d/dep ^2.0` — only rung 2 could, and
+/// `--max-scope closure` forbids it. `ours.lock` must end up with a marker
+/// block, not a half-written lock.
+#[test]
+fn max_scope_closure_caps_and_falls_back_to_markers_in_viv_lock() {
+    let ctx = TestContext::new();
+    let dir = ctx.project.path();
+    fs::write(
+        dir.join("composer.json"),
+        serde_json::to_vec(&json!({
+            "name": "vivace/fixture-viv-lock-cap",
+            "repositories": [
+                {"packagist.org": false},
+                {"type": "package", "package": [
+                    {"name": "d/dep", "version": "1.0.0",
+                     "dist": {"type": "zip", "url": "https://example.invalid/d-dep-1.0.0.zip"}},
+                    {"name": "d/dep", "version": "2.0.0",
+                     "dist": {"type": "zip", "url": "https://example.invalid/d-dep-2.0.0.zip"}},
+                    {"name": "d/dep", "version": "2.0.1",
+                     "dist": {"type": "zip", "url": "https://example.invalid/d-dep-2.0.1.zip"}},
+                    {"name": "e/dependent", "version": "1.0.0", "require": {"d/dep": "^1.0"},
+                     "dist": {"type": "zip", "url": "https://example.invalid/e-dependent-1.0.0.zip"}},
+                    {"name": "e/dependent", "version": "2.0.0", "require": {"d/dep": "^2.0"},
+                     "dist": {"type": "zip", "url": "https://example.invalid/e-dependent-2.0.0.zip"}},
+                ]},
+            ],
+            "require": {"d/dep": "^2.0", "e/dependent": "^1.0 || ^2.0"},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("composer.lock"),
+        serde_json::to_vec(&json!({
+            "packages": [{"name": "e/dependent", "version": "1.0.0", "require": {"d/dep": "^1.0"}}],
+            "packages-dev": [],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let e_dependent = ("e/dependent", "1.0.0");
+    fs::write(
+        dir.join("base.lock"),
+        viv_lock_body(&[("d/dep", "1.0.0"), e_dependent]),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("ours.lock"),
+        viv_lock_body(&[("d/dep", "2.0.0"), e_dependent]),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("theirs.lock"),
+        viv_lock_body(&[("d/dep", "2.0.1"), e_dependent]),
+    )
+    .unwrap();
+
+    let output = ctx
+        .viv()
+        .args(["lock", "merge"])
+        .arg(dir.join("base.lock"))
+        .arg(dir.join("ours.lock"))
+        .arg(dir.join("theirs.lock"))
+        .arg("-d")
+        .arg(dir)
+        .arg("--max-scope")
+        .arg("closure")
+        .output()
+        .expect("failed to run viv");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a capped re-solve must still exit 1 like any other unresolved divergence: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let got = fs::read_to_string(dir.join("ours.lock")).unwrap();
+    assert!(
+        got.contains("<<<<<<< ours"),
+        "viv.lock must carry a marker block, not a half-written re-solve: {got}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--max-scope=closure")
+            && stderr.contains("falling back to conflict markers"),
+        "stderr must name the cap and the fallback: {stderr}"
+    );
+}
+
+/// #295's other fallback: no sibling `composer.lock` at all means no
+/// `require` to re-solve the pinned set with, so `viv lock merge` must go
+/// straight to markers and say why, naming the file it looked for, rather
+/// than trying a solve it cannot pin and reporting an obscure lookup error.
+#[test]
+fn missing_sibling_composer_lock_falls_back_to_markers_with_a_reason() {
+    let ctx = TestContext::new();
+    let dir = ctx.project.path();
+    fs::write(
+        dir.join("composer.json"),
+        serde_json::to_vec(&json!({"require": {"d/dep": "^2.0"}})).unwrap(),
+    )
+    .unwrap();
+    fs::write(dir.join("base.lock"), viv_lock_body(&[("d/dep", "1.0.0")])).unwrap();
+    fs::write(dir.join("ours.lock"), viv_lock_body(&[("d/dep", "2.0.0")])).unwrap();
+    fs::write(
+        dir.join("theirs.lock"),
+        viv_lock_body(&[("d/dep", "2.0.1")]),
+    )
+    .unwrap();
+
+    let output = ctx
+        .viv()
+        .args(["lock", "merge"])
+        .arg(dir.join("base.lock"))
+        .arg(dir.join("ours.lock"))
+        .arg(dir.join("theirs.lock"))
+        .arg("-d")
+        .arg(dir)
+        .output()
+        .expect("failed to run viv");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "no sibling composer.lock must still fall back to markers, not error out: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let got = fs::read_to_string(dir.join("ours.lock")).unwrap();
+    assert!(
+        got.contains("<<<<<<< ours"),
+        "viv.lock must carry a marker block: {got}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let composer_lock_path = dir.join("composer.lock");
+    assert!(
+        stderr.contains(&composer_lock_path.display().to_string()),
+        "stderr must name the composer.lock it looked for: {stderr}"
+    );
+}
