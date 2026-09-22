@@ -118,7 +118,8 @@ enum Command {
     /// Cache maintenance: prune stale entries, or remove the cache outright.
     Cache(CacheArgs),
     /// Lock file maintenance: translate an existing `composer.lock` into
-    /// chapter 1's `viv.lock` (#273), without re-solving.
+    /// chapter 1's `viv.lock` (#273), without re-solving, or merge one as a
+    /// git merge driver (#275).
     Lock(LockArgs),
     /// Check installed (or locked) packages for security vulnerability
     /// advisories and abandoned packages.
@@ -222,7 +223,7 @@ fn main() -> ExitCode {
             }
         },
         Command::Lock(args) => match native_lock::run(&args) {
-            Ok(()) => ExitCode::SUCCESS,
+            Ok(status) => ExitCode::from(status),
             Err(err) => {
                 err_out(&format!("{err:#}"));
                 ExitCode::from(1)

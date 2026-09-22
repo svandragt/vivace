@@ -404,6 +404,42 @@ def probe_native(viv_bin: str) -> bool:
     return result.returncode == 0
 
 
+def probe_driver(viv_bin: str) -> bool:
+    try:
+        result = subprocess.run([viv_bin, "lock", "merge", "--help"], capture_output=True)
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0
+
+
+def driver_conflict(
+    viv_bin: str, work: Path, composer_json: bytes | None, base: bytes, ours: bytes, theirs: bytes
+) -> tuple[bool | None, str | None]:
+    """`viv lock merge` on the composer.lock trio, run from a directory
+    holding the merge commit's own (already-resolved) composer.json: exit 0
+    is clean, exit 1 is a real (divergent) conflict. Returns (None, error)
+    on anything else (a crash, or composer.json missing at that revision)."""
+    if composer_json is None:
+        return None, "composer.json missing at the merge commit"
+    tmpdir = work / "driver-src"
+    tmpdir.mkdir(exist_ok=True)
+    (tmpdir / "composer.json").write_bytes(composer_json)
+    paths = {}
+    for label, content in (("base", base), ("ours", ours), ("theirs", theirs)):
+        p = tmpdir / f"{label}.lock"
+        p.write_bytes(content)
+        paths[label] = p
+    result = subprocess.run(
+        [viv_bin, "lock", "merge", str(paths["base"]), str(paths["ours"]), str(paths["theirs"]),
+         "-d", str(tmpdir)],
+        capture_output=True,
+    )
+    if result.returncode not in (0, 1):
+        stderr = result.stderr.decode(errors="replace").strip()
+        return None, (stderr.splitlines()[-1] if stderr else f"viv lock merge crashed ({result.returncode})")
+    return result.returncode == 1, None
+
+
 def native_lock_text(viv_bin: str, work: Path, composer_json: bytes | None, composer_lock: bytes) -> tuple[bytes | None, str | None]:
     if composer_json is None:
         return None, "composer.json missing at this revision"
@@ -430,6 +466,8 @@ class MergeOutcome:
     native_conflicts: int | None
     native_error: str | None
     real: int
+    driver_conflict: bool | None = None
+    driver_error: str | None = None
 
 
 @dataclass
@@ -458,7 +496,10 @@ def clone_or_reuse(cache_root: Path, project: Project) -> Path:
     return dest
 
 
-def run_repo(project: Project, cache_root: Path, cap: int, viv_bin: str, native_available: bool) -> RepoReport:
+def run_repo(
+    project: Project, cache_root: Path, cap: int, viv_bin: str, native_available: bool,
+    driver_available: bool,
+) -> RepoReport:
     report = RepoReport(project=project)
     repo_dir = clone_or_reuse(cache_root, project)
 
@@ -524,7 +565,18 @@ def run_repo(project: Project, cache_root: Path, cap: int, viv_bin: str, native_
                     if err:
                         native_error = err
 
-            report.merges.append(MergeOutcome(m.sha, composer_conflicts, native_conflicts, native_error, real))
+            driver_conflicted: bool | None = None
+            driver_err: str | None = None
+            if driver_available:
+                merge_json = blob(repo_dir, m.sha, "composer.json")
+                driver_conflicted, driver_err = driver_conflict(
+                    viv_bin, work, merge_json, base_lock, ours_lock, theirs_lock
+                )
+
+            report.merges.append(MergeOutcome(
+                m.sha, composer_conflicts, native_conflicts, native_error, real,
+                driver_conflicted, driver_err,
+            ))
 
     return report
 
@@ -600,7 +652,7 @@ def render_archaeology(items: list[ArchOutcome]) -> list[str]:
 
 def render(
     reports: list[RepoReport], cap: int, viv_bin: str, viv_version: str,
-    native_available: bool, viv_commit: str | None,
+    native_available: bool, viv_commit: str | None, driver_available: bool,
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     commit_note = f", commit `{viv_commit}`" if viv_commit else ""
@@ -617,11 +669,24 @@ def render(
             "column reads n/a throughout this run (#273's harness runs ahead "
             "of the subcommand landing)."
         )
+    if not driver_available:
+        lines.append(
+            "`viv lock merge` is not available on this binary; the viv lock "
+            "merge column reads n/a throughout this run."
+        )
     lines.append("")
 
     total_merges = total_composer = total_native = total_real = total_wins = 0
-    total_composer_conflicting = total_native_conflicting = 0
-    native_seen_anywhere = False
+    total_composer_conflicting = total_native_conflicting = total_driver_conflicting = 0
+    native_seen_anywhere = driver_seen_anywhere = False
+
+    header = (
+        "| Merges examined | Merges conflicting (composer.lock) | "
+        "Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | "
+        "Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | "
+        "composer.lock conflicted, viv.lock did not |"
+    )
+    separator = "|---|---|---|---|---|---|---|---|"
 
     for r in reports:
         lines.append(f"### {r.project.name}")
@@ -632,13 +697,8 @@ def render(
             continue
         lines.append(f"Examined `{r.range_note}`" + (" -- capped." if r.capped else "."))
         lines.append("")
-        lines.append(
-            "| Merges examined | Merges conflicting (composer.lock) | "
-            "Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | "
-            "Conflict hunks (viv.lock) | Real conflicts | "
-            "composer.lock conflicted, viv.lock did not |"
-        )
-        lines.append("|---|---|---|---|---|---|---|")
+        lines.append(header)
+        lines.append(separator)
 
         n = len(r.merges)
         composer_sum = sum(m.composer_conflicts or 0 for m in r.merges)
@@ -652,9 +712,12 @@ def render(
             if m.composer_conflicts and m.composer_conflicts > 0 and m.native_conflicts == 0
         )
         wins_display = wins if native_vals else None
+        driver_vals = [m.driver_conflict for m in r.merges if m.driver_conflict is not None]
+        driver_conflicting = sum(driver_vals) if driver_vals else None
 
         lines.append(
             f"| {n} | {composer_conflicting} | {fmt_n(native_conflicting)} | "
+            f"{fmt_n(driver_conflicting)} | "
             f"{composer_sum} | {fmt_n(native_sum)} | {real_sum} | {fmt_n(wins_display)} |"
         )
         lines.append("")
@@ -667,6 +730,9 @@ def render(
             total_native += native_sum
             total_native_conflicting += native_conflicting
             total_wins += wins
+        if driver_vals:
+            driver_seen_anywhere = True
+            total_driver_conflicting += driver_conflicting
         total_real += real_sum
 
         for f in r.footnotes:
@@ -678,16 +744,12 @@ def render(
 
     lines.append("### Totals")
     lines.append("")
-    lines.append(
-        "| Merges examined | Merges conflicting (composer.lock) | "
-        "Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | "
-        "Conflict hunks (viv.lock) | Real conflicts | "
-        "composer.lock conflicted, viv.lock did not |"
-    )
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append(header)
+    lines.append(separator)
     lines.append(
         f"| {total_merges} | {total_composer_conflicting} | "
         f"{fmt_n(total_native_conflicting) if native_seen_anywhere else 'n/a'} | "
+        f"{fmt_n(total_driver_conflicting) if driver_seen_anywhere else 'n/a'} | "
         f"{total_composer} | "
         f"{fmt_n(total_native) if native_seen_anywhere else 'n/a'} | {total_real} | "
         f"{fmt_n(total_wins) if native_seen_anywhere else 'n/a'} |"
@@ -736,6 +798,8 @@ def main() -> int:
         viv_version = v.stdout.strip()
     viv_commit = viv_bin_commit(viv_bin)
     log(f"native (viv lock convert) available: {native_available}")
+    driver_available = probe_driver(viv_bin)
+    log(f"driver (viv lock merge) available: {driver_available}")
 
     projects = parse_corpus(corpus_path)
     if only:
@@ -744,14 +808,14 @@ def main() -> int:
     reports = []
     for project in projects:
         log(f"{project.name}: starting")
-        r = run_repo(project, cache_root, cap, viv_bin, native_available)
+        r = run_repo(project, cache_root, cap, viv_bin, native_available, driver_available)
         reports.append(r)
         if r.skipped_reason:
             update_corpus_note(corpus_path, project.name, f'skip = "{r.skipped_reason}"')
         else:
             update_corpus_note(corpus_path, project.name, f'examined = "{r.range_note}"')
 
-    section = render(reports, cap, viv_bin, viv_version, native_available, viv_commit)
+    section = render(reports, cap, viv_bin, viv_version, native_available, viv_commit, driver_available)
     if not report_path.exists():
         report_path.write_text(HEADER)
     with open(report_path, "a") as f:

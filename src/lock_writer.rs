@@ -87,6 +87,101 @@ pub struct LockOptions<'a> {
     pub aliases: &'a [AliasEntry],
 }
 
+/// Owned form of [`LockOptions`]'s fields, re-derived from an existing
+/// lock's raw JSON rather than a fresh solve: shared by `update::lock_only`
+/// (re-deriving a lock from itself for `update --lock`/`validate --fix`)
+/// and `lock_merge` (re-deriving one from whichever side's aggregate state
+/// the merge keeps, `ours` — these fields carry no per-record identity, so
+/// chunk 1's record merge has nothing to say about them).
+pub(crate) struct LockAggregates {
+    pub minimum_stability: &'static str,
+    pub stability_flags: HashMap<String, u8>,
+    pub prefer_stable: bool,
+    pub prefer_lowest: bool,
+    pub platform_reqs: Map<String, Value>,
+    pub platform_dev_reqs: Map<String, Value>,
+    pub platform_overrides: Map<String, Value>,
+    pub aliases: Vec<AliasEntry>,
+}
+
+impl LockAggregates {
+    /// Reads every field [`LockOptions`] needs off an already-parsed lock's
+    /// raw JSON `Value`, applying the same defaults `Locker` does for a
+    /// missing key.
+    pub(crate) fn from_lock_value(lock: &Value) -> Self {
+        let stability_flags = lock
+            .get("stability-flags")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .filter_map(|(name, rank)| u8::try_from(rank.as_u64()?).ok().map(|r| (name.clone(), r)))
+            .collect();
+        let aliases = lock
+            .get("aliases")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                Some(AliasEntry {
+                    package: entry.get("package")?.as_str()?.to_string(),
+                    version: entry.get("version")?.as_str()?.to_string(),
+                    alias: entry.get("alias")?.as_str()?.to_string(),
+                    alias_normalized: entry.get("alias_normalized")?.as_str()?.to_string(),
+                })
+            })
+            .collect();
+        let minimum_stability = match lock.get("minimum-stability").and_then(Value::as_str) {
+            Some("dev") => "dev",
+            Some("alpha") => "alpha",
+            Some("beta") => "beta",
+            Some("RC") => "RC",
+            _ => "stable",
+        };
+        let empty_map = Map::new();
+        LockAggregates {
+            minimum_stability,
+            stability_flags,
+            prefer_stable: lock
+                .get("prefer-stable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            prefer_lowest: lock
+                .get("prefer-lowest")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            platform_reqs: lock
+                .get("platform")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_else(|| empty_map.clone()),
+            platform_dev_reqs: lock
+                .get("platform-dev")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_else(|| empty_map.clone()),
+            platform_overrides: lock
+                .get("platform-overrides")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or(empty_map),
+            aliases,
+        }
+    }
+
+    pub(crate) fn as_options(&self) -> LockOptions<'_> {
+        LockOptions {
+            minimum_stability: self.minimum_stability,
+            stability_flags: &self.stability_flags,
+            prefer_stable: self.prefer_stable,
+            prefer_lowest: self.prefer_lowest,
+            platform_reqs: &self.platform_reqs,
+            platform_dev_reqs: &self.platform_dev_reqs,
+            platform_overrides: &self.platform_overrides,
+            aliases: &self.aliases,
+        }
+    }
+}
+
 /// The full `composer.lock` body, `JsonFile::encode`'s default flags
 /// (`JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE`,
 /// four-space indent) with the trailing newline `JsonFile::write` appends.
@@ -196,7 +291,12 @@ fn lock_packages(packages: &[ResolvedPackage]) -> Result<Value> {
     Ok(Value::Array(dumped))
 }
 
-fn dump_package(raw: &Value) -> Result<Value> {
+/// `ArrayDumper::dump`'s per-package shape, exported so a caller that must
+/// render one entry's canonical JSON outside a full [`write()`] call (the
+/// conflict-marker blocks `lock_merge` splices into a merged `packages`
+/// array around a divergent record) reuses the exact same key order/dropping
+/// rules rather than re-deriving them.
+pub(crate) fn dump_package(raw: &Value) -> Result<Value> {
     let raw = raw.as_object().cloned().unwrap_or_default();
     let mut out = Map::new();
     for &key in KEY_ORDER {
