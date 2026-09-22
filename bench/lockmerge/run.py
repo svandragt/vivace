@@ -375,6 +375,7 @@ def render(
     lines.append("")
 
     total_merges = total_composer = total_native = total_real = total_wins = 0
+    total_composer_conflicting = total_native_conflicting = 0
     native_seen_anywhere = False
 
     for r in reports:
@@ -387,16 +388,19 @@ def render(
         lines.append(f"Examined `{r.range_note}`" + (" -- capped." if r.capped else "."))
         lines.append("")
         lines.append(
-            "| Merges examined | Textual conflicts (composer.lock) | "
-            "Textual conflicts (viv.lock) | Real conflicts | "
+            "| Merges examined | Merges conflicting (composer.lock) | "
+            "Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | "
+            "Conflict hunks (viv.lock) | Real conflicts | "
             "composer.lock conflicted, viv.lock did not |"
         )
-        lines.append("|---|---|---|---|---|")
+        lines.append("|---|---|---|---|---|---|---|")
 
         n = len(r.merges)
         composer_sum = sum(m.composer_conflicts or 0 for m in r.merges)
+        composer_conflicting = sum(1 for m in r.merges if m.composer_conflicts and m.composer_conflicts > 0)
         native_vals = [m.native_conflicts for m in r.merges if m.native_conflicts is not None]
         native_sum = sum(native_vals) if native_vals else None
+        native_conflicting = sum(1 for v in native_vals if v > 0) if native_vals else None
         real_sum = sum(m.real for m in r.merges)
         wins = sum(
             1 for m in r.merges
@@ -405,15 +409,18 @@ def render(
         wins_display = wins if native_vals else None
 
         lines.append(
-            f"| {n} | {composer_sum} | {fmt_n(native_sum)} | {real_sum} | {fmt_n(wins_display)} |"
+            f"| {n} | {composer_conflicting} | {fmt_n(native_conflicting)} | "
+            f"{composer_sum} | {fmt_n(native_sum)} | {real_sum} | {fmt_n(wins_display)} |"
         )
         lines.append("")
 
         total_merges += n
         total_composer += composer_sum
+        total_composer_conflicting += composer_conflicting
         if native_vals:
             native_seen_anywhere = True
             total_native += native_sum
+            total_native_conflicting += native_conflicting
             total_wins += wins
         total_real += real_sum
 
@@ -425,13 +432,16 @@ def render(
     lines.append("### Totals")
     lines.append("")
     lines.append(
-        "| Merges examined | Textual conflicts (composer.lock) | "
-        "Textual conflicts (viv.lock) | Real conflicts | "
+        "| Merges examined | Merges conflicting (composer.lock) | "
+        "Merges conflicting (viv.lock) | Conflict hunks (composer.lock) | "
+        "Conflict hunks (viv.lock) | Real conflicts | "
         "composer.lock conflicted, viv.lock did not |"
     )
-    lines.append("|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|")
     lines.append(
-        f"| {total_merges} | {total_composer} | "
+        f"| {total_merges} | {total_composer_conflicting} | "
+        f"{fmt_n(total_native_conflicting) if native_seen_anywhere else 'n/a'} | "
+        f"{total_composer} | "
         f"{fmt_n(total_native) if native_seen_anywhere else 'n/a'} | {total_real} | "
         f"{fmt_n(total_wins) if native_seen_anywhere else 'n/a'} |"
     )
@@ -583,12 +593,15 @@ def self_test() -> int:
         conflicts, err = merge_file_conflicts(work, ours_lock, base_lock, theirs_lock)
         assert err is None, err
         assert conflicts is not None and conflicts >= 1, f"expected a textual conflict on the shared array, got {conflicts}"
+        # the single two-parent merge conflicts, so exactly 1 merge conflicting.
+        assert sum(1 for c in [conflicts] if c > 0) == 1, "expected the conflicting merge to count as 1"
 
         # a clean three-way merge (disjoint changes) should report 0.
         clean_conflicts, err = merge_file_conflicts(
             work, lock(ours_pkgs), lock(base_pkgs), lock(theirs_pkgs)
         )
         assert err is None and clean_conflicts == 0, f"expected a clean merge, got {clean_conflicts}/{err}"
+        assert sum(1 for c in [clean_conflicts] if c > 0) == 0, "expected the clean merge to count as 0"
 
         assert real_conflicts(
             {"x": ("1.0", None)}, {"x": ("1.0", None)}, {"x": ("2.0", None)}
