@@ -11,6 +11,7 @@ use vivace::audit::{self, AuditArgs};
 use vivace::diagnose::{self, DiagnoseArgs};
 use vivace::init::{self, InitArgs};
 use vivace::install::{self, CacheArgs, DumpAutoloadArgs, InstallArgs};
+use vivace::native_lock::{self, LockArgs};
 use vivace::new::{self, NewArgs};
 use vivace::normalize::{self, NormalizeArgs};
 use vivace::require::{self, RemoveArgs, RequireArgs};
@@ -116,6 +117,9 @@ enum Command {
     Normalize(NormalizeArgs),
     /// Cache maintenance: prune stale entries, or remove the cache outright.
     Cache(CacheArgs),
+    /// Lock file maintenance: translate an existing `composer.lock` into
+    /// chapter 1's `viv.lock` (#273), without re-solving.
+    Lock(LockArgs),
     /// Check installed (or locked) packages for security vulnerability
     /// advisories and abandoned packages.
     Audit(AuditArgs),
@@ -211,6 +215,13 @@ fn main() -> ExitCode {
             }
         },
         Command::Cache(args) => match install::cache(&args, cli.cache_dir.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
+        Command::Lock(args) => match native_lock::run(&args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 err_out(&format!("{err:#}"));

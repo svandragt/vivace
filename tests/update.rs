@@ -179,6 +179,17 @@ async fn native_lock_reproduces_the_monolog_viv_lock() {
     assert_matches_expected(&got, &fixture.join("viv.lock"));
 }
 
+/// `viv lock convert` (#273): translating the monolog fixture's own
+/// `composer.lock` — never re-solved — must produce the exact same
+/// `viv.lock` the real solve above writes, byte for byte. That equality is
+/// the point: it proves the translation loses nothing `write` uses.
+#[test]
+fn lock_convert_reproduces_the_monolog_viv_lock() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let got = vivace::native_lock::convert(&fixture).unwrap();
+    assert_matches_expected(&got, &fixture.join("viv.lock"));
+}
+
 /// The hard constraint `--lock native` must satisfy (`AGENTS.md`, #272):
 /// writing `viv.lock` never changes `composer.lock`'s own bytes.
 /// `native_lock::write` only takes shared references into the same solve

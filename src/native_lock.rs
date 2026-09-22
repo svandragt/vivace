@@ -7,14 +7,98 @@
 //!
 //! Reading `viv.lock` back (`install`/`update` accepting it in place of
 //! `composer.lock`) is a separate piece of work, not implemented here.
+//!
+//! `viv lock convert` (#273) is the other direction: an existing
+//! `composer.lock`, translated into this format without re-solving, for
+//! projects (and historical commits) adopting the format after the fact.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use clap::{Args, Subcommand};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::lock::{self, Package};
 use crate::solver::transaction::ResolvedPackage;
+
+/// `viv lock` flags: which lock operation to run.
+#[derive(Args, Debug, Clone)]
+pub struct LockArgs {
+    #[command(subcommand)]
+    pub command: LockCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum LockCommand {
+    /// Translate an existing `composer.lock` into `viv.lock` (#273):
+    /// reads `DIR/composer.lock` and `DIR/composer.json`, and writes
+    /// `DIR/viv.lock`, without re-solving anything.
+    Convert {
+        /// Project directory holding composer.json and composer.lock.
+        #[arg(short = 'd', long = "project-dir", default_value = ".")]
+        project_dir: PathBuf,
+        /// Print the translated lock to stdout instead of writing
+        /// `viv.lock` to disk.
+        #[arg(long)]
+        stdout: bool,
+    },
+}
+
+pub fn run(args: &LockArgs) -> Result<()> {
+    match &args.command {
+        LockCommand::Convert {
+            project_dir,
+            stdout,
+        } => run_convert(project_dir, *stdout),
+    }
+}
+
+fn run_convert(project_dir: &Path, to_stdout: bool) -> Result<()> {
+    let converted = convert(project_dir)?;
+    if to_stdout {
+        use std::io::Write as _;
+        write!(std::io::stdout().lock(), "{converted}")?;
+        return Ok(());
+    }
+    fs_err::write(project_dir.join("viv.lock"), converted)?;
+    Ok(())
+}
+
+/// `DIR/composer.lock` + `DIR/composer.json` -> `viv.lock`'s body, without
+/// re-solving: each lock entry's own `raw` (the untouched JSON object,
+/// `dist`/`source` nested exactly like a pool package's provider-file raw)
+/// already carries everything `record` reads, so it is reused as
+/// [`ResolvedPackage::raw`] as-is rather than widening that type or adding a
+/// narrower one just for this path.
+pub fn convert(project_dir: &Path) -> Result<String> {
+    let root: Value = serde_json::from_str(
+        &fs_err::read_to_string(project_dir.join("composer.json"))
+            .context("reading composer.json")?,
+    )
+    .context("parsing composer.json")?;
+    let parsed =
+        lock::read_lock(&project_dir.join("composer.lock")).context("reading composer.lock")?;
+    let non_dev: Vec<ResolvedPackage> = parsed.packages(false).map(resolved).collect();
+    let dev: Vec<ResolvedPackage> = parsed
+        .packages
+        .iter()
+        .filter(|p| p.dev)
+        .map(resolved)
+        .collect();
+    write(&non_dev, &dev, &root)
+}
+
+/// A locked package, as-is: `version` is already the pretty version
+/// Composer wrote, and `raw` is the lock entry itself.
+fn resolved(package: &Package) -> ResolvedPackage {
+    ResolvedPackage {
+        name: package.name.clone(),
+        pretty_version: package.version.clone(),
+        raw: package.raw.clone(),
+    }
+}
 
 #[derive(Serialize)]
 struct Document {
