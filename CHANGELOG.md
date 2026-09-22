@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Added
+- `viv lock convert` translates an existing `composer.lock` into chapter 1's `viv.lock` without re-solving ([#273](https://github.com/svandragt/vivace/issues/273))
+- `viv lock merge` is a git merge driver for `composer.lock`/`viv.lock`: it merges the three inputs by name-keyed package record instead of by text line. `--no-resolve` skips the divergent-name re-solve, `--as-of` pins that re-solve's registry view to an RFC 3339 timestamp ([#275](https://github.com/svandragt/vivace/issues/275))
+- `viv update --lock native` solves normally and, alongside the unchanged `composer.lock`, writes `viv.lock` in chapter 1's research format ([#272](https://github.com/svandragt/vivace/issues/272))
+- `viv workspace list` discovers a repository's `extra.viv.workspace` members and reports each one's name, version, path and inter-member requirements ([#276](https://github.com/svandragt/vivace/issues/276))
+- `package` repositories: packages declared inline in `composer.json` rather than fetched from a registry
+- `make bench-ab BEFORE=<bin> AFTER=<bin>` grades a pull request's own binary against `main`'s, viv against itself, as a pre-merge gate; `make bench-check` now runs on `bench/laravel` and `make bench-smoke` covers the runner-sized monolog fixture CI actually gates on ([#293](https://github.com/svandragt/vivace/issues/293))
+
+### Fixed
+- A git subprocess viv spawns (clone, checkout) no longer inherits the caller's own repository as its working directory ([#289](https://github.com/svandragt/vivace/issues/289))
+- A private GitHub package keeps its SSH `source.url` instead of falling back to the API's HTTPS one ([#282](https://github.com/svandragt/vivace/issues/282), [#283](https://github.com/svandragt/vivace/issues/283))
 
 ## [0.14.0] - 2026-09-18
 ### Added

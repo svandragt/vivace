@@ -279,7 +279,7 @@ so `prune` cannot delete a live archive (#286), corpus boot harness and
 measurement (#287). Depends on nothing in chapter 1. The boot harness is
 worth building first: it decides whether the rest is worth writing.
 
-## Chapter 3: workspaces (planned)
+## Chapter 3: workspaces (started)
 
 **Question.** When a repository holds several `composer.json` files, can
 one lock and one solve serve all of them, so every member agrees on one
@@ -340,6 +340,10 @@ one lock over the union (#277), per-member `vendor/` and `composer.lock`
 projection (#278), corpus and measurement harness (#279). Depends on
 chapter 1's record format (#272) for the lock; the discovery and solve
 work does not wait for it.
+
+Done: #276 (member discovery and `viv workspace list`). #277 waits on an
+answer to why a workspace beats one root with path repositories; only
+members installable and testable alone survives that question so far.
 
 ## Candidate chapters
 

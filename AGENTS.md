@@ -28,6 +28,8 @@ make build                         # cargo build --release, binary at target/rel
 make test                          # cargo nextest run (PHP-dependent tests skip without php)
 make check                         # fmt --check, clippy -D warnings, nextest, cargo deny
 make bench                         # hyperfine: composer vs riff vs viv vs vivacity on bench/laravel
+make bench-ab BEFORE=<bin> AFTER=<bin>  # pre-merge viv-against-viv A/B, no Composer denominator
+make bench-smoke                   # fast bench/compare.py check on the runner-sized monolog fixture, CI's own check
 make hooks                         # install the pre-commit hook that runs `make check`
 make fixtures                      # regenerate the monolog fixture's expected Composer output
 make fuzz                          # cargo-fuzz, 30s per target (#44); nightly toolchain required
@@ -119,10 +121,13 @@ are planned.
 | `src/plan.rs` | diff lock against `vendor/composer/installed.json` |
 | `src/autoload/` | autoloader generation; `templates/` holds Composer's verbatim files |
 | `src/solver/` | port of Composer's CDCL dependency solver; see `docs/resolver-design.md` |
-| `src/repository.rs` | Packagist v2/v1 metadata clients, closure loading, HTTP cache |
+| `src/repository.rs` | Packagist v2/v1 metadata clients, `package` (inline declarations), closure loading, HTTP cache |
 | `src/plugins/` | native adapters for the Composer plugins vivace ports |
 | `src/show.rs` | `viv show`/`tree`/`why`/`outdated`, read-only inspection of installed packages |
 | `src/diagnose.rs` | `viv diagnose`, environment/config report |
+| `src/native_lock.rs` | `viv.lock` (chapter 1) writer/reader, `viv lock convert` |
+| `src/lock_merge.rs` | `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver |
+| `src/workspace.rs` | Chapter 3's `extra.viv.workspace` member discovery, `viv workspace list` |
 | `tests/fixtures/composer/` | upstream Composer test corpora, do not edit |
 | `tests/fixtures/monolog/` | end-to-end fixture with Composer's expected output |
 | `bench/` | hyperfine script, Laravel-sized lock, results |
@@ -168,7 +173,7 @@ project, unlike the local `bench/laravel` numbers above) and
 `bench/results/baseline.json`. That baseline is measured on GitHub's runners,
 not Sander's machine, so it isn't written by a local run: a maintainer
 downloads the `baseline-candidate-<project>` artifact from a green CI run and commits it
-as `bench/results/baseline.json`. Run `make bench-check` to reproduce the same
+as `bench/results/baseline.json`. Run `make bench-smoke` to reproduce the same
 check locally against the committed baseline.
 
 A research flag's own path is measured against the compatible mode as its
