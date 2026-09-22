@@ -112,12 +112,32 @@ tolerance in `install` (#274), merge driver (#275). The format comes first:
 it should remove most conflicts on its own and is a small change on top of
 the existing lock writer.
 
-## Chapter 2: autoload from the store, no vendor tree (planned)
+## Chapter 2: autoload from the store, no vendor tree (measured, not pursued)
 
 **Question.** If `vendor/` is a generated autoloader plus the
 `installed.json` and `installed.php` shims that frameworks read, and
 classes load straight from the shared store, what happens to install time,
 disk use, and framework compatibility?
+
+**Result, 2026-09-21.** Not pursued. The control arm
+(`bench/results/storeload.md`, #287) settled both claims before the flagged
+arm was built.
+
+- The disk saving is nil under the default link mode. `vendor/` on laravel
+  is 1328 directories and 8834 files that share the store's inodes, so
+  removing it reclaims directory entries and no package bytes. The first
+  harness run reported this wrongly, counting distinct inodes, which equals
+  the dentry count however many links a file has; the corrected measure
+  counts link counts and cross-checks against `linkat`.
+- The speed saving is real and bounded: 19 ms of a 43 ms warm install on
+  laravel, nothing cold. Drupal, the corpus's file-count extreme, would show
+  more. Nobody would feel either.
+- The cost is a new failure class. With no tree the store is load-bearing at
+  runtime, so `prune` can break a running project (#286).
+
+A saving nobody perceives, bought with a failure nobody had. The harness and
+the corrected disk measure are the chapter's output; #284–#286 stay open as
+candidates should the boot question matter for another reason.
 
 **Why Composer needs a tree.** `vendor/` is not only where files land.
 Four things resolve by path into it:
