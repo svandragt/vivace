@@ -16,10 +16,11 @@ merge under two formats and classifies the result:
                  same `git merge-file` on the converted trio.
 
 "Real conflicts" are computed once from the composer.lock JSON, independent
-of format: packages whose version or source reference differ between
-base->ours AND base->theirs, with ours and theirs landing on different
-results. That is the control -- a textual conflict a format removes is a
-win only if it was not a real one.
+of format: packages whose identity (version, source reference, dev flag --
+`docs/research.md` chapter 1's own three fields, matching `viv lock
+merge`'s `Identity`) differs between base->ours AND base->theirs, with
+ours and theirs landing on different results. That is the control -- a
+textual conflict a format removes is a win only if it was not a real one.
 
 `viv lock convert` doesn't exist on main yet (#272's sibling work); this
 script probes for the subcommand once and prints "n/a (viv lock convert
@@ -181,18 +182,27 @@ def qualifying_merges(repo_dir: Path, cap: int) -> tuple[list[Merge], list[str],
 # --- classification -------------------------------------------------
 
 
-def lock_index(raw: bytes) -> dict[str, tuple[str | None, str | None]] | None:
+def lock_index(raw: bytes) -> dict[str, tuple[str | None, str | None, bool]] | None:
+    """name -> (version, source-reference, dev): the same three-field
+    identity `docs/research.md` chapter 1 and `viv lock merge`'s own
+    `Identity` use, not just (version, reference). A two-field index made
+    "Merges with real conflicts" undercount relative to the driver: a
+    package whose dev classification differs between `ours`/`theirs` while
+    its version/reference matches `base` on one side looked *unchanged* on
+    that side (same 2-tuple), even though it genuinely changed too, hiding
+    a real three-way divergence whenever the other side also changed the
+    package (#275 chunk 2's 88-vs-82 finding)."""
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return None
-    idx: dict[str, tuple[str | None, str | None]] = {}
-    for key in ("packages", "packages-dev"):
+    idx: dict[str, tuple[str | None, str | None, bool]] = {}
+    for key, dev in (("packages", False), ("packages-dev", True)):
         for pkg in data.get(key) or []:
             name = pkg.get("name")
             if not name:
                 continue
-            idx[name] = (pkg.get("version"), (pkg.get("source") or {}).get("reference"))
+            idx[name] = (pkg.get("version"), (pkg.get("source") or {}).get("reference"), dev)
     return idx
 
 
@@ -260,8 +270,9 @@ class PackageResolution:
 def classify_resolution(
     m: tuple | None, o: tuple | None, t: tuple | None
 ) -> tuple[str, str | None]:
-    """m/o/t are (version, source-reference) tuples from the merge commit's,
-    ours', and theirs' composer.lock (or None when the package is absent)."""
+    """m/o/t are (version, source-reference, dev) tuples from the merge
+    commit's, ours', and theirs' composer.lock (or None when the package is
+    absent)."""
     if m is None:
         return "removed", None
     if m == o:
@@ -412,13 +423,48 @@ def probe_driver(viv_bin: str) -> bool:
     return result.returncode == 0
 
 
+def summarize_resolve_failure(stderr: str) -> str:
+    """A one-line reason for a failed re-solve. The solver's own
+    `SolverError` is a multi-line `Problem N: ...` report followed by a
+    fixed "Potential causes ... Read <troubleshooting>" tail (`main.rs`'s
+    `resolver_error`), so the *last* line is always that same boilerplate,
+    not the reason -- pull out the first named problem instead: a "could
+    not be found in any version" line (dead package) if there is one,
+    otherwise the first "Root composer.json requires" bullet, otherwise
+    just the first non-empty line (a one-line error like the network one
+    `try_resolve_composer_lock` raises for an unreachable Packagist)."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if not lines:
+        return "no stderr"
+    for line in lines:
+        if "could not be found in any version" in line:
+            return line
+    for line in lines:
+        if line.startswith("- ") and "Root composer.json requires" in line:
+            return line
+    return lines[0]
+
+
 def driver_conflict(
-    viv_bin: str, work: Path, composer_json: bytes | None, base: bytes, ours: bytes, theirs: bytes
+    viv_bin: str, work: Path, cache_dir: Path, composer_json: bytes | None,
+    base: bytes, ours: bytes, theirs: bytes,
 ) -> tuple[bool | None, str | None]:
     """`viv lock merge` on the composer.lock trio, run from a directory
     holding the merge commit's own (already-resolved) composer.json: exit 0
-    is clean, exit 1 is a real (divergent) conflict. Returns (None, error)
-    on anything else (a crash, or composer.json missing at that revision)."""
+    is clean (a divergent name's own re-solve finished, chunk 2), exit 1 is
+    a name that stayed divergent -- either no re-solve was attempted (no
+    divergence at all) or it was and didn't finish, in which case
+    `summarize_resolve_failure` pulls the reason (dead package, abandoned
+    repo URL, constraint conflict, no network) out of stderr for the caller
+    to footnote as an honest result, not a harness gap. `cache_dir` is
+    reused across every merge in a repo so a warm re-solve isn't repaying
+    the same Packagist metadata fetch each time; `--cache-dir` (not the
+    real `~/.cache/vivace`), same isolation rule as `bench/run.sh`. A real
+    `php` on `PATH` (`devbox run --`) matters here in a way chunk 1 never
+    needed: the re-solve's platform check otherwise assumes no extensions
+    at all and every project requiring one manufactures a false conflict.
+    Returns (None, error) on anything else (a crash, or composer.json
+    missing at that revision)."""
     if composer_json is None:
         return None, "composer.json missing at the merge commit"
     tmpdir = work / "driver-src"
@@ -430,14 +476,17 @@ def driver_conflict(
         p.write_bytes(content)
         paths[label] = p
     result = subprocess.run(
-        [viv_bin, "lock", "merge", str(paths["base"]), str(paths["ours"]), str(paths["theirs"]),
-         "-d", str(tmpdir)],
+        [viv_bin, "--cache-dir", str(cache_dir), "lock", "merge",
+         str(paths["base"]), str(paths["ours"]), str(paths["theirs"]), "-d", str(tmpdir)],
         capture_output=True,
     )
     if result.returncode not in (0, 1):
         stderr = result.stderr.decode(errors="replace").strip()
-        return None, (stderr.splitlines()[-1] if stderr else f"viv lock merge crashed ({result.returncode})")
-    return result.returncode == 1, None
+        return None, (summarize_resolve_failure(stderr) if stderr else f"viv lock merge crashed ({result.returncode})")
+    if result.returncode == 1:
+        stderr = result.stderr.decode(errors="replace").strip()
+        return True, (summarize_resolve_failure(stderr) if stderr else None)
+    return False, None
 
 
 def native_lock_text(viv_bin: str, work: Path, composer_json: bytes | None, composer_lock: bytes) -> tuple[bytes | None, str | None]:
@@ -519,6 +568,7 @@ def run_repo(
 
     with tempfile.TemporaryDirectory(prefix="lockmerge-") as tmp:
         work = Path(tmp)
+        driver_cache = work / "driver-cache"
         for m in merges:
             base_lock = blob(repo_dir, m.base, "composer.lock")
             ours_lock = blob(repo_dir, m.ours, "composer.lock")
@@ -570,8 +620,12 @@ def run_repo(
             if driver_available:
                 merge_json = blob(repo_dir, m.sha, "composer.json")
                 driver_conflicted, driver_err = driver_conflict(
-                    viv_bin, work, merge_json, base_lock, ours_lock, theirs_lock
+                    viv_bin, work, driver_cache, merge_json, base_lock, ours_lock, theirs_lock
                 )
+                if driver_conflicted and driver_err:
+                    report.footnotes.append(
+                        f"{m.sha[:12]}: viv lock merge re-solve did not finish: {driver_err}"
+                    )
 
             report.merges.append(MergeOutcome(
                 m.sha, composer_conflicts, native_conflicts, native_error, real,

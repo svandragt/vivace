@@ -9,11 +9,26 @@
 //! changed on one side, changed identically, or genuinely divergent, and
 //! only the last needs a human.
 //!
-//! This chunk does everything except resolving the divergent ones — that is
-//! chunk 2 (re-solving the divergent names' closure against the merged
-//! manifest, `docs/research.md`'s "Done when, revised").
+//! Chunk 2 replaces the marker output for a `composer.lock` input with a
+//! re-solve of the divergent names' closure (`resolve_divergent_closure`),
+//! keeping markers as the fallback when the solve can't finish (no network,
+//! a dead package, a genuine constraint conflict in the merged manifest) or
+//! when `--no-resolve` asks for chunk 1's behaviour outright.
+//!
+//! `viv.lock` inputs keep markers unconditionally in this chunk: a
+//! `native_lock::Record` carries only `name`/`version`/`dist-url`/
+//! `dist-hash`/`source-ref`/`dev`/`root-requirement` — no `require`, no
+//! `autoload`, none of what [`solver::pool_builder::build_partial`] reads
+//! off a locked-out entry to load it into the pool
+//! (`package_from_lock_entry`) or off `locked_by_name`'s own `require` to
+//! expand a `WithTransitiveDeps` closure. Pinning from the record alone
+//! would either invent those fields or silently resolve as if every locked
+//! package had none, understating the very cascade chapter 1's archaeology
+//! measured. `composer.lock` is the primary target; teaching `viv.lock` the
+//! same trick needs its own richer record, not a guess here.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -22,7 +37,9 @@ use serde_json::Value;
 use crate::lock::{self, Lock};
 use crate::lock_writer::{self, LockAggregates};
 use crate::native_lock;
-use crate::solver::transaction::ResolvedPackage;
+use crate::repository::{Repository, Transport};
+use crate::solver::{self, pool_builder::UpdateAllowMode, transaction::ResolvedPackage};
+use crate::update;
 
 /// A locked package's comparable identity for merge purposes
 /// (`docs/research.md` chapter 1): two records with the same identity are
@@ -132,8 +149,17 @@ fn detect_format(path: &Path) -> Result<Format> {
 }
 
 /// `viv lock merge <base> <ours> <theirs> -d DIR`: 0 when the result is
-/// written clean, 1 when it still holds conflict markers.
-pub fn run(base: &Path, ours: &Path, theirs: &Path, project_dir: &Path) -> Result<u8> {
+/// written clean (a re-solve included), 1 when it still holds conflict
+/// markers a human must resolve.
+pub fn run(
+    base: &Path,
+    ours: &Path,
+    theirs: &Path,
+    project_dir: &Path,
+    no_resolve: bool,
+    cache_dir: Option<&Path>,
+    offline: bool,
+) -> Result<u8> {
     let base_format =
         detect_format(base).with_context(|| format!("detecting {}'s format", base.display()))?;
     for (label, path) in [("ours", ours), ("theirs", theirs)] {
@@ -150,7 +176,15 @@ pub fn run(base: &Path, ours: &Path, theirs: &Path, project_dir: &Path) -> Resul
     }
 
     match base_format {
-        Format::ComposerLock => merge_composer_lock(base, ours, theirs, project_dir),
+        Format::ComposerLock => merge_composer_lock(
+            base,
+            ours,
+            theirs,
+            project_dir,
+            no_resolve,
+            cache_dir,
+            offline,
+        ),
         Format::VivLock => merge_viv_lock(base, ours, theirs),
     }
 }
@@ -183,7 +217,15 @@ fn has_conflict_markers(content: &[u8]) -> bool {
         .any(|line| line.starts_with(b"<<<<<<<") || line.starts_with(b">>>>>>>"))
 }
 
-fn merge_composer_lock(base: &Path, ours: &Path, theirs: &Path, project_dir: &Path) -> Result<u8> {
+fn merge_composer_lock(
+    base: &Path,
+    ours: &Path,
+    theirs: &Path,
+    project_dir: &Path,
+    no_resolve: bool,
+    cache_dir: Option<&Path>,
+    offline: bool,
+) -> Result<u8> {
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path)
         .with_context(|| format!("reading {}", composer_json_path.display()))?;
@@ -205,6 +247,30 @@ fn merge_composer_lock(base: &Path, ours: &Path, theirs: &Path, project_dir: &Pa
     let theirs_entries = composer_entries(&theirs_lock);
 
     let (merged, divergent) = merge(&base_entries, &ours_entries, &theirs_entries);
+
+    if !divergent.is_empty() && !no_resolve {
+        match try_resolve_composer_lock(
+            &merged,
+            &divergent,
+            &composer_json,
+            project_dir,
+            cache_dir,
+            offline,
+        ) {
+            Ok(text) => {
+                fs_err::write(ours, text)?;
+                return Ok(0);
+            }
+            Err(err) => {
+                let names: Vec<&str> = divergent.iter().map(String::as_str).collect();
+                warn_out(&format!(
+                    "viv lock merge: re-solving {} against the merged composer.json did not \
+                     finish ({err:#}); falling back to conflict markers",
+                    names.join(", ")
+                ));
+            }
+        }
+    }
 
     let mut non_dev = Vec::new();
     let mut dev = Vec::new();
@@ -238,6 +304,127 @@ fn merge_composer_lock(base: &Path, ours: &Path, theirs: &Path, project_dir: &Pa
         inject_composer_conflicts(&doc, &merged, &divergent, &ours_entries, &theirs_entries)?;
     fs_err::write(ours, patched)?;
     Ok(1)
+}
+
+/// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr`
+/// lint (`update.rs`'s own `warn_out` does the same).
+fn warn_out(message: &str) {
+    let _ = writeln!(std::io::stderr().lock(), "{message}");
+}
+
+/// The merge's non-divergent records, in the exact shape
+/// `update::locked_packages_by_name` builds from a real lock (lowercased
+/// name -> its full `composer.lock` entry): wrapped in a throwaway
+/// `packages`/`packages-dev` document just to hand it to that same
+/// function, rather than re-deriving the mapping here.
+fn locked_by_name_from_merge(merged: &BTreeMap<String, Entry<Value>>) -> HashMap<String, Value> {
+    let mut packages = Vec::new();
+    let mut packages_dev = Vec::new();
+    for entry in merged.values() {
+        if entry.identity.dev {
+            packages_dev.push(entry.payload.clone());
+        } else {
+            packages.push(entry.payload.clone());
+        }
+    }
+    update::locked_packages_by_name(&serde_json::json!({
+        "packages": packages,
+        "packages-dev": packages_dev,
+    }))
+}
+
+/// Re-solves `allow_list`'s names and their locked dependency closure
+/// (`UpdateAllowMode::WithTransitiveDeps` — see the `-W`/`-w` doc comment on
+/// that enum; chapter 1's archaeology measured a cascade of median 0 but
+/// max 14 *other* packages dragged along by a real resolution, so a mode
+/// that excludes root-required names from the closure could hand back a
+/// lock that doesn't satisfy its own manifest on the tail) against `root`,
+/// leaving every other locked name exactly as `locked_by_name` states it.
+/// `pub`, generic over [`Transport`]: `merge_composer_lock` always builds a
+/// real `HttpTransport` repository, but a test can drive this directly
+/// with a fixture-backed one instead (`tests/update.rs`'s own pattern).
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, only ever called with the default hasher (mirrors \
+              solver::solve_partial_update's own allowance)"
+)]
+pub async fn resolve_divergent_closure<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    locked_by_name: &HashMap<String, Value>,
+    allow_list: &[String],
+) -> Result<solver::UpdateResult> {
+    solver::solve_partial_update(
+        repo,
+        root,
+        prefer_stable,
+        false,
+        locked_by_name,
+        allow_list,
+        UpdateAllowMode::WithTransitiveDeps,
+    )
+    .await
+}
+
+/// [`solver::UpdateResult`] -> the final `composer.lock` text, the same
+/// `LockOptions` shape `update.rs`'s own full-update write uses.
+fn write_resolved_lock(result: &solver::UpdateResult, composer_json: &[u8]) -> Result<String> {
+    let options = lock_writer::LockOptions {
+        minimum_stability: result.minimum_stability,
+        stability_flags: &result.stability_flags,
+        prefer_stable: result.prefer_stable,
+        prefer_lowest: result.prefer_lowest,
+        platform_reqs: &result.platform_reqs,
+        platform_dev_reqs: &result.platform_dev_reqs,
+        platform_overrides: &result.platform_overrides,
+        aliases: &result.aliases,
+    };
+    lock_writer::write(&result.non_dev, Some(&result.dev), &options, composer_json)
+}
+
+/// The CLI path's re-solve attempt: builds the same fetcher/repository
+/// sequence `update.rs`'s own `solve` does (`build_fetcher`,
+/// `build_repository`, `default_cache_dir`), then
+/// [`resolve_divergent_closure`] over it. Any failure here — no network, a
+/// package no longer resolvable, a genuine constraint conflict in the
+/// merged manifest — is the caller's cue to fall back to conflict markers,
+/// so this never itself decides that markers are fine; it only reports why
+/// the resolve didn't happen.
+fn try_resolve_composer_lock(
+    merged: &BTreeMap<String, Entry<Value>>,
+    divergent: &BTreeSet<String>,
+    composer_json: &[u8],
+    project_dir: &Path,
+    cache_dir: Option<&Path>,
+    offline: bool,
+) -> Result<String> {
+    let root: Value = serde_json::from_slice(composer_json).context("parsing composer.json")?;
+    let locked_by_name = locked_by_name_from_merge(merged);
+    let allow_list: Vec<String> = divergent.iter().cloned().collect();
+    let prefer_stable = root
+        .get("prefer-stable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let cache_dir = match cache_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => update::default_cache_dir()?,
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let fetcher = update::build_fetcher(project_dir, &root, offline)?;
+        let metadata_ttl = update::metadata_ttl(None, offline);
+        let repo = update::build_repository(&root, &cache_dir, &fetcher, metadata_ttl).await?;
+        let resolved =
+            resolve_divergent_closure(&repo, &root, prefer_stable, &locked_by_name, &allow_list)
+                .await;
+        update::forget_repo(repo);
+        write_resolved_lock(&resolved?, composer_json)
+    })
 }
 
 /// One divergent name's marker block, `ours`' entry then `theirs`',
