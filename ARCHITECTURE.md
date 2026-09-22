@@ -44,7 +44,7 @@ chain into the lower half and install (`--no-install` opts out).
 | Module | Job |
 |---|---|
 | `lock` | Parse `composer.lock` and the root `composer.json` (`autoload`, `autoload-dev`, `config`). Keeps JSON key order (`serde_json` `preserve_order`) because `installed.json` re-emits lock entries. |
-| `repository` | Packagist v2 and v1 (Satis/Private Packagist) metadata clients, multi-repository construction from `composer.json`'s `repositories`, an HTTP cache mirroring Composer's disk format. |
+| `repository` | Packagist v2 and v1 (Satis/Private Packagist) metadata clients, `package` (inline `composer.json` declarations), multi-repository construction from `composer.json`'s `repositories`, an HTTP cache mirroring Composer's disk format. |
 | `solver` | Port of Composer's CDCL dependency solver (`pool`, `pool_builder`, `pool_optimizer`, `rule_set_generator`, `rules`, `watch_graph`, `decisions`, `policy`, `solver`, `transaction`, `request`, `platform`). Full updates only; `viv install` never reaches it. |
 | `lock_writer` | Writes `composer.lock` from a solved transaction: top-level key order, `content-hash`, per-package `ArrayDumper` shape. |
 | `require` | `viv add`/`viv rm`: constraint synthesis and a format-preserving `composer.json` edit, then a partial update of the touched package(s). |
@@ -68,7 +68,10 @@ chain into the lower half and install (`--no-install` opts out).
 | `tool` | `viv x`/`viv run`/`viv exec`: npx-style one-off tool execution, `scripts::Runner` entry points, and a bare `vendor/bin` exec. |
 | `version`, `semver` | Composer version normalisation and constraint parsing/matching, shared by the solver, `show`, and the autoloader's version dumps. |
 | `time` | Civil-date/epoch-day helpers shared by `show` (release-age math), `lock_writer` (normalising a package's `time` field) and `vcs` (VCS timestamp formatting). |
-| `main.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, `diagnose`, plus `--offline` and `--cache-dir`. |
+| `native_lock` | Chapter 1's `viv.lock` writer and reader, and `viv lock convert`, which translates an existing `composer.lock` into it without re-solving. |
+| `lock_merge` | Record-level three-way merge and re-solve for `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver. |
+| `workspace` | Chapter 3's `extra.viv.workspace` member discovery and `viv workspace list`. |
+| `main.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, `diagnose`, `lock`, `workspace`, plus `--offline` and `--cache-dir`. |
 
 ## Why a store and hardlinks
 

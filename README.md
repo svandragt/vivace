@@ -184,6 +184,10 @@ viv dump-autoload -o
 viv normalize --check     # add/rm/init also normalise when they write
 viv cache prune
 viv diagnose              # environment/config report to paste into a bug report
+viv lock convert          # translate an existing composer.lock into viv.lock
+viv lock merge base ours theirs   # git merge driver for composer.lock/viv.lock
+viv workspace list        # list a workspace's members and their inter-requirements
+viv update --lock native  # resolves normally, also writes viv.lock beside composer.lock
 ```
 
 `install` runs your project's setup scripts, the same way Composer does,
@@ -192,6 +196,10 @@ unless you pass `--no-scripts`.[^10]
 `add`, `rm` and `init` also tidy up `composer.json` when they write it, so
 two branches that each add a dependency merge cleanly instead of fighting
 over ordering. `install` and `update` never touch `composer.json`.[^11]
+
+To use `viv lock merge` as a git merge driver for a project's `composer.lock`,
+add `composer.lock merge=viv` to `.gitattributes` and run
+`git config merge.viv.driver 'viv lock merge %O %A %B'` once.
 
 ## Using viv as composer
 
@@ -348,6 +356,7 @@ Commands viv runs itself, with the same output as Composer:
   `update-lock`, `add` (`require`), `rm` (`remove`), `dump-autoload`,
   `normalize`.
 - Inspect: `show`, `tree`, `why`, `outdated`, `audit`, `validate`.
+- Maintain: `lock` (convert, merge), `workspace` (list).
 - Run: `run`, `exec`, the lifecycle scripts, and the cache commands.
 - `diagnose` prints viv's own report, not Composer's.
 
