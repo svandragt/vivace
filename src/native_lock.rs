@@ -62,14 +62,15 @@ pub enum LockCommand {
         /// The other side's version (`%B`).
         theirs: PathBuf,
         /// Project directory whose composer.json supplies the root
-        /// requirements, the `content-hash` and (composer.lock only) the
-        /// repositories a divergent name's re-solve fetches against.
+        /// requirements and the repositories a divergent name's re-solve
+        /// fetches against; for composer.lock, also the `content-hash`, and
+        /// for viv.lock (#295), the sibling composer.lock the pinned set's
+        /// `require` is read off.
         #[arg(short = 'd', long = "project-dir", default_value = ".")]
         project_dir: PathBuf,
         /// Skip the re-solve and go straight to chunk 1's conflict markers
-        /// for any divergent name (composer.lock only; viv.lock always
-        /// does this in chunk 2, see `lock_merge`'s module docs). For tests
-        /// and offline use, where a network re-solve isn't wanted at all.
+        /// for any divergent name, in either format. For tests and offline
+        /// use, where a network re-solve isn't wanted at all.
         #[arg(long)]
         no_resolve: bool,
         /// Resolve the divergent closure as the registry stood at this
@@ -78,17 +79,15 @@ pub enum LockCommand {
         /// did not exist yet cannot be chosen. `dev-*` branch versions are
         /// never filtered this way — Packagist serves only a branch's
         /// current head, not a historical revision of one, so they always
-        /// resolve to today's. Composer.lock only (no effect merging
-        /// viv.lock inputs, which never re-solve in this chunk).
+        /// resolve to today's.
         #[arg(long, value_name = "TIMESTAMP")]
         as_of: Option<String>,
         /// How far a divergent name's re-solve may escalate before giving
-        /// up on markers (#296, composer.lock only): `closure` is chunk 2's
-        /// original scope (the divergent names plus their own locked
-        /// closure), `dependents` adds pinned packages that directly
-        /// require one of those, `seeded` (the default) is a full solve
-        /// that prefers every non-divergent locked version but pins none
-        /// of them hard.
+        /// up on markers (#296): `closure` is chunk 2's original scope (the
+        /// divergent names plus their own locked closure), `dependents`
+        /// adds pinned packages that directly require one of those,
+        /// `seeded` (the default) is a full solve that prefers every
+        /// non-divergent locked version but pins none of them hard.
         #[arg(long, value_enum, default_value = "seeded")]
         max_scope: crate::lock_merge::Scope,
     },

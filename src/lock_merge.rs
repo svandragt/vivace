@@ -15,17 +15,20 @@
 //! a dead package, a genuine constraint conflict in the merged manifest) or
 //! when `--no-resolve` asks for chunk 1's behaviour outright.
 //!
-//! `viv.lock` inputs keep markers unconditionally in this chunk: a
-//! `native_lock::Record` carries only `name`/`version`/`dist-url`/
-//! `dist-hash`/`source-ref`/`dev`/`root-requirement` — no `require`, no
-//! `autoload`, none of what [`solver::pool_builder::build_partial`] reads
-//! off a locked-out entry to load it into the pool
-//! (`package_from_lock_entry`) or off `locked_by_name`'s own `require` to
-//! expand a `WithTransitiveDeps` closure. Pinning from the record alone
-//! would either invent those fields or silently resolve as if every locked
-//! package had none, understating the very cascade chapter 1's archaeology
-//! measured. `composer.lock` is the primary target; teaching `viv.lock` the
-//! same trick needs its own richer record, not a guess here.
+//! `viv.lock` inputs re-solve the same way (#295): a `native_lock::Record`
+//! carries only `name`/`version`/`dist-url`/`dist-hash`/`source-ref`/`dev`/
+//! `root-requirement` — no `require`, no `autoload`, none of what
+//! [`solver::pool_builder::build_partial`] reads off a locked-out entry to
+//! load it into the pool (`package_from_lock_entry`) or off
+//! `locked_by_name`'s own `require` to expand a `WithTransitiveDeps`
+//! closure. Rather than invent those fields, [`viv_lock_payloads`] sources
+//! the non-divergent pinned set's payload from the sibling `composer.lock`
+//! (#297 made one always sit beside `viv.lock`) keyed by name; the
+//! divergent names themselves never need a payload, since rung 1's own
+//! allow list re-solves them fresh regardless of what was locked. Missing
+//! that sibling file falls back to markers, same as any other resolve
+//! failure, but named up front rather than surfacing as an obscure lookup
+//! error.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write as _;
@@ -260,7 +263,17 @@ pub fn run(
             offline,
             max_scope,
         ),
-        Format::VivLock => merge_viv_lock(base, ours, theirs),
+        Format::VivLock => merge_viv_lock(
+            base,
+            ours,
+            theirs,
+            project_dir,
+            no_resolve,
+            as_of,
+            cache_dir,
+            offline,
+            max_scope,
+        ),
     }
 }
 
@@ -966,7 +979,158 @@ fn render_viv_marker(
     Ok(lines.join("\n"))
 }
 
-fn merge_viv_lock(base: &Path, ours: &Path, theirs: &Path) -> Result<u8> {
+/// #295: `viv.lock`'s non-divergent pinned set has no `require` of its own
+/// (see the module doc), so its resolve payload — everything
+/// [`solver::pool_builder::build_partial`] needs to pin a name hard — comes
+/// from the sibling `composer.lock`'s own entry for that name instead,
+/// matched by name and never re-fetched. `pub`: a test builds `merged`'s
+/// identities directly and checks this against a hand-built `composer.lock`
+/// `Value`, the same way [`composer_entries`] is exposed for
+/// [`escalate_resolve`]'s own tests. A divergent name is deliberately never
+/// looked up here: rung 1's own allow list re-solves it fresh regardless of
+/// what either branch had locked, so the only names that need a payload are
+/// the ones staying pinned.
+pub fn viv_lock_payloads(
+    merged: &BTreeMap<String, Identity>,
+    composer_lock: &Value,
+) -> Result<BTreeMap<String, Entry<Value>>> {
+    let payloads = update::locked_packages_by_name(composer_lock);
+    merged
+        .iter()
+        .map(|(name, identity)| {
+            let payload = payloads
+                .get(&name.to_ascii_lowercase())
+                .cloned()
+                .with_context(|| {
+                    format!(
+                        "composer.lock has no entry for {name}, needed to re-solve viv.lock's \
+                         pinned set"
+                    )
+                })?;
+            Ok((
+                name.clone(),
+                Entry {
+                    identity: identity.clone(),
+                    payload,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// `ours`/`theirs` only ever feed [`moved_packages`]' identity comparison
+/// inside [`escalate_resolve`], never a payload, so a `viv.lock` record's
+/// own (unused) fields stand in as `Value::Null` rather than sourcing a
+/// second payload these two maps never read.
+fn to_value_entries(
+    entries: &BTreeMap<String, Entry<native_lock::Record>>,
+) -> BTreeMap<String, Entry<Value>> {
+    entries
+        .iter()
+        .map(|(name, entry)| {
+            (
+                name.clone(),
+                Entry {
+                    identity: entry.identity.clone(),
+                    payload: Value::Null,
+                },
+            )
+        })
+        .collect()
+}
+
+/// The `viv.lock` counterpart to [`try_resolve_composer_lock`]: assembles
+/// [`escalate_resolve`]'s `Value` payloads via [`viv_lock_payloads`], then
+/// writes back both `viv.lock` (via [`native_lock::write`]) and the sibling
+/// `composer.lock` (via [`write_resolved_lock`], the same writer the
+/// composer.lock path itself uses) so the pair stays in step for #297's own
+/// `reconcile`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors try_resolve_composer_lock's own arguments, plus the composer.lock sibling \
+              path this format's re-solve reads its pinned set's requires from"
+)]
+fn try_resolve_viv_lock(
+    merged: &BTreeMap<String, Entry<native_lock::Record>>,
+    divergent: &BTreeSet<String>,
+    ours: &BTreeMap<String, Entry<native_lock::Record>>,
+    theirs: &BTreeMap<String, Entry<native_lock::Record>>,
+    project_dir: &Path,
+    composer_lock_path: &Path,
+    as_of: Option<i64>,
+    cache_dir: Option<&Path>,
+    offline: bool,
+    max_scope: Scope,
+) -> Result<(String, String, Scope, Vec<Moved>)> {
+    let composer_lock: Value = serde_json::from_slice(&fs_err::read(composer_lock_path)?)
+        .with_context(|| format!("parsing {}", composer_lock_path.display()))?;
+    let merged_identities: BTreeMap<String, Identity> = merged
+        .iter()
+        .map(|(name, entry)| (name.clone(), entry.identity.clone()))
+        .collect();
+    let merged_value = viv_lock_payloads(&merged_identities, &composer_lock)?;
+    let ours_value = to_value_entries(ours);
+    let theirs_value = to_value_entries(theirs);
+
+    let composer_json_path = project_dir.join("composer.json");
+    let composer_json = fs_err::read(&composer_json_path)
+        .with_context(|| format!("reading {}", composer_json_path.display()))?;
+    let root: Value = serde_json::from_slice(&composer_json).context("parsing composer.json")?;
+    let prefer_stable = root
+        .get("prefer-stable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let cache_dir = match cache_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => update::default_cache_dir()?,
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let resolved = runtime.block_on(async {
+        let fetcher = update::build_fetcher(project_dir, &root, offline)?;
+        let metadata_ttl = update::metadata_ttl(None, offline);
+        let repo = update::build_repository(&root, &cache_dir, &fetcher, metadata_ttl).await?;
+        let resolved = escalate_resolve(
+            &repo,
+            &root,
+            prefer_stable,
+            &merged_value,
+            divergent,
+            &ours_value,
+            &theirs_value,
+            as_of,
+            Some(&cache_dir),
+            max_scope,
+        )
+        .await;
+        update::forget_repo(repo);
+        resolved
+    })?;
+
+    let viv_text = native_lock::write(&resolved.result.non_dev, &resolved.result.dev, &root)?;
+    let composer_text = write_resolved_lock(&resolved.result, &composer_json)?;
+    Ok((viv_text, composer_text, resolved.scope, resolved.moved))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors merge_composer_lock's own --as-of/--cache-dir/--offline/--max-scope, plus \
+              the three merge-driver paths"
+)]
+fn merge_viv_lock(
+    base: &Path,
+    ours: &Path,
+    theirs: &Path,
+    project_dir: &Path,
+    no_resolve: bool,
+    as_of: Option<i64>,
+    cache_dir: Option<&Path>,
+    offline: bool,
+    max_scope: Scope,
+) -> Result<u8> {
     let base_entries = viv_entries(native_lock::read(base)?);
     let ours_entries = viv_entries(native_lock::read(ours)?);
     let theirs_entries = viv_entries(native_lock::read(theirs)?);
@@ -978,6 +1142,49 @@ fn merge_viv_lock(base: &Path, ours: &Path, theirs: &Path) -> Result<u8> {
             merged.into_values().map(|entry| entry.payload).collect();
         fs_err::write(ours, native_lock::write_records(&records)?)?;
         return Ok(0);
+    }
+
+    if !no_resolve {
+        let composer_lock_path = project_dir.join("composer.lock");
+        if composer_lock_path.exists() {
+            match try_resolve_viv_lock(
+                &merged,
+                &divergent,
+                &ours_entries,
+                &theirs_entries,
+                project_dir,
+                &composer_lock_path,
+                as_of,
+                cache_dir,
+                offline,
+                max_scope,
+            ) {
+                Ok((viv_text, composer_text, scope, moved)) => {
+                    fs_err::write(ours, viv_text)?;
+                    fs_err::write(&composer_lock_path, composer_text)?;
+                    warn_out(&format!(
+                        "viv lock merge: also re-wrote {} so it stays a companion to viv.lock",
+                        composer_lock_path.display()
+                    ));
+                    print_resolution(&divergent, scope, &moved);
+                    return Ok(0);
+                }
+                Err(err) => {
+                    let names: Vec<&str> = divergent.iter().map(String::as_str).collect();
+                    warn_out(&format!(
+                        "viv lock merge: re-solving {} against the merged composer.json did not \
+                         finish ({err:#}); falling back to conflict markers",
+                        names.join(", ")
+                    ));
+                }
+            }
+        } else {
+            warn_out(&format!(
+                "viv lock merge: no sibling {} to read the pinned set's requires from; falling \
+                 back to conflict markers",
+                composer_lock_path.display()
+            ));
+        }
     }
 
     let mut names: Vec<&String> = merged.keys().chain(divergent.iter()).collect();
