@@ -55,6 +55,11 @@ fn git(dir: &Path, args: &[&str]) {
 fn git_init(project: &Path) {
     git(project, &["init", "-q", "-b", "main"]);
     git(project, &["config", "commit.gpgsign", "false"]);
+    // `git merge` wants an identity before it starts, and the direct
+    // `git_command()` calls below don't carry the env the `git` helper sets;
+    // CI runners have no global identity, so put one in the repo config.
+    git(project, &["config", "user.name", "vivace"]);
+    git(project, &["config", "user.email", "vivace@example.com"]);
 }
 
 fn commit_all(project: &Path, message: &str) {
