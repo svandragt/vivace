@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::{Map, Value};
 
-use super::classmap::{ClassMap, ClassName, ScanKey, Sidecar, scan_paths};
+use super::classmap::{ClassMap, ClassName, ScanKey, Sidecar, fingerprint_dir, scan_paths};
 use super::php::{Key, Php, export_bytes, export_static, export_str, loader_properties};
 use super::sort::sort_packages;
 
@@ -245,6 +245,8 @@ pub fn generate(input: &Input) -> Result<Generated> {
         vendor: &vendor,
         excluded: &autoloads.exclude,
         archives: ArchiveIndex::build(&input.packages),
+        root_sidecar: cache_root(&input.packages)
+            .map(|root| crate::store::root_classmap_sidecar(&root, &base)),
         map: BTreeMap::new(),
         scanned: HashSet::new(),
         warnings: Vec::new(),
@@ -828,6 +830,12 @@ struct Scanner<'a> {
     vendor: &'a str,
     excluded: &'a [String],
     archives: ArchiveIndex,
+    /// #269: the root package's own classmap/PSR-4 sidecar, one file for the
+    /// whole project (unlike `sidecars` below, one per store archive) —
+    /// `None` when no package in this install came from the store, so there
+    /// is no cache root to put it under (path/git-only project: falls back
+    /// to always rescanning the root, same as before this cache existed).
+    root_sidecar: Option<PathBuf>,
     map: BTreeMap<ClassName, String>,
     scanned: HashSet<PathBuf>,
     warnings: Vec<String>,
@@ -855,11 +863,25 @@ struct Scanner<'a> {
     merge_elapsed: std::time::Duration,
     /// #77 (measurement only): exclusion-regex build plus `ArchiveIndex`
     /// lookup and `ScanKey` construction, run once per `scan()` call
-    /// regardless of hit/miss.
+    /// regardless of hit/miss. #269: for a directory with no store archive,
+    /// this also includes the fingerprint walk that stands in for one.
     setup_elapsed: std::time::Duration,
     /// #77 (measurement only): sidecar write time on a miss, isolated from
     /// `scan_paths` (the walk/tokenize) above it.
     cache_write_elapsed: std::time::Duration,
+}
+
+/// The store's own root, derived from any one package's `archive_dir`
+/// (`<cache_root>/archive-v0/<hash>`) rather than threaded through [`Input`]:
+/// every one of the dozens of call sites (mostly tests) that build an
+/// [`Input`] literal would otherwise need a new field. `None` when nothing
+/// in `packages` came from the store (a path/git-only project) — the root
+/// package then simply gets no cache, same as before #269.
+fn cache_root(packages: &[Package]) -> Option<PathBuf> {
+    packages.iter().find_map(|p| {
+        let archive_dir = p.archive_dir.as_ref()?;
+        archive_dir.parent()?.parent().map(Path::to_path_buf)
+    })
 }
 
 /// Maps an absolute, normalised scan directory back to the store archive dir
@@ -936,9 +958,13 @@ impl Scanner<'_> {
             }
             let exclusion = build_exclusion_regex(&abs_dir, &excluded, &mut self.regex_cache)?;
 
-            // Only a directory hardlinked from the store (never the root
-            // package, a path/git-source install, or one the store had no
-            // pointer for) has an archive to key a cache on.
+            // A directory hardlinked from the store (never the root package,
+            // a path/git-source install, or one the store had no pointer
+            // for) has an archive to key a cache on directly. Anything else
+            // — chiefly the root package's own classmap/PSR-4 trees (#269)
+            // — falls back to the project's one root sidecar, keyed on a
+            // [`super::classmap::Fingerprint`] instead of an archive's
+            // content hash, since it isn't immutable store content.
             let cache = self
                 .archives
                 .locate(&abs_dir)
@@ -947,8 +973,25 @@ impl Scanner<'_> {
                         subpath,
                         exclude: exclusion.as_ref().map(|r| r.as_str().to_string()),
                         psr: task.psr.clone(),
+                        fingerprint: None,
                     };
                     (crate::store::archive_classmap_sidecar(archive_dir), key)
+                })
+                .or_else(|| {
+                    let sidecar = self.root_sidecar.clone()?;
+                    let subpath = abs_dir
+                        .strip_prefix(self.base)
+                        .unwrap_or(&abs_dir)
+                        .trim_start_matches('/')
+                        .to_string();
+                    let fingerprint = fingerprint_dir(Path::new(&abs_dir)).ok()?;
+                    let key = ScanKey {
+                        subpath,
+                        exclude: exclusion.as_ref().map(|r| r.as_str().to_string()),
+                        psr: task.psr.clone(),
+                        fingerprint: Some(fingerprint),
+                    };
+                    Some((sidecar, key))
                 });
             self.setup_elapsed += setup_started.elapsed();
 
@@ -2157,6 +2200,7 @@ mod tests {
             archives: ArchiveIndex {
                 entries: Vec::new(),
             },
+            root_sidecar: None,
             map: BTreeMap::new(),
             scanned: HashSet::new(),
             warnings: Vec::new(),

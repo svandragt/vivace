@@ -46,6 +46,15 @@ pub(crate) const REPO_BUCKET: &str = "repo-v0";
 /// Mirrored git checkouts for a VCS-sourced package, under
 /// `vcs-v0/<slugified url>/`; see `vcs::GitDriver::load`.
 pub(crate) const VCS_BUCKET: &str = "vcs-v0";
+/// #269: one classmap-scan sidecar per project for the root package's own
+/// directories, which have no store archive to sit beside —
+/// `root-classmap-v0/<sha256 of the project's canonicalized base dir>.json`,
+/// see [`root_classmap_sidecar`]. Never pruned by age like `dists-v0`'s
+/// pointers are (`prune`'s `older_than` pass): a project moved or deleted
+/// leaves its entry here forever.
+/// ponytail: unbounded growth, one small JSON file per distinct project path
+/// ever built with `-o`; age it out in `prune_locked` if that ever matters.
+const ROOT_CLASSMAP_BUCKET: &str = "root-classmap-v0";
 const LOCK_FILE: &str = ".lock";
 
 /// Every current bucket name, shared by `prune` (what a stale-bucket sweep
@@ -61,6 +70,7 @@ const KNOWN_BUCKETS: &[&str] = &[
     PLATFORM_BUCKET,
     REPO_BUCKET,
     VCS_BUCKET,
+    ROOT_CLASSMAP_BUCKET,
     LOCK_FILE,
 ];
 
@@ -672,6 +682,20 @@ fn archive_marker(dir: &Path) -> PathBuf {
 /// from scratch, keyed by the archive's own content hash (its dir name).
 pub fn archive_classmap_sidecar(dir: &Path) -> PathBuf {
     dir.with_extension("classmap-v0")
+}
+
+/// The classmap-scan cache sidecar for a project's own directories (#269):
+/// the root package's PSR-4/classmap trees have no store archive to sit
+/// beside, since they are not immutable, so this lives under its own bucket
+/// instead, keyed by a hash of the project's canonicalized base dir — one
+/// file per project, surviving `vendor/` being rebuilt the same way
+/// [`archive_classmap_sidecar`] does for a package. [`crate::autoload::
+/// classmap::Fingerprint`] (not the archive's content hash) is what tells a
+/// cached entry in it apart from a stale one.
+pub fn root_classmap_sidecar(cache_root: &Path, base: &str) -> PathBuf {
+    cache_root
+        .join(ROOT_CLASSMAP_BUCKET)
+        .join(format!("{}.json", hex(Sha256::digest(base.as_bytes()))))
 }
 
 /// Write `manifest` into `marker` via a temp file in the same directory, then
