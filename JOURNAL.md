@@ -1329,3 +1329,38 @@ cancels machine speed only while both numbers are far from the floor; a
 100-file hardlink pass is not. CI on the same commit passes warm at the
 baseline ratio exactly, so the release cites CI. A virus scan was running
 during the local run as well; noise, but not the cause.
+
+## 2026-09-22 to 23: chapter 1 closes its queue, 0.15.0
+
+**Milestone 17 actioned.** Six tickets landed in two days, each on a
+topic branch merged into `main` after `make check` and, where `install`
+changed, `make bench-ab` against `main`. #294 inline `package`
+repositories. #297 `viv.lock` as a companion `install` and `update` read;
+review caught the reconciler narrowing to `viv.lock`'s records, which would
+have dropped a package Composer's `require` added, so both directions
+refuse. #296 the driver escalates in three rungs, closure, direct
+dependents, seeded solve, and names what moved. #274 `install` names the
+marker line and packages. #295 `viv.lock` inputs re-solve with payloads
+from the sibling `composer.lock`. #298 and #299 came out of one question
+from Sander: what does a developer new to viv see on their first
+conflicted merge? Markers and advice about three files they do not have.
+Now `install` reads git's index stages, runs the driver's merge, writes
+the lock, wires the clone, and carries on. `init` writes the attribute.
+One `stat` of `.gitattributes` on the hot path, accepted as negligible.
+
+**The residue is the correct failure.** Client replay on `e197d67`: 355
+merges, 51 the driver cannot finish. Forty-three are `dev-*` heads, 28 of
+them `roave/security-advisories dev-latest` against `wpcs ^2.3`. Packagist
+overwrites a branch entry on every push, so the solver sees today's head,
+whose conflict map has moved. The historical head is in git (the lock's
+`source.reference`), not lost, but fetching it would only improve the
+measurement: for a merge today the served head is right, the manifest is
+unsatisfiable, and the fix is `wpcs` to 3.x in `composer.json`. The lock
+has nothing left to decide. Driver-attributable residue: zero of 355.
+
+**CI red once.** #299's test drove `git merge` through a call that skipped
+the helper setting the author env; runners have no global identity, so
+git refused before merging and the "left mid-merge" assertion fired.
+Local runs passed on the developer's global config. Identity now lives in
+the fixture repo's config; reproduce with an empty `HOME` before pushing a
+test that shells out to git.
