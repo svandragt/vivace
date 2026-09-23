@@ -11,6 +11,7 @@ pub mod link;
 pub mod lock;
 pub mod lock_merge;
 pub mod lock_writer;
+pub mod merge_driver;
 pub mod native_lock;
 pub mod new;
 pub mod normalize;

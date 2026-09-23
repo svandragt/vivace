@@ -155,6 +155,17 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
     )?;
     normalize::maybe_normalize(&composer_json_path, &indent)?;
 
+    // #298: routes a future `git merge` of `composer.lock`/`viv.lock`
+    // through `viv lock merge` (`docs/research.md` chapter 1) from the
+    // moment the project exists, rather than leaving it for a developer to
+    // add by hand once they hit a lock conflict. `install` (`merge_driver`)
+    // wires the driver config in each clone that has this attribute.
+    let attributes_path = project_dir.join(".gitattributes");
+    let added_attributes = crate::merge_driver::ensure_gitattributes(
+        &project_dir,
+        &crate::merge_driver::ATTRIBUTE_LINES,
+    )?;
+
     let status = validate::run(&ValidateArgs {
         file: Some(composer_json_path.clone()),
         project_dir: PathBuf::from("."),
@@ -177,6 +188,9 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
 
     if allow_list.is_empty() {
         out(&format!("Wrote {}", composer_json_path.display()));
+        if !added_attributes.is_empty() {
+            out(&format!("Wrote {}", attributes_path.display()));
+        }
         out("Run `viv add <pkg>` to add a dependency.");
     } else {
         require::partial_update(
@@ -196,6 +210,9 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
             std::time::Duration::ZERO,
         )?;
         out(&format!("Wrote {}", composer_json_path.display()));
+        if !added_attributes.is_empty() {
+            out(&format!("Wrote {}", attributes_path.display()));
+        }
     }
     Ok(())
 }

@@ -357,6 +357,11 @@ fn run_impl(
         crate::native_lock::reconcile(&mut lock, &viv_lock_path)
             .map_err(|err| with_marker_hint("viv.lock", &viv_lock_path, "name = \"", err))?;
     }
+    // #298: wires the clone so a fresh clone's very first merge already
+    // runs through `viv lock merge`, rather than needing `git config`
+    // configured by hand — the weakest step in chapter 1's adoption path
+    // (`docs/research.md`).
+    crate::merge_driver::wire(&project_dir);
     let dev = !args.no_dev;
 
     let plugins_started = Instant::now();
