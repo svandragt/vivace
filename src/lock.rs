@@ -183,8 +183,17 @@ where
 /// Read and parse a `composer.lock` file.
 pub fn read_lock(path: &Path) -> Result<Lock> {
     let content = fs_err::read_to_string(path)?;
-    let raw: Value = serde_json::from_str(&content)
-        .with_context(|| format!("parsing {} as JSON", path.display()))?;
+    parse_lock(&content, path)
+}
+
+/// The parse half of [`read_lock`], split out (#299) so a caller already
+/// holding a `composer.lock`'s bytes in memory — `viv lock merge`'s git
+/// index-stage reads, which have no real file to read from — can parse
+/// without writing a temporary file first. `label` stands in for `path` in
+/// every error message.
+pub(crate) fn parse_lock(content: &str, label: &Path) -> Result<Lock> {
+    let raw: Value = serde_json::from_str(content)
+        .with_context(|| format!("parsing {} as JSON", label.display()))?;
 
     let content_hash = raw
         .get("content-hash")
@@ -201,11 +210,11 @@ pub fn read_lock(path: &Path) -> Result<Lock> {
             .flatten()
             .enumerate()
         {
-            let package = parse_package(entry, dev, key, index, path)?;
+            let package = parse_package(entry, dev, key, index, label)?;
             if !seen.insert(package.name.clone()) {
                 bail!(
                     "{}: package \"{}\" appears more than once in packages/packages-dev",
-                    path.display(),
+                    label.display(),
                     package.name
                 );
             }

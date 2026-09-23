@@ -216,7 +216,14 @@ pub fn write(non_dev: &[ResolvedPackage], dev: &[ResolvedPackage], root: &Value)
 /// no reader existed before this, chapter 1 having shipped the writer only.
 pub(crate) fn read(path: &Path) -> Result<Vec<Record>> {
     let content = fs_err::read_to_string(path).context("reading viv.lock")?;
-    let doc: Document = toml::from_str(&content).context("parsing viv.lock")?;
+    parse(&content)
+}
+
+/// The parse half of [`read`] (#299), for a caller already holding
+/// `viv.lock`'s bytes in memory (a git index-stage read has no real file to
+/// read from).
+pub(crate) fn parse(content: &str) -> Result<Vec<Record>> {
+    let doc: Document = toml::from_str(content).context("parsing viv.lock")?;
     Ok(doc.package)
 }
 
