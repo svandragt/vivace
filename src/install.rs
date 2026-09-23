@@ -346,21 +346,67 @@ fn run_impl(
         serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let root = lock::root_from_value(&composer_json_value).context("parsing composer.json")?;
     let read_lock_started = Instant::now();
-    let mut lock = read_lock(&lock_path)
-        .map_err(|err| with_marker_hint("composer.lock", &lock_path, "\"name\": \"", err))?;
+    // #299: a plain parse failure might be `composer.lock` sitting mid-merge
+    // with conflict markers and no driver configured yet (`#274`'s own
+    // trigger). `merge_driver` reads git's index stages and re-solves the
+    // way `viv lock merge` would before falling back to `with_marker_hint`'s
+    // message, which only names files a driver-less developer never has.
+    let mut lock = match read_lock(&lock_path) {
+        Ok(lock) => lock,
+        Err(err) => {
+            if crate::merge_driver::resolve_composer_lock_conflict(
+                &project_dir,
+                &lock_path,
+                cache_dir,
+                offline,
+            )? {
+                crate::merge_driver::wire_after_resolve(&project_dir, viv_lock_present);
+                read_lock(&lock_path)
+                    .context("re-reading composer.lock after resolving its git merge conflict")?
+            } else {
+                return Err(with_marker_hint(
+                    "composer.lock",
+                    &lock_path,
+                    "\"name\": \"",
+                    err,
+                ));
+            }
+        }
+    };
     tracing::debug!(
         packages = lock.packages.len(),
         elapsed_ms = read_lock_started.elapsed().as_millis(),
         "read and parsed composer.lock"
     );
-    if viv_lock_present {
-        crate::native_lock::reconcile(&mut lock, &viv_lock_path)
-            .map_err(|err| with_marker_hint("viv.lock", &viv_lock_path, "name = \"", err))?;
+    if viv_lock_present && let Err(err) = crate::native_lock::reconcile(&mut lock, &viv_lock_path) {
+        if crate::merge_driver::resolve_viv_lock_conflict(
+            &project_dir,
+            &viv_lock_path,
+            &lock_path,
+            cache_dir,
+            offline,
+        )? {
+            crate::merge_driver::wire_after_resolve(&project_dir, true);
+            // A successful re-solve here rewrites the sibling composer.lock
+            // too (#295's own coupling), so both must be re-read together.
+            lock = read_lock(&lock_path).context(
+                "re-reading composer.lock after resolving viv.lock's git merge conflict",
+            )?;
+            crate::native_lock::reconcile(&mut lock, &viv_lock_path)
+                .context("reconciling viv.lock after resolving its git merge conflict")?;
+        } else {
+            return Err(with_marker_hint(
+                "viv.lock",
+                &viv_lock_path,
+                "name = \"",
+                err,
+            ));
+        }
     }
-    // #298: wires the clone so a fresh clone's very first merge already
-    // runs through `viv lock merge`, rather than needing `git config`
-    // configured by hand — the weakest step in chapter 1's adoption path
-    // (`docs/research.md`).
+    // #298: every install, not only one that just resolved a conflict
+    // above (`wire_after_resolve` already covers that case, idempotently),
+    // wires the clone so a fresh clone's very first merge already runs
+    // through `viv lock merge`.
     crate::merge_driver::wire(&project_dir);
     let dev = !args.no_dev;
 
@@ -1587,7 +1633,7 @@ fn with_marker_hint(
     name_prefix: &str,
     err: anyhow::Error,
 ) -> anyhow::Error {
-    match marker_conflict_message(label, path, name_prefix) {
+    match marker_conflict_message(label, path, name_prefix, true) {
         Some(message) => anyhow::anyhow!(message),
         None => err,
     }
@@ -1598,8 +1644,17 @@ fn with_marker_hint(
 /// JSON, `name = "` for `viv.lock`'s TOML) — always the first field of a
 /// package entry (`lock_writer::KEY_ORDER`, `native_lock::Record`), so the
 /// first match inside each half of a block is that side's name, not a
-/// nested one (an author's `"name"`, say).
-fn marker_conflict_message(label: &str, path: &Path, name_prefix: &str) -> Option<String> {
+/// nested one (an author's `"name"`, say). `include_advice` is false for
+/// `merge_driver`'s own git-index-stage resolve (#299): once that path has
+/// tried and failed to resolve the divergent names itself, `viv lock
+/// merge <base> <ours> <theirs>` names files the developer never had in
+/// the first place.
+pub(crate) fn marker_conflict_message(
+    label: &str,
+    path: &Path,
+    name_prefix: &str,
+    include_advice: bool,
+) -> Option<String> {
     let content = fs_err::read_to_string(path).ok()?;
     let mut first_line = None;
     let mut in_half = false;
@@ -1635,9 +1690,11 @@ fn marker_conflict_message(label: &str, path: &Path, name_prefix: &str) -> Optio
         let _ = write!(message, "\npackages: {}", names.join(", "));
     }
     message.push('\n');
-    message.push_str(
-        "run `viv lock merge <base> <ours> <theirs>` or resolve the markers by hand, then retry",
-    );
+    message.push_str(if include_advice {
+        "run `viv lock merge <base> <ours> <theirs>` or resolve the markers by hand, then retry"
+    } else {
+        "resolve the markers by hand, then retry"
+    });
     Some(message)
 }
 

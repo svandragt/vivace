@@ -308,22 +308,31 @@ fn has_conflict_markers(content: &[u8]) -> bool {
         .any(|line| line.starts_with(b"<<<<<<<") || line.starts_with(b">>>>>>>"))
 }
 
+/// The record merge and re-solve, purely on the three inputs' bytes: no
+/// path but `project_dir`'s own `composer.json`/repositories touches disk
+/// (#299). [`merge_composer_lock`] is this with a real `%O %A %B` triple
+/// read off disk; `install`'s git-index-stage fallback (`merge_driver.rs`)
+/// calls this directly with `git show :1:`/`:2:`/`:3:` output, which has no
+/// path of its own to write a temporary file for. Returns the resulting
+/// `composer.lock` text and the same 0/1 status [`run`] reports; the
+/// caller decides where that text goes (`ours`, for the CLI driver; the
+/// real `composer.lock`, for `install`'s fallback).
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors run's own --no-resolve/--as-of/--cache-dir/--offline/--max-scope, plus the \
-              three paths"
+              three inputs"
 )]
-fn merge_composer_lock(
-    base: &Path,
-    ours: &Path,
-    theirs: &Path,
+pub(crate) fn merge_composer_lock_bytes(
+    base: &[u8],
+    ours: &[u8],
+    theirs: &[u8],
     project_dir: &Path,
     no_resolve: bool,
     as_of: Option<i64>,
     cache_dir: Option<&Path>,
     offline: bool,
     max_scope: Scope,
-) -> Result<u8> {
+) -> Result<(String, u8)> {
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path)
         .with_context(|| format!("reading {}", composer_json_path.display()))?;
@@ -335,10 +344,12 @@ fn merge_composer_lock(
         );
     }
 
-    let base_lock = lock::read_lock(base).with_context(|| format!("reading {}", base.display()))?;
-    let ours_lock = lock::read_lock(ours).with_context(|| format!("reading {}", ours.display()))?;
-    let theirs_lock =
-        lock::read_lock(theirs).with_context(|| format!("reading {}", theirs.display()))?;
+    let base_lock = lock::parse_lock(&String::from_utf8_lossy(base), Path::new("base"))
+        .context("reading base")?;
+    let ours_lock = lock::parse_lock(&String::from_utf8_lossy(ours), Path::new("ours"))
+        .context("reading ours")?;
+    let theirs_lock = lock::parse_lock(&String::from_utf8_lossy(theirs), Path::new("theirs"))
+        .context("reading theirs")?;
 
     let base_entries = composer_entries(&base_lock);
     let ours_entries = composer_entries(&ours_lock);
@@ -360,9 +371,8 @@ fn merge_composer_lock(
             max_scope,
         ) {
             Ok((text, scope, moved)) => {
-                fs_err::write(ours, text)?;
                 print_resolution(&divergent, scope, &moved);
-                return Ok(0);
+                return Ok((text, 0));
             }
             Err(err) => {
                 let names: Vec<&str> = divergent.iter().map(String::as_str).collect();
@@ -390,8 +400,7 @@ fn merge_composer_lock(
         }
     }
 
-    let ours_value: Value =
-        serde_json::from_slice(&fs_err::read(ours)?).context("re-parsing ours as JSON")?;
+    let ours_value: Value = serde_json::from_slice(ours).context("re-parsing ours as JSON")?;
     let aggregates = LockAggregates::from_lock_value(&ours_value);
     let dev_present = ours_value.get("packages-dev").is_some_and(|v| !v.is_null());
     let dev_opt = dev_present.then_some(dev.as_slice());
@@ -399,14 +408,47 @@ fn merge_composer_lock(
     let doc = lock_writer::write(&non_dev, dev_opt, &aggregates.as_options(), &composer_json)?;
 
     if divergent.is_empty() {
-        fs_err::write(ours, doc)?;
-        return Ok(0);
+        return Ok((doc, 0));
     }
 
     let patched =
         inject_composer_conflicts(&doc, &merged, &divergent, &ours_entries, &theirs_entries)?;
-    fs_err::write(ours, patched)?;
-    Ok(1)
+    Ok((patched, 1))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors run's own --no-resolve/--as-of/--cache-dir/--offline/--max-scope, plus the \
+              three paths"
+)]
+fn merge_composer_lock(
+    base: &Path,
+    ours: &Path,
+    theirs: &Path,
+    project_dir: &Path,
+    no_resolve: bool,
+    as_of: Option<i64>,
+    cache_dir: Option<&Path>,
+    offline: bool,
+    max_scope: Scope,
+) -> Result<u8> {
+    let base_bytes = fs_err::read(base).with_context(|| format!("reading {}", base.display()))?;
+    let ours_bytes = fs_err::read(ours).with_context(|| format!("reading {}", ours.display()))?;
+    let theirs_bytes =
+        fs_err::read(theirs).with_context(|| format!("reading {}", theirs.display()))?;
+    let (text, status) = merge_composer_lock_bytes(
+        &base_bytes,
+        &ours_bytes,
+        &theirs_bytes,
+        project_dir,
+        no_resolve,
+        as_of,
+        cache_dir,
+        offline,
+        max_scope,
+    )?;
+    fs_err::write(ours, text)?;
+    Ok(status)
 }
 
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr`
@@ -1115,33 +1157,37 @@ fn try_resolve_viv_lock(
     Ok((viv_text, composer_text, resolved.scope, resolved.moved))
 }
 
+/// [`merge_composer_lock_bytes`]'s `viv.lock` counterpart (#299): the
+/// three inputs' bytes in, `(viv.lock text, composer.lock text when the
+/// re-solve also rewrote the sibling, status)` out, nothing touched on
+/// disk but `project_dir`'s own `composer.json` and (read-only, via
+/// [`try_resolve_viv_lock`]) sibling `composer.lock`.
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors merge_composer_lock's own --as-of/--cache-dir/--offline/--max-scope, plus \
-              the three merge-driver paths"
+    reason = "mirrors merge_composer_lock_bytes's own --as-of/--cache-dir/--offline/--max-scope, \
+              plus the three inputs"
 )]
-fn merge_viv_lock(
-    base: &Path,
-    ours: &Path,
-    theirs: &Path,
+pub(crate) fn merge_viv_lock_bytes(
+    base: &[u8],
+    ours: &[u8],
+    theirs: &[u8],
     project_dir: &Path,
     no_resolve: bool,
     as_of: Option<i64>,
     cache_dir: Option<&Path>,
     offline: bool,
     max_scope: Scope,
-) -> Result<u8> {
-    let base_entries = viv_entries(native_lock::read(base)?);
-    let ours_entries = viv_entries(native_lock::read(ours)?);
-    let theirs_entries = viv_entries(native_lock::read(theirs)?);
+) -> Result<(String, Option<String>, u8)> {
+    let base_entries = viv_entries(native_lock::parse(&String::from_utf8_lossy(base))?);
+    let ours_entries = viv_entries(native_lock::parse(&String::from_utf8_lossy(ours))?);
+    let theirs_entries = viv_entries(native_lock::parse(&String::from_utf8_lossy(theirs))?);
 
     let (merged, divergent) = merge(&base_entries, &ours_entries, &theirs_entries);
 
     if divergent.is_empty() {
         let records: Vec<native_lock::Record> =
             merged.into_values().map(|entry| entry.payload).collect();
-        fs_err::write(ours, native_lock::write_records(&records)?)?;
-        return Ok(0);
+        return Ok((native_lock::write_records(&records)?, None, 0));
     }
 
     if !no_resolve {
@@ -1160,14 +1206,12 @@ fn merge_viv_lock(
                 max_scope,
             ) {
                 Ok((viv_text, composer_text, scope, moved)) => {
-                    fs_err::write(ours, viv_text)?;
-                    fs_err::write(&composer_lock_path, composer_text)?;
                     warn_out(&format!(
                         "viv lock merge: also re-wrote {} so it stays a companion to viv.lock",
                         composer_lock_path.display()
                     ));
                     print_resolution(&divergent, scope, &moved);
-                    return Ok(0);
+                    return Ok((viv_text, Some(composer_text), 0));
                 }
                 Err(err) => {
                     let names: Vec<&str> = divergent.iter().map(String::as_str).collect();
@@ -1205,8 +1249,45 @@ fn merge_viv_lock(
 
     let mut text = chunks.join("\n\n");
     text.push('\n');
-    fs_err::write(ours, text)?;
-    Ok(1)
+    Ok((text, None, 1))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors merge_composer_lock's own --as-of/--cache-dir/--offline/--max-scope, plus \
+              the three merge-driver paths"
+)]
+fn merge_viv_lock(
+    base: &Path,
+    ours: &Path,
+    theirs: &Path,
+    project_dir: &Path,
+    no_resolve: bool,
+    as_of: Option<i64>,
+    cache_dir: Option<&Path>,
+    offline: bool,
+    max_scope: Scope,
+) -> Result<u8> {
+    let base_bytes = fs_err::read(base).with_context(|| format!("reading {}", base.display()))?;
+    let ours_bytes = fs_err::read(ours).with_context(|| format!("reading {}", ours.display()))?;
+    let theirs_bytes =
+        fs_err::read(theirs).with_context(|| format!("reading {}", theirs.display()))?;
+    let (viv_text, composer_text, status) = merge_viv_lock_bytes(
+        &base_bytes,
+        &ours_bytes,
+        &theirs_bytes,
+        project_dir,
+        no_resolve,
+        as_of,
+        cache_dir,
+        offline,
+        max_scope,
+    )?;
+    fs_err::write(ours, viv_text)?;
+    if let Some(composer_text) = composer_text {
+        fs_err::write(project_dir.join("composer.lock"), composer_text)?;
+    }
+    Ok(status)
 }
 
 #[cfg(test)]
