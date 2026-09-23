@@ -1006,3 +1006,147 @@ task's own ~300 ms expectation; the actual split shows why:
 Network fetch is ~95% of cold wall time on this run; everything else
 (parse/link/autoload/write) is single-digit-to-tens of ms, same shape as the
 warm scenario above.
+
+## 10. Link concurrency: measured, flat (#270)
+
+Machine and corpus as section 9 (AMD Ryzen 9 7900X3D, 24 logical, `nproc`
+24; `bench/laravel`, laravel/laravel, 101 packages, `--no-plugins
+--no-scripts`, isolated `--cache-dir`). Binary built from `main` at
+`5f9da87` (release: 0.15.0) unless noted.
+
+### 10.A `main` already fans linking out (#37, landed 2026-09-06)
+
+`src/install.rs`'s `link_archives` already runs one `link_tree` call per
+package on a `std::thread::scope` pool sized
+`available_parallelism().min(EXTRACT_CONCURRENCY).min(packages.len())` — 8
+workers here — pulling work off a shared `AtomicUsize` index, which is the
+same "fixed pool of N workers pulling from a queue" shape this ticket asked
+to try. Section 9.C's `strace -c -f` (also `main`, `viv 0.13.0`) already
+reflects this pool, not a single thread: `clone3` shows 8 worker threads,
+and the "one thread" framing in the ticket's own Evidence section wasn't
+borne out here.
+
+Warm install, `RUST_LOG=debug`, "linked packages into vendor" `elapsed_ms`,
+5 runs: 20, 20, 20, 20, 20 — **median 20 ms**, consistent with section
+9.B's 19 ms.
+
+### 10.B Two more shapes tried, both flat
+
+**Shape 1 — wider pool.** Same `std::thread::scope` structure, cap raised
+from `EXTRACT_CONCURRENCY` (8, tuned for CPU-bound zip decompression) to
+the full `available_parallelism()` (24, since hardlinking is syscall/VFS-
+bound, not CPU-bound). One-line diff (`src/install.rs`, `link_archives`):
+drop the `.min(EXTRACT_CONCURRENCY)` step.
+
+5 runs: 21, 21, 21, 21, 22 — **median 21 ms**. No improvement over 10.A;
+slightly worse.
+
+**Shape 2 — one task per package via `spawn_blocking`.** The ticket's own
+suggestion ("the runtime already exists for fetching") doesn't hold for the
+warm-install path this ticket measures: `run()` only builds a
+`tokio::runtime` inside the `if !missing.is_empty()` branch, and a warm
+install (everything already in the store) never takes it — there is no
+live runtime at the point `link_archives` runs. Tried anyway: a fresh
+`current_thread` runtime, one `spawn_blocking` task per package (unbounded,
+no queue), joined via a `JoinSet` before returning.
+
+5 runs: 22, 21, 22, 22, 21 — **median 22 ms**. Also flat; the extra runtime
+construction and per-task scheduling cost slightly more than it recovers.
+
+### 10.C Why it's flat
+
+`strace -f -c`, warm install, `main` (10.A's binary), one run:
+
+| syscall | % time | calls | errors |
+|---|---|---|---|
+| linkat | 40.96 | 7746 | — |
+| futex | 20.76 | 5 | 1 |
+| mkdir | 10.14 | 1208 | 75 |
+| getdents64 | 8.49 | 2202 | — |
+| chmod | 4.44 | 1103 | — |
+
+Same call counts as section 9.C (7746 `linkat`, 1208 `mkdir`), and `clone3`
+shows exactly 8 threads — confirming the pool in 10.A runs, not one thread.
+75 of the 1208 `mkdir` calls fail (`EEXIST`, swallowed by
+`fs_err::create_dir_all`): packages sharing a vendor namespace directory
+(`vendor/symfony/*`, `vendor/illuminate/*`) race to create the same parent
+when linked by different workers, which `create_dir_all` already tolerates.
+Widening the pool (10.B, shape 1) doesn't reduce `linkat`'s 7746 calls or
+`mkdir`'s 1208 — the work is fixed per file/directory regardless of thread
+count — and going past the machine's already-warm 8-way pool adds thread
+setup/scheduling cost without cutting the syscall count, so wall time is
+flat to slightly worse. `strace`'s own per-call timing (`usecs/call`
+inflated by ptrace stops) isn't used for the ms numbers above; only the
+phase log's unstraced `elapsed_ms` is.
+
+### 10.D `make bench-ab`, shape 1 against `main`
+
+BEFORE: `main` at `5f9da87` (10.A's binary). AFTER: shape 1 (10.B),
+`src/install.rs` with the `.min(EXTRACT_CONCURRENCY)` line removed, same
+commit otherwise. `systemd-inhibit --what=sleep:idle -- make bench-ab
+BEFORE=<before> AFTER=<after>`. The tiny-scenario FAIL clause applied, so
+it ran twice.
+
+Run 1:
+
+```
+scenario                before          after      delta status
+cold            4081.0+/-3001.4ms 3850.6+/-1008.9ms   -230.3ms   info   (drupal/recommended-project)
+warm             297.5+/-6.2ms  285.6+/-5.7ms    -12.0ms     ok
+noop               5.4+/-0.3ms    5.6+/-0.2ms     +0.2ms     ok
+cold            3022.7+/-1050.7ms 2629.5+/-4414.3ms   -393.2ms   info   (laravel)
+warm              40.4+/-1.1ms   46.4+/-6.8ms     +6.0ms     ok
+noop               7.6+/-0.4ms    6.4+/-0.3ms     -1.1ms     ok
+cold            3849.6+/-4456.9ms 2399.8+/-152.3ms  -1449.8ms   info   (symfony/demo)
+warm              48.3+/-1.8ms   56.6+/-5.5ms     +8.3ms   FAIL
+noop               8.3+/-0.5ms    8.6+/-0.7ms     +0.3ms     ok
+```
+
+Run 2:
+
+```
+scenario                before          after      delta status
+cold            2936.1+/-397.1ms 3709.9+/-1619.2ms   +773.7ms   info   (drupal/recommended-project)
+warm             283.6+/-5.1ms  288.8+/-3.9ms     +5.2ms     ok
+noop               5.4+/-0.4ms    5.2+/-0.4ms     -0.2ms     ok
+cold            2217.3+/-522.9ms 1701.7+/-423.9ms   -515.6ms   info   (laravel)
+warm              40.2+/-0.9ms  54.0+/-10.9ms    +13.8ms   FAIL
+noop               6.5+/-0.3ms    6.6+/-0.3ms     +0.1ms     ok
+cold            2960.5+/-1722.8ms 2594.0+/-2078.0ms   -366.5ms   info   (symfony/demo)
+warm              50.6+/-1.5ms   53.3+/-3.2ms     +2.6ms     ok
+noop               8.6+/-0.2ms    8.6+/-0.6ms     +0.0ms     ok
+```
+
+`noop` is unaffected both runs (linking doesn't run on a no-op install).
+`warm` never improves and FAILs the 15% gate on a different scenario each
+run (symfony/demo run 1, laravel run 2) — a wider pool costs more than it
+saves on this machine, matching 10.B/10.C.
+
+### 10.E Compat, shape 1's binary
+
+`COMPAT_ONLY=laravel/laravel,composer/composer devbox run -- compat/run.sh
+270-check`, shape 1's binary:
+
+| Project | Mode | Result |
+|---|---|---|
+| laravel/laravel | dev | identical |
+| laravel/laravel | no-dev | identical |
+| composer/composer | dev | identical |
+| composer/composer | no-dev | identical |
+
+Byte-identical both ways — shape 1 doesn't change what lands in `vendor/`,
+only how many threads write it. (Report and per-project logs deleted after
+reading, per `compat/README.md`.)
+
+### 10.F Decision
+
+`main`'s existing 8-way pool (#37) already gets "linked packages into
+vendor" to ~20 ms; neither a wider `std::thread::scope` pool (24 workers)
+nor per-package `spawn_blocking` on a fresh runtime moves it below 10 ms,
+and `make bench-ab` shows the wider pool making warm installs on the
+corpus's extremes *worse*, not better, failing the 15% gate on a different
+project each run. Per the ticket's own rule, this doesn't land: no code
+change here, only this write-up. #270 closes as measured, not worth it —
+the phase is already concurrent since #37, and 7746 `linkat` plus 1208
+`mkdir` calls over 101 packages is the syscall floor on this filesystem,
+not a thread-count problem.
