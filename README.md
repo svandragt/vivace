@@ -119,9 +119,12 @@ written outside the project and the cache.
 viv's contract is that its output matches Composer's byte for byte. Before
 every release, a compatibility sweep installs a mix of pinned popular
 projects and a random sample of Packagist packages with both Composer and
-viv, then compares the results.[^2] The v0.14.0 sweep: 28 rows identical, 0 differ, 12
-skipped (all in the random sample, where Composer itself failed), and all 10 pinned projects resolve the same `composer.lock` as
-Composer as well as installing the same `vendor/`.[^3]
+viv, then compares the results.[^2] The v0.15.0 sweep: 20 of 20 pinned rows
+identical, all 10 pinned projects resolve the same `composer.lock` as
+Composer as well as installing the same `vendor/`; in the random sample 9
+identical, 10 skipped where Composer itself failed, and 1 differs in the
+order of two autoload entries that Composer itself orders differently on a
+cold and a warm cache (#301).[^3]
 
 One pinned project still needs `--no-plugins`, for a plugin viv refuses by
 design rather than one it has yet to port.[^4] See [Plugins](#plugins)
@@ -152,6 +155,12 @@ install a lock naming a plugin outside its list, even with
 | Warm | 17.8× (6.8 to 42.8) | 6.9× (2.7 to 149.8)[^6] | 2.0× (1.1 to 3.2) |
 | No-op | 42.0× (19.0 to 105.5) | 13.9× (2.5 to 57.9) | 6.8× (3.0 to 15.2) |
 | Update-warm | 1.9× (1.3 to 4.0) | n/a | 1.5× (1.1 to 1.8) |
+
+The table has not been re-measured since 0.13.0; each release since is
+gated against the previous one instead. v0.14.0 against v0.15.0 with
+`make bench-ab` on laravel, symfony/demo and drupal: warm and no-op within
+noise on all three (drupal warm 309 ms to 290 ms, laravel 40 ms to 42 ms,
+symfony 50 ms to 48 ms).
 
 A warm update still revalidates every package's metadata with the registry,
 one conditional request each, even when nothing changed. `--metadata-ttl
@@ -227,7 +236,7 @@ In GitHub Actions, one step installs viv and puts the shim first on `PATH`, so a
 - run: composer install --no-dev
 ```
 
-The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.14.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim. Cache viv's store with `actions/cache` on `~/.cache/vivace`, keyed on `composer.lock`.
+The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.15.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim. Cache viv's store with `actions/cache` on `~/.cache/vivace`, keyed on `composer.lock`.
 
 A command or flag the shim doesn't understand falls back to the real
 Composer with a note on stderr naming what wasn't understood, so a migration
@@ -265,7 +274,7 @@ Two things differ from the `composer:2` stage it replaces:
   the shim doesn't understand hard-errors there instead of silently running
   Composer, the way it would on a machine that still has Composer installed.
 
-Tags are `:0.14`, `:0.14.0` and `:0`. There is no `:latest`: a moving tag
+Tags are `:0.15`, `:0.15.0` and `:0`. There is no `:latest`: a moving tag
 that silently resolves to nothing breaks scripted installs, which is the
 mistake that kept `releases/latest` returning 404 for ten releases.
 

@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.15.0] - 2026-09-23
 ### Added
 - `viv lock convert` translates an existing `composer.lock` into chapter 1's `viv.lock` without re-solving ([#273](https://github.com/svandragt/vivace/issues/273))
 - `viv lock merge` is a git merge driver for `composer.lock`/`viv.lock`: it merges the three inputs by name-keyed package record instead of by text line. `--no-resolve` skips the divergent-name re-solve, `--as-of` pins that re-solve's registry view to an RFC 3339 timestamp ([#275](https://github.com/svandragt/vivace/issues/275))
