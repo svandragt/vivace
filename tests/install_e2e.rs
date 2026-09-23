@@ -1154,7 +1154,7 @@ fn optimized_autoload_reuses_the_classmap_cache_after_vendor_is_rebuilt() {
         .unwrap()
         .filter_map(|entry| {
             let path = entry.unwrap().path();
-            (path.extension().and_then(|e| e.to_str()) == Some("classmap-v0")).then_some(path)
+            (path.extension().and_then(|e| e.to_str()) == Some("classmap-v1")).then_some(path)
         })
         .collect();
     assert!(

@@ -410,7 +410,12 @@ impl Store {
                     fs_err::remove_dir_all(&path)?;
                 } else if let Some(id) = name
                     .strip_suffix(".ok")
+                    // `.classmap-v0` is #303's predecessor: never written any
+                    // more, but an existing one from before the upgrade is
+                    // still an orphan like any other sidecar once its archive
+                    // dir is gone.
                     .or_else(|| name.strip_suffix(".classmap-v0"))
+                    .or_else(|| name.strip_suffix(".classmap-v1"))
                 {
                     if !dirs.contains(id) {
                         report.add(&path)?;
@@ -419,7 +424,14 @@ impl Store {
                 } else if dirs.contains(name.as_str()) && !referenced.contains(name) {
                     report.add(&path)?;
                     fs_err::remove_dir_all(&path)?;
-                    for sidecar in [archive_marker(&path), archive_classmap_sidecar(&path)] {
+                    // Both the current sidecar suffix and #303's predecessor:
+                    // an archive pruned before ever getting a `.classmap-v1`
+                    // write could still be carrying a `.classmap-v0` one.
+                    for sidecar in [
+                        archive_marker(&path),
+                        archive_classmap_sidecar(&path),
+                        path.with_extension("classmap-v0"),
+                    ] {
                         if sidecar.is_file() {
                             report.add(&sidecar)?;
                             fs_err::remove_file(&sidecar)?;
@@ -680,8 +692,13 @@ fn archive_marker(dir: &Path) -> PathBuf {
 /// `autoload::classmap` result rather than "extraction finished" — reused by
 /// [`crate::autoload::generator`] so a scan survives `vendor/` being rebuilt
 /// from scratch, keyed by the archive's own content hash (its dir name).
+///
+/// `.classmap-v1` (#303): entries store the merge's own final per-file shape
+/// instead of a raw per-class scan (`.classmap-v0`, #77) — bumped rather than
+/// migrated in place, since a pre-#303 file at the old suffix is simply never
+/// looked at again and a miss rewrites it (`autoload::classmap::SidecarV1`).
 pub fn archive_classmap_sidecar(dir: &Path) -> PathBuf {
-    dir.with_extension("classmap-v0")
+    dir.with_extension("classmap-v1")
 }
 
 /// The classmap-scan cache sidecar for a project's own directories (#269):
