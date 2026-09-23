@@ -545,18 +545,27 @@ fn bump_mtime_of(fp: &mut Fingerprint, metadata: &std::fs::Metadata) {
     }
 }
 
-/// One archive's classmap-scan sidecar, as written: paths relative to the
-/// scanned root, so a cached scan applies wherever that root is linked next
-/// (a rebuilt `vendor/`, or another project's) — the `canonical` map only
-/// earns its keep mid-scan, deduping symlinks a cache hit never walks.
+/// The root package's classmap-scan sidecar (#269's `root-classmap-v0`), as
+/// written: paths relative to the scanned root, so a cached scan applies
+/// wherever that root is linked next (a rebuilt `vendor/`, or another
+/// project's) — the `canonical` map only earns its keep mid-scan, deduping
+/// symlinks a cache hit never walks.
 ///
-/// A `Vec` of entries, not one: an archive commonly gets scanned under more
-/// than one [`ScanKey`] — a package with several classmap directories, a
+/// A `Vec` of entries, not one: a package (root or archive) commonly gets
+/// scanned under more than one [`ScanKey`] — several classmap directories, a
 /// PSR-4 namespace mapped onto more than one directory (`vendor/symfony/
 /// polyfill-*`'s base dir plus its `Resources/stubs`), or both a classmap and
 /// a PSR-4 rule over the same subpath (`nette/schema`). #77: storing only the
 /// latest key made every other one thrash — evicted and rescanned on every
 /// single warm run, not once.
+///
+/// #303 moved the *archive* sidecar to [`SidecarV1`]'s already-merge-shaped
+/// format instead; this raw-scan/JSON shape stays for the root package only,
+/// because a namespace-mismatch warning for the root's own files is real
+/// (unlike a vendor package's, always suppressed — see
+/// `generator::Scanner::shape_for_merge`) and must keep firing on a cache hit
+/// exactly as it does on a miss, which only works if PSR-4 filtering is still
+/// deferred to merge time rather than baked into the cached bytes.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Sidecar(Vec<CachedScan>);
 
@@ -689,6 +698,309 @@ pub fn write_cached_scan(
     cache.insert_and_write(sidecar, key, dir, found)
 }
 
+// ---------------------------------------------------------------------
+// #303: the per-archive sidecar, already in the merge's own final shape.
+// ---------------------------------------------------------------------
+
+/// A store archive's classmap-scan sidecar (`.classmap-v1`,
+/// `store::archive_classmap_sidecar`): unlike [`Sidecar`]'s raw per-class
+/// scan result, each entry here is already what `generator::Scanner`'s fold
+/// used to re-derive from that raw result on every single run — files
+/// grouped (a class found in two files under one scan lists both, same as
+/// [`Sidecar`]'s `ambiguous` did, so the merge's first-wins tie-break can
+/// still choose between them), sorted into the final lexicographic-by-file
+/// order that tie-break depends on (#198, #259), and PSR-4 filtering already
+/// applied — a namespace mismatch is deterministic for a given archive/key,
+/// so a hit has nothing left to recompute. Paths are relative to the archive
+/// root (`ScanKey::archive_relative`), not to whichever subdirectory a
+/// particular key scanned, so every key sharing one archive's sidecar spells
+/// a path from the same base.
+///
+/// A pre-#303 `.classmap-v0` sidecar is never read as a compatibility
+/// fallback: a miss is cheaper than carrying two decoders, and a miss here
+/// just rewrites a fresh `.classmap-v1` file next to it.
+#[derive(Debug, Default)]
+pub(crate) struct SidecarV1(Vec<CachedScanV1>);
+
+#[derive(Debug)]
+struct CachedScanV1 {
+    key: ScanKey,
+    /// `(path relative to the archive root, classes)`, already in final
+    /// lexicographic-by-path order and already PSR-4 filtered.
+    files: Vec<(PathBuf, Vec<ClassName>)>,
+}
+
+impl ScanKey {
+    /// A file's path relative to the directory this key scanned, as stored
+    /// in a [`SidecarV1`] entry: relative to the archive root instead, by
+    /// prepending this key's own `subpath`.
+    fn archive_relative(&self, rel: &Path) -> PathBuf {
+        if self.subpath.is_empty() {
+            rel.to_path_buf()
+        } else {
+            Path::new(&self.subpath).join(rel)
+        }
+    }
+
+    /// The inverse of [`Self::archive_relative`]: strip this key's own
+    /// `subpath` back off, so the result is relative to the directory the
+    /// key actually scanned again.
+    fn strip_archive_prefix<'a>(&self, root_relative: &'a Path) -> &'a Path {
+        if self.subpath.is_empty() {
+            root_relative
+        } else {
+            root_relative
+                .strip_prefix(&self.subpath)
+                .unwrap_or(root_relative)
+        }
+    }
+}
+
+impl SidecarV1 {
+    /// Read every cached scan `sidecar` holds, once. A missing file, a
+    /// `.classmap-v0` file (wrong shape and encoding — its length-prefixed
+    /// bytes are read as v1's, which either fails a bounds check or decodes
+    /// as garbage, both treated as corrupt), or genuinely corrupt content is
+    /// an empty sidecar (a miss on every key), not an error.
+    pub(crate) fn read(sidecar: &Path) -> Self {
+        fs_err::read(sidecar)
+            .ok()
+            .and_then(|bytes| decode(&bytes))
+            .unwrap_or_default()
+    }
+
+    /// Re-root `key`'s entry onto `dir` (the directory this key scans), or
+    /// `None` on a miss — no matching key, same "cache miss, not an error"
+    /// contract as [`Sidecar::get`].
+    pub(crate) fn get(&self, key: &ScanKey, dir: &Path) -> Option<Vec<(PathBuf, Vec<ClassName>)>> {
+        let entry = self.0.iter().find(|e| e.key == *key)?;
+        Some(
+            entry
+                .files
+                .iter()
+                .map(|(root_relative, classes)| {
+                    (
+                        dir.join(key.strip_archive_prefix(root_relative)),
+                        classes.clone(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// Replace or add `key`'s entry and persist the whole sidecar again —
+    /// merge-not-overwrite, same rationale as [`Sidecar::insert_and_write`]
+    /// (#77). `shaped` is already final: absolute paths under `dir`, grouped,
+    /// ordered and PSR-4 filtered by the caller (`generator::Scanner::
+    /// shape_for_merge`) — this only re-roots them onto the archive and
+    /// encodes.
+    pub(crate) fn insert_and_write(
+        &mut self,
+        sidecar: &Path,
+        key: &ScanKey,
+        dir: &Path,
+        shaped: &[(PathBuf, Vec<ClassName>)],
+    ) -> Result<()> {
+        let files = shaped
+            .iter()
+            .map(|(file, classes)| {
+                let rel = file.strip_prefix(dir).unwrap_or(file);
+                (key.archive_relative(rel), classes.clone())
+            })
+            .collect();
+        let entry = CachedScanV1 {
+            key: key.clone(),
+            files,
+        };
+        match self.0.iter_mut().find(|e| e.key == *key) {
+            Some(existing) => *existing = entry,
+            None => self.0.push(entry),
+        }
+        let parent = sidecar
+            .parent()
+            .expect("sidecar is nested under the archive dir");
+        fs_err::create_dir_all(parent)?;
+        let mut temp = tempfile::Builder::new()
+            .prefix(".tmp-classmap-")
+            .tempfile_in(parent)?;
+        std::io::Write::write_all(&mut temp, &encode(&self.0)?)?;
+        temp.persist(sidecar)?;
+        Ok(())
+    }
+}
+
+/// Length-prefixed binary encoding: no serde-compatible binary crate is in
+/// the dependency tree (`Cargo.toml` has `serde_json` only), and adding one
+/// for this alone would cost more than it saves over a hand-written layout
+/// this small. Every count and length is a little-endian `u32`; a class name
+/// is raw bytes (no hex, unlike [`Sidecar`]'s JSON, which needs a string
+/// key), a path is UTF-8 (already assumed throughout this codebase, which is
+/// Linux-only — see the module doc).
+fn encode(entries: &[CachedScanV1]) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    write_u32(&mut buf, len_u32(entries.len()));
+    for entry in entries {
+        write_key(&mut buf, &entry.key);
+        write_u32(&mut buf, len_u32(entry.files.len()));
+        for (path, classes) in &entry.files {
+            let path = path.to_str().ok_or_else(|| {
+                anyhow!(
+                    "classmap sidecar path is not valid UTF-8: {}",
+                    path.display()
+                )
+            })?;
+            write_bytes(&mut buf, path.as_bytes());
+            write_u32(&mut buf, len_u32(classes.len()));
+            for class in classes {
+                write_bytes(&mut buf, class);
+            }
+        }
+    }
+    Ok(buf)
+}
+
+/// A count or length as a `u32` for the sidecar's own on-disk format: every
+/// value this is called on (archives, files, classes, path bytes) is well
+/// under 2^32 for any real project, so a value that somehow isn't just
+/// clamps rather than threading a `Result` through the whole encoder for an
+/// input that never occurs.
+fn len_u32(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+fn decode(bytes: &[u8]) -> Option<SidecarV1> {
+    let mut r = Reader { buf: bytes, pos: 0 };
+    let count = r.read_u32()?;
+    let mut entries = Vec::new();
+    for _ in 0..count {
+        let key = read_key(&mut r)?;
+        let file_count = r.read_u32()?;
+        let mut files = Vec::new();
+        for _ in 0..file_count {
+            let path = PathBuf::from(r.read_str()?);
+            let class_count = r.read_u32()?;
+            let mut classes = Vec::new();
+            for _ in 0..class_count {
+                classes.push(r.read_bytes()?.to_vec());
+            }
+            files.push((path, classes));
+        }
+        entries.push(CachedScanV1 { key, files });
+    }
+    Some(SidecarV1(entries))
+}
+
+fn write_key(buf: &mut Vec<u8>, key: &ScanKey) {
+    write_bytes(buf, key.subpath.as_bytes());
+    match &key.exclude {
+        Some(exclude) => {
+            buf.push(1);
+            write_bytes(buf, exclude.as_bytes());
+        }
+        None => buf.push(0),
+    }
+    match &key.psr {
+        Some((ns, kind)) => {
+            buf.push(1);
+            write_bytes(buf, ns.as_bytes());
+            write_bytes(buf, kind.as_bytes());
+        }
+        None => buf.push(0),
+    }
+    match &key.fingerprint {
+        // Always `None` for an archive scan (see `ScanKey::fingerprint`'s
+        // own doc) but encoded anyway rather than forking the format: one
+        // `ScanKey` shape, one encoder, whichever sidecar it ends up in.
+        Some(fp) => {
+            buf.push(1);
+            buf.extend_from_slice(&fp.max_mtime.0.to_le_bytes());
+            buf.extend_from_slice(&fp.max_mtime.1.to_le_bytes());
+            buf.extend_from_slice(&fp.file_count.to_le_bytes());
+        }
+        None => buf.push(0),
+    }
+}
+
+fn read_key(r: &mut Reader<'_>) -> Option<ScanKey> {
+    let subpath = r.read_str()?;
+    let exclude = match r.read_u8()? {
+        0 => None,
+        _ => Some(r.read_str()?),
+    };
+    let psr = match r.read_u8()? {
+        0 => None,
+        _ => Some((r.read_str()?, r.read_str()?)),
+    };
+    let fingerprint = match r.read_u8()? {
+        0 => None,
+        _ => Some(Fingerprint {
+            max_mtime: (r.read_i64()?, r.read_u32()?),
+            file_count: r.read_u64()?,
+        }),
+    };
+    Some(ScanKey {
+        subpath,
+        exclude,
+        psr,
+        fingerprint,
+    })
+}
+
+fn write_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
+    write_u32(buf, len_u32(bytes.len()));
+    buf.extend_from_slice(bytes);
+}
+
+/// A cursor over a sidecar's bytes: every read is bounds-checked against
+/// what's actually left in `buf`, so a truncated file (or a `.classmap-v0`
+/// JSON file misread as v1) yields `None` at the first short read instead of
+/// panicking or over-allocating from an untrusted length.
+struct Reader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn read_u8(&mut self) -> Option<u8> {
+        let b = *self.buf.get(self.pos)?;
+        self.pos += 1;
+        Some(b)
+    }
+
+    fn read_u32(&mut self) -> Option<u32> {
+        let bytes = self.buf.get(self.pos..self.pos + 4)?;
+        self.pos += 4;
+        Some(u32::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn read_i64(&mut self) -> Option<i64> {
+        let bytes = self.buf.get(self.pos..self.pos + 8)?;
+        self.pos += 8;
+        Some(i64::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn read_u64(&mut self) -> Option<u64> {
+        let bytes = self.buf.get(self.pos..self.pos + 8)?;
+        self.pos += 8;
+        Some(u64::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn read_bytes(&mut self) -> Option<&'a [u8]> {
+        let len = self.read_u32()? as usize;
+        let bytes = self.buf.get(self.pos..self.pos + len)?;
+        self.pos += len;
+        Some(bytes)
+    }
+
+    fn read_str(&mut self) -> Option<String> {
+        String::from_utf8(self.read_bytes()?.to_vec()).ok()
+    }
+}
+
 fn does_not_exist(path: &Path) -> anyhow::Error {
     anyhow!(
         "Could not scan for classes inside \"{}\" which does not appear to be a file nor a folder",
@@ -776,5 +1088,110 @@ mod tests {
         // UTF-8 on its own; Composer's classmap keeps it raw (issue #71).
         let source = b"<?php\nclass \xA9 {}\n";
         assert_eq!(find_classes(source), vec![b"\xA9".to_vec()]);
+    }
+
+    #[test]
+    fn sidecar_v1_round_trips_files_in_whatever_order_theyre_given() {
+        // `SidecarV1` is a dumb transport: the "final lexicographic order"
+        // guarantee is the caller's (`generator::Scanner::shape_for_merge`),
+        // proven here by writing two files out of order and getting the same
+        // order straight back, not re-sorted underneath the caller.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let scanned = dir.path().join("scanned");
+        std::fs::create_dir_all(&scanned).unwrap();
+        let sidecar = dir.path().join("archive").with_extension("classmap-v1");
+
+        let key = ScanKey {
+            subpath: "src".to_string(),
+            exclude: None,
+            psr: None,
+            fingerprint: None,
+        };
+        let shaped = vec![
+            (scanned.join("b.php"), vec![b"B".to_vec()]),
+            (scanned.join("a.php"), vec![b"A".to_vec(), b"A2".to_vec()]),
+        ];
+        let mut cache = SidecarV1::default();
+        cache
+            .insert_and_write(&sidecar, &key, &scanned, &shaped)
+            .expect("write should succeed");
+
+        let hit = SidecarV1::read(&sidecar)
+            .get(&key, &scanned)
+            .expect("a matching key should hit");
+        assert_eq!(hit, shaped);
+    }
+
+    #[test]
+    fn sidecar_v1_misses_on_a_different_key_or_a_missing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sidecar = dir.path().join("archive").with_extension("classmap-v1");
+        let key = ScanKey {
+            subpath: String::new(),
+            exclude: None,
+            psr: None,
+            fingerprint: None,
+        };
+        assert!(
+            SidecarV1::read(&sidecar).get(&key, dir.path()).is_none(),
+            "no sidecar file at all is a miss"
+        );
+
+        let mut cache = SidecarV1::default();
+        cache
+            .insert_and_write(&sidecar, &key, dir.path(), &[])
+            .expect("write should succeed");
+        let different = ScanKey {
+            psr: Some(("App\\".to_string(), "psr-4".to_string())),
+            ..key
+        };
+        assert!(
+            SidecarV1::read(&sidecar)
+                .get(&different, dir.path())
+                .is_none()
+        );
+    }
+
+    /// #303's own done-when: an older viv's `.classmap-v0` sidecar next to an
+    /// archive is never read as v1 (a different file entirely), so it's a
+    /// miss regardless of what it holds; the miss then writes a fresh
+    /// `.classmap-v1` file, leaving the stale one untouched rather than
+    /// upgrading it in place.
+    #[test]
+    fn v1_ignores_a_stale_v0_sidecar_and_a_miss_writes_v1() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let archive = dir.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(archive.join("Foo.php"), "<?php\nclass Foo {}\n").unwrap();
+
+        let key = ScanKey {
+            subpath: String::new(),
+            exclude: None,
+            psr: None,
+            fingerprint: None,
+        };
+        let found = scan_paths(&archive, None).expect("scan should succeed");
+        let v0 = archive.with_extension("classmap-v0");
+        write_cached_scan(&v0, &key, &archive, &found).expect("v0 write should succeed");
+
+        let v1 = crate::store::archive_classmap_sidecar(&archive);
+        assert_ne!(v0, v1, "v0 and v1 must be different files");
+        assert!(
+            SidecarV1::read(&v1).get(&key, &archive).is_none(),
+            "a v0-only sidecar must miss under v1, not be read as a fallback"
+        );
+
+        let shaped = vec![(archive.join("Foo.php"), vec![b"Foo".to_vec()])];
+        let mut cache = SidecarV1::default();
+        cache
+            .insert_and_write(&v1, &key, &archive, &shaped)
+            .expect("v1 write should succeed");
+        assert!(v1.is_file(), "a miss rewrites a fresh v1 sidecar");
+        assert!(v0.is_file(), "the stale v0 file is left alone");
+        assert_eq!(
+            SidecarV1::read(&v1).get(&key, &archive),
+            Some(shaped),
+            "the freshly written v1 sidecar hits on the next read"
+        );
     }
 }

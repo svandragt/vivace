@@ -1392,3 +1392,191 @@ Every warm/noop scenario is `ok` (two improved outright: laravel warm -1.4
 ms, symfony_demo warm -2.9 ms); cold is informational only (network/clone
 variance) and moves both ways. No scenario failed, so there was nothing to
 rerun.
+
+## 13. Sidecar in final key form (#303)
+
+#302 (section 12) flagged its own biggest remaining `merge_ms` piece
+(per-file `BTreeMap` regroup, ~6.3 ms) and the sidecar's hex/JSON round trip
+(~4 ms) as real but declined as "a bigger, riskier change than this pass's
+allocation-only fixes". This ticket is that change: the per-archive sidecar
+(`.classmap-v0` → `.classmap-v1`, `src/autoload/classmap.rs`'s `SidecarV1`)
+now stores each `ScanKey`'s entries already grouped per file, in final
+lexicographic-by-path order, PSR-4 filtering already applied, paths relative
+to the archive root — exactly the shape `Scanner::scan_all`'s fold used to
+re-derive from a raw per-class scan on every single hit. A hit
+(`ScanOutcome::HitShaped`) is now a plain ordered append into `self.map`;
+`Scanner::shape_for_merge` (the old regroup-and-filter fold) still runs for a
+miss (whose result becomes the *next* sidecar entry, shaped once) and for the
+root-package sidecar's own hits, which stay on the pre-#303 raw shape — see
+below.
+
+### Encoding: hand-written, not a new dependency
+
+`Cargo.toml` has no binary serde format (`bincode`/`postcard` are not in the
+tree, only `serde_json`); adding one for a format this small would cost more
+than it saves, so `SidecarV1` is a hand-written length-prefixed layout
+(`encode`/`decode`, `Reader` in `src/autoload/classmap.rs`): every count and
+length a little-endian `u32`, a class name raw bytes (no hex — the actual
+reason JSON needed it, a `Vec<u8>` cannot be an object key, doesn't apply to
+a binary format), a path UTF-8 (already assumed everywhere in this Linux-only
+codebase). `Reader` bounds-checks every read against what's actually left in
+the buffer, so a truncated file — or `.classmap-v0`'s JSON bytes misread as
+v1 — fails closed as an empty sidecar (a miss on every key) rather than
+panicking or over-allocating from an untrusted length.
+
+### The root-package sidecar (#269) stays on the old shape
+
+`root_classmap_sidecar`'s `root-classmap-v0` bucket is **not** moved to
+`SidecarV1`. Baking PSR-4 filtering into the cached bytes is safe for a store
+archive because `Scanner::shape_for_merge`'s namespace-mismatch warning is
+unconditionally suppressed for any file under the vendor dir — precompute or
+not, that warning never fires for a vendor package either way. It is *not*
+safe for the root package: that same warning **does** fire for the root's own
+files (a real, user-visible "does not comply with psr-4 autoloading standard"
+message), and today it fires identically on a cache hit or a miss, because
+the raw scan result is always re-filtered at merge time. Moving the root
+sidecar to `SidecarV1` would silently drop that warning on every hit after
+the first miss — a behaviour regression the ticket's own byte-identical
+contract (about the two rendered PHP files, not warnings) wouldn't catch, but
+a real one. The root package's own directories are also not where this
+ticket's cost lives (section 11: #269 already turned every root scan into a
+fingerprint-guarded hit or a cheap, correctly-invalidated miss; a real
+Laravel-shaped root app's own 3 directories are a rounding error next to 110
+vendor archives). `CacheSlot`/`ScanOutcome` (`src/autoload/generator.rs`) keep
+the two sidecars on separate code paths for exactly this reason:
+`CacheSlot::Archive` reads/writes `SidecarV1`, already shaped, no filtering
+left to do on a hit; `CacheSlot::Root` reads/writes the old `Sidecar`, and its
+hit still goes through `shape_for_merge` exactly like a miss.
+
+### Profile: what actually moved
+
+`bench/laravel`, warm `-o` install, `cache_hits=110/cache_misses=0` both
+before and after (scanning itself contributes nothing new — #269 already
+made that a hit; this ticket only changes what a hit *contains*).
+`RUST_LOG=vivace=debug`, one run each, `viv-before` = `main` (`16539fe`, this
+session's `origin/main` tip, #302's own landed state), `viv-after` = this
+branch, both `--release`, same machine as sections 9/11/12 (AMD Ryzen 9
+7900X3D):
+
+| | Before (`.classmap-v0`) | After (`.classmap-v1`) |
+|---|---|---|
+| `cache_read_ms` (sidecar open+decode, 110 archives) | 4 | 3 |
+| `merge_ms` (regroup + PSR filter + ordered append) | 11 | **4** |
+| `setup_ms` (exclusion regex, `ArchiveIndex`/`ScanKey`, unchanged scope) | 2 | 3 |
+| `scan_all` total (`elapsed_ms`) | 18 | **10** |
+| render (`rendered and wrote autoload files`, classmap_entries=5880, #302's own scope, untouched here) | 8 | 8 |
+
+`merge_ms` dropped almost exactly by the ~6 ms the per-file regroup cost
+before (11 → 4 ms): a hit is now the plain ordered append the ticket asked
+for, not a rebuild-then-filter. `cache_read_ms` moved less than hoped
+(4 → 3 ms): swapping hex-in-JSON for raw length-prefixed bytes removes the
+hex round trip, but 110 archives still each cost one file open, one read and
+one decode pass — real I/O the format change narrows, not a cost this ticket
+can remove outright. `setup_ms` (regex/`ArchiveIndex` lookup) is unrelated to
+this ticket's own scope (#198) and moved inside normal run-to-run noise.
+
+### Result
+
+`hyperfine -w 2 -r 10`, isolated `--cache-dir` on the *same* filesystem as
+`bench/laravel` (a cache dir under `/tmp` on this machine is a different
+block device to `/home`, forcing every link into a copy and swamping the
+signal — caught and redone once), warm:
+
+| | `install` (plain) | `install -o` | delta |
+|---|---|---|---|
+| Before (`main`, `16539fe`) | 38.7 ± 1.2 ms | 63.6 ± 5.0 ms | 24.9 ms |
+| After (this branch) | 38.7 ± 4.9 ms | 52.7 ± 2.2 ms | **14.0 ms** |
+
+A 10.9 ms cut (~44%) in the `-o` gap, tracking the debug-span numbers above
+almost exactly (scan_all: 18 → 10 ms, −8 ms; the rest is run-to-run hyperfine
+noise on a 5-15 ms measurement). Short of the ticket's own "within 10 ms of
+plain" done-when by about 4 ms. The profile above accounts for the whole
+remaining 14 ms: `render` (8 ms, #302's own scope — building and writing two
+~5,880-entry PHP files is not this ticket's format change to shrink), plus
+`cache_read_ms` + `merge_ms` + `setup_ms` (3 + 4 + 3 = 10 ms, all either
+inherent per-entry work a leaner cache format can't remove — touching each of
+~8,000 classmap entries at least once is the `-o` contract itself, not
+avoidable bookkeeping — or explicitly another ticket's scope, as noted
+above). Stopping here per the ticket's own "or when you have shipped the
+format change and the remaining gap is measured and explained": the format
+change is shipped, and the residual gap is render plus irreducible per-entry
+work, not a leftover inefficiency in the sidecar itself.
+
+### Output contract
+
+Real `laravel/laravel` checkout (`git clone`, pinned
+`aa0cf127fc365a56ee016867144ddffabc2290ae`, `compat/corpus.toml`'s own pin),
+lock via `composer update --no-install --no-scripts --no-plugins
+--ignore-platform-reqs`. `viv install -o --no-plugins --no-scripts` (cold
+store, then warm after removing `vendor/` against the same store) against
+`composer install -o --no-plugins --no-scripts`: `autoload_classmap.php` and
+`autoload_static.php` byte-identical in both scenarios, and warm byte-
+identical to cold on viv's own side too. 107 `.classmap-v1` sidecars written
+next to the store's archives, zero `.classmap-v0` (confirmed by listing the
+store's `archive-v0` bucket directly).
+
+The ambiguous-class case: `tests/autoload_goldens.rs`'s
+`classmap_fold_is_invariant_to_scan_worker_count`
+(`override_vendors_autoloading_case`, root's `lib/A/B/C.php` deliberately
+shadowing `a/a`'s own `lib/A/B/C.php`) already byte-compares against
+Composer's recorded golden at both 1 and 8 scan workers and still passes
+unchanged — that fixture never touches an archive sidecar itself (every one
+of its fixtures sets `archive_dir: None`), so a new unit test closes the gap
+this ticket actually opens: `archive_sidecar_hit_agrees_with_a_fresh_scan_on_a_cross_archive_ambiguous_class`
+(`src/autoload/generator.rs`) gives two real, archive-backed directories the
+same class, runs `Scanner::scan_all` cold (two misses, writing two
+`.classmap-v1` sidecars) and then warm against a fresh `Scanner` (two hits,
+reading them back), and asserts the resulting map and warnings are identical
+either way — first task in queue order wins, same as before #303.
+
+### Tests
+
+`src/autoload/classmap.rs`: `sidecar_v1_round_trips_files_in_whatever_order_theyre_given`
+(a dumb-transport round trip — `SidecarV1` doesn't itself sort, the caller's
+order survives unchanged), `sidecar_v1_misses_on_a_different_key_or_a_missing_file`,
+and `v1_ignores_a_stale_v0_sidecar_and_a_miss_writes_v1` (the ticket's own
+"add a test that a v0 sidecar beside an archive is ignored and a v1
+written": a `.classmap-v0` file is written first, a `SidecarV1::get` against
+the `.classmap-v1` path still misses, and a subsequent write lands a fresh
+v1 file the stale v0 one is left next to, untouched). `src/autoload/
+generator.rs`: `archive_sidecar_hit_agrees_with_a_fresh_scan_on_a_cross_archive_ambiguous_class`
+(above). `devbox run -- cargo nextest run -E 'test(classmap) | test(autoload)
+| test(generator)'`: 105 passed. `make check`: 875 passed, 6 skipped,
+fmt/clippy/deny/machete/doc all clean (871 passed, 6 skipped on this
+branch's own starting point, `origin/main`'s `16539fe`, checked in a
+throwaway worktree — +4, matching the 4 tests this ticket adds).
+
+Also re-ran with `VIVACE_TEST_NETWORK=1`:
+`tests::install_e2e::optimized_autoload_reuses_the_classmap_cache_after_vendor_is_rebuilt`
+(monolog, real network dists) still passes, and its own sidecar-extension
+assertion was updated from `.classmap-v0` to `.classmap-v1`.
+
+### `make bench-ab BEFORE=<main 16539fe, throwaway worktree> AFTER=<303-sidecar-v1>`
+
+`systemd-inhibit --what=sleep:idle`, default `BENCH_RUNS=5`, laravel/drupal/
+symfony_demo (`bench/compare.py --ab`, 15% tolerance; `-o` isn't part of this
+spanning set, same as section 12 — see the `-o`-specific table above
+instead):
+
+```
+bench/compare.py --ab: drupal_recommended-project (tolerance 15%)
+scenario                before          after      delta status
+cold            6950.1+/-3501.7ms 7166.1+/-6005.9ms   +216.0ms   info
+warm             284.6+/-8.2ms  285.6+/-5.8ms     +1.0ms     ok
+noop               5.3+/-0.5ms    5.9+/-0.3ms     +0.6ms     ok
+bench/compare.py --ab: laravel (tolerance 15%)
+scenario                before          after      delta status
+cold            11664.9+/-3505.4ms 6524.5+/-2021.7ms  -5140.4ms   info
+warm              39.5+/-0.7ms   38.2+/-1.4ms     -1.3ms     ok
+noop               6.7+/-0.3ms    6.6+/-0.5ms     -0.0ms     ok
+bench/compare.py --ab: symfony_demo (tolerance 15%)
+scenario                before          after      delta status
+cold            6585.2+/-3773.7ms 6582.6+/-5972.4ms     -2.6ms   info
+warm              45.0+/-3.3ms   45.9+/-2.0ms     +0.9ms     ok
+noop               8.6+/-0.4ms    8.9+/-0.3ms     +0.3ms     ok
+```
+
+Every warm/noop scenario is `ok` (none of them run `-o`, so this is "did the
+new format cost the plain path anything" — it didn't); cold is informational
+only (network/clone variance) and moves both ways. No scenario failed, so
+there was nothing to rerun.

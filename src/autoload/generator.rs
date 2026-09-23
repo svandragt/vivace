@@ -15,7 +15,9 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::{Map, Value};
 
-use super::classmap::{ClassMap, ClassName, ScanKey, Sidecar, fingerprint_dir, scan_paths};
+use super::classmap::{
+    ClassMap, ClassName, ScanKey, Sidecar, SidecarV1, fingerprint_dir, scan_paths,
+};
 use super::php::{Key, Php, export_bytes, export_static, export_str, loader_properties};
 use super::sort::sort_packages;
 
@@ -252,6 +254,7 @@ pub fn generate(input: &Input) -> Result<Generated> {
         warnings: Vec::new(),
         regex_cache: HashMap::new(),
         sidecars: HashMap::new(),
+        archive_sidecars: HashMap::new(),
         cache_hits: 0,
         cache_misses: 0,
         scan_paths_elapsed: std::time::Duration::ZERO,
@@ -817,11 +820,30 @@ struct ScanTask {
     psr: Option<(String, String)>,
 }
 
+/// Which sidecar a [`PreparedScan`] reads/writes through, and the key it
+/// scans under — `None` (in [`PreparedScan::cache`]) for a directory with no
+/// store archive to key a cache on (root package with nothing in the store
+/// yet, or a path/git source). The two variants are the two sidecar shapes
+/// [`ScanOutcome`] can come back as: an archive hit is already the merge's
+/// final shape (#303); a root hit is the older raw shape, still shaped and
+/// PSR-filtered at merge time (see [`super::classmap::Sidecar`]'s doc for
+/// why that one wasn't moved).
+enum CacheSlot {
+    Archive(PathBuf, ScanKey),
+    Root(PathBuf, ScanKey),
+}
+
 /// A [`ScanTask`] once its cache has been checked: either the sidecar
 /// already had the answer, or the directory still needs [`scan_paths`] to
 /// walk it — the part `Scanner::scan_all` fans out across threads (#198).
 enum ScanOutcome {
-    Hit(ClassMap),
+    /// An archive sidecar hit (#303): already grouped per file, in final
+    /// order, PSR-4 filtered — `Scanner::scan_all`'s fold is a plain ordered
+    /// append over this.
+    HitShaped(Vec<(PathBuf, Vec<ClassName>)>),
+    /// A root-sidecar hit: the raw scan result, shaped by
+    /// `Scanner::shape_for_merge` exactly like a miss.
+    HitRaw(ClassMap),
     Miss,
 }
 
@@ -831,10 +853,7 @@ enum ScanOutcome {
 struct PreparedScan {
     abs_dir: String,
     psr: Option<(String, String)>,
-    /// The sidecar path plus this scan's cache key; `None` for a directory
-    /// with no store archive to key a cache on (root package, path/git
-    /// source, or one the store had no pointer for).
-    cache: Option<(PathBuf, ScanKey)>,
+    cache: Option<CacheSlot>,
     exclusion: Option<Regex>,
     outcome: ScanOutcome,
 }
@@ -861,10 +880,15 @@ struct Scanner<'a> {
     /// autoload with no vendor-dir overlap trimming) share one `Regex::new`
     /// instead of paying to compile it again per directory.
     regex_cache: HashMap<String, Regex>,
-    /// #77: one archive's sidecar parsed at most once per install, however
-    /// many distinct `ScanKey`s (classmap dirs, PSR-4 namespaces mapped onto
-    /// more than one directory, ...) that archive gets scanned under.
+    /// #77/#269: the root package's own sidecar, parsed at most once per
+    /// install however many distinct `ScanKey`s it's scanned under — the
+    /// pre-#303 raw-scan shape (see [`Sidecar`]'s own doc for why the root
+    /// package keeps it).
     sidecars: HashMap<PathBuf, Sidecar>,
+    /// #303: a store archive's sidecar, one file per archive, already in the
+    /// merge's own final shape — same one-parse-per-install rationale as
+    /// `sidecars` above.
+    archive_sidecars: HashMap<PathBuf, SidecarV1>,
     /// #54: whether the classmap-scan sidecar cache is actually paying off,
     /// and how much of `scan()`'s time is the filesystem walk/tokenizing
     /// (`scan_paths`) itself versus everything else in `scan()`.
@@ -992,7 +1016,7 @@ impl Scanner<'_> {
                         psr: task.psr.clone(),
                         fingerprint: None,
                     };
-                    (crate::store::archive_classmap_sidecar(archive_dir), key)
+                    CacheSlot::Archive(crate::store::archive_classmap_sidecar(archive_dir), key)
                 })
                 .or_else(|| {
                     let sidecar = self.root_sidecar.clone()?;
@@ -1008,7 +1032,7 @@ impl Scanner<'_> {
                         psr: task.psr.clone(),
                         fingerprint: Some(fingerprint),
                     };
-                    Some((sidecar, key))
+                    Some(CacheSlot::Root(sidecar, key))
                 });
             self.setup_elapsed += setup_started.elapsed();
 
@@ -1017,21 +1041,28 @@ impl Scanner<'_> {
             // archive per install, however many distinct keys that archive
             // is scanned under — a `HashMap` entry, not a file read, on
             // every key after the first (#77).
-            let cached = cache.as_ref().and_then(|(sidecar, key)| {
-                self.sidecars
+            let outcome = match &cache {
+                Some(CacheSlot::Archive(sidecar, key)) => self
+                    .archive_sidecars
+                    .entry(sidecar.clone())
+                    .or_insert_with(|| SidecarV1::read(sidecar))
+                    .get(key, Path::new(&abs_dir))
+                    .map_or(ScanOutcome::Miss, ScanOutcome::HitShaped),
+                Some(CacheSlot::Root(sidecar, key)) => self
+                    .sidecars
                     .entry(sidecar.clone())
                     .or_insert_with(|| Sidecar::read(sidecar))
                     .get(key, Path::new(&abs_dir))
-            });
+                    .map_or(ScanOutcome::Miss, ScanOutcome::HitRaw),
+                None => ScanOutcome::Miss,
+            };
             self.cache_read_elapsed += read_started.elapsed();
 
-            let outcome = if let Some(found) = cached {
-                self.cache_hits += 1;
-                ScanOutcome::Hit(found)
-            } else {
+            if matches!(outcome, ScanOutcome::Miss) {
                 self.cache_misses += 1;
-                ScanOutcome::Miss
-            };
+            } else {
+                self.cache_hits += 1;
+            }
             prepared.push(PreparedScan {
                 abs_dir,
                 psr: task.psr.clone(),
@@ -1142,7 +1173,8 @@ impl Scanner<'_> {
         let scanned_upper_bound: usize = prepared
             .iter()
             .map(|scan| match &scan.outcome {
-                ScanOutcome::Hit(found) => found.map.len() + found.ambiguous.len(),
+                ScanOutcome::HitShaped(shaped) => shaped.len(),
+                ScanOutcome::HitRaw(found) => found.map.len() + found.ambiguous.len(),
                 ScanOutcome::Miss => 0,
             })
             .sum::<usize>()
@@ -1153,109 +1185,173 @@ impl Scanner<'_> {
         self.scanned.reserve(scanned_upper_bound);
 
         for (index, scan) in prepared.into_iter().enumerate() {
-            let found = match scan.outcome {
-                ScanOutcome::Hit(found) => found,
-                ScanOutcome::Miss => {
-                    let found = scanned
-                        .remove(&index)
-                        .expect("every miss index was scanned and any error already returned");
-                    if let Some((sidecar, key)) = &scan.cache {
-                        // Best-effort: a failed write (read-only cache,
-                        // permissions) must not fail the install that
-                        // triggered it, only cost it a cache miss next time.
-                        // Merges into whatever this archive's sidecar
-                        // already held instead of overwriting it, so a
-                        // different key already cached for the same archive
-                        // doesn't get evicted (#77).
-                        let write_started = std::time::Instant::now();
-                        let _ = self
-                            .sidecars
-                            .entry(sidecar.clone())
-                            .or_insert_with(|| Sidecar::read(sidecar))
-                            .insert_and_write(sidecar, key, Path::new(&scan.abs_dir), &found);
-                        self.cache_write_elapsed += write_started.elapsed();
-                    }
-                    found
-                }
-            };
+            let merge_started = std::time::Instant::now();
             let psr = scan
                 .psr
                 .as_ref()
                 .map(|(ns, kind)| (ns.as_str(), kind.as_str()));
             let abs_dir = &scan.abs_dir;
+            let cache = &scan.cache;
 
-            let merge_started = std::time::Instant::now();
-            // `found` is owned here (moved out of `scan.outcome`/`scanned`
-            // above), so its map/ambiguous entries can be moved into
-            // `per_file` instead of cloned — a class name and a path clone
-            // each avoided per entry, which adds up over a package's whole
-            // classmap.
-            let ClassMap {
-                map,
-                ambiguous,
-                mut canonical,
-            } = found;
-            let mut per_file: BTreeMap<PathBuf, Vec<ClassName>> = BTreeMap::new();
-            for (class, path) in map {
-                per_file.entry(path).or_default().push(class);
-            }
-            for (class, _, other) in ambiguous {
-                per_file.entry(other).or_default().push(class);
-            }
+            // #303: an archive hit is already the merge's own final shape
+            // (grouped per file, final order, PSR-4 filtered) — nothing left
+            // to do but append it. A root hit or a miss is still the raw
+            // per-class scan result, shaped here exactly as every scan used
+            // to be before the sidecar started storing this shape directly.
+            let for_merge: Vec<(PathBuf, PathBuf, Vec<ClassName>)> = match scan.outcome {
+                ScanOutcome::HitShaped(shaped) => shaped
+                    .into_iter()
+                    .map(|(file, classes)| {
+                        let real = file.clone();
+                        (file, real, classes)
+                    })
+                    .collect(),
+                ScanOutcome::HitRaw(found) => self.shape_for_merge(found, psr, abs_dir),
+                ScanOutcome::Miss => {
+                    let found = scanned
+                        .remove(&index)
+                        .expect("every miss index was scanned and any error already returned");
+                    // Best-effort below: a failed write (read-only cache,
+                    // permissions) must not fail the install that triggered
+                    // it, only cost it a cache miss next time. Merges into
+                    // whatever this archive's sidecar already held instead
+                    // of overwriting it, so a different key already cached
+                    // for the same archive doesn't get evicted (#77).
+                    if let Some(CacheSlot::Root(sidecar, key)) = cache {
+                        let write_started = std::time::Instant::now();
+                        let _ = self
+                            .sidecars
+                            .entry(sidecar.clone())
+                            .or_insert_with(|| Sidecar::read(sidecar))
+                            .insert_and_write(sidecar, key, Path::new(abs_dir), &found);
+                        self.cache_write_elapsed += write_started.elapsed();
+                    }
+                    let shaped = self.shape_for_merge(found, psr, abs_dir);
+                    if let Some(CacheSlot::Archive(sidecar, key)) = cache {
+                        let write_started = std::time::Instant::now();
+                        // The exact bytes just folded into `self.map` below:
+                        // #303's sidecar stores the merge's own final shape,
+                        // not a raw scan, so a later hit has nothing left to
+                        // recompute.
+                        let shaped_for_write: Vec<(PathBuf, Vec<ClassName>)> = shaped
+                            .iter()
+                            .map(|(file, _, classes)| (file.clone(), classes.clone()))
+                            .collect();
+                        let _ = self
+                            .archive_sidecars
+                            .entry(sidecar.clone())
+                            .or_insert_with(|| SidecarV1::read(sidecar))
+                            .insert_and_write(sidecar, key, Path::new(abs_dir), &shaped_for_write);
+                        self.cache_write_elapsed += write_started.elapsed();
+                    }
+                    shaped
+                }
+            };
 
-            for (file, classes) in per_file {
-                // `scan_paths` already canonicalized this file to dedupe
-                // symlinked duplicates; reuse it instead of doing so again.
-                // `remove` rather than `get().cloned()`: each file is only
-                // ever looked up once per task, so taking ownership skips a
-                // `PathBuf` clone for every one of them.
-                let real = canonical.remove(&file).unwrap_or_else(|| file.clone());
-                if self.scanned.contains(&real) {
-                    continue;
-                }
-                let file_path = normalized_path_str(&file);
-                let classes = match psr {
-                    Some((namespace, kind)) => {
-                        let (valid, rejected) =
-                            filter_by_namespace(&classes, &file_path, namespace, kind, abs_dir);
-                        if valid.is_empty() {
-                            if !file_path.starts_with(self.vendor) {
-                                let short = |p: &str| {
-                                    p.strip_prefix(self.base)
-                                        .map_or_else(|| p.to_string(), |r| format!(".{r}"))
-                                };
-                                for class in rejected {
-                                    self.warnings.push(format!(
-                                        "Class {} located in {} does not comply with {kind} autoloading standard (rule: {namespace} => {}). Skipping.",
-                                        lossy(&class),
-                                        short(&file_path),
-                                        short(abs_dir)
-                                    ));
-                                }
-                            }
-                            continue;
-                        }
-                        valid
-                    }
-                    None => classes,
-                };
-                self.scanned.insert(real);
-                for class in classes {
-                    match self.map.get(&class) {
-                        None => {
-                            self.map.insert(class, file_path.clone());
-                        }
-                        Some(existing) if *existing != file_path => self.warnings.push(format!(
-                            "Warning: Ambiguous class resolution, \"{}\" was found in both \"{existing}\" and \"{file_path}\", the first will be used.",
-                            lossy(&class)
-                        )),
-                        Some(_) => {}
-                    }
-                }
-            }
+            self.append_into_map(for_merge);
             self.merge_elapsed += merge_started.elapsed();
         }
         Ok(())
+    }
+
+    /// The regroup-by-file, PSR-4-filter fold every scan result — cached or
+    /// freshly walked — went through before #303's archive sidecar started
+    /// storing this shape directly: still needed for the root-package
+    /// sidecar (hit or miss, see [`super::classmap::Sidecar`]'s doc for why)
+    /// and for any miss (its result becomes the *next* archive sidecar entry
+    /// once shaped, at the call site above). Classes a PSR-4 rule rejects
+    /// are dropped and, for a file outside the vendor dir only (the root
+    /// package's own — `self.vendor`), warned about, exactly as before
+    /// #303.
+    fn shape_for_merge(
+        &mut self,
+        found: ClassMap,
+        psr: Option<(&str, &str)>,
+        abs_dir: &str,
+    ) -> Vec<(PathBuf, PathBuf, Vec<ClassName>)> {
+        // `found` is owned here, so its map/ambiguous entries can be moved
+        // into `per_file` instead of cloned — a class name and a path clone
+        // each avoided per entry, which adds up over a package's whole
+        // classmap.
+        let ClassMap {
+            map,
+            ambiguous,
+            mut canonical,
+        } = found;
+        let mut per_file: BTreeMap<PathBuf, Vec<ClassName>> = BTreeMap::new();
+        for (class, path) in map {
+            per_file.entry(path).or_default().push(class);
+        }
+        for (class, _, other) in ambiguous {
+            per_file.entry(other).or_default().push(class);
+        }
+
+        let mut out = Vec::with_capacity(per_file.len());
+        for (file, classes) in per_file {
+            // `scan_paths` already canonicalized this file to dedupe
+            // symlinked duplicates; reuse it instead of doing so again.
+            // `remove` rather than `get().cloned()`: each file is only ever
+            // looked up once per task, so taking ownership skips a
+            // `PathBuf` clone for every one of them.
+            let real = canonical.remove(&file).unwrap_or_else(|| file.clone());
+            let file_path = normalized_path_str(&file);
+            let classes = match psr {
+                Some((namespace, kind)) => {
+                    let (valid, rejected) =
+                        filter_by_namespace(&classes, &file_path, namespace, kind, abs_dir);
+                    if valid.is_empty() {
+                        if !file_path.starts_with(self.vendor) {
+                            let short = |p: &str| {
+                                p.strip_prefix(self.base)
+                                    .map_or_else(|| p.to_string(), |r| format!(".{r}"))
+                            };
+                            for class in rejected {
+                                self.warnings.push(format!(
+                                    "Class {} located in {} does not comply with {kind} autoloading standard (rule: {namespace} => {}). Skipping.",
+                                    lossy(&class),
+                                    short(&file_path),
+                                    short(abs_dir)
+                                ));
+                            }
+                        }
+                        continue;
+                    }
+                    valid
+                }
+                None => classes,
+            };
+            out.push((file, real, classes));
+        }
+        out
+    }
+
+    /// The tail every scan's `(file, real, classes)` triples fold through,
+    /// in order: skip a file some earlier task already claimed (`real`, the
+    /// canonicalized dedup key — always `file` itself for an archive hit,
+    /// see [`ScanOutcome::HitShaped`]'s own construction above), otherwise
+    /// record it and resolve each class against `self.map`, first writer
+    /// wins, same ambiguity warning as always. `entries`' own order (the
+    /// "final lexicographic order" #198/#259 depend on) decides every tie.
+    fn append_into_map(&mut self, entries: Vec<(PathBuf, PathBuf, Vec<ClassName>)>) {
+        for (file, real, classes) in entries {
+            if self.scanned.contains(&real) {
+                continue;
+            }
+            let file_path = normalized_path_str(&file);
+            self.scanned.insert(real);
+            for class in classes {
+                match self.map.get(&class) {
+                    None => {
+                        self.map.insert(class, file_path.clone());
+                    }
+                    Some(existing) if *existing != file_path => self.warnings.push(format!(
+                        "Warning: Ambiguous class resolution, \"{}\" was found in both \"{existing}\" and \"{file_path}\", the first will be used.",
+                        lossy(&class)
+                    )),
+                    Some(_) => {}
+                }
+            }
+        }
     }
 }
 
@@ -2279,6 +2375,7 @@ mod tests {
             warnings: Vec::new(),
             regex_cache: HashMap::new(),
             sidecars: HashMap::new(),
+            archive_sidecars: HashMap::new(),
             cache_hits: 0,
             cache_misses: 0,
             scan_paths_elapsed: std::time::Duration::ZERO,
@@ -2287,6 +2384,84 @@ mod tests {
             setup_elapsed: std::time::Duration::ZERO,
             cache_write_elapsed: std::time::Duration::ZERO,
         }
+    }
+
+    fn two_archive_index(dir_a: &Path, dir_b: &Path) -> ArchiveIndex {
+        ArchiveIndex {
+            entries: vec![
+                (normalize_path(&path_str(dir_a)), dir_a.to_path_buf()),
+                (normalize_path(&path_str(dir_b)), dir_b.to_path_buf()),
+            ],
+        }
+    }
+
+    /// #303: a class declared in two different *archive*-backed directories
+    /// (unlike `classmap_fold_is_invariant_to_scan_worker_count`'s root+
+    /// package case, which never touches an archive sidecar — every one of
+    /// its fixtures sets `archive_dir: None`) must resolve the same way
+    /// whether the winning task's directory is scanned fresh (a miss, both
+    /// tasks below on the first `scan_all`) or comes back as a v1 sidecar
+    /// hit (both tasks on the second, against a fresh `Scanner` reusing the
+    /// same sidecar files the first one wrote): first task in queue order
+    /// wins, the second task's file just warns — same map, same warning,
+    /// either way.
+    #[test]
+    fn archive_sidecar_hit_agrees_with_a_fresh_scan_on_a_cross_archive_ambiguous_class() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let base = root.path().to_string_lossy().into_owned();
+        let vendor = format!("{base}/vendor");
+
+        let dir_a = root.path().join("a");
+        let dir_b = root.path().join("b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::write(dir_a.join("Dup.php"), "<?php\nclass Dup {}\n").unwrap();
+        std::fs::write(dir_b.join("Dup.php"), "<?php\nclass Dup {}\n").unwrap();
+
+        let tasks = vec![
+            ScanTask {
+                dir: dir_a.to_string_lossy().into_owned(),
+                psr: None,
+            },
+            ScanTask {
+                dir: dir_b.to_string_lossy().into_owned(),
+                psr: None,
+            },
+        ];
+
+        let mut cold = Scanner {
+            archives: two_archive_index(&dir_a, &dir_b),
+            ..empty_scanner(&base, &vendor)
+        };
+        cold.scan_all(&tasks).expect("cold scan should succeed");
+        assert_eq!(cold.cache_misses, 2, "neither directory has a sidecar yet");
+        assert_eq!(cold.cache_hits, 0);
+
+        let mut warm = Scanner {
+            archives: two_archive_index(&dir_a, &dir_b),
+            ..empty_scanner(&base, &vendor)
+        };
+        warm.scan_all(&tasks).expect("warm scan should succeed");
+        assert_eq!(
+            warm.cache_hits, 2,
+            "the miss above wrote a v1 sidecar for both"
+        );
+        assert_eq!(warm.cache_misses, 0);
+
+        assert_eq!(
+            cold.map, warm.map,
+            "the same class must resolve to the same file whether scanned fresh or cache-hit"
+        );
+        assert_eq!(
+            cold.warnings, warm.warnings,
+            "the same ambiguous-class warning must fire either way"
+        );
+        assert_eq!(
+            cold.map.get(b"Dup".as_slice()),
+            Some(&format!("{}/Dup.php", normalize_path(&path_str(&dir_a)))),
+            "the first task in queue order wins the tie"
+        );
+        assert_eq!(cold.warnings.len(), 1, "one ambiguous-class warning");
     }
 
     /// #198: with no store archive backing any of these directories,
