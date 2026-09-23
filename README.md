@@ -197,9 +197,12 @@ unless you pass `--no-scripts`.[^10]
 two branches that each add a dependency merge cleanly instead of fighting
 over ordering. `install` and `update` never touch `composer.json`.[^11]
 
-To use `viv lock merge` as a git merge driver for a project's `composer.lock`,
-add `composer.lock merge=viv` to `.gitattributes` and run
-`git config merge.viv.driver 'viv lock merge %O %A %B'` once.
+To use `viv lock merge` as a git merge driver, add `composer.lock merge=viv`
+to `.gitattributes` (and `viv.lock merge=viv` if the project has adopted
+that file) and run `git config merge.viv.driver 'viv lock merge %O %A %B'`
+once. Git then hands both branches' locks to viv, which merges them record
+by record and re-solves what diverged; you only see conflict markers when
+the merged `composer.json` cannot be satisfied.
 
 ## Using viv as composer
 
