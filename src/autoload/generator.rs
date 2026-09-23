@@ -319,6 +319,12 @@ pub fn generate(input: &Input) -> Result<Generated> {
         "scanned classmap/PSR directories"
     );
     out.warnings.append(&mut scanner.warnings);
+    // #302: the two large PHP files (`autoload_classmap.php`,
+    // `autoload_static.php`) are rendered from `classmap` below with no
+    // instrumentation of their own before this — timed separately from
+    // `scan_all` above so a slow render on a classmap-heavy `-o` install
+    // doesn't hide inside "scanned classmap/PSR directories"'s own number.
+    let render_started = std::time::Instant::now();
     let mut classmap = scanner.map;
     classmap.insert(
         b"Composer\\InstalledVersions".to_vec(),
@@ -339,7 +345,13 @@ pub fn generate(input: &Input) -> Result<Generated> {
     for (class, code) in &classmap_codes {
         classmap_file.extend_from_slice(b"    ");
         classmap_file.extend_from_slice(&export_bytes(class));
-        classmap_file.extend_from_slice(format!(" => {},\n", code.plain()).as_bytes());
+        classmap_file.extend_from_slice(b" => ");
+        // Straight into the buffer rather than through a second `format!`
+        // just to wrap `code.plain()`'s own String: one allocation instead
+        // of two for every classmap entry, of which a `-o` install on a
+        // large project renders thousands (#302).
+        classmap_file.extend_from_slice(code.plain().as_bytes());
+        classmap_file.extend_from_slice(b",\n");
     }
     classmap_file.extend_from_slice(b");\n");
 
@@ -467,6 +479,11 @@ pub fn generate(input: &Input) -> Result<Generated> {
         target_dir.join("LICENSE"),
         include_bytes!("templates/LICENSE"),
     )?;
+    tracing::debug!(
+        classmap_entries = classmap_codes.len(),
+        elapsed_ms = render_started.elapsed().as_millis(),
+        "rendered and wrote autoload files"
+    );
 
     out.classmap = classmap
         .into_iter()
@@ -1115,6 +1132,26 @@ impl Scanner<'_> {
                 .collect()
         };
 
+        // An upper bound on how many distinct files the fold below will
+        // insert into `self.scanned`: every class plus every ambiguous
+        // second-occurrence counts one file at most once each, so summing
+        // their counts up front and reserving it in one shot avoids the
+        // `HashSet` repeatedly doubling and rehashing everything it already
+        // holds as a classmap-heavy `-o` install grows it past a few
+        // thousand entries (#302).
+        let scanned_upper_bound: usize = prepared
+            .iter()
+            .map(|scan| match &scan.outcome {
+                ScanOutcome::Hit(found) => found.map.len() + found.ambiguous.len(),
+                ScanOutcome::Miss => 0,
+            })
+            .sum::<usize>()
+            + scanned
+                .values()
+                .map(|found| found.map.len() + found.ambiguous.len())
+                .sum::<usize>();
+        self.scanned.reserve(scanned_upper_bound);
+
         for (index, scan) in prepared.into_iter().enumerate() {
             let found = match scan.outcome {
                 ScanOutcome::Hit(found) => found,
@@ -1148,32 +1185,35 @@ impl Scanner<'_> {
             let abs_dir = &scan.abs_dir;
 
             let merge_started = std::time::Instant::now();
+            // `found` is owned here (moved out of `scan.outcome`/`scanned`
+            // above), so its map/ambiguous entries can be moved into
+            // `per_file` instead of cloned — a class name and a path clone
+            // each avoided per entry, which adds up over a package's whole
+            // classmap.
+            let ClassMap {
+                map,
+                ambiguous,
+                mut canonical,
+            } = found;
             let mut per_file: BTreeMap<PathBuf, Vec<ClassName>> = BTreeMap::new();
-            for (class, path) in &found.map {
-                per_file
-                    .entry(path.clone())
-                    .or_default()
-                    .push(class.clone());
+            for (class, path) in map {
+                per_file.entry(path).or_default().push(class);
             }
-            for (class, _, other) in &found.ambiguous {
-                per_file
-                    .entry(other.clone())
-                    .or_default()
-                    .push(class.clone());
+            for (class, _, other) in ambiguous {
+                per_file.entry(other).or_default().push(class);
             }
 
             for (file, classes) in per_file {
                 // `scan_paths` already canonicalized this file to dedupe
                 // symlinked duplicates; reuse it instead of doing so again.
-                let real = found
-                    .canonical
-                    .get(&file)
-                    .cloned()
-                    .unwrap_or_else(|| file.clone());
+                // `remove` rather than `get().cloned()`: each file is only
+                // ever looked up once per task, so taking ownership skips a
+                // `PathBuf` clone for every one of them.
+                let real = canonical.remove(&file).unwrap_or_else(|| file.clone());
                 if self.scanned.contains(&real) {
                     continue;
                 }
-                let file_path = normalize_path(&path_str(&file));
+                let file_path = normalized_path_str(&file);
                 let classes = match psr {
                     Some((namespace, kind)) => {
                         let (valid, rejected) =
@@ -1668,7 +1708,13 @@ fn path_code(base: &str, vendor: &str, path: &str) -> PathCode {
     } else {
         format!("{base}/{path}")
     });
-    let (prefix, rest) = if format!("{path}/").starts_with(&format!("{vendor}/")) {
+    // Same test as `format!("{path}/").starts_with(&format!("{vendor}/"))`
+    // (`path` under `vendor`, or equal to it) without allocating two strings
+    // just to compare them — this runs once per rendered classmap/PSR entry.
+    let under_vendor = path
+        .strip_prefix(vendor)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+    let (prefix, rest) = if under_vendor {
         (Prefix::Vendor, path[vendor.len()..].to_string())
     } else {
         let relative = normalize_path(&find_shortest_path(base, &path, true));
@@ -1950,6 +1996,19 @@ pub(crate) fn path_str(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// `normalize_path(&path_str(path))` without the extra allocation
+/// `path_str` costs on the way there: every path this tool writes is valid
+/// UTF-8, so `Path::to_str` borrows it for free where `path_str`'s
+/// `to_string_lossy().into_owned()` always clones, lossy or not. Only the
+/// (practically unreachable) non-UTF-8 case pays for both. Called once per
+/// scanned classmap file on a `-o` install (#302).
+fn normalized_path_str(path: &Path) -> String {
+    match path.to_str() {
+        Some(s) => normalize_path(s),
+        None => normalize_path(&path_str(path)),
+    }
+}
+
 fn is_absolute(path: &str) -> bool {
     path.starts_with('/')
 }
@@ -1957,6 +2016,20 @@ fn is_absolute(path: &str) -> bool {
 /// `Filesystem::normalizePath` without the Windows drive and UNC handling:
 /// collapse `//`, resolve `.` and `..`, drop the trailing slash.
 pub(crate) fn normalize_path(path: &str) -> String {
+    // Every scanned/cached classmap path already comes out of a prior
+    // `normalize_path` (an `abs_dir` joined with a clean relative subpath),
+    // so it typically has nothing left to collapse. Detect that case without
+    // building the `Vec<&str>` of parts below: this function runs once per
+    // classmap file and once per rendered path entry, thousands of times on
+    // a `-o` install.
+    let already_clean = !path.is_empty()
+        && !path.contains('\\')
+        && !path.contains("//")
+        && !path.split('/').any(|part| part == "." || part == "..")
+        && (path == "/" || !path.ends_with('/'));
+    if already_clean {
+        return path.to_string();
+    }
     let path = path.replace('\\', "/");
     let (absolute, rest) = match path.strip_prefix('/') {
         Some(rest) => ("/", rest),
