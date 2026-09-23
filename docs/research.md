@@ -154,15 +154,39 @@ repositories solvable (#294), **52**, 15%; with the three escalation rungs
 conflict, one at rung 1 and two at rung 3.
 
 The 51 are the replay's floor rather than the driver's. Forty-three are
-`dev-*` branches whose current head declares a conflict the historical
-head did not; Packagist serves only today's head, so no replay recovers
-them, and a developer merging today gets the head they want. Seven require
-a package Packagist no longer lists, one manifest is malformed. The
-constraint chains and platform-heuristic cases of the earlier run are
-gone: rung 3 either finishes them or pushes them to a `dev-*` leaf.
-`--as-of`, resolving against the registry as it stood at the commit,
-changed nothing, which is the confirmation: the residue is branches, not
-releases. Excluding what a replay cannot reproduce, the
+`dev-*` requirements, 28 of them `roave/security-advisories dev-latest`.
+A tagged release is one immutable Packagist entry; a branch is one entry
+the registry overwrites on every push, so the solver only ever sees
+today's head. In 28 merges today's head declares
+`conflict: wp-coding-standards/wpcs <3` while the merged manifest still
+requires `wpcs ^2.3`, and the solver reports those two names:
+
+```
+roave/security-advisories dev-latest conflicts with wp-coding-standards/wpcs 2.3.0
+```
+
+The head at commit time is not lost, each side's `composer.lock` records
+its `source.reference`, and that commit's `composer.json` is still in the
+package's git repository. Only Packagist's copy is gone. A replay could
+recover it by fetching that commit and feeding its metadata to the solver
+in place of the registry entry, the path Composer takes for `type: vcs`
+repositories. That is not built, because it would only improve the
+measurement. For a merge happening today the head as served is the right
+input: `wpcs ^2.3` with today's `dev-latest` is unsatisfiable, so
+`viv lock merge` writes markers for those two names and exits 1, and
+`composer update` fails with the same message. The failure is the correct
+one. The advisories package is saying wpcs 2.3.0 has an advisory, and the
+fix is a `composer.json` change, wpcs to 3.x. That is the chapter's
+principle holding: the lock has nothing left to decide, the remaining
+human decision lives in `composer.json`, and viv names the two packages
+it concerns.
+
+Seven merges require a package Packagist no longer lists, one manifest is
+malformed. The constraint chains and platform-heuristic cases of the
+earlier run are gone: rung 3 either finishes them or pushes them to a
+`dev-*` leaf. `--as-of`, resolving against the registry as it stood at
+the commit, changed nothing, which is the confirmation: the residue is
+branches, not releases. Excluding what a replay cannot reproduce, the
 driver-attributable residue is zero of 355 (`bench/results/lockmerge.md`,
 2026-09-23 section).
 
