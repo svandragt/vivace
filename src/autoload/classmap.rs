@@ -444,13 +444,105 @@ pub fn scan_paths(path: &Path, exclude: Option<&Regex>) -> Result<ClassMap> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanKey {
     /// The scanned directory's path relative to the archive root (empty for
-    /// the package root itself).
+    /// the package root itself). For the root-package cache (#269), which
+    /// has no archive root to be relative to, this is just an opaque
+    /// identity for the directory within that project's one sidecar file —
+    /// [`Fingerprint`] is what actually stands in for its content.
     pub subpath: String,
     /// The exclusion regex's own source, if any was built for this scan.
     pub exclude: Option<String>,
     /// `(namespace, "psr-0"|"psr-4")` for a PSR scan, `None` for a plain
     /// `classmap` entry.
     pub psr: Option<(String, String)>,
+    /// #269: the root package's own directories have no store archive (they
+    /// are not immutable, so nothing content-addresses them) — a fingerprint
+    /// standing in for "unchanged since this was cached" instead. `None` for
+    /// a store-archive scan, where the archive dir itself already is that
+    /// guarantee. `#[serde(default)]` so a sidecar written before this field
+    /// existed still parses (as a `None` on every entry, a well-formed cache
+    /// miss rather than a corrupt-file wipe of the whole sidecar).
+    #[serde(default)]
+    pub fingerprint: Option<Fingerprint>,
+}
+
+/// A cheap stand-in for a directory's content: the recursive max mtime across
+/// every directory and file under it, plus a file count as a second check —
+/// two operations within the same mtime tick (coarse filesystem resolution,
+/// or just fast enough hardware) would otherwise look unchanged. Cost is a
+/// `stat` per entry (`readdir` plus metadata), no file content read, so it's
+/// far cheaper than the [`scan_paths`] walk it guards, but still linear in
+/// the directory's own size — a directory that changes on every run gains
+/// nothing from this and pays the fingerprint walk on top of the scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fingerprint {
+    max_mtime: (i64, u32),
+    file_count: u64,
+}
+
+/// Compute [`Fingerprint`] for `dir`, walking it the same way [`scan_paths`]
+/// does (dot files and VCS dirs skipped, symlink cycles broken) so the two
+/// never disagree about what's "under" the directory.
+pub fn fingerprint_dir(dir: &Path) -> Result<Fingerprint> {
+    let mut visited = HashSet::new();
+    let mut fp = Fingerprint {
+        max_mtime: (0, 0),
+        file_count: 0,
+    };
+    fingerprint_walk(dir, &mut visited, &mut fp)?;
+    Ok(fp)
+}
+
+fn fingerprint_walk(
+    dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+    fp: &mut Fingerprint,
+) -> Result<()> {
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(canonical) {
+        return Ok(());
+    }
+    bump_mtime(fp, dir);
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || VCS_DIRS.contains(&name.as_ref()) {
+            continue;
+        }
+        if metadata.is_dir() {
+            fingerprint_walk(&path, visited, fp)?;
+        } else if metadata.is_file() {
+            fp.file_count += 1;
+            bump_mtime_of(fp, &metadata);
+        }
+    }
+    Ok(())
+}
+
+fn bump_mtime(fp: &mut Fingerprint, path: &Path) {
+    if let Ok(metadata) = std::fs::metadata(path) {
+        bump_mtime_of(fp, &metadata);
+    }
+}
+
+fn bump_mtime_of(fp: &mut Fingerprint, metadata: &std::fs::Metadata) {
+    let Ok(modified) = metadata.modified() else {
+        return;
+    };
+    let Ok(since_epoch) = modified.duration_since(std::time::UNIX_EPOCH) else {
+        return;
+    };
+    let stamp = (
+        i64::try_from(since_epoch.as_secs()).unwrap_or(0),
+        since_epoch.subsec_nanos(),
+    );
+    if stamp > fp.max_mtime {
+        fp.max_mtime = stamp;
+    }
 }
 
 /// One archive's classmap-scan sidecar, as written: paths relative to the
@@ -560,6 +652,10 @@ impl Sidecar {
         let parent = sidecar
             .parent()
             .expect("sidecar is nested under the archive dir");
+        // A no-op for an archive sidecar (the archive dir already made
+        // `parent`); needed for the root-package sidecar's own bucket
+        // (#269), which nothing else creates.
+        fs_err::create_dir_all(parent)?;
         let mut temp = tempfile::Builder::new()
             .prefix(".tmp-classmap-")
             .tempfile_in(parent)?;

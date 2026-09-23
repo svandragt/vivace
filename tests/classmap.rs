@@ -6,7 +6,9 @@
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
-use vivace::autoload::classmap::{ScanKey, read_cached_scan, scan_paths, write_cached_scan};
+use vivace::autoload::classmap::{
+    ScanKey, fingerprint_dir, read_cached_scan, scan_paths, write_cached_scan,
+};
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/composer/classmap")
@@ -345,6 +347,7 @@ fn cached_scan_reroots_onto_a_different_directory() {
         subpath: String::new(),
         exclude: None,
         psr: None,
+        fingerprint: None,
     };
     let sidecar = archive.path().with_extension("classmap-v0");
     write_cached_scan(&sidecar, &key, archive.path(), &found).expect("write should succeed");
@@ -366,6 +369,7 @@ fn cached_scan_misses_on_a_different_key() {
         subpath: String::new(),
         exclude: None,
         psr: None,
+        fingerprint: None,
     };
     let sidecar = archive.path().with_extension("classmap-v0");
     write_cached_scan(&sidecar, &key, archive.path(), &found).expect("write should succeed");
@@ -374,6 +378,7 @@ fn cached_scan_misses_on_a_different_key() {
         subpath: "src".to_string(),
         exclude: None,
         psr: None,
+        fingerprint: None,
     };
     assert!(read_cached_scan(&sidecar, &different, archive.path()).is_none());
 }
@@ -385,6 +390,7 @@ fn read_cached_scan_is_none_for_a_missing_sidecar() {
         subpath: String::new(),
         exclude: None,
         psr: None,
+        fingerprint: None,
     };
     assert!(read_cached_scan(&dir.path().join("missing"), &key, dir.path()).is_none());
 }
@@ -405,11 +411,13 @@ fn writing_a_second_key_keeps_the_first_cached() {
         subpath: "a".to_string(),
         exclude: None,
         psr: None,
+        fingerprint: None,
     };
     let key_b = ScanKey {
         subpath: "b".to_string(),
         exclude: None,
         psr: None,
+        fingerprint: None,
     };
     write_cached_scan(&sidecar, &key_a, archive.path(), &found).expect("write should succeed");
     write_cached_scan(&sidecar, &key_b, archive.path(), &found).expect("write should succeed");
@@ -419,4 +427,98 @@ fn writing_a_second_key_keeps_the_first_cached() {
         "key_a must still hit after key_b was written"
     );
     assert!(read_cached_scan(&sidecar, &key_b, archive.path()).is_some());
+}
+
+/// #269: the root package's own directories have no store archive to key a
+/// cache on, so their entry carries a [`vivace::autoload::classmap::
+/// Fingerprint`] instead — the generator recomputes it and folds it into the
+/// `ScanKey` before every lookup, so a stale fingerprint alone (not a
+/// separate check) makes the old entry a miss. `key_of` mirrors exactly that
+/// generator step for the three cases the ticket names: add, remove, rename.
+fn key_of(dir: &std::path::Path) -> ScanKey {
+    ScanKey {
+        subpath: String::new(),
+        exclude: None,
+        psr: None,
+        fingerprint: Some(fingerprint_dir(dir).expect("fingerprint should succeed")),
+    }
+}
+
+#[test]
+fn root_cache_misses_after_a_php_file_is_added() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("A.php"), "<?php\nclass A {}").unwrap();
+    let sidecar = dir.path().with_extension("root-classmap-v0");
+    let found = scan_paths(dir.path(), None).expect("scan should succeed");
+    write_cached_scan(&sidecar, &key_of(dir.path()), dir.path(), &found)
+        .expect("write should succeed");
+    assert!(
+        read_cached_scan(&sidecar, &key_of(dir.path()), dir.path()).is_some(),
+        "an unchanged directory must still hit"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(dir.path().join("B.php"), "<?php\nclass B {}").unwrap();
+
+    assert!(
+        read_cached_scan(&sidecar, &key_of(dir.path()), dir.path()).is_none(),
+        "the freshly computed key (current fingerprint) must miss once B.php exists"
+    );
+    let rescanned = scan_paths(dir.path(), None).expect("rescan should succeed");
+    assert!(rescanned.map.contains_key(b"A".as_slice()));
+    assert!(rescanned.map.contains_key(b"B".as_slice()));
+}
+
+#[test]
+fn root_cache_misses_after_a_php_file_is_removed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("A.php"), "<?php\nclass A {}").unwrap();
+    std::fs::write(dir.path().join("B.php"), "<?php\nclass B {}").unwrap();
+    let sidecar = dir.path().with_extension("root-classmap-v0");
+    let found = scan_paths(dir.path(), None).expect("scan should succeed");
+    write_cached_scan(&sidecar, &key_of(dir.path()), dir.path(), &found)
+        .expect("write should succeed");
+    assert!(
+        read_cached_scan(&sidecar, &key_of(dir.path()), dir.path()).is_some(),
+        "an unchanged directory must still hit"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::remove_file(dir.path().join("B.php")).unwrap();
+
+    assert!(read_cached_scan(&sidecar, &key_of(dir.path()), dir.path()).is_none());
+    let rescanned = scan_paths(dir.path(), None).expect("rescan should succeed");
+    assert!(rescanned.map.contains_key(b"A".as_slice()));
+    assert!(!rescanned.map.contains_key(b"B".as_slice()));
+}
+
+#[test]
+fn root_cache_misses_after_a_php_file_is_renamed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("A.php"), "<?php\nclass A {}").unwrap();
+    std::fs::write(dir.path().join("Old.php"), "<?php\nclass Old {}").unwrap();
+    let sidecar = dir.path().with_extension("root-classmap-v0");
+    let found = scan_paths(dir.path(), None).expect("scan should succeed");
+    write_cached_scan(&sidecar, &key_of(dir.path()), dir.path(), &found)
+        .expect("write should succeed");
+    assert!(
+        read_cached_scan(&sidecar, &key_of(dir.path()), dir.path()).is_some(),
+        "an unchanged directory must still hit"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::rename(dir.path().join("Old.php"), dir.path().join("New.php")).unwrap();
+
+    assert!(
+        read_cached_scan(&sidecar, &key_of(dir.path()), dir.path()).is_none(),
+        "a rename keeps the file count the same, so the directory's own \
+         mtime (not the count) must be what trips the cache"
+    );
+    let rescanned = scan_paths(dir.path(), None).expect("rescan should succeed");
+    assert!(rescanned.map.contains_key(b"A".as_slice()));
+    assert_eq!(
+        rescanned.map.get(b"Old".as_slice()),
+        Some(&dir.path().join("New.php")),
+        "the class is still named Old, only its file moved"
+    );
 }

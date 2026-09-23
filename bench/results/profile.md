@@ -1006,3 +1006,122 @@ task's own ~300 ms expectation; the actual split shows why:
 Network fetch is ~95% of cold wall time on this run; everything else
 (parse/link/autoload/write) is single-digit-to-tens of ms, same shape as the
 warm scenario above.
+
+## 2026-09-23
+
+#269's fix, measured. Part 1 (a package's classmap cached beside its store
+archive, keyed by `ScanKey`, concatenated instead of rescanned) already
+landed before this ticket was filed ("Cache scanned classmaps per store
+archive", #77) — confirmed still working below. This branch adds only part
+2: the root package's own classmap/PSR-4 directories, which have no store
+archive to key a cache on, now get one project-scoped sidecar
+(`root-classmap-v0/<hash of the project dir>.json` under the store),
+keyed on a `(recursive max mtime, file count)` fingerprint instead of a
+content hash (`src/autoload/classmap.rs`'s `Fingerprint`/`fingerprint_dir`,
+`src/store.rs`'s `root_classmap_sidecar`).
+
+Binaries: `viv-before` = `main` (`169cdc1`, this session's `origin/main`
+tip); `viv-after` = this branch. Both `--release`, same machine as section 9.
+
+### Part 1 is already warm on `bench/laravel` (no regression)
+
+The committed `bench/laravel` fixture is lock+`composer.json` only, no root
+`autoload` block, so it never exercises part 2 — it's the control for "did
+this branch regress the already-working part 1 path". `RUST_LOG=vivace=debug
+-v`, 3 warm runs each (`-o`, cache primed by one prior run, `vendor/` removed
+between runs), median of the `scanned classmap/PSR directories` line's
+`elapsed_ms`, and `hyperfine -w 2 -r 10` wall time:
+
+| Binary | cache_hits/misses | scan_paths_ms | elapsed_ms (scan line, median) | wall `install` | wall `install -o` |
+|---|---|---|---|---|---|
+| before | 110/0 | 0 | 21 | 42.9 ± 1.6 ms | 71.7 ± 4.8 ms |
+| after | 110/0 | 0 | 21 | 42.2 ± 1.5 ms | 74.0 ± 4.8 ms |
+
+No change outside noise: part 1 alone already gets every package to a cache
+hit on a warm run; part 2 has nothing to do here because this fixture's root
+package owns no PSR-4/classmap directories.
+
+### Part 2's effect: a root package with real `app/`/`database/` trees
+
+`bench/laravel` was extended, scratch-only (not committed — the fixture is
+deliberately lock+json only per its own `.gitignore`), with a synthetic root
+`autoload.psr-4` (`App\`, `Database\Factories\`, `Database\Seeders\`) and 400
+generated PHP files across `app/{Models,Http/Controllers,Http/Middleware,
+Providers,Console/Commands,Events,Listeners,Jobs,Rules,Policies}` and
+`database/{factories,seeders}`, roughly a real Laravel app's own class count.
+Same method as above:
+
+| Binary | cache_hits/misses | scan_paths_ms | elapsed_ms (scan line, median) | wall `install` | wall `install -o` |
+|---|---|---|---|---|---|
+| before | 110/3 (root dirs always miss) | 6 | 28 | 40.7 ± 1.4 ms | 78.2 ± 3.6 ms |
+| after | 113/0 | 0 | 22 | 41.3 ± 2.0 ms | 72.9 ± 2.5 ms |
+
+Part 2 takes the root package's 3 directories from a permanent miss to a
+hit, saving ~6ms of scan on this tree and ~5ms of wall time on `-o`
+(78.2 → 72.9 ms); `install` (no `-o`) is unaffected either binary, as
+expected. `-o` is still well above `install`'s own time (~10 ms was the
+ticket's done-when): the remaining gap is `merge_ms` (13–16 ms, folding every
+scanned class into the final map — PSR filtering, ambiguity bookkeeping,
+symlink dedup) plus `cache_read_ms`/generation overhead the debug log's
+`scanned classmap/PSR directories` span doesn't cover, none of which #269
+was scoped to touch. Shipping part 1 (already landed) and part 2 (this
+branch) removes every avoidable *rescan*; the residual is generation cost,
+a different ticket.
+
+### `make bench-ab BEFORE=<main 169cdc1> AFTER=<269-classmap-cache>`
+
+`systemd-inhibit --what=sleep:idle`, `BENCH_RUNS=5`, laravel/drupal/
+symfony_demo (`bench/compare.py --ab`, 15% tolerance, no `-o` — it isn't part
+of this spanning set, see the `-o`-specific tables above instead):
+
+```
+bench/compare.py --ab: drupal_recommended-project (tolerance 15%)
+scenario                before          after      delta status
+cold            9924.7+/-5859.3ms 14962.2+/-7506.2ms  +5037.5ms   info
+warm             285.6+/-7.0ms  284.0+/-8.7ms     -1.5ms     ok
+noop               5.4+/-1.2ms    5.7+/-0.3ms     +0.3ms     ok
+bench/compare.py --ab: laravel (tolerance 15%)
+scenario                before          after      delta status
+cold            2516.4+/-786.2ms 3369.0+/-4015.6ms   +852.6ms   info
+warm              40.4+/-0.4ms   39.6+/-1.5ms     -0.8ms     ok
+noop               6.5+/-0.3ms    6.9+/-0.5ms     +0.4ms     ok
+bench/compare.py --ab: symfony_demo (tolerance 15%)
+scenario                before          after      delta status
+cold            8338.5+/-3290.9ms 7207.9+/-2223.2ms  -1130.7ms   info
+warm              49.2+/-1.7ms   49.8+/-1.0ms     +0.5ms     ok
+noop               8.3+/-0.5ms    8.4+/-0.3ms     +0.2ms     ok
+```
+
+Every warm/noop scenario is `ok`; cold is informational only (network/clone
+variance, not gated) and swings both ways. No scenario failed, so there was
+nothing to rerun.
+
+### Compat
+
+`COMPAT_ONLY=laravel/laravel,composer/composer devbox run -- compat/run.sh
+269-check` (plain install, no `-o`, plus its own random sample of 10):
+`laravel/laravel` and `composer/composer` both `identical`, dev and no-dev;
+9 of 10 random-sample projects `identical`, the rest `skipped` on a
+pre-existing Composer-side resolve/platform failure unrelated to this
+change. Results file deleted after reading, per the sweep's own convention
+of not committing a run's output.
+
+Separately (the sweep never passes `-o`): a real `laravel/laravel` checkout
+(`aa0cf127f`, the same commit the sweep cloned), `composer update
+--ignore-platform-reqs` for a lock, then `viv install -o` vs `composer
+install -o --no-plugins --no-scripts`, cold and warm cache both sides —
+`vendor/composer/autoload_classmap.php` and `autoload_static.php`
+byte-identical in both scenarios. This checkout's own `app/` is only 8
+files (the stock skeleton), so it doesn't move the wall clock the way the
+400-file synthetic tree above does; it's the correctness check, not the
+speed one.
+
+### Tests
+
+Three new `tests/classmap.rs` cases exercise exactly the ticket's three
+mutations against a fingerprint-cached directory (add/remove/rename a `.php`
+file): each confirms a freshly computed key misses the stale entry and a
+rescan recovers the right class, including the rename case specifically
+because it leaves the file count unchanged (only the containing directory's
+own mtime moves). Full suite: 871 passed, 6 skipped (`make check`, this
+machine).
