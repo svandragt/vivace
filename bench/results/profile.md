@@ -1270,3 +1270,125 @@ rescan recovers the right class, including the rename case specifically
 because it leaves the file count unchanged (only the containing directory's
 own mtime moves). Full suite: 871 passed, 6 skipped (`make check`, this
 machine).
+
+## 12. Optimised autoload merge and render (#302)
+
+#302's own profile of the `merge_ms`/render gap #269 left open (section 11).
+Same machine as sections 9 and 11 (AMD Ryzen 9 7900X3D). `perf_event_paranoid`
+was `4` for this session with no passwordless `sudo` to lower it (the
+environment `#302` itself anticipates), so profiling fell back to the
+finer `tracing`/`Instant` spans the ticket names as the alternative, added
+and removed around `Scanner::scan_all`'s fold and the classmap/static file
+renders in `src/autoload/generator.rs` and `src/autoload/php.rs`.
+
+### Profile: where the 13–16 ms `merge_ms` and the ~16 ms of render outside
+it actually went
+
+`bench/laravel`, warm `-o` install, cache_hits=110/cache_misses=0 throughout
+(scanning itself contributes nothing — #269 already made that a hit). Five
+runs each, temporary per-step `Instant` timers (removed before landing;
+`merge_ms`/the new `rendered and wrote autoload files` span are what's left
+committed):
+
+| Step | Before | Note |
+|---|---|---|
+| merge: per-file `BTreeMap` grouping | ~6.4 ms | rebuilds a `PathBuf -> Vec<ClassName>` map every run from `found.map`/`found.ambiguous` |
+| merge: canonical lookup + `normalize_path` | ~3.7 ms | `path_str` always clones (even when lossless), then `normalize_path` rebuilds an already-clean path from scratch |
+| merge: `self.scanned` insert | ~2.15 ms | `HashSet<PathBuf>` grown one `insert` at a time, no `reserve` — repeated doubling/rehashing past a few thousand entries |
+| merge: `self.map` insert + ambiguity check | ~1.3–1.6 ms | `BTreeMap<ClassName, PathBuf>` insert, not touched (order-sensitive, see below) |
+| merge: PSR-4 filter | ~0.3 ms | already cheap — the ticket's own "precompute per archive" candidate confirmed *not* worth it |
+| `path_code` for ~8,000 classmap entries | ~3.5 ms | two `format!` allocations per entry just to test a string prefix; `normalize_path` re-parsing an already-clean path |
+| `autoload_classmap.php` render | ~2.3 ms | a second `format!` wrapping `PathCode::plain()`'s own String, per entry |
+| `autoload_static.php` render | ~4.9 ms | `Php::Arr` build (`class.clone()` per entry) + `export_static`'s reindent pass (`Vec<Vec<u8>>` of ~8,000 lines, then `.join()`) |
+| `export_str` (called from all of the above) | — | two `String::replace` passes per call, each allocating even when nothing matched (no path here ever needs escaping) |
+
+### Optimised, one item at a time, re-measured after each
+
+1. **Merge fold consumes `found` instead of cloning it** (`ClassMap { map, ambiguous, canonical }` destructured, `per_file` built from owned entries, `canonical.remove` instead of `.get().cloned()`): no measurable change alone (~6.4 ms → ~6.2 ms) — cloning a `Vec<u8>`/`PathBuf` here was already cheap; kept because it's strictly less work for the same result.
+2. **`normalize_path` fast path** (already-clean input — no `\`, `//`, `.`/`..` component, or trailing slash — returned as-is) **+ `path_code`'s vendor-prefix check without two `format!` allocations**: `path_code` step 3.5 ms → 1.7–2.0 ms.
+3. **`export_str` fast path** (skip both `String::replace` passes when there's nothing to escape) **+ `export_static` rewritten to build one output buffer in a single pass** (no `Vec<Vec<u8>>` of lines, no final `.join()`): `autoload_static.php` render 4.9 ms → 4.0–4.3 ms (`export_static(classMap)` alone: 2.7 ms → 1.8–2.0 ms).
+4. **`normalized_path_str`**: `Path::to_str()`'s zero-copy borrow feeding `normalize_path` directly, instead of `path_str`'s always-cloning `to_string_lossy().into_owned()` first: merge canon/normalize step 3.7–4.5 ms → 2.9–3.3 ms.
+5. **`self.scanned.reserve(upper_bound)`** before the fold, sized from `found.map.len() + found.ambiguous.len()` summed across every prepared scan: `self.scanned.insert` step 2.15 ms → ~1.05 ms — the biggest single per-step win, all of it from not rehashing the set as it grows.
+6. **`autoload_classmap.php` render writes straight into the byte buffer** instead of a second `format!` just to wrap `PathCode::plain()`'s own String: render step 2.3–2.5 ms → 1.7–2.0 ms.
+
+Declined: switching `per_file`'s `BTreeMap<PathBuf, Vec<ClassName>>` to a
+`HashMap` (per_file's biggest remaining cost, ~6.3 ms) would drop the
+lexicographic-path fold order #198/#259 rely on for which of two same-scan
+ambiguous files wins a class slot — a correctness risk for a project's real
+compat guarantee that a handful of milliseconds doesn't justify without a
+change to that ordering guarantee itself, which is out of this ticket's
+scope. Same reasoning for the sidecar's own hex/JSON round-trip
+(`cache_read_ms`, ~4 ms): #77's format, not #302's to redesign. The ticket's
+own "sidecar stores entries in final key form, merge is append + one sort"
+candidate would attack both of these at once but is a bigger, riskier
+change than this pass's allocation-only fixes — flagged as a follow-up, not
+attempted here.
+
+### Result
+
+`RUST_LOG=vivace=debug`, `bench/laravel`, warm, one run:
+
+| | Before (#269, section 11) | After (#302) |
+|---|---|---|
+| `merge_ms` | 13–16 | 11 |
+| `cache_read_ms` / `setup_ms` | 4 / 3 (unchanged, not this ticket's scope) | 4 / 3 |
+| render (classmap + static file build/write, new span) | not separately measured (~16 ms inferred) | 8 (`rendered and wrote autoload files`, classmap_entries=5880) |
+
+`hyperfine -w 2 -r 10`, isolated `--cache-dir`, warm:
+
+| | `install` | `install -o` | delta |
+|---|---|---|---|
+| Before | 42.9 ± 3.4 ms | 70.2 ± 1.3 ms | 27.3 ms |
+| After | 39.6 ± 1.0 ms | 61.7 ± 1.9 ms | 22.1 ms |
+
+A ~19% cut in the `-o` gap, short of the ticket's ~10 ms done-when. The
+profile shows why: `merge_ms`'s largest remaining piece (per-file grouping,
+~6.3 ms) and the sidecar reconstruction (~4 ms) are both real, necessary
+work under the current cache format, not avoidable allocation waste — the
+kind of gain this pass could safely take is exhausted. Stopping here per the
+ticket's own "or when the profile shows no single item above 2 ms" is not
+literally met either (a few items still sit at 2–4 ms), but every one of
+them is now either inherent to the cache format (#77's scope) or guarded by
+an ordering guarantee (#198/#259's scope) rather than a leftover
+inefficiency this ticket could fix alone.
+
+### Output contract
+
+Real `laravel/laravel` checkout (`git clone --depth 1`), lock via
+`composer update --no-install --no-scripts --no-plugins --no-interaction
+--ignore-platform-reqs`. `viv install -o --no-plugins --no-scripts` (cold
+store, then warm after removing `vendor/`) against `composer install -o
+--no-plugins --no-scripts`: `autoload_classmap.php` and
+`autoload_static.php` byte-identical in both scenarios.
+
+`devbox run -- cargo nextest run -E 'test(classmap) | test(autoload)'`: 98
+passed. `make check`: 871 passed, 6 skipped, fmt/clippy/deny/machete/doc all
+clean.
+
+### `make bench-ab BEFORE=<main 7988aeb> AFTER=<302-autoload-merge>`
+
+`systemd-inhibit --what=sleep:idle`, default `BENCH_RUNS=5`, laravel/drupal/
+symfony_demo:
+
+```
+bench/compare.py --ab: drupal_recommended-project (tolerance 15%)
+scenario                before          after      delta status
+cold            3484.2+/-731.5ms 3262.4+/-1379.7ms   -221.7ms   info
+warm             283.4+/-3.5ms  282.7+/-3.2ms     -0.7ms     ok
+noop               5.4+/-0.4ms    5.8+/-0.6ms     +0.4ms     ok
+bench/compare.py --ab: laravel (tolerance 15%)
+scenario                before          after      delta status
+cold            2181.5+/-142.5ms 2197.6+/-618.9ms    +16.2ms   info
+warm              40.9+/-0.8ms   39.5+/-1.8ms     -1.4ms     ok
+noop               6.1+/-0.3ms    6.3+/-0.1ms     +0.2ms     ok
+bench/compare.py --ab: symfony_demo (tolerance 15%)
+scenario                before          after      delta status
+cold            2818.7+/-333.9ms 2527.4+/-73.0ms   -291.3ms   info
+warm              48.1+/-1.3ms   45.2+/-1.5ms     -2.9ms     ok
+noop               8.2+/-0.2ms    8.6+/-0.7ms     +0.4ms     ok
+```
+
+Every warm/noop scenario is `ok` (two improved outright: laravel warm -1.4
+ms, symfony_demo warm -2.9 ms); cold is informational only (network/clone
+variance) and moves both ways. No scenario failed, so there was nothing to
+rerun.

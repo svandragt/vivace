@@ -25,7 +25,16 @@ pub enum Key {
 }
 
 /// `var_export($s, true)`: single quotes, escaping `\` and `'`.
+///
+/// A path never needs escaping (no `\` or `'` in a Linux path this tool
+/// writes), and this is called for every classmap/PSR-4 entry rendered, so
+/// the common case skips straight to one allocation instead of the two
+/// `String::replace` passes below, each of which allocates a fresh string
+/// even when nothing matched.
 pub fn export_str(s: &str) -> String {
+    if !s.contains(['\\', '\'']) {
+        return format!("'{s}'");
+    }
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
@@ -83,28 +92,30 @@ fn export(value: &Php, indent: usize, out: &mut Vec<u8>) {
 /// `var_export` output re-indented the way `AutoloadGenerator::getStaticFile`
 /// does: every line gets four spaces plus its own indentation doubled, the
 /// first line is left-trimmed and trailing spaces are removed.
+///
+/// Writes straight into one output buffer instead of collecting a `Vec<u8>`
+/// per line and joining them: a classmap-heavy `-o` install re-indents
+/// several thousand lines here, so the per-line allocation was showing up on
+/// its own in a profile (#302).
 pub fn export_static(value: &Php) -> Vec<u8> {
     let mut raw = Vec::new();
     export(value, 0, &mut raw);
-    let lines: Vec<Vec<u8>> = raw
-        .split(|&b| b == b'\n')
-        .map(|line| {
-            let leading = line.iter().take_while(|&&b| b == b' ').count();
-            let mut out = vec![b' '; 4 + leading];
-            out.extend_from_slice(line);
-            while out.last().is_some_and(u8::is_ascii_whitespace) {
-                out.pop();
-            }
-            out
-        })
-        .collect();
-    let mut joined = lines.join(&b'\n');
-    let start = joined
-        .iter()
-        .take_while(|b| b.is_ascii_whitespace())
-        .count();
-    joined.drain(..start);
-    joined
+    let mut out = Vec::with_capacity(raw.len() + raw.len() / 8 + 16);
+    for (i, line) in raw.split(|&b| b == b'\n').enumerate() {
+        if i > 0 {
+            out.push(b'\n');
+        }
+        let leading = line.iter().take_while(|&&b| b == b' ').count();
+        let line_start = out.len();
+        out.resize(line_start + 4 + leading, b' ');
+        out.extend_from_slice(line);
+        while out.len() > line_start && out.last().is_some_and(u8::is_ascii_whitespace) {
+            out.pop();
+        }
+    }
+    let start = out.iter().take_while(|b| b.is_ascii_whitespace()).count();
+    out.drain(..start);
+    out
 }
 
 /// The non-empty `ClassLoader` array properties, in declaration order, as
