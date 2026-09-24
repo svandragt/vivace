@@ -416,26 +416,117 @@ published `composer.json` files.
 
 ## Candidate chapters
 
-Opportunities that open once the contract is "a working project managed by
-viv" rather than byte-identical output. Each is a chapter waiting for a
-question and a measurement; none is scheduled.
+Three chapters in, the pattern is clear. Chapter 1 held because it
+asked a question Composer's users feel every week. Chapters 2 and 3
+closed because the control already gave the result: Composer's cache
+in one case, an aggregate root in the other. So every candidate below
+names its control and a measurement that costs days, not weeks, and
+none starts a build before that measurement is in. They are in the
+order worth running them.
 
-- **Autoload as a store property.** Each immutable package version in the
-  store carries its precomputed classmap and PSR map, so install is a
-  concatenation and only the root package is ever scanned. The performance
-  finding behind it (#269, the `-o` root scan) becomes a design rather than
-  a cache. Separable from chapter 2: that chapter changes where the paths
-  point, this one changes who computes the map, and either works without
-  the other.
-- **A lock that describes the whole install.** Chapter 1's format extended
-  with content-addressed hashes of the extracted trees, the full resolved
-  graph and a platform snapshot, so an offline install needs no mirror and
-  reproducibility is checked against the trees, not the dist URLs.
-- **Lock-seeded solving by default.** Start the pool from the locked
-  versions and widen only on conflict, so an `update` that changes little
-  costs little. Measured against the closure and solve phases the profile
-  already logs.
-- **A declared extension model.** The native adapters show that most
-  Composer plugins are path mapping, file scaffolding and patching. A
-  manifest that declares those directly replaces emulating plugin execution,
-  and the adapter list becomes the migration table.
+### Candidate A: an append-only ledger lock
+
+**Question.** If the lock is written as an ordered ledger of record
+changes, one line per package change with the change that caused it,
+does git's own `merge=union` merge it correctly with no driver at all,
+or does the union fold over real conflicts silently?
+
+**Why it might hold.** Chapter 1's driver merges by name-keyed record.
+A ledger makes the record the unit of the text itself, so two branches
+that change different packages append different lines and union
+concatenates them. The cost is a fold at read time and the risk is the
+silent case: both branches move the same package and union keeps both
+lines, so the fold has to detect that and refuse.
+
+**Control.** Chapter 1's `viv lock merge` on the same inputs.
+
+**Measurement.** The client replay corpus from chapter 1 (355 merges,
+`bench/results/lockmerge.md`). Convert both parents and the base to
+the ledger, `merge=union` them, fold, and compare with the driver's
+result: merges identical, merges where the union folded over a same-
+package change without a marker, merges where the fold refused and the
+driver did not. The chapter holds only if the second count is zero.
+
+**Build if it holds.** A ledger writer and fold in `viv lock convert`,
+then a decision on whether the driver stays for `composer.lock` only.
+
+### Candidate B: install from a lock years later
+
+**Question.** How many committed locks still install today, byte for
+byte, at the commit that wrote them, and what breaks the rest?
+
+**Why now.** Chapter 1's residue found 7 packages gone from Packagist
+and every `dev-*` head overwritten since the lock was written. Those
+were merges from the last two years. A lock is meant to reproduce an
+install, and the corpus can say how long that holds in practice.
+
+**Control.** Composer 2.10 on the same commit, same failure classes.
+
+**Measurement.** The compat corpus and `compat/hunted.md` projects at
+commits one, two and four years back, `viv install` from the committed
+lock with no update: installs identical, dist URL gone (registry,
+GitHub archive, private host), source reference gone, `dev-*` head
+moved, platform requirement no longer met by a current PHP. Counts per
+class and per age. Results in `compat/results/lock-age.md`.
+
+**Build if it holds.** The doc's earlier "lock that describes the whole
+install": content hashes of the extracted trees and a platform snapshot
+in chapter 1's format, so an install can be verified against trees the
+store still has when the URLs are gone.
+
+### Candidate C: lock-seeded solving
+
+**Question.** On an `update` that changes one package, how much of the
+time goes to fetching and solving packages that end up unchanged?
+
+**Control.** The full solve `viv update` runs today.
+
+**Measurement.** No code. The profile already logs the closure fetch,
+pool build and solve phases per run (`bench/results/profile.md`). For
+each bench project, `viv update <one package>` against the committed
+lock: phase times, packages fetched, packages whose locked version
+survives. The chapter is worth a build if the surviving share is high
+and the fetch dominates.
+
+**Build if it holds.** Start the pool from the locked versions, widen
+to the registry only for names the solver cannot satisfy from the
+lock. Composer's partial update already keeps the rest locked; this
+changes what is fetched, not what is chosen, so the compat sweep with
+`COMPAT_LOCKS=1` is the gate.
+
+### Candidate D: locks solved on one PHP, installed on another
+
+**Question.** How often does a lock solved on a developer's PHP refuse
+on the PHP that runs it, and would a lock that carries its platform
+snapshot have caught it at `update` time?
+
+**Why now.** #300 made `viv install` refuse when the platform does not
+satisfy the lock, and #242 made `update` solve for a platform the
+machine lacks. Both are correct and both move the failure around; the
+question is how common the failure is.
+
+**Control.** Composer's behaviour is identical, so the control is the
+status quo: the count of projects where it bites.
+
+**Measurement.** Across the compat corpus, each committed lock's
+platform requirements against the previous and next PHP minor, and
+against each PHP version the project's own CI matrix names: locks that
+would refuse, and on which requirement (`php`, `ext-*`). All from
+`composer.lock` and `.github/workflows`, no installs.
+
+**Build if it holds.** A platform snapshot in chapter 1's format and a
+`--platform` target on `update`, so the lock says what it was solved
+for and `install` reports a mismatch as a solve problem, not a runtime
+one.
+
+### Parked, with reasons
+
+- **Autoload as a store property.** #303's per-archive sidecar already
+  stores the shaped classmap beside each archive; the remaining gap on
+  Laravel is 14 ms of render, and chapter 2 showed the vendor tree is
+  not the cost. A design change would not move the number.
+- **A declared extension model.** The native adapters show most plugins
+  are path mapping, scaffolding and patching, and a manifest could
+  replace emulation. That is product design with the adapter list as
+  its migration table, better scheduled when a client hits the next
+  plugin than measured as a chapter.
