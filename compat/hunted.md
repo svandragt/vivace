@@ -44,7 +44,7 @@ the same comparison `compat/run.sh`'s `lock_compare_one` (#180) uses.
 | Project | Commit | Lock result | Notes |
 |---|---|---|---|
 | laravel/laravel | aa0cf12 | identical |  |
-| symfony/skeleton | c7e48b6 | differs | `config.bump-after-update: true` (set in this skeleton): real Composer rewrites `composer.json`'s own `symfony/flex` constraint from `^2` to the resolved `^2.11` and bumps `content-hash` accordingly; viv leaves `composer.json` untouched. Same packages/versions resolved either way. Minimal repro: `{"require": {"monolog/monolog": "^3.0"}, "config": {"bump-after-update": true}}` — Composer rewrites the require to `^3.12` and reports "./composer.json has been updated"; viv's copy still reads `^3.0`, so the two `content-hash` values differ (`8d225dc9...` vs `5fb11b17...`). `bump-after-update` looks unimplemented in viv (no match for it anywhere in `src/`); filed as #205. |
+| symfony/skeleton | c7e48b6 | differs | `config.bump-after-update: true` (set in this skeleton): real Composer rewrites `composer.json`'s own `symfony/flex` constraint from `^2` to the resolved `^2.11` and bumps `content-hash` accordingly; viv leaves `composer.json` untouched. Same packages/versions resolved either way. Minimal repro: `{"require": {"monolog/monolog": "^3.0"}, "config": {"bump-after-update": true}}` — Composer rewrites the require to `^3.12` and reports "./composer.json has been updated"; viv's copy still reads `^3.0`, so the two `content-hash` values differ (`8d225dc9...` vs `5fb11b17...`). `bump-after-update` was unimplemented at the time; filed as #205, fixed 2026-09-14, and the minimal repro now rewrites the require to `^3.12` under viv too (rechecked 2026-09-24 during the 0.16.0 README review). The row is kept as recorded. |
 | drupal/recommended-project | 5823c9f | identical |  |
 | api-platform/api-platform | 5152cb1 | identical |  |
 | laminas/laminas-mvc-skeleton | — | skipped | `composer update` itself failed: `require-dev` pulls `vimeo/psalm`, which caps PHP at `~8.3.0`; devbox's PHP is 8.4.24. Not a viv/composer divergence. |
@@ -55,9 +55,9 @@ the same comparison `compat/run.sh`'s `lock_compare_one` (#180) uses.
 | doctrine/orm | 7d857bf | identical |  |
 
 Ten projects attempted, none previously in this file: 8 identical, 1 differs,
-1 skipped (platform, not tool disagreement). The one divergence is a
-`composer.json`-mutation feature gap (`bump-after-update`), not a resolver
-disagreement — package/version selection matched in every case, including
+1 skipped (platform, not tool disagreement). The one divergence was a
+`composer.json`-mutation feature gap (`bump-after-update`, #205, fixed since),
+not a resolver disagreement — package/version selection matched in every case, including
 the differs row.
 
 ## 2026-09-15, popular applications and local projects
