@@ -90,9 +90,12 @@ jobs:
   # No devbox here: its macOS install took 186 s of a 6 min job. The runner's
   # own rustup plus setup-php gives the tests the same `php` and `composer`
   # on PATH in seconds. Lints that don't depend on the OS stay Linux-only.
-  # Two runners, half the suite each (`nextest --partition`): the whole
-  # suite took 173 s on one macOS runner and put this job 2 min past every
-  # Linux job, so it alone set the run's wall time (#195).
+  # Three runners, a third of the suite each (`nextest --partition`): the
+  # whole suite took 173 s on one macOS runner and put this job 2 min past
+  # every Linux job, so it alone set the run's wall time; two partitions
+  # still left one at 127 s because `count:` splits by test count, not
+  # duration (#195). No clippy here: the Linux gate runs it and macOS has
+  # no cfg-specific code worth a second 26 s pass.
   check-macos:
     if: github.event_name == 'push'
     runs-on: macos-latest
@@ -100,7 +103,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2]
+        partition: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -114,9 +117,7 @@ jobs:
       - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
         with:
           tool: nextest
-      - run: cargo clippy --all-targets -- -D warnings
-        if: matrix.partition == 1
-      - run: cargo nextest run --partition count:${{ matrix.partition }}/2
+      - run: cargo nextest run --partition count:${{ matrix.partition }}/3
         env:
           VIVACE_TEST_NETWORK: "1"
 
