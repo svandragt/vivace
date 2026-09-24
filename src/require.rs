@@ -78,15 +78,13 @@ pub struct RequireArgs {
     /// (`composer require --no-install`): today's `viv add` behaviour.
     #[arg(long)]
     pub no_install: bool,
-    /// Skip every platform (`php`/`ext-*`) requirement check on the
-    /// chained install's autoload write, same as `install`'s own flag
-    /// (`#231`). The partial update's own solve still only offers versions
-    /// the detected platform satisfies (`update.rs`'s `UpdateArgs` doc
-    /// comment on the same pair of flags explains the gap).
+    /// Ignore every platform (`php`/`ext-*`/`lib-*`) requirement in the
+    /// partial update's solve and in the chained install's platform
+    /// check, as Composer's flag does (#242).
     #[arg(long)]
     pub ignore_platform_reqs: bool,
-    /// Skip one named platform requirement (`*` glob, repeatable) on the
-    /// chained install's autoload write; the same solve-side gap applies.
+    /// Ignore one named platform requirement (`*` glob, repeatable) in the
+    /// solve and in the chained install's platform check (#242).
     #[arg(long, value_name = "REQ")]
     pub ignore_platform_req: Vec<String>,
     /// Allows installing a version a known security advisory covers or a
@@ -142,15 +140,13 @@ pub struct RemoveArgs {
     /// (`composer remove --no-install`): today's `viv rm` behaviour.
     #[arg(long)]
     pub no_install: bool,
-    /// Skip every platform (`php`/`ext-*`) requirement check on the
-    /// chained install's autoload write, same as `install`'s own flag
-    /// (`#231`). The partial update's own solve still only offers versions
-    /// the detected platform satisfies (`update.rs`'s `UpdateArgs` doc
-    /// comment on the same pair of flags explains the gap).
+    /// Ignore every platform (`php`/`ext-*`/`lib-*`) requirement in the
+    /// partial update's solve and in the chained install's platform
+    /// check, as Composer's flag does (#242).
     #[arg(long)]
     pub ignore_platform_reqs: bool,
-    /// Skip one named platform requirement (`*` glob, repeatable) on the
-    /// chained install's autoload write; the same solve-side gap applies.
+    /// Ignore one named platform requirement (`*` glob, repeatable) in the
+    /// solve and in the chained install's platform check (#242).
     #[arg(long, value_name = "REQ")]
     pub ignore_platform_req: Vec<String>,
     /// Allows installing a version a known security advisory covers or a
