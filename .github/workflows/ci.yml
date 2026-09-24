@@ -117,9 +117,10 @@ jobs:
       - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
         with:
           tool: nextest
+      # Offline: the 54 network tests fetch real dists and took the longest
+      # partition from 65 s to 108 s; they exercise nothing OS-specific and
+      # the Linux gate runs them (#195).
       - run: cargo nextest run --partition count:${{ matrix.partition }}/3
-        env:
-          VIVACE_TEST_NETWORK: "1"
 
   # Report only, no threshold (#45): surfaces which parts of the solver port
   # and lock writer are untested, not a number to gate on. Not chained
