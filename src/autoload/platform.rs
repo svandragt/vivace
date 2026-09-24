@@ -32,6 +32,26 @@ pub enum IgnorePlatform {
     List(Vec<String>),
 }
 
+impl IgnorePlatform {
+    /// `PlatformRequirementFilter::isIgnored`, shared by [`platform_check`],
+    /// #300's install-time verify (`install.rs`) and #242's solve-time
+    /// filter (`pool_builder.rs`): does `name` (already lowercased by every
+    /// caller here) match `--ignore-platform-reqs`/`--ignore-platform-req`?
+    pub fn is_ignored(&self, name: &str) -> bool {
+        match self {
+            IgnorePlatform::None => false,
+            IgnorePlatform::All => true,
+            IgnorePlatform::List(patterns) => patterns.iter().any(|pattern| {
+                Regex::new(&format!(
+                    "(?i)^{}$",
+                    regex::escape(pattern).replace(r"\*", ".*")
+                ))
+                .is_ok_and(|re| re.is_match(name))
+            }),
+        }
+    }
+}
+
 /// Returns the file body, or `None` when there is nothing to check.
 pub fn platform_check(
     packages: &[PlatformInput],
@@ -41,13 +61,6 @@ pub fn platform_check(
     if mode == PlatformCheck::Off || *ignore == IgnorePlatform::All {
         return Ok(None);
     }
-    let ignored: Vec<Regex> = match ignore {
-        IgnorePlatform::List(patterns) => patterns
-            .iter()
-            .map(|p| Regex::new(&format!("(?i)^{}$", regex::escape(p).replace(r"\*", ".*"))))
-            .collect::<std::result::Result<_, _>>()?,
-        _ => Vec::new(),
-    };
 
     // Extension providers: any package's `replace`/`provide` of `ext-*`.
     let mut providers: HashMap<String, Vec<Vec<Interval>>> = HashMap::new();
@@ -72,7 +85,7 @@ pub fn platform_check(
         }
         for (target, constraint) in package.require {
             let target = target.to_ascii_lowercase();
-            if ignored.iter().any(|re| re.is_match(&target)) {
+            if ignore.is_ignored(&target) {
                 continue;
             }
             if target == "php" || target == "php-64bit" {

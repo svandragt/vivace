@@ -173,10 +173,10 @@ fn main() -> ExitCode {
         },
         Command::Install(args) => match install::run(&args, cli.cache_dir.as_deref(), offline) {
             Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                err_out(&format!("{err:#}"));
-                ExitCode::from(1)
-            }
+            // #300: a platform-requirement refusal is a `SolverError` too
+            // (`install::run_impl`'s own lock-verify step), same exit code
+            // and unwrapped message as `update`/`require`/`remove`'s.
+            Err(err) => resolver_error(&err),
         },
         Command::Update(args) => match update::run(&args, cli.cache_dir.as_deref(), offline) {
             Ok(()) => ExitCode::SUCCESS,
@@ -312,11 +312,12 @@ fn main() -> ExitCode {
     }
 }
 
-/// `update`/`require`/`remove`'s shared error path: a [`SolverError`]
-/// prints its own Composer-shaped message with no extra context wrapping
-/// and exits `2`, matching `Installer::ERROR_DEPENDENCY_RESOLUTION_FAILED`'s
-/// exit code; anything else (a missing file, a bad `composer.json`, ...)
-/// keeps the plain `{err:#}` chain and exit `1`.
+/// `update`/`require`/`remove`/`install`'s shared error path: a
+/// [`SolverError`] prints its own Composer-shaped message with no extra
+/// context wrapping and exits `2`, matching
+/// `Installer::ERROR_DEPENDENCY_RESOLUTION_FAILED`'s exit code; anything
+/// else (a missing file, a bad `composer.json`, ...) keeps the plain
+/// `{err:#}` chain and exit `1`.
 fn resolver_error(err: &anyhow::Error) -> ExitCode {
     if let Some(solver_error) = err.downcast_ref::<SolverError>() {
         err_out(&format!("{solver_error}"));

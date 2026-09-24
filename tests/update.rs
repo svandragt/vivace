@@ -1429,9 +1429,17 @@ async fn unsatisfiable_root_require_matches_composers_message() {
 /// `config.platform` pinning the assumed version deterministically (so this
 /// doesn't depend on the host's real `php`, unlike most tests in this file).
 /// `Rule::getPrettyString`'s `-> satisfiable by` used to fire here too, even
-/// though `php[8.3.0]` doesn't satisfy `>=99`; Composer's own wording for a
-/// platform package present at a non-matching version is `-> found
-/// php[8.3.0] but it does not match the constraint.`
+/// though `php[8.3.0]` doesn't satisfy `>=99`.
+///
+/// #300: the wording this test locked in for the fixed case —
+/// `-> found php[8.3.0] but it does not match the constraint.` — turned out
+/// to not be real Composer's own text for it either (`grep` finds that
+/// phrase nowhere in Composer 2.10.2's `DependencyResolver/*.php`); a lone
+/// unsatisfiable root require is `Problem::getPrettyString`'s single-reason
+/// fast path, which re-checks `whatProvides` with the *constraint* (not
+/// `None`, `problem.rs`'s own fix), always taking Composer's
+/// `getMissingPackageReason` branch instead — verified against a real
+/// `devbox run -- composer update --no-ansi` on this exact `composer.json`.
 #[tokio::test]
 async fn unsatisfiable_php_constraint_reports_found_not_satisfiable() {
     let cache = tempfile::tempdir().unwrap();
@@ -1458,8 +1466,8 @@ async fn unsatisfiable_php_constraint_reports_found_not_satisfiable() {
     let message = format!("{solver_error}");
     assert!(
         message.contains(
-            "Root composer.json requires php >=99 -> found php[8.3.0] but it does \
-             not match the constraint."
+            "Root composer.json requires php >=99 but your php version (8.3.0) does not \
+             satisfy that requirement."
         ),
         "message:\n{message}"
     );

@@ -1,0 +1,42 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "ebfc984e4f6055d5e47e753652bcd6eb",
+    "packages": [
+        {
+            "name": "acme/hello",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/hello",
+                "reference": "872fedf269c58767d9d78d592cd2d2699aaa1003"
+            },
+            "require": {
+                "ext-viv-nonexistent-two": "*"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Hello\\": "src/"
+                }
+            },
+            "transport-options": {
+                "relative": true
+            }
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {
+        "ext-viv-nonexistent": "*"
+    },
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}

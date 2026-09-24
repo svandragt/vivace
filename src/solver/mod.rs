@@ -1,10 +1,14 @@
 //! Port of Composer 2.10.2's dependency solver
 //! (`src/Composer/DependencyResolver/*.php`), full update only: no lock
 //! writing, no `viv update`/`viv add` CLI wiring (`docs/resolver-design.md`
-//! stage 3). Not reachable from `src/install.rs`/`src/main.rs`: the solver
-//! only runs on `update`, so the no-slower-than-Composer rule
-//! (`AGENTS.md`'s Performance rule) does not apply to anything in this
-//! module.
+//! stage 3). The SAT solver itself (`solver.rs`, `rule_set_generator.rs`,
+//! `watch_graph.rs`, `decisions.rs`) still only runs on `update`, so the
+//! no-slower-than-Composer rule (`AGENTS.md`'s Performance rule) doesn't
+//! apply there; #300 changed this for the rest — `install.rs`'s own
+//! lock-verify step now builds a [`pool::Pool`] from `platform.rs`/
+//! `pool_builder::package_from_lock_entry` and renders a mismatch through
+//! `problem.rs`, on every `install`, so the rule *does* apply to those three
+//! now.
 //!
 //! | This module | Upstream |
 //! |---|---|

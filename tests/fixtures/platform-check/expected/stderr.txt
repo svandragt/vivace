@@ -1,0 +1,8 @@
+Your lock file does not contain a compatible set of packages. Please run composer update.
+
+  Problem 1
+    - Root composer.json requires PHP extension ext-viv-nonexistent * but it is missing from your system. Install or enable PHP's viv-nonexistent extension.
+  Problem 2
+    - acme/hello is locked to version 1.0.0 and an update of this package was not requested.
+    - acme/hello 1.0.0 requires ext-viv-nonexistent-two * -> it is missing from your system. Install or enable PHP's viv-nonexistent-two extension.
+

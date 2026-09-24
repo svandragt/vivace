@@ -1,0 +1,10 @@
+{
+    "name": "vivace/fixture-platform-check-php",
+    "require": {
+        "php": ">=8.0"
+    },
+    "config": {
+        "secure-http": true,
+        "platform": { "php": "7.0.0" }
+    }
+}

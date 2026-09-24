@@ -35,6 +35,11 @@ use crate::normalize;
 use crate::plan::{self, Plan};
 use crate::plugins;
 use crate::scripts;
+use crate::semver;
+use crate::solver::pool::Pool;
+use crate::solver::problem::{SolverError, missing_package_reason, missing_package_suffix};
+use crate::solver::request::Request;
+use crate::solver::{ConstraintCache, pool_builder};
 use crate::source;
 use crate::store::{Store, hex};
 use crate::vcs;
@@ -234,6 +239,114 @@ fn ignore_platform(all: bool, req: &[String]) -> IgnorePlatform {
     } else {
         IgnorePlatform::List(req.to_vec())
     }
+}
+
+/// #300: `Installer::doInstall`'s "Verifying lock file contents can be
+/// installed on current platform" step — a `php`/`ext-*`/`lib-*` root or
+/// locked-package requirement this host (or `config.platform`) can't
+/// satisfy exits before any fetch/plan/link work, `vendor/` untouched.
+///
+/// No fresh solve: a pool built from just the detected platform packages
+/// plus one [`crate::solver::pool::Package`] per locked entry
+/// (`pool_builder::package_from_lock_entry`) already carries every
+/// provider a real solve's pool would — a locked package's own
+/// `provide`/`replace` links count the same way — so `Pool::what_provides`
+/// alone answers "does anything here satisfy this link" without generating
+/// rules or running the SAT solver. Reuses `problem::missing_package_reason`/
+/// `missing_package_suffix` for Composer's exact wording, and
+/// `SolverError::for_install` for the header/`  Problem N` layout
+/// `update`/`require`/`remove`'s own solver failures already print.
+fn verify_platform_requirements(
+    root: &Root,
+    lock: &Lock,
+    dev: bool,
+    ignore: &IgnorePlatform,
+    cache_dir: Option<&Path>,
+) -> Result<()> {
+    if *ignore == IgnorePlatform::All {
+        return Ok(());
+    }
+
+    let mut cache = ConstraintCache::new();
+    let mut packages =
+        crate::solver::platform::cached_platform_packages(&root.config.platform, cache_dir)?;
+    for package in lock.packages(dev) {
+        packages.push(pool_builder::package_from_lock_entry(
+            &package.raw,
+            &mut cache,
+        )?);
+    }
+    let pool = Pool::new(packages);
+    // Never populated (`Pool::with_removed` is a real-solve-only concern,
+    // #238/#152): `missing_package_suffix`'s advisory/root-conflict branches
+    // read `request.requires`/`pool.removed()` only when `pool.removed()`
+    // is non-empty, which it never is for this ad hoc pool, so an empty
+    // stand-in is exactly as good as a real `Request` here.
+    let no_request = Request {
+        requires: Vec::new(),
+        fixed: Vec::new(),
+    };
+
+    let mut problems: Vec<String> = Vec::new();
+
+    let sections: [(&Map<String, Value>, bool); 2] =
+        [(&root.require, true), (&root.require_dev, dev)];
+    for (links, active) in sections {
+        if !active {
+            continue;
+        }
+        for (name, value) in links {
+            let name = name.to_ascii_lowercase();
+            if !crate::repository::is_platform_package(&name) || ignore.is_ignored(&name) {
+                continue;
+            }
+            let raw = value
+                .as_str()
+                .with_context(|| format!("require {name}: constraint is not a string"))?;
+            let constraint = semver::parse_constraint(raw)?;
+            if pool.what_provides(&name, Some(&constraint)).is_empty() {
+                problems.push(format!(
+                    "\n    {}",
+                    missing_package_reason(&pool, &no_request, &name, raw)
+                ));
+            }
+        }
+    }
+
+    for package in pool.packages() {
+        for link in &package.requires {
+            if !crate::repository::is_platform_package(&link.target)
+                || ignore.is_ignored(&link.target)
+            {
+                continue;
+            }
+            if pool
+                .what_provides(&link.target, link.constraint.as_deref())
+                .is_empty()
+            {
+                let suffix = missing_package_suffix(
+                    &pool,
+                    &no_request,
+                    &link.target,
+                    link.pretty_constraint(),
+                );
+                problems.push(format!(
+                    "\n    - {name} is locked to version {version} and an update of this \
+                     package was not requested.\n    - {name} {version} requires {target} \
+                     {constraint} -> {suffix}",
+                    name = package.name,
+                    version = package.pretty_version,
+                    target = link.target,
+                    constraint = link.pretty_constraint(),
+                ));
+            }
+        }
+    }
+
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(SolverError::for_install(problems).into())
 }
 
 impl From<&InstallArgs> for AutoloadFlags {
@@ -445,6 +558,9 @@ fn run_impl(
         lines.extend(MISSING_REQUIREMENTS_HINT.iter().map(|s| (*s).to_string()));
         bail!(lines.join("\n"));
     }
+    let ignore_platform_reqs =
+        ignore_platform(args.ignore_platform_reqs, &args.ignore_platform_req);
+    verify_platform_requirements(&root, &lock, dev, &ignore_platform_reqs, cache_dir)?;
 
     let selected: Vec<&Package> = lock.packages(dev).collect();
     for package in &selected {

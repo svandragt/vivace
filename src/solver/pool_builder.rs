@@ -745,7 +745,14 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
 /// `extra.branch-alias`, exactly where Composer's `ArrayLoader` reads it
 /// from — this fn's caller reconstructs that alias package separately, it
 /// is not carried in the `Package` returned here.
-fn package_from_lock_entry(entry: &Value, cache: &mut ConstraintCache) -> Result<Package> {
+///
+/// `pub(crate)`: #300's install-time platform-requirement check
+/// (`install.rs`) reuses this to turn every locked package into a pool
+/// member too, the same shape a partial update's locked-out names get.
+pub(crate) fn package_from_lock_entry(
+    entry: &Value,
+    cache: &mut ConstraintCache,
+) -> Result<Package> {
     let obj = entry
         .as_object()
         .context("lock package entry is not an object")?;

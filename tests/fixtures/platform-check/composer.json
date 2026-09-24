@@ -1,0 +1,17 @@
+{
+    "name": "vivace/fixture-platform-check",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/hello",
+            "options": { "versions": { "acme/hello": "1.0.0" } }
+        }
+    ],
+    "require": {
+        "acme/hello": "1.0.0",
+        "ext-viv-nonexistent": "*"
+    },
+    "config": {
+        "secure-http": true
+    }
+}
