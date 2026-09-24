@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-24
+### Added
+- `viv install` refuses, with Composer's Problem wording and exit code 2, when the lock needs a PHP version, extension or library the detected platform lacks, before anything is written; `config.platform`, `--ignore-platform-reqs` and `--ignore-platform-req` are honoured. The verdict is cached in the store so an unchanged project costs one stat and one small read; with no `php` on PATH the check is skipped ([#300](https://github.com/svandragt/vivace/issues/300))
+- `--ignore-platform-reqs` and `--ignore-platform-req=<name>` now reach the solve in `update`, `require` and `remove`, so a package pinned to a PHP this machine lacks resolves as it does in Composer ([#242](https://github.com/svandragt/vivace/issues/242))
+- Top-level `"type": "path"` repositories: a glob or plain relative `url`, `options.symlink`, `options.versions`, the git-guessed version, `dist.reference` and `transport-options` as Composer writes them ([#305](https://github.com/svandragt/vivace/issues/305))
+- `self.version` in the root `composer.json`'s own `require` and `require-dev` resolves to the root's version, in both the first solve and the dev-split second solve ([#304](https://github.com/svandragt/vivace/issues/304))
+
+### Changed
+- Warm `viv install -o` on `bench/laravel` from 78 ms to 53 ms: the root package's classmap scan is cached by directory fingerprint ([#269](https://github.com/svandragt/vivace/issues/269)), the classmap merge and autoload render allocate less ([#302](https://github.com/svandragt/vivace/issues/302)), and each archive's classmap sidecar is stored in its final key form ([#303](https://github.com/svandragt/vivace/issues/303)). Link concurrency was measured at the syscall floor and left alone ([#270](https://github.com/svandragt/vivace/issues/270))
+- Composer's platform Problem wording for `php`, `ext-*` and `lib-*` requirements is now reproduced exactly, including the "your php version (x) does not satisfy" case a present-but-mismatched platform package used to skip
+
+### Research
+- Chapter 3, workspaces, closed as measured and not pursued: on every corpus repository whose members are installed alone, standalone and aggregate solves agree ([#279](https://github.com/svandragt/vivace/issues/279)); four candidate chapters and an rspack prior-art note written up
+- CI per push from 5.4 min to a 4.4 min median, with macOS in three offline partitions and optimised dependencies in the dev profile ([#195](https://github.com/svandragt/vivace/issues/195))
+
 ## [0.15.0] - 2026-09-23
 ### Added
 - `viv lock convert` translates an existing `composer.lock` into chapter 1's `viv.lock` without re-solving ([#273](https://github.com/svandragt/vivace/issues/273))

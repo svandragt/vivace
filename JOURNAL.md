@@ -1364,3 +1364,40 @@ git refused before merging and the "left mid-merge" assertion fired.
 Local runs passed on the developer's global config. Identity now lives in
 the fixture repo's config; reproduce with an empty `HOME` before pushing a
 test that shells out to git.
+
+## 2026-09-24: chapter 3 measured and closed, three compat fixes, 0.16.0
+
+The day started with #300 and #242, the two gaps called out in the
+0.15.0 notes. Both landed together. The install-time platform check
+nearly doubled the no-op install until the profile named the cause: the
+first constraint parse in a process compiles the version parser's
+regexes, about 4 ms, and the no-op path had never parsed one before.
+The verdict is cached in the store now, keyed on the lock and
+composer.json hashes, the php probe key and the flags. The lesson goes
+in memory: a new install-path feature that parses a constraint pays a
+regex compile, measure with hyperfine on the no-op, not only bench-ab.
+
+Chapter 3 got the decision it had waited on. Colleagues had said the
+aggregate root is the right design, not a workaround, so the chapter
+was rewritten to measure against it before building anything. A
+ten-repository corpus and a five-row harness (#279) said: members are
+installed alone on 3 of 10, and on those the standalone and aggregate
+solves agree on every shared package. The harness also found two viv
+bugs on real published composer.json files, top-level path
+repositories (#305) and self.version in a root require (#304), and a
+third when the rerun hit the dev-split solve. With all three fixed the
+Sylius rerun confirmed the verdict: measured, not pursued. #277 and
+#278 closed as not planned.
+
+#195's CI work finished at a 4.4 min median: macOS in three offline
+partitions without clippy, dependencies optimised in the dev profile.
+The remaining minute is GitHub's macOS queue and PHP install.
+
+Four candidate chapters are written up with a control and a cheap
+measurement each, and rspack was read as prior art; its one idea worth
+taking is a single snapshot per run that every cache keys on (#311).
+The next chapter is the append-only ledger lock (#306).
+
+One process slip: a merge went to main with a compile error in a test
+because the gate and the push were chained with `;`. Fixed within six
+minutes; the gate and the push are separate commands from now on.
