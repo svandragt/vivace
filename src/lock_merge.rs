@@ -804,7 +804,8 @@ fn try_resolve_composer_lock(
     runtime.block_on(async {
         let fetcher = update::build_fetcher(project_dir, &root, offline)?;
         let metadata_ttl = update::metadata_ttl(None, offline);
-        let repo = update::build_repository(&root, &cache_dir, &fetcher, metadata_ttl).await?;
+        let repo = update::build_repository(project_dir, &root, &cache_dir, &fetcher, metadata_ttl)
+            .await?;
         let resolved = escalate_resolve(
             &repo,
             &root,
@@ -1135,7 +1136,8 @@ fn try_resolve_viv_lock(
     let resolved = runtime.block_on(async {
         let fetcher = update::build_fetcher(project_dir, &root, offline)?;
         let metadata_ttl = update::metadata_ttl(None, offline);
-        let repo = update::build_repository(&root, &cache_dir, &fetcher, metadata_ttl).await?;
+        let repo = update::build_repository(project_dir, &root, &cache_dir, &fetcher, metadata_ttl)
+            .await?;
         let resolved = escalate_resolve(
             &repo,
             &root,

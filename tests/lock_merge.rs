@@ -79,10 +79,15 @@ async fn lock_merge_resolves_the_divergent_closure_against_a_fixture_transport()
     let cache = tempfile::tempdir().unwrap();
     let composer_json = fs_err::read(fixtures().join("composer.json")).unwrap();
     let root: Value = serde_json::from_slice(&composer_json).unwrap();
-    let repo =
-        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
-            .await
-            .unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
 
     let mut locked_by_name = common::locked_by_name(&fixtures().join("base.lock"));
     locked_by_name.remove("psr/log");
@@ -151,10 +156,15 @@ async fn resolve_divergent_closure_declines_a_version_released_after_as_of() {
     };
     let cache = tempfile::tempdir().unwrap();
     let root: Value = serde_json::json!({"require": {"psr/log": "^3.0"}});
-    let repo =
-        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
-            .await
-            .unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
     let locked_by_name = std::collections::HashMap::new();
     let allow_list = vec!["psr/log".to_string()];
 
@@ -298,10 +308,15 @@ async fn rung_2_resolves_when_a_pinned_direct_dependent_blocks_the_closure() {
         root: fixtures_root(),
     };
     let cache = tempfile::tempdir().unwrap();
-    let repo =
-        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
-            .await
-            .unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
 
     let e_dependent = pinned(
         "e/dependent",
@@ -370,10 +385,15 @@ async fn max_scope_closure_caps_before_rung_2_and_names_the_cap() {
         root: fixtures_root(),
     };
     let cache = tempfile::tempdir().unwrap();
-    let repo =
-        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
-            .await
-            .unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
 
     let e_dependent = pinned(
         "e/dependent",
@@ -440,10 +460,15 @@ async fn rung_3_moves_a_two_hop_dependent_and_leaves_an_unrelated_package_pinned
         root: fixtures_root(),
     };
     let cache = tempfile::tempdir().unwrap();
-    let repo =
-        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
-            .await
-            .unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
 
     let e_dependent = pinned(
         "e/dependent",
@@ -540,10 +565,15 @@ async fn viv_lock_rung_1_resolve_writes_a_reconcilable_viv_lock_and_composer_loc
         root: fixtures_root(),
     };
     let cache = tempfile::tempdir().unwrap();
-    let repo =
-        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport, Duration::ZERO)
-            .await
-            .unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
 
     let composer_lock = json!({
         "packages": [{"name": "g/untouched", "version": "1.0.0", "require": {"php": ">=7.4.0"}}],

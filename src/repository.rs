@@ -10,15 +10,17 @@
 //! stage 2, the pool builder's metadata loader.
 //!
 //! Skipped, with a clear error where it matters: `providers-api`,
-//! `security-advisories`, and `path`/`artifact` repositories are not
-//! supported (a repository whose `type` isn't `"composer"`, `"vcs"`, `"git"`
-//! or `"github"` is rejected; a `"composer"` repository missing every
-//! provider mechanism below is treated as empty rather than erroring,
-//! matching `whatProvides`'s own `return []`).
+//! `security-advisories`, and `artifact` repositories are not supported (a
+//! repository whose `type` isn't `"composer"`, `"package"`, `"path"`,
+//! `"vcs"`, `"git"` or `"github"` is rejected; a `"composer"` repository
+//! missing every provider mechanism below is treated as empty rather than
+//! erroring, matching `whatProvides`'s own `return []`).
 //! `"vcs"`/`"git"`/`"github"` repositories are handled by
 //! [`crate::vcs`] (`VcsRepository`/`Vcs\GitDriver`/`Vcs\GitHubDriver`);
 //! every other VCS driver (GitLab, Bitbucket, Forgejo, Mercurial,
-//! Perforce, Fossil, SVN) is not supported.
+//! Perforce, Fossil, SVN) is not supported. `"path"` repositories
+//! (`#305`) are discovered by [`crate::path_repo`] and fed into the same
+//! `PackageSource` a `"package"` repository uses.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -1572,8 +1574,12 @@ impl Source {
         cache_root: &Path,
         transport: &T,
         // #191: only a `"composer"` source's `/p2/` provider files honour
-        // this; a VCS or `package` source has no such fetch to skip.
+        // this; a VCS, `package` or `path` source has no such fetch to skip.
         metadata_ttl: Duration,
+        // #305: only a `"path"` source resolves its `url` (possibly a
+        // glob) against this — every other kind's `url` is already a full
+        // remote address.
+        project_dir: &Path,
     ) -> Result<Source> {
         let kind = match &entry.kind {
             RepoKind::Composer => SourceKind::Composer(
@@ -1583,6 +1589,9 @@ impl Source {
                 vcs::VcsSource::load(&entry.url, repo_type, cache_root, transport).await?,
             ),
             RepoKind::Package(entries) => SourceKind::Package(PackageSource::load(entries)?),
+            RepoKind::Path { options } => SourceKind::Package(PackageSource::load(
+                &crate::path_repo::discover(project_dir, &entry.url, options)?,
+            )?),
         };
         Ok(Source {
             filters: entry.filters,
@@ -1894,9 +1903,10 @@ async fn get_hash_verified_json<D: DeserializeOwned + Send + 'static, T: Transpo
 /// One `composer.json` `repositories[]` entry, resolved to a supported
 /// `type` and its filters: `packagist.org` defaulting/disabling is settled
 /// by [`parse_repositories`] before this is built. `url` is only meaningful
-/// for [`RepoKind::Composer`]/[`RepoKind::Vcs`] — a `"package"` repository
-/// has no URL of its own (its `package` key carries the metadata directly),
-/// so [`parse_repo_entry`] leaves it empty for that kind.
+/// for [`RepoKind::Composer`]/[`RepoKind::Vcs`]/[`RepoKind::Path`] — a
+/// `"package"` repository has no URL of its own (its `package` key carries
+/// the metadata directly), so [`parse_repo_entry`] leaves it empty for that
+/// kind.
 #[derive(Debug)]
 struct RepoEntry {
     url: String,
@@ -1909,15 +1919,21 @@ struct RepoEntry {
 /// `composer.json` (`"vcs"`, `"git"` or `"github"`) since that's what
 /// decides which driver [`vcs::VcsSource::load`] picks — `"git"`/`"github"`
 /// force a driver outright the way Composer's own `$this->drivers[$type]`
-/// does, `"vcs"` autodetects — or a `"package"` one, holding its declared
+/// does, `"vcs"` autodetects — a `"package"` one, holding its declared
 /// `package` entries (one object, or the elements of an array) already
 /// validated as objects with a `name` and a `version`
-/// ([`parse_package_entries`]).
+/// ([`parse_package_entries`]) — or a `"path"` one (`#305`), holding its
+/// `options` object (`{}` when absent): [`Source::load`] hands `url` and
+/// `options` to [`crate::path_repo::discover`], which does the equivalent
+/// of `parse_package_entries` itself (one package per matched directory,
+/// already carrying a `name`/`version`) since that depends on the
+/// filesystem, not on `composer.json` alone.
 #[derive(Debug)]
 enum RepoKind {
     Composer,
     Vcs { repo_type: String },
     Package(Vec<Value>),
+    Path { options: Map<String, Value> },
 }
 
 /// `RepositoryFactory::createRepos` + `Config::merge`'s `repositories`
@@ -2005,9 +2021,16 @@ fn parse_repo_entry(name: &str, repo: &Value) -> Result<RepoEntry> {
         "vcs" | "git" | "github" => RepoKind::Vcs {
             repo_type: repo_type.to_string(),
         },
+        "path" => RepoKind::Path {
+            options: obj
+                .get("options")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default(),
+        },
         _ => bail!(
-            "repository {name:?}: type {repo_type:?} is not supported (composer, package, vcs \
-             and git repositories are)"
+            "repository {name:?}: type {repo_type:?} is not supported (composer, package, path, \
+             vcs and git repositories are)"
         ),
     };
     let url = obj
@@ -2102,7 +2125,16 @@ impl<T: Transport> Repository<T> {
             filters: RepoFilters::default(),
             kind: RepoKind::Composer,
         };
-        let source = Source::load(entry, cache_root, &transport, Duration::ZERO).await?;
+        // A `RepoKind::Composer` entry never consults `project_dir` (only
+        // `RepoKind::Path` does, #305) — `Path::new(".")` is never read.
+        let source = Source::load(
+            entry,
+            cache_root,
+            &transport,
+            Duration::ZERO,
+            Path::new("."),
+        )
+        .await?;
         Ok(Repository {
             transport,
             sources: vec![source],
@@ -2116,13 +2148,18 @@ impl<T: Transport> Repository<T> {
     /// Builds every source named in the root `composer.json`'s
     /// `repositories` (plus the implicit `packagist.org`, unless disabled),
     /// in priority order (`docs/resolver-design.md`'s Metadata section,
-    /// extended by `#67` to more than one repository).
+    /// extended by `#67` to more than one repository). `project_dir` is the
+    /// directory `root` itself lives in — only a `"path"`-type repository
+    /// (`#305`) ever reads it, to resolve its (possibly relative, possibly
+    /// glob) `url` against.
     pub async fn from_composer_json(
+        project_dir: &Path,
         root: &Value,
         cache_root: &Path,
         transport: T,
     ) -> Result<Repository<T>> {
-        Self::from_composer_json_with_ttl(root, cache_root, transport, Duration::ZERO).await
+        Self::from_composer_json_with_ttl(project_dir, root, cache_root, transport, Duration::ZERO)
+            .await
     }
 
     /// [`Repository::from_composer_json`], but every `"composer"`-type
@@ -2131,6 +2168,7 @@ impl<T: Transport> Repository<T> {
     /// `Duration::ZERO` (`from_composer_json`'s own default) matches today's
     /// behaviour of always revalidating.
     pub async fn from_composer_json_with_ttl(
+        project_dir: &Path,
         root: &Value,
         cache_root: &Path,
         transport: T,
@@ -2142,12 +2180,11 @@ impl<T: Transport> Repository<T> {
         // `try_join_all` preserves `entries`' own order in its `Vec` result,
         // same as the loop it replaces did, regardless of which finishes
         // first.
-        let sources = futures::future::try_join_all(
-            entries
-                .into_iter()
-                .map(|entry| Source::load(entry, cache_root, &transport, metadata_ttl)),
-        )
-        .await?;
+        let sources =
+            futures::future::try_join_all(entries.into_iter().map(|entry| {
+                Source::load(entry, cache_root, &transport, metadata_ttl, project_dir)
+            }))
+            .await?;
         Ok(Repository {
             transport,
             sources,
@@ -3587,11 +3624,35 @@ mod tests {
     #[test]
     fn parse_repositories_rejects_unsupported_type() {
         let root = serde_json::json!({
-            "repositories": [{"type": "path", "url": "../acme/pkg"}],
+            "repositories": [{"type": "artifact", "url": "../acme/dists"}],
         });
         let err = parse_repositories(&root).unwrap_err().to_string();
-        assert!(err.contains("path"), "{err}");
+        assert!(err.contains("artifact"), "{err}");
         assert!(!err.contains("v0.1"), "{err}");
+    }
+
+    #[test]
+    fn parse_repositories_accepts_a_path_repository_and_its_options() {
+        let root = serde_json::json!({
+            "repositories": [
+                {"type": "path", "url": "packages/*", "options": {"symlink": false}},
+            ],
+        });
+        let entries = parse_repositories(&root).unwrap();
+        assert_eq!(entries[0].url, "packages/*");
+        let RepoKind::Path { options } = &entries[0].kind else {
+            panic!("expected RepoKind::Path, got {:?}", entries[0].kind);
+        };
+        assert_eq!(options.get("symlink"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn parse_repositories_rejects_a_path_repository_with_no_url() {
+        let root = serde_json::json!({
+            "repositories": [{"type": "path"}],
+        });
+        let err = parse_repositories(&root).unwrap_err().to_string();
+        assert!(err.contains("\"url\""), "{err}");
     }
 
     #[test]

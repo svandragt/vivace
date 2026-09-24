@@ -212,7 +212,12 @@ pub fn run_outdated(args: &OutdatedArgs, cache_dir: Option<&Path>, offline: bool
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let repo = runtime.block_on(Repository::from_composer_json(&root, &cache_dir, transport))?;
+    let repo = runtime.block_on(Repository::from_composer_json(
+        &project_dir,
+        &root,
+        &cache_dir,
+        transport,
+    ))?;
 
     let ignore = build_name_filter(&args.ignore)?;
 

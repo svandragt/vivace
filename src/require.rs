@@ -369,6 +369,7 @@ pub(crate) fn partial_update(
     // miss errors cleanly instead of silently reaching the network.
     let fetcher = crate::update::build_fetcher(project_dir, &root, offline)?;
     let repo = runtime.block_on(crate::update::build_repository(
+        project_dir,
         &root,
         &cache_dir,
         &fetcher,
@@ -535,6 +536,7 @@ pub(crate) fn synthesize_constraint(
     // uses since #158, instead of always hitting `https://repo.packagist.org`.
     let fetcher = crate::update::build_fetcher(project_dir, root, offline)?;
     let repo = runtime.block_on(crate::update::build_repository(
+        project_dir,
         root,
         &cache_dir,
         &fetcher,
