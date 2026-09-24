@@ -90,16 +90,23 @@ jobs:
   # No devbox here: its macOS install took 186 s of a 6 min job. The runner's
   # own rustup plus setup-php gives the tests the same `php` and `composer`
   # on PATH in seconds. Lints that don't depend on the OS stay Linux-only.
+  # Two runners, half the suite each (`nextest --partition`): the whole
+  # suite took 173 s on one macOS runner and put this job 2 min past every
+  # Linux job, so it alone set the run's wall time (#195).
   check-macos:
     if: github.event_name == 'push'
     runs-on: macos-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: check-macos
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.partition == 1 }}
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: "8.4"
@@ -108,7 +115,8 @@ jobs:
         with:
           tool: nextest
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo nextest run
+        if: matrix.partition == 1
+      - run: cargo nextest run --partition count:${{ matrix.partition }}/2
         env:
           VIVACE_TEST_NETWORK: "1"
 
