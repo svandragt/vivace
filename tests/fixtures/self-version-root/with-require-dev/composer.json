@@ -1,0 +1,44 @@
+{
+    "name": "acme/root",
+    "version": "2.3.0",
+    "repositories": [
+        {
+            "packagist.org": false
+        },
+        {
+            "type": "package",
+            "package": [
+                {
+                    "name": "acme/sibling",
+                    "version": "2.3.0",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.com/dist/acme/sibling-2.3.0.zip"
+                    }
+                },
+                {
+                    "name": "acme/sibling",
+                    "version": "2.4.0",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.com/dist/acme/sibling-2.4.0.zip"
+                    }
+                },
+                {
+                    "name": "acme/devtool",
+                    "version": "1.0.0",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.com/dist/acme/devtool-1.0.0.zip"
+                    }
+                }
+            ]
+        }
+    ],
+    "require": {
+        "acme/sibling": "self.version"
+    },
+    "require-dev": {
+        "acme/devtool": "1.0.0"
+    }
+}
