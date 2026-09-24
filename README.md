@@ -353,12 +353,9 @@ without touching the network.[^14]
   project on the machine. If you patch vendor files by hand, install with
   `--link-mode copy`, or `--link-mode clone` for writable files sharing the
   store's disk space where the filesystem supports it.
-- **Two `update` gaps.** `--ignore-platform-reqs` on `update`, `require`
-  and `remove` affects the autoload write, not the solve, so a package
-  pinned to a PHP this interpreter lacks still fails to resolve
-  ([#242](https://github.com/svandragt/vivace/issues/242)). And a version
-  filtered out by `minimum-stability` is still reported as not found rather
-  than as filtered; Composer names the cause.
+- **A `minimum-stability` gap.** A version filtered out by
+  `minimum-stability` is still reported as not found rather than as
+  filtered; Composer names the cause.
 
 ## Scope
 
@@ -393,7 +390,10 @@ Commands that stay with Composer: `search`, `config`, `global`,
   `--minimal-changes` and Composer's default blocking of versions with a
   security advisory (`--no-blocking` to allow them), `add`, `rm`,
   `dump-autoload`, and offline mode with `--offline` or
-  `COMPOSER_DISABLE_NETWORK`.
+  `COMPOSER_DISABLE_NETWORK`. `install` refuses before writing anything when
+  the lock needs a PHP version, extension or library the detected platform
+  lacks, honouring `config.platform`, `--ignore-platform-reqs` and
+  `--ignore-platform-req`.
 - Plugins: the ones with native adapters, listed under [Plugins](#plugins).
 
 ## Development
@@ -405,7 +405,7 @@ and hyperfine for the fixtures and benchmarks.
 make install    # put viv on your PATH (~/.cargo/bin); make install-shim adds the composer drop-in
 make check      # fmt, clippy, tests, cargo deny, cargo machete, cargo doc
 make test
-make bench      # composer vs riff vs viv on bench/laravel
+make bench      # composer vs riff vs viv vs vivacity on bench/laravel
 VIVACE_TEST_NETWORK=1 make test   # includes the end-to-end install
 ```
 
