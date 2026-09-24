@@ -790,10 +790,28 @@ pub struct RootVersion {
 /// `.git` check below is what makes this cheap enough for the install
 /// path's perf budget (AGENTS.md) on every project that plainly isn't a
 /// git checkout, the common case for `viv install` in CI/deploy.
+/// `guess_version_in_git_tree` is the same guesser without this shortcut,
+/// for a caller that already knows walking up is exactly what it wants
+/// (#305's path-repository member directories).
 pub fn guess_root_version(project_dir: &Path) -> Option<RootVersion> {
     if !project_dir.join(".git").exists() {
         return None;
     }
+    guess_version_in_git_tree(project_dir)
+}
+
+/// [`guess_root_version`]'s guesser body, minus its own-`.git`-only
+/// shortcut: `git`'s upward search for the enclosing repository does the
+/// same walk Composer's `VersionGuesser` relies on (`ProcessExecutor`
+/// spawns `git` with `$path` as its cwd, nothing more), so a path-repository
+/// member directory with no `.git` of its own — the common case for a
+/// monorepo component (`Sylius\Component\*`, `WooCommerce`'s `plugins/woocommerce`)
+/// — still resolves to the enclosing checkout's branch, matching Composer
+/// rather than falling back to `dev-main`. `pub(crate)`: only
+/// [`crate::path_repo`] calls this directly; every other caller goes
+/// through [`guess_root_version`]'s cheap precheck.
+pub(crate) fn guess_version_in_git_tree(dir: &Path) -> Option<RootVersion> {
+    let project_dir = dir;
     let output = git_command()
         .args(["branch", "-a", "--no-color", "--no-abbrev", "-v"])
         .current_dir(project_dir)

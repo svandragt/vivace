@@ -377,10 +377,15 @@ async fn ttl_window_serves_provider_metadata_without_a_request() {
 
     // First process: populates the disk cache.
     let transport1 = FixtureTransport::new();
-    let repo =
-        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport1, Duration::ZERO)
-            .await
-            .unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport1,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
     let first = repo
         .load_package("monolog/monolog", DevAcceptance::NonDevOnly)
         .await
@@ -390,10 +395,15 @@ async fn ttl_window_serves_provider_metadata_without_a_request() {
     // Second process, `metadata_ttl` still zero: the provider file is
     // revalidated regardless, exactly as it always has been.
     let transport2 = FixtureTransport::new();
-    let repo2 =
-        Repository::from_composer_json_with_ttl(&root, cache.path(), &transport2, Duration::ZERO)
-            .await
-            .unwrap();
+    let repo2 = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport2,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
     repo2
         .load_package("monolog/monolog", DevAcceptance::NonDevOnly)
         .await
@@ -407,6 +417,7 @@ async fn ttl_window_serves_provider_metadata_without_a_request() {
     // straight from disk, no request issued at all.
     let transport3 = FixtureTransport::new();
     let repo3 = Repository::from_composer_json_with_ttl(
+        Path::new("."),
         &root,
         cache.path(),
         &transport3,
@@ -704,7 +715,7 @@ async fn available_package_patterns_skip_names_outside_the_patterns() {
             {"type": "composer", "url": "https://wp-available-patterns"},
         ],
     });
-    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
         .await
         .unwrap();
 
@@ -769,7 +780,7 @@ async fn two_repositories_offering_the_same_version_the_first_wins() {
             {"packagist.org": false},
         ],
     });
-    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
         .await
         .unwrap();
 
@@ -799,7 +810,7 @@ async fn non_canonical_repository_does_not_block_lower_priority_repositories() {
             {"packagist.org": false},
         ],
     });
-    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
         .await
         .unwrap();
 
@@ -824,7 +835,7 @@ async fn only_filter_hides_names_outside_the_pattern() {
             {"packagist.org": false},
         ],
     });
-    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
         .await
         .unwrap();
 
@@ -948,7 +959,7 @@ async fn viv_update_reproduces_composers_lock_against_a_real_satis_build() {
     let composer_json = fs_err::read(satis_project_root().join("composer.json")).unwrap();
     let root: Value = serde_json::from_slice(&composer_json).unwrap();
 
-    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
         .await
         .unwrap();
     let result = solver::solve_update(&repo, &root, false, false)

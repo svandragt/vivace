@@ -86,9 +86,15 @@ async fn update_lock_ttl(fixture: &Path, cache: &Path, metadata_ttl: Duration) -
     };
     let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
     let root: Value = serde_json::from_slice(&composer_json).unwrap();
-    let repo = Repository::from_composer_json_with_ttl(&root, cache, &transport, metadata_ttl)
-        .await
-        .unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache,
+        &transport,
+        metadata_ttl,
+    )
+    .await
+    .unwrap();
 
     let result = solver::solve_update(&repo, &root, false, false)
         .await
@@ -1990,7 +1996,7 @@ async fn viv_update_reproduces_composers_lock_against_real_wpackagist() {
     let fetcher = vivace::fetch::Fetcher::new(auth).unwrap();
     let transport = vivace::repository::HttpTransport { fetcher: &fetcher };
     let cache = tempfile::tempdir().unwrap();
-    let repo = Repository::from_composer_json(&root, cache.path(), transport)
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), transport)
         .await
         .unwrap();
     let result = solver::solve_update(&repo, &root, false, false)

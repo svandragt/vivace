@@ -425,12 +425,14 @@ pub(crate) fn build_fetcher(project_dir: &Path, root: &Value, offline: bool) -> 
 /// `https://repo.packagist.org` instead, ignoring `composer.json`'s own
 /// `repositories` (`#158`).
 pub(crate) async fn build_repository<'f>(
+    project_dir: &Path,
     root: &Value,
     cache_dir: &Path,
     fetcher: &'f Fetcher,
     metadata_ttl: std::time::Duration,
 ) -> Result<Repository<HttpTransport<'f>>> {
     Repository::from_composer_json_with_ttl(
+        project_dir,
         root,
         cache_dir,
         HttpTransport { fetcher },
@@ -477,7 +479,7 @@ async fn solve(
     // update) the lock read need neither its result nor the network, so run
     // them alongside it instead of serially after.
     let (repo, audit_result, locked_result) = tokio::join!(
-        build_repository(root, &cache_dir, &fetcher, metadata_ttl),
+        build_repository(project_dir, root, &cache_dir, &fetcher, metadata_ttl),
         async { audit_config_and_no_blocking(root, args.no_blocking || args.no_security_blocking) },
         async {
             // #90: a warm update's closure is almost always the previous

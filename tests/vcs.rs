@@ -124,7 +124,7 @@ async fn vcs_repository_lists_tags_and_branches() {
 
     let cache = tempfile::tempdir().unwrap();
     let transport = PanicTransport;
-    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
         .await
         .unwrap();
 
@@ -218,7 +218,7 @@ async fn vcs_update_matches_composer_byte_for_byte() {
 
     let cache = tempfile::tempdir().unwrap();
     let transport = PanicTransport;
-    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
         .await
         .unwrap();
     let result = vivace::solver::solve_update(&repo, &root, false, false)
@@ -329,7 +329,7 @@ async fn github_repository_lists_tags_and_the_default_branch() {
     });
     let cache = tempfile::tempdir().unwrap();
     let transport = github_fixture_transport();
-    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
         .await
         .unwrap();
 
@@ -389,7 +389,7 @@ async fn github_repository_never_matches_an_unrelated_package_name() {
     });
     let cache = tempfile::tempdir().unwrap();
     let transport = github_fixture_transport();
-    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
         .await
         .unwrap();
 

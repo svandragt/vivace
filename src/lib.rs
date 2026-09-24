@@ -15,6 +15,7 @@ pub mod merge_driver;
 pub mod native_lock;
 pub mod new;
 pub mod normalize;
+pub mod path_repo;
 pub mod plan;
 pub mod plugins;
 pub mod repository;

@@ -143,7 +143,7 @@ fn run_from_package(
         None => json!({}),
     };
     let repo = runtime.block_on(Repository::from_composer_json(
-        &repo_root, &cache_dir, transport,
+        &dir, &repo_root, &cache_dir, transport,
     ))?;
 
     let constraint_text = constraint.unwrap_or("*");

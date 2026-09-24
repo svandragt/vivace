@@ -123,6 +123,7 @@ pub fn run(args: &AuditArgs, cache_dir: Option<&Path>, offline: bool) -> Result<
         serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let repo_transport = RepoHttpTransport { fetcher: &fetcher };
     let repo = runtime.block_on(Repository::from_composer_json(
+        &project_dir,
         &root_value,
         &cache_dir,
         repo_transport,
