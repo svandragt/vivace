@@ -367,6 +367,16 @@ Regenerate with:
 python3 bench/aggregate.py bench/results/corpus.md
 ```
 
+## Workspaces (#279)
+
+Whether a workspace (one solve, one lock over several `composer.json`
+members) gives anything an aggregate root built from `path` repositories
+doesn't, measured across a pinned public corpus rather than argued from one
+project. `bench/workspaces.sh rows1-3` then `bench/workspaces.sh rows4-5`
+produce the five rows `docs/research.md` chapter 3 asks for into
+`bench/results/workspaces.md`; the corpus itself, with each repository's
+member globs and how it was found, is `bench/workspaces-corpus.toml`.
+
 ## Cold install: closing the gap to Riff (#1)
 
 Debug timings (`RUST_LOG=vivace=debug`) on the cold path showed the fetch

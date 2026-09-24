@@ -1,0 +1,80 @@
+# Pinned corpus for the workspace measurement (bench/workspaces.sh, #279).
+#
+# Each repository holds several composer.json files that are installable
+# roots in their own right (a plugin, module, component or package with a
+# `require` beyond php/ext-*). `members` is one or more globs, relative to
+# the repository root, matched against `find`; `found_via` records how the
+# repository was found, for anyone re-running the corpus search later.
+#
+# Refresh a pin with `git ls-remote <repo> <ref>`; commit the new commit to
+# make a run reproducible.
+
+[[repo]]
+name = "automattic/newspack-workspace"
+repo = "https://github.com/Automattic/newspack-workspace.git"
+commit = "c5dadc3c7ede505c434e5d156178f2d771500b85"
+members = "plugins/*/composer.json,themes/*/composer.json"
+found_via = "gh api search/code -f q='filename:composer.json path:plugins \"wordpress-plugin\"': a WordPress plugin/theme monorepo literally named workspace"
+
+[[repo]]
+name = "woocommerce/woocommerce"
+repo = "https://github.com/woocommerce/woocommerce.git"
+commit = "fe2c177f974b34ba711828968978ea14c09f8cd1"
+members = "packages/php/*/composer.json,plugins/woocommerce/composer.json,plugins/woocommerce-beta-tester/composer.json"
+found_via = "gh api repos/.../git/trees?recursive=1 on a known WordPress platform monorepo; packages/php/*/tasks/phpstan and tools/monorepo-utils test fixtures excluded (tooling and test scaffolding, not installable roots)"
+
+[[repo]]
+name = "acquia/acquia_cms"
+repo = "https://github.com/acquia/acquia_cms.git"
+commit = "8d8f3a264990651297528370e6127acc3449af57"
+members = "modules/*/composer.json"
+found_via = "gh api search/code -f q='filename:composer.json path:modules drupal': a Drupal distribution; nested modules/*/modules/*/composer.json excluded (sub-modules of a member, not top-level members)"
+
+[[repo]]
+name = "apigee/apigee-edge-drupal"
+repo = "https://github.com/apigee/apigee-edge-drupal.git"
+commit = "4a1176330b18abc54d8e955c12c67b9d328fc2e4"
+members = "modules/*/composer.json"
+found_via = "gh api search/code -f q='filename:composer.json path:modules drupal': a Drupal module suite split into sub-modules, each its own composer.json"
+
+[[repo]]
+name = "laravel/framework"
+repo = "https://github.com/laravel/framework.git"
+commit = "06cdbaea9f1165de0d75ba5f46d781143250ef80"
+members = "src/Illuminate/*/composer.json"
+found_via = "known: the Laravel framework split into per-component composer.json (illuminate/*), the source each is subtree-split from; tests/Foundation/Fixtures/* excluded (test fixtures, not installable roots)"
+
+[[repo]]
+name = "bagisto/bagisto"
+repo = "https://github.com/bagisto/bagisto.git"
+commit = "805b67013134ebc53f1da1285f0aa6632f5dde62"
+members = "packages/Webkul/*/composer.json"
+found_via = "known: a Laravel e-commerce monorepo, each package under packages/Webkul/* its own composer.json"
+
+[[repo]]
+name = "sylius/sylius"
+repo = "https://github.com/Sylius/Sylius.git"
+commit = "38588aff004e9ad66fe78e3c8b61791709b57659"
+members = "src/Sylius/Component/*/composer.json"
+found_via = "known: a Symfony e-commerce monorepo split into components; src/Sylius/Bundle/* and */test(s)/composer.json excluded to keep member count tractable for rows 4-5"
+
+[[repo]]
+name = "shopware/platform"
+repo = "https://github.com/shopware/platform.git"
+commit = "ac2a1782cf7975c68f29443147b503f8ffcc6f68"
+members = "src/Core/composer.json,src/Administration/composer.json,src/Storefront/composer.json,src/Elasticsearch/composer.json"
+found_via = "known: a Symfony e-commerce monorepo split into four top-level bundles; tests/**/_fixtures/*/composer.json excluded (test fixtures, not installable roots)"
+
+[[repo]]
+name = "neos/neos-development-collection"
+repo = "https://github.com/neos/neos-development-collection.git"
+commit = "b03372d5840bc679e343a75eeb0335ca56185032"
+members = "*/composer.json"
+found_via = "known: the Flow/Neos CMS development collection, one top-level directory per package"
+
+[[repo]]
+name = "typo3/typo3"
+repo = "https://github.com/typo3/typo3.git"
+commit = "23a584bf722a6f8c693833c2dcc10da2e66f85a0"
+members = "typo3/sysext/*/composer.json"
+found_via = "known: TYPO3 core split into system extensions, each its own composer.json; nested Tests/Functional/Fixtures/Extensions/*/composer.json excluded (test fixtures, not installable roots)"
