@@ -620,6 +620,16 @@ pub struct Config {
     /// (`Config.php`'s `'audit' => ['ignore' => [], 'abandoned' => 'fail']`).
     #[serde(default)]
     pub audit: AuditConfig,
+    /// `config.platform`: pins or disables a detected platform package
+    /// (`solver::platform::cached_platform_packages`'s `overrides`
+    /// parameter, `pool_builder.rs:625`'s own read of the same key at
+    /// update time); #300's install-time platform-requirement check reads
+    /// it from here too, matching that update-time source rather than the
+    /// lock's own recorded `platform-overrides` (`Locker::getPlatformOverrides`)
+    /// — the two only differ once `config.platform` changes without a
+    /// following `update`, a case `STALE_LOCK_WARNING` already flags.
+    #[serde(default)]
+    pub platform: Map<String, Value>,
 }
 
 impl Default for Config {
@@ -640,6 +650,7 @@ impl Default for Config {
             allow_plugins: AllowPlugins::None,
             preferred_install: PreferredInstall::default(),
             audit: AuditConfig::default(),
+            platform: Map::new(),
         }
     }
 }

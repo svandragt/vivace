@@ -454,6 +454,11 @@ async fn solve(
     // unaccounted gap between "resolved metadata and solved" and "loaded
     // metadata closure".
     let setup_started = Instant::now();
+    // #242: reaches the solve itself now, not just the follow-up `install`
+    // chained after it (`install::ignore_platform`, shared rather than
+    // reimplemented).
+    let ignore_platform_reqs =
+        crate::install::ignore_platform(args.ignore_platform_reqs, &args.ignore_platform_req);
     let prefer_stable = args.prefer_stable
         || root
             .get("prefer-stable")
@@ -525,6 +530,7 @@ async fn solve(
             preferred,
             advisories,
             Some(&cache_dir),
+            &ignore_platform_reqs,
         )
         .await;
         forget_repo(repo);
@@ -566,6 +572,7 @@ async fn solve(
         preferred,
         advisories,
         Some(&cache_dir),
+        &ignore_platform_reqs,
     )
     .await;
     forget_repo(repo);

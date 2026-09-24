@@ -55,6 +55,13 @@ pub(crate) const VCS_BUCKET: &str = "vcs-v0";
 /// ponytail: unbounded growth, one small JSON file per distinct project path
 /// ever built with `-o`; age it out in `prune_locked` if that ever matters.
 const ROOT_CLASSMAP_BUCKET: &str = "root-classmap-v0";
+/// #300's install-time platform check (`install::verify_platform_requirements`):
+/// the last-verified-OK inputs, one file per project, same
+/// sha256-of-canonicalized-base-dir keying as [`ROOT_CLASSMAP_BUCKET`] — see
+/// [`platform_check_sidecar`]. A match skips the whole check (no constraint
+/// parsing, so no first-use regex compile either — the warm/noop cost
+/// `bench-ab` caught). Same unbounded-growth ponytail as that bucket.
+pub(crate) const PLATFORM_CHECK_BUCKET: &str = "platform-check-v0";
 const LOCK_FILE: &str = ".lock";
 
 /// Every current bucket name, shared by `prune` (what a stale-bucket sweep
@@ -71,6 +78,7 @@ const KNOWN_BUCKETS: &[&str] = &[
     REPO_BUCKET,
     VCS_BUCKET,
     ROOT_CLASSMAP_BUCKET,
+    PLATFORM_CHECK_BUCKET,
     LOCK_FILE,
 ];
 
@@ -712,6 +720,14 @@ pub fn archive_classmap_sidecar(dir: &Path) -> PathBuf {
 pub fn root_classmap_sidecar(cache_root: &Path, base: &str) -> PathBuf {
     cache_root
         .join(ROOT_CLASSMAP_BUCKET)
+        .join(format!("{}.json", hex(Sha256::digest(base.as_bytes()))))
+}
+
+/// #300's install-time platform-check verdict cache, same keying as
+/// [`root_classmap_sidecar`]: `base` is the project's canonicalized dir.
+pub fn platform_check_sidecar(cache_root: &Path, base: &str) -> PathBuf {
+    cache_root
+        .join(PLATFORM_CHECK_BUCKET)
         .join(format!("{}.json", hex(Sha256::digest(base.as_bytes()))))
 }
 

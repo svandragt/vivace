@@ -1,0 +1,12 @@
+{
+    "name": "acme/hello",
+    "type": "library",
+    "require": {
+        "ext-viv-nonexistent-two": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Acme\\Hello\\": "src/"
+        }
+    }
+}

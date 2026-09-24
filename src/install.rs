@@ -35,6 +35,11 @@ use crate::normalize;
 use crate::plan::{self, Plan};
 use crate::plugins;
 use crate::scripts;
+use crate::semver;
+use crate::solver::pool::Pool;
+use crate::solver::problem::{SolverError, missing_package_reason, missing_package_suffix};
+use crate::solver::request::Request;
+use crate::solver::{ConstraintCache, pool_builder};
 use crate::source;
 use crate::store::{Store, hex};
 use crate::vcs;
@@ -225,8 +230,11 @@ struct AutoloadFlags {
 
 /// Composer's `--ignore-platform-reqs` wins over any `--ignore-platform-req`
 /// entries when both are given
-/// (`PlatformRequirementFilterFactory::fromBoolOrList`).
-fn ignore_platform(all: bool, req: &[String]) -> IgnorePlatform {
+/// (`PlatformRequirementFilterFactory::fromBoolOrList`). `pub(crate)`: #242
+/// reuses this from `update.rs`/`require.rs` to build the same
+/// `IgnorePlatform` for the solve, not just the autoload/lock-verify steps
+/// here.
+pub(crate) fn ignore_platform(all: bool, req: &[String]) -> IgnorePlatform {
     if all {
         IgnorePlatform::All
     } else if req.is_empty() {
@@ -234,6 +242,256 @@ fn ignore_platform(all: bool, req: &[String]) -> IgnorePlatform {
     } else {
         IgnorePlatform::List(req.to_vec())
     }
+}
+
+/// #300: `Installer::doInstall`'s "Verifying lock file contents can be
+/// installed on current platform" step — a `php`/`ext-*`/`lib-*` root or
+/// locked-package requirement this host (or `config.platform`) can't
+/// satisfy exits before any fetch/plan/link work, `vendor/` untouched.
+///
+/// No fresh solve: a pool built from just the detected platform packages
+/// plus one [`crate::solver::pool::Package`] per locked entry that names a
+/// platform package anywhere in its own `require`/`provide`/`replace`
+/// (`pool_builder::package_from_lock_entry`, fed a name/version-only entry
+/// filtered to those links by [`platform_relevant_entry`]) already carries
+/// every provider a real solve's pool would — a locked package's own
+/// `provide`/`replace` links count the same way — so `Pool::what_provides`
+/// alone answers "does anything here satisfy this link" without generating
+/// rules or running the SAT solver.
+///
+/// The filter matters for speed, not just correctness: every `install`
+/// pays this on the warm/no-op path too (below), so parsing a lock's every
+/// ordinary dependency link and cloning its full raw JSON entry
+/// (`Package::raw`) — none of which this check ever reads — measurably
+/// regressed `bench-ab`'s warm/noop numbers on a 100+ package lock before
+/// this narrowed it to the (usually very few, often zero) platform-named
+/// links.
+///
+/// Reuses `problem::missing_package_reason`/`missing_package_suffix` for
+/// Composer's exact wording, and `SolverError::for_install` for the
+/// header/`  Problem N` layout `update`/`require`/`remove`'s own solver
+/// failures already print.
+///
+/// Two follow-ups to the original #300 landing, both found by measuring
+/// `viv install --no-scripts` on `bench/laravel` with `hyperfine` rather than
+/// only `bench-ab`'s own scenarios:
+///
+/// - No `php` on PATH at all skips the check outright (`resolve_php_path`
+///   below) rather than running it against `cached_platform_packages`'s own
+///   "assume php 8.3.0, no extensions" fallback — that fallback is right for
+///   `platform_check.php` (a runtime guard for whatever host eventually runs
+///   it), but wrong as an `install`-time verdict on *this* host: it refused
+///   Laravel's own lock (`ext-xmlwriter` "missing") even though `viv install`
+///   worked here before this check existed (a container build stage
+///   producing `vendor/` ahead of its `php-fpm` layer is a real case of
+///   exactly this).
+/// - [`PlatformCheckVerdict`] caches the last-verified-OK inputs so a repeat
+///   install with nothing platform-relevant changed skips constraint parsing
+///   entirely: `semver::parse_constraint`/`normalize` compile their
+///   `LazyLock` regexes on first use (~4 ms, `regex_automata::meta`), and
+///   this check was the first thing on the no-op path ever calling either,
+///   which `bench-ab`'s warm/noop regression traced back to. Keyed on a
+///   content hash, not mtime/size: `bench/run.sh`'s own noop scenario
+///   re-copies `composer.json`/`composer.lock` ahead of every timed run
+///   (`cp $json_src/composer.json $lock_src/composer.lock .`), which gives
+///   each rep a fresh mtime over identical bytes — a stat-based key missed
+///   every single time, paying the full regex-compile cost on every "noop"
+///   rep and reproducing the exact regression this cache exists to fix.
+fn verify_platform_requirements(
+    root: &Root,
+    lock: &Lock,
+    dev: bool,
+    ignore: &IgnorePlatform,
+    cache_dir: Option<&Path>,
+    project_dir: &Path,
+    composer_json: &[u8],
+) -> Result<()> {
+    if *ignore == IgnorePlatform::All {
+        return Ok(());
+    }
+    let Some(php_path) = crate::solver::platform::resolve_php_path() else {
+        return Ok(());
+    };
+
+    let sidecar = cache_dir
+        .map(|dir| crate::store::platform_check_sidecar(dir, &project_dir.display().to_string()));
+    let verdict =
+        PlatformCheckVerdict::compute(root, dev, ignore, &php_path, project_dir, composer_json)?;
+    if let Some(sidecar) = &sidecar
+        && read_verdict(sidecar).as_ref() == Some(&verdict)
+    {
+        return Ok(());
+    }
+
+    let mut cache = ConstraintCache::new();
+    let mut packages =
+        crate::solver::platform::cached_platform_packages(&root.config.platform, cache_dir)?;
+    for package in lock.packages(dev) {
+        if let Some(entry) = platform_relevant_entry(&package.raw) {
+            packages.push(pool_builder::package_from_lock_entry(&entry, &mut cache)?);
+        }
+    }
+    let pool = Pool::new(packages);
+    // Never populated (`Pool::with_removed` is a real-solve-only concern,
+    // #238/#152): `missing_package_suffix`'s advisory/root-conflict branches
+    // read `request.requires`/`pool.removed()` only when `pool.removed()`
+    // is non-empty, which it never is for this ad hoc pool, so an empty
+    // stand-in is exactly as good as a real `Request` here.
+    let no_request = Request {
+        requires: Vec::new(),
+        fixed: Vec::new(),
+    };
+
+    let mut problems: Vec<String> = Vec::new();
+
+    let sections: [(&Map<String, Value>, bool); 2] =
+        [(&root.require, true), (&root.require_dev, dev)];
+    for (links, active) in sections {
+        if !active {
+            continue;
+        }
+        for (name, value) in links {
+            let name = name.to_ascii_lowercase();
+            if !crate::repository::is_platform_package(&name) || ignore.is_ignored(&name) {
+                continue;
+            }
+            let raw = value
+                .as_str()
+                .with_context(|| format!("require {name}: constraint is not a string"))?;
+            let constraint = semver::parse_constraint(raw)?;
+            if pool.what_provides(&name, Some(&constraint)).is_empty() {
+                problems.push(format!(
+                    "\n    {}",
+                    missing_package_reason(&pool, &no_request, &name, raw)
+                ));
+            }
+        }
+    }
+
+    for package in pool.packages() {
+        for link in &package.requires {
+            if !crate::repository::is_platform_package(&link.target)
+                || ignore.is_ignored(&link.target)
+            {
+                continue;
+            }
+            if pool
+                .what_provides(&link.target, link.constraint.as_deref())
+                .is_empty()
+            {
+                let suffix = missing_package_suffix(
+                    &pool,
+                    &no_request,
+                    &link.target,
+                    link.pretty_constraint(),
+                );
+                problems.push(format!(
+                    "\n    - {name} is locked to version {version} and an update of this \
+                     package was not requested.\n    - {name} {version} requires {target} \
+                     {constraint} -> {suffix}",
+                    name = package.name,
+                    version = package.pretty_version,
+                    target = link.target,
+                    constraint = link.pretty_constraint(),
+                ));
+            }
+        }
+    }
+
+    if problems.is_empty() {
+        if let Some(sidecar) = &sidecar
+            && let Ok(bytes) = serde_json::to_vec(&verdict)
+        {
+            let _ = write_atomic(sidecar, &bytes);
+        }
+        return Ok(());
+    }
+    Err(SolverError::for_install(problems).into())
+}
+
+/// [`verify_platform_requirements`]'s verdict-cache key: every input that
+/// could change its answer. `composer_json`/`composer_lock` are content
+/// hashes (`Sha256`, already a dependency via `crate::store::hex`), not
+/// mtime/size: a stat-based key looked cheaper but missed on any rewrite
+/// that preserves content — a fresh `cp`/checkout/container `COPY` layer —
+/// which includes `bench/run.sh`'s own noop scenario (it re-copies both
+/// files ahead of every timed rep), so it paid the full regex-compile cost
+/// this cache exists to skip on every single "noop" measurement. Hashing
+/// costs well under the ~4 ms `semver::parse_constraint`/`normalize` compile
+/// this cache avoids (sub-millisecond even on Symfony Demo's larger lock),
+/// and `composer.lock` is read once more here rather than threading its
+/// bytes through `read_lock` — a bigger, less surgical change for a read
+/// this cheap. A stored verdict is only ever written after the check
+/// actually passed (never a refusal, matching `cached_probe`'s own "a write
+/// failure just means next time re-checks" trade-off): a match here means
+/// "checked before with these exact inputs, and it was fine", not "trust
+/// this blindly".
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+struct PlatformCheckVerdict {
+    composer_json_sha256: String,
+    composer_lock_sha256: String,
+    /// `None` when `cache_key` itself can't stat `php_path` (rare: it
+    /// resolved a moment ago via `resolve_php_path`), same "just re-check"
+    /// fallback as a cache-miss.
+    php_probe_key: Option<String>,
+    platform_overrides: Map<String, Value>,
+    ignore: IgnorePlatform,
+    dev: bool,
+}
+
+impl PlatformCheckVerdict {
+    fn compute(
+        root: &Root,
+        dev: bool,
+        ignore: &IgnorePlatform,
+        php_path: &Path,
+        project_dir: &Path,
+        composer_json: &[u8],
+    ) -> Result<Self> {
+        let composer_lock = fs_err::read(project_dir.join("composer.lock"))
+            .context("reading composer.lock for the platform-check verdict cache")?;
+        Ok(PlatformCheckVerdict {
+            composer_json_sha256: hex(Sha256::digest(composer_json)),
+            composer_lock_sha256: hex(Sha256::digest(&composer_lock)),
+            php_probe_key: crate::solver::platform::cache_key(php_path),
+            platform_overrides: root.config.platform.clone(),
+            ignore: ignore.clone(),
+            dev,
+        })
+    }
+}
+
+fn read_verdict(sidecar: &Path) -> Option<PlatformCheckVerdict> {
+    serde_json::from_slice(&fs_err::read(sidecar).ok()?).ok()
+}
+
+/// `entry` (a `composer.lock` package, `Package::raw`) reduced to just its
+/// `name`/`version` plus whichever `require`/`provide`/`replace` links
+/// target a platform package — `None` when none do, the common case, so
+/// [`verify_platform_requirements`] never even calls
+/// `pool_builder::package_from_lock_entry` (let alone constraint-parses or
+/// clones the entry) for a package this check has no reason to care about.
+fn platform_relevant_entry(entry: &Value) -> Option<Value> {
+    let obj = entry.as_object()?;
+    let mut filtered = Map::new();
+    filtered.insert("name".to_string(), obj.get("name")?.clone());
+    filtered.insert("version".to_string(), obj.get("version")?.clone());
+    let mut relevant = false;
+    for key in ["require", "provide", "replace"] {
+        let Some(links) = obj.get(key).and_then(Value::as_object) else {
+            continue;
+        };
+        let kept: Map<String, Value> = links
+            .iter()
+            .filter(|(name, _)| crate::repository::is_platform_package(name))
+            .map(|(name, constraint)| (name.clone(), constraint.clone()))
+            .collect();
+        if !kept.is_empty() {
+            relevant = true;
+            filtered.insert(key.to_string(), Value::Object(kept));
+        }
+    }
+    relevant.then_some(Value::Object(filtered))
 }
 
 impl From<&InstallArgs> for AutoloadFlags {
@@ -445,6 +703,30 @@ fn run_impl(
         lines.extend(MISSING_REQUIREMENTS_HINT.iter().map(|s| (*s).to_string()));
         bail!(lines.join("\n"));
     }
+    let ignore_platform_reqs =
+        ignore_platform(args.ignore_platform_reqs, &args.ignore_platform_req);
+    // Resolved here, ahead of everything else that wants it (the platform
+    // probe's own cache immediately below, `Store::open` further down):
+    // `cached_platform_packages` treats an unresolved `None` as "no cache
+    // dir yet" and probes fresh every time, which is exactly right for a
+    // caller that truly has none yet but was silently paying a fresh `php`
+    // shell-out on every `install` here otherwise, `--cache-dir`-less
+    // invocations (`XDG_CACHE_HOME` only, `bench/run.sh`'s own setup) most
+    // of all — measured as the full warm/noop regression `bench-ab` exists
+    // to catch, not the "one stat" this cache was supposed to cost.
+    let cache_dir = match cache_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => crate::update::default_cache_dir()?,
+    };
+    verify_platform_requirements(
+        &root,
+        &lock,
+        dev,
+        &ignore_platform_reqs,
+        Some(&cache_dir),
+        &project_dir,
+        &composer_json,
+    )?;
 
     let selected: Vec<&Package> = lock.packages(dev).collect();
     for package in &selected {
@@ -548,10 +830,6 @@ fn run_impl(
     let start = Instant::now();
     fs_err::create_dir_all(&vendor_dir)?;
 
-    let cache_dir = match cache_dir {
-        Some(dir) => dir.to_path_buf(),
-        None => crate::update::default_cache_dir()?,
-    };
     let store = Arc::new(Store::open(&cache_dir)?);
 
     // Path (#13's local-directory case), dist-less git-source (#13's VCS

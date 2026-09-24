@@ -60,18 +60,29 @@ impl Problem {
     /// `self.reasons` in insertion order is the same list.
     pub fn pretty_string(&self, pool: &Pool, request: &Request) -> String {
         // `getPrettyString`'s single-reason fast path: a lone
-        // `RULE_ROOT_REQUIRE` with *zero* pool matches for the name (any
-        // version, ignoring the constraint that made it unsatisfiable)
-        // short-circuits straight to `getMissingPackageReason`. A name that
-        // does exist falls through to the general per-reason list below,
-        // same as every other reason count.
+        // `RULE_ROOT_REQUIRE` with zero pool matches *for the constraint
+        // that made it unsatisfiable* short-circuits straight to
+        // `getMissingPackageReason` (`$pool->whatProvides($packageName,
+        // $constraint)`, not `None` — #300 found this checking `None` here
+        // instead, which for a platform package present at a non-matching
+        // version, e.g. `php ^7.4` against a detected `php[8.4]`, always has
+        // *some* match and so never took this branch; verified against a
+        // real `composer update` for `php >=99`, which does). A name that
+        // does exist at any version this constraint accepts falls through to
+        // the general per-reason list below, same as every other reason
+        // count.
         if let [
             Reason::RootRequire {
                 package_name,
                 pretty_constraint,
             },
         ] = self.reasons.as_slice()
-            && pool.what_provides(package_name, None).is_empty()
+            && pool
+                .what_provides(
+                    package_name,
+                    pretty_constraint_as_constraint(pretty_constraint).as_ref(),
+                )
+                .is_empty()
         {
             return format!(
                 "\n    {}",
@@ -285,15 +296,22 @@ fn satisfiable_or_found_suffix(pool: &Pool, target: &str, pretty_constraint: &st
     }
 }
 
-fn missing_package_reason(
+/// `getMissingPackageReason`'s `ext-`/`lib-` branches spell the package kind
+/// out in the prefix (`"PHP extension "`/`"linked library "`); `php`/`hhvm`
+/// get no such label. `pub(crate)`: #300's install-time check
+/// (`install.rs`) builds the same "- Root composer.json requires ..." line
+/// for a root platform require, so this stays the one place that decides
+/// the wording.
+pub(crate) fn missing_package_reason(
     pool: &Pool,
     request: &Request,
     package_name: &str,
     pretty_constraint: &str,
 ) -> String {
-    if crate::repository::is_platform_package(package_name) {
+    if let Some(kind) = PlatformKind::of(package_name) {
         return format!(
-            "- Root composer.json requires {package_name} {pretty_constraint} but {}",
+            "- Root composer.json requires {}{package_name} {pretty_constraint} but {}",
+            kind.label(),
             missing_package_suffix(pool, request, package_name, pretty_constraint)
         );
     }
@@ -309,6 +327,42 @@ fn missing_package_reason(
     format!("- Root composer.json requires {package_name} {pretty_constraint}, {suffix}")
 }
 
+/// `getMissingPackageReason`'s `stripos($packageName, ...)` dispatch: the
+/// three shapes it special-cases with their own wording. `None` for
+/// anything else [`crate::repository::is_platform_package`] still matches
+/// (`composer-plugin-api`, `composer-runtime-api`) — those fall through to
+/// the plain non-platform wording, same as upstream falling past the whole
+/// `isPlatformPackage` block with no return.
+enum PlatformKind {
+    PhpOrHhvm,
+    Extension,
+    Library,
+}
+
+impl PlatformKind {
+    fn of(package_name: &str) -> Option<PlatformKind> {
+        let lower = package_name.to_ascii_lowercase();
+        if lower == "hhvm" || lower == "php" || lower.starts_with("php-") {
+            Some(PlatformKind::PhpOrHhvm)
+        } else if lower.starts_with("ext-") {
+            Some(PlatformKind::Extension)
+        } else if lower.starts_with("lib-") {
+            Some(PlatformKind::Library)
+        } else {
+            None
+        }
+    }
+
+    /// `getMissingPackageReason`'s prefix label ahead of the package name.
+    fn label(&self) -> &'static str {
+        match self {
+            PlatformKind::PhpOrHhvm => "",
+            PlatformKind::Extension => "PHP extension ",
+            PlatformKind::Library => "linked library ",
+        }
+    }
+}
+
 /// The suffix half of `getMissingPackageReason`'s `[prefix, suffix]` tuple:
 /// also reused standalone by `Reason::PackageRequires`'s `-> ...` tail
 /// (`Rule::getPrettyString`'s own `$text . ' -> ' . $reason[1]`, suffix
@@ -316,22 +370,72 @@ fn missing_package_reason(
 /// "nothing at all provides this" check already failed, matching
 /// Composer's own `count($packages) === 0`/`count($requires) === 0` guard
 /// before either calls into `getMissingPackageReason`.
-fn missing_package_suffix(
+///
+/// `pub(crate)`: #300's install-time check (`install.rs`) builds the same
+/// `-> ...` tail for a locked package's own unsatisfied platform require.
+pub(crate) fn missing_package_suffix(
     pool: &Pool,
     request: &Request,
     package_name: &str,
     pretty_constraint: &str,
 ) -> String {
-    if crate::repository::is_platform_package(package_name) {
+    if let Some(kind) = PlatformKind::of(package_name) {
+        // Every shape below reads "is a version of this name in the pool at
+        // all" the same way `getPlatformPackageVersion`'s own
+        // `$pool->whatProvides($packageName)` does: present (regardless of
+        // whether it satisfies `pretty_constraint`, already known false by
+        // the time either caller reaches this) means "wrong version",
+        // absent means "missing"/"disabled by config" (`config.platform.X:
+        // false` removes the entry outright, `cached_platform_packages`'s
+        // own `Value::Bool(false)` handling in `solver/platform.rs`).
         let installed = pool.what_provides(package_name, None);
-        if let Some(&id) = installed.first() {
-            let package = pool.package_by_id(id);
-            return format!(
-                "your {package_name} version ({}) does not satisfy that requirement.",
-                package.pretty_version
-            );
-        }
-        return format!("{package_name} is missing from your platform.");
+        return match kind {
+            PlatformKind::PhpOrHhvm => {
+                if let Some(&id) = installed.first() {
+                    format!(
+                        "your {package_name} version ({}) does not satisfy that requirement.",
+                        pool.package_by_id(id).pretty_version
+                    )
+                } else {
+                    format!(
+                        "the {package_name} package is disabled by your platform config. \
+                         Enable it again with \"composer config platform.{package_name} \
+                         --unset\"."
+                    )
+                }
+            }
+            PlatformKind::Extension => {
+                if let Some(&id) = installed.first() {
+                    format!(
+                        "it has the wrong version installed ({}).",
+                        pool.package_by_id(id).pretty_version
+                    )
+                } else {
+                    let ext = &package_name[4..];
+                    format!(
+                        "it is missing from your system. Install or enable PHP's {ext} extension."
+                    )
+                }
+            }
+            // `lib-icu` alone reads back the loaded-or-not `ext-intl`
+            // instead of its own presence (Composer's own special case:
+            // ICU ships inside the `intl` extension, so "missing" really
+            // means "intl isn't loaded" and "wrong version" means "intl is
+            // loaded, but with a libicu build too old/new").
+            PlatformKind::Library if package_name.eq_ignore_ascii_case("lib-icu") => {
+                if pool.what_provides("ext-intl", None).is_empty() {
+                    "it is missing from your system, make sure the intl extension is loaded."
+                        .to_string()
+                } else {
+                    "it has the wrong version installed, try upgrading the intl extension."
+                        .to_string()
+                }
+            }
+            PlatformKind::Library => "it has the wrong version installed or is missing from \
+                                       your system, make sure to load the extension providing \
+                                       it."
+            .to_string(),
+        };
     }
 
     // #238/#152: a name whose only matching candidates were filtered out
@@ -652,22 +756,57 @@ fn depluralize(tail: &str) -> String {
     }
 }
 
+/// Which of Composer's two Solver-shaped intro sentences a [`SolverError`]
+/// prints ahead of its `Problem` list: `Solver::solve`'s own live solve
+/// (`update`/`require`/`remove`), or `Installer::doInstall`'s lock-verify
+/// step (#300) re-using the same `Problem`/`Rule` rendering for a request
+/// built from the lock instead of a fresh solve.
+enum Header {
+    Solve,
+    Install,
+}
+
+impl Header {
+    fn text(&self) -> &'static str {
+        match self {
+            Header::Solve => {
+                "Your requirements could not be resolved to an installable set of packages."
+            }
+            Header::Install => {
+                "Your lock file does not contain a compatible set of packages. Please run \
+                 composer update."
+            }
+        }
+    }
+}
+
 /// The solver's public error: one or more [`Problem`]s, pre-rendered
 /// against the pool that produced them (`SolverError` used to hold
 /// `Problem`s directly and implement `Display` itself; see the module
 /// doc for why that moved to `Problem::pretty_string`).
-#[derive(Default)]
 pub struct SolverError {
+    header: Header,
     pub problems: Vec<String>,
 }
 
 impl SolverError {
     pub fn from_problems(problems: &[Problem], pool: &Pool, request: &Request) -> SolverError {
         SolverError {
+            header: Header::Solve,
             problems: problems
                 .iter()
                 .map(|p| p.pretty_string(pool, request))
                 .collect(),
+        }
+    }
+
+    /// #300: `install.rs`'s lock-verify check, `problems` already rendered
+    /// via [`Problem::pretty_string`] against its own ad hoc platform+locked
+    /// pool rather than a real solve's.
+    pub fn for_install(problems: Vec<String>) -> SolverError {
+        SolverError {
+            header: Header::Install,
+            problems,
         }
     }
 }
@@ -691,10 +830,7 @@ impl fmt::Display for SolverError {
         // The blank line here is Composer's own: the fixed intro sentence a
         // command prints, then `SolverProblemsException::getPrettyString`'s
         // text, which itself starts with `"\n"` before the first `  Problem`.
-        writeln!(
-            f,
-            "Your requirements could not be resolved to an installable set of packages.\n"
-        )?;
+        writeln!(f, "{}\n", self.header.text())?;
         let mut any_not_found = false;
         for (i, problem) in self.problems.iter().enumerate() {
             // `problem` already starts with its own leading `\n` (`Problem::

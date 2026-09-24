@@ -713,6 +713,7 @@ pub async fn escalate_resolve<T: Transport>(
                         preferred,
                         None,
                         cache_dir,
+                        &crate::autoload::platform::IgnorePlatform::None,
                     )
                     .await
                     {

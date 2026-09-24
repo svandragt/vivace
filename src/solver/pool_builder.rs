@@ -41,6 +41,7 @@ use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::audit::{self, AdvisoriesResponse, AdvisoriesTransport, NoAdvisories};
+use crate::autoload::platform::IgnorePlatform;
 use crate::lock::AuditConfig;
 use crate::repository::{
     ClosureRoot, DevAcceptance, PackageVersion, Repository, Transport, branch_alias_target,
@@ -51,7 +52,7 @@ use crate::solver::platform::cached_platform_packages;
 use crate::solver::policy::DefaultPolicy;
 use crate::solver::pool::{self, Link, Package, Pool};
 use crate::solver::pool_optimizer;
-use crate::solver::request::Request;
+use crate::solver::request::{Request, RootRequire};
 use crate::solver::{ConstraintCache, parse_constraint_cached};
 
 /// `BasePackage::STABILITIES` order, least to most stable... actually most
@@ -300,6 +301,7 @@ pub async fn build<T: Transport>(
         &HashMap::new(),
         None,
         None,
+        &IgnorePlatform::None,
     )
     .await
 }
@@ -326,7 +328,7 @@ pub async fn build<T: Transport>(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors build plus one seed slice, the minimal-changes pin set, the advisory pool \
-              filter, and the platform-probe cache dir"
+              filter, the platform-probe cache dir, and the ignore-platform-reqs filter"
 )]
 pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -337,6 +339,7 @@ pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     preferred: &HashMap<String, semver::NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
+    ignore: &IgnorePlatform,
 ) -> Result<BuildResult> {
     build_partial_seeded(
         repo,
@@ -350,6 +353,7 @@ pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
         advisories,
         cache_dir,
         None,
+        ignore,
     )
     .await
 }
@@ -372,6 +376,34 @@ fn root_requires(
         });
     }
     Ok(requires)
+}
+
+/// #242: `RuleSetGenerator::addRulesForPackage`/`addRulesForRequest`'s own
+/// `if ($platformRequirementFilter->isIgnored($link->getTarget())) continue;`
+/// guard, ported as a pool-level filter instead: this port's rule
+/// generation reads `Package::requires`/`Request::requires` directly with
+/// no per-link filter hook of its own, so dropping an ignored platform link
+/// here — right before `Pool::new` ever sees `packages`, and before
+/// `Request` is built from `requires` — is the same result, for every
+/// pool/request built through [`build_partial_seeded`] (root, locked and
+/// freshly fetched packages alike, since they're all in one `packages` vec
+/// by this point). The `+` upper-bound-only form (`php+`,
+/// `IgnoreListPlatformRequirementFilter::filterConstraint`) is out of
+/// scope: [`IgnorePlatform::List`] has no such syntax to parse.
+fn strip_ignored_platform_links(
+    packages: &mut [Package],
+    requires: &mut Vec<RootRequire>,
+    ignore: &IgnorePlatform,
+) {
+    if *ignore == IgnorePlatform::None {
+        return;
+    }
+    let is_ignored =
+        |name: &str| crate::repository::is_platform_package(name) && ignore.is_ignored(name);
+    for package in packages.iter_mut() {
+        package.requires.retain(|link| !is_ignored(&link.target));
+    }
+    requires.retain(|require| !is_ignored(&require.name));
 }
 
 /// A partial update's allow-list mode (`Request::UPDATE_*`), deciding how
@@ -463,6 +495,7 @@ pub async fn build_partial<T: Transport>(
         None,
         None,
         None,
+        &IgnorePlatform::None,
     )
     .await
 }
@@ -488,7 +521,8 @@ pub async fn build_partial<T: Transport>(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors build_partial plus one seed slice, the minimal-changes pin set, the \
-              advisory pool filter, the platform-probe cache dir, and lock_merge's --as-of cutoff"
+              advisory pool filter, the platform-probe cache dir, the ignore-platform-reqs \
+              filter, and lock_merge's --as-of cutoff"
 )]
 pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -502,6 +536,7 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
     as_of: Option<i64>,
+    ignore: &IgnorePlatform,
 ) -> Result<BuildResult> {
     let require = string_map(root, "require");
     let require_dev = string_map(root, "require-dev");
@@ -689,7 +724,7 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     );
 
     let advisory_started = Instant::now();
-    let (packages, removed) = if let Some(advisories) = &advisories {
+    let (mut packages, removed) = if let Some(advisories) = &advisories {
         filter_advisories(packages, exempt_upto, advisories).await?
     } else {
         (packages, Vec::new())
@@ -699,11 +734,10 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         packages = packages.len(),
         "filtered the pool for advisories (--offline: should bail fast)"
     );
+    let mut requires = root_requires(&require, &require_dev)?;
+    strip_ignored_platform_links(&mut packages, &mut requires, ignore);
     let pool = Pool::new(packages).with_removed(removed);
-    let request = Request {
-        requires: root_requires(&require, &require_dev)?,
-        fixed,
-    };
+    let request = Request { requires, fixed };
     let policy = if preferred.is_empty() {
         DefaultPolicy::new(prefer_stable, prefer_lowest)
     } else {
@@ -745,7 +779,14 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
 /// `extra.branch-alias`, exactly where Composer's `ArrayLoader` reads it
 /// from — this fn's caller reconstructs that alias package separately, it
 /// is not carried in the `Package` returned here.
-fn package_from_lock_entry(entry: &Value, cache: &mut ConstraintCache) -> Result<Package> {
+///
+/// `pub(crate)`: #300's install-time platform-requirement check
+/// (`install.rs`) reuses this to turn every locked package into a pool
+/// member too, the same shape a partial update's locked-out names get.
+pub(crate) fn package_from_lock_entry(
+    entry: &Value,
+    cache: &mut ConstraintCache,
+) -> Result<Package> {
     let obj = entry
         .as_object()
         .context("lock package entry is not an object")?;
