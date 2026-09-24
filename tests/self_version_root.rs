@@ -93,3 +93,14 @@ async fn root_self_version_falls_back_to_the_default_root_version() {
     let want = fs_err::read_to_string(fixture("default-version").join("composer.lock")).unwrap();
     assert_eq!(got, want, "viv's lock does not byte-match composer's");
 }
+
+/// A root with `require-dev` takes the dev-split second solve, whose
+/// request is rebuilt from the raw root JSON: the `self.version` literal
+/// reached the constraint parser there after the first solve had already
+/// succeeded (found on a monorepo member with a `phpunit` dev requirement).
+#[tokio::test]
+async fn root_self_version_survives_the_dev_split_second_solve() {
+    let got = update_lock("with-require-dev").await;
+    let want = fs_err::read_to_string(fixture("with-require-dev").join("composer.lock")).unwrap();
+    assert_eq!(got, want, "viv's lock does not byte-match composer's");
+}

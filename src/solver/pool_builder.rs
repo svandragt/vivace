@@ -863,7 +863,10 @@ fn extract_platform_requirements(links: &Map<String, Value>) -> Map<String, Valu
 /// same `fixed_count` platform packages the first solve's pool starts with
 /// (`clone_package` copies them verbatim, so their pool indices line up).
 pub(crate) fn require_only_request(root: &Value, fixed_count: usize) -> Result<Request> {
-    let require = string_map(root, "require");
+    // #304's second site: this request is rebuilt from the raw root JSON
+    // for the dev-split solve, after `build_partial_seeded` already
+    // resolved `self.version` for the first one.
+    let require = resolve_self_version(string_map(root, "require"), &root_pretty_version(root));
     let mut requires = Vec::with_capacity(require.len());
     for (name, value) in &require {
         let raw = value
