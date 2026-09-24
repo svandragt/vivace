@@ -52,7 +52,7 @@ async fn update_lock(name: &str) -> String {
 
     let cache = tempfile::tempdir().unwrap();
     let transport = PanicTransport;
-    let repo = Repository::from_composer_json(&root, cache.path(), &transport)
+    let repo = Repository::from_composer_json(&fixture, &root, cache.path(), &transport)
         .await
         .unwrap();
 
