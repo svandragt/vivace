@@ -1,0 +1,10 @@
+{
+    "name": "vivace/fixture-ignore-platform-solve",
+    "repositories": [
+        { "type": "composer", "url": "http://127.0.0.1:8987" },
+        { "packagist.org": false }
+    ],
+    "require": {
+        "acme/platform-dep": "1.0.0"
+    }
+}

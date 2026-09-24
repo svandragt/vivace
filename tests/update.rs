@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use common::{FixtureTransport, TestContext, fixtures_root};
 use serde_json::Value;
+use vivace::autoload::platform::IgnorePlatform;
 use vivace::repository::Repository;
 use vivace::solver;
 use vivace::store::Store;
@@ -328,6 +329,7 @@ async fn resolved_monolog_version(no_blocking: bool, ignore: vivace::lock::Audit
         HashMap::new(),
         Some(filter),
         None,
+        &IgnorePlatform::None,
     )
     .await
     .unwrap();
@@ -408,6 +410,7 @@ async fn solve_security_advisory_fixture(
         HashMap::new(),
         Some(filter),
         Some(cache),
+        &IgnorePlatform::None,
     )
     .await
     .unwrap();
@@ -590,6 +593,7 @@ async fn update_makes_no_advisory_request_when_no_repository_advertises() {
         HashMap::new(),
         Some(filter),
         None,
+        &IgnorePlatform::None,
     )
     .await
     .unwrap();
@@ -682,6 +686,7 @@ async fn update_does_not_panic_when_the_advisory_filter_drops_an_aliased_version
         HashMap::new(),
         Some(filter),
         None,
+        &IgnorePlatform::None,
     )
     .await;
     let Err(err) = result else {
@@ -795,6 +800,7 @@ async fn seeding_with_an_unreachable_lock_name_does_not_change_the_lock() {
         HashMap::new(),
         None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
         None,
+        &IgnorePlatform::None,
     )
     .await
     .unwrap();
@@ -1090,6 +1096,7 @@ async fn minimal_changes_keeps_the_locked_version() {
         preferred,
         None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
         None,
+        &IgnorePlatform::None,
     )
     .await
     .unwrap();

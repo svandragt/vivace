@@ -52,6 +52,7 @@ use anyhow::Result;
 use serde_json::{Map, Value};
 
 use crate::audit::AdvisoriesTransport;
+use crate::autoload::platform::IgnorePlatform;
 use crate::repository::{Repository, Transport, branch_alias_target_of};
 use crate::semver::{self, Constraint, NormalizedVersion};
 use policy::DefaultPolicy;
@@ -153,7 +154,8 @@ pub async fn solve_update<T: Transport>(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors solve_update plus one seed slice, the minimal-changes pin set, the \
-              advisory pool filter, and the platform-probe cache dir"
+              advisory pool filter, the platform-probe cache dir, and the ignore-platform-reqs \
+              filter"
 )]
 pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -164,6 +166,7 @@ pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     preferred: HashMap<String, NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
+    ignore: &IgnorePlatform,
 ) -> Result<UpdateResult> {
     let built = pool_builder::build_seeded(
         repo,
@@ -174,6 +177,7 @@ pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
         &preferred,
         advisories,
         cache_dir,
+        ignore,
     )
     .await?;
     resolve(built, root, prefer_stable, prefer_lowest, preferred)
@@ -209,6 +213,7 @@ pub async fn solve_partial_update<T: Transport>(
         HashMap::new(),
         None,
         None,
+        &IgnorePlatform::None,
     )
     .await
 }
@@ -225,7 +230,8 @@ pub async fn solve_partial_update<T: Transport>(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors solve_partial_update plus one seed slice, the minimal-changes pin set, \
-              the advisory pool filter, and the platform-probe cache dir"
+              the advisory pool filter, the platform-probe cache dir, and the \
+              ignore-platform-reqs filter"
 )]
 pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -239,6 +245,7 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     preferred: HashMap<String, NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
+    ignore: &IgnorePlatform,
 ) -> Result<UpdateResult> {
     solve_partial_update_seeded_inner(
         repo,
@@ -253,6 +260,7 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
         advisories,
         cache_dir,
         None,
+        ignore,
     )
     .await
 }
@@ -295,6 +303,7 @@ pub async fn solve_partial_update_as_of<T: Transport>(
         None,
         None,
         as_of,
+        &IgnorePlatform::None,
     )
     .await
 }
@@ -309,8 +318,8 @@ pub async fn solve_partial_update_as_of<T: Transport>(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors solve_partial_update plus one seed slice, the minimal-changes pin set, \
-              the advisory pool filter, the platform-probe cache dir, and lock_merge's --as-of \
-              cutoff"
+              the advisory pool filter, the platform-probe cache dir, lock_merge's --as-of \
+              cutoff, and the ignore-platform-reqs filter"
 )]
 async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -325,6 +334,7 @@ async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
     as_of: Option<i64>,
+    ignore: &IgnorePlatform,
 ) -> Result<UpdateResult> {
     let locked_requires: HashMap<String, Vec<String>> = locked_by_name
         .iter()
@@ -366,6 +376,7 @@ async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>
         advisories,
         cache_dir,
         as_of,
+        ignore,
     )
     .await?;
     resolve(built, root, prefer_stable, prefer_lowest, preferred)

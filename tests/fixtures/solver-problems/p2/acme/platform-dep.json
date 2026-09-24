@@ -1,0 +1,13 @@
+{
+    "packages": {
+        "acme/platform-dep": [
+            {
+                "name": "acme/platform-dep",
+                "version": "1.0.0",
+                "version_normalized": "1.0.0.0",
+                "type": "library",
+                "require": {"ext-viv-nonexistent": "*"}
+            }
+        ]
+    }
+}

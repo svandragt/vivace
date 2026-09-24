@@ -339,6 +339,9 @@ pub(crate) fn partial_update(
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root: Value = serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let lock_path = project_dir.join("composer.lock");
+    // #242: reaches this partial update's own solve, not just the follow-up
+    // `install` chained after it.
+    let ignore = install::ignore_platform(ignore_platform_reqs, ignore_platform_req);
 
     // `Installer::run`: `pre-update-cmd` dispatches before pool
     // building/solving even starts.
@@ -406,6 +409,7 @@ pub(crate) fn partial_update(
             HashMap::new(),
             advisories,
             Some(&cache_dir),
+            &ignore,
         ))?
     } else {
         runtime.block_on(solver::solve_update_seeded(
@@ -417,6 +421,7 @@ pub(crate) fn partial_update(
             HashMap::new(),
             advisories,
             Some(&cache_dir),
+            &ignore,
         ))?
     };
     // #177: `repo` is never read again below (see `update::forget_repo`'s
