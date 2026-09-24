@@ -323,7 +323,7 @@ so `prune` cannot delete a live archive (#286), corpus boot harness and
 measurement (#287). Depends on nothing in chapter 1. The boot harness is
 worth building first: it decides whether the rest is worth writing.
 
-## Chapter 3: workspaces (measure first)
+## Chapter 3: workspaces (measured, hold)
 
 **Question.** When a repository holds several `composer.json` files, does
 a workspace, one root that names its members and one lock over all of
@@ -384,8 +384,31 @@ own generated autoloader against the shared lock, so `php members/x/bin/tool`
 works without the root. `composer.lock` is still exportable per member,
 projected from the shared lock, so a member can leave the workspace.
 
-**Work.** Done: #276 (member discovery and `viv workspace list`). Next:
-#279 (corpus and measurement). Gated on #279's result: #277, #278.
+**Result (2026-09-24, `bench/results/workspaces.md`).** Ten public
+repositories with 4 to 37 members each. Row 1: members are installed
+alone, by a committed lock or a CI workflow, on 3 of the 10 (a WordPress
+platform, a WordPress plugin monorepo, a Laravel shop). Row 4 on those
+three: 0 external packages differ between a member's standalone solve
+and the aggregate solve, over 22 comparisons. The repository with the
+largest drift, laravel/framework at 54 of 58, is a read-only split
+source whose components are never installed alone from the monorepo.
+Row 5 confirms what the control already gives: warm install cost drops
+19 to 118 times under one aggregate root, and the store shrinks where
+members share dependencies. Coverage gap: two viv bugs kept the two
+repositories shaped most like a workspace out of rows 4 and 5, Sylius
+(every component declares a `path` repository to its siblings, #305)
+and Neos (24 of 29 members use `self.version`, #304).
+
+**Verdict.** Measured, hold. On the evidence, a workspace removes drift
+nobody in this corpus experiences, so #277 and #278 stay unbuilt. The
+hold, rather than a close, is for the coverage gap: once #304 and #305
+are fixed, rows 4 and 5 rerun on Sylius and Neos. If those two also show
+no drift on members installed alone, the chapter closes as "measured,
+not pursued" like chapter 2.
+
+**Work.** Done: #276 (member discovery and `viv workspace list`), #279
+(corpus and measurement). Waiting on #304 and #305 for the rerun. Not
+started, gated on the rerun: #277, #278.
 
 ## Candidate chapters
 
