@@ -119,12 +119,10 @@ written outside the project and the cache.
 viv's contract is that its output matches Composer's byte for byte. Before
 every release, a compatibility sweep installs a mix of pinned popular
 projects and a random sample of Packagist packages with both Composer and
-viv, then compares the results.[^2] The v0.15.0 sweep: 20 of 20 pinned rows
+viv, then compares the results.[^2] The v0.16.0 sweep: 20 of 20 pinned rows
 identical, all 10 pinned projects resolve the same `composer.lock` as
-Composer as well as installing the same `vendor/`; in the random sample 9
-identical, 10 skipped where Composer itself failed, and 1 differs in the
-order of two autoload entries that Composer itself orders differently on a
-cold and a warm cache (#301).[^3]
+Composer as well as installing the same `vendor/`; in the random sample 10
+identical and 10 skipped where Composer itself failed.[^3]
 
 One pinned project still needs `--no-plugins`, for a plugin viv refuses by
 design rather than one it has yet to port.[^4] See [Plugins](#plugins)
@@ -157,10 +155,10 @@ install a lock naming a plugin outside its list, even with
 | Update-warm | 1.9× (1.3 to 4.0) | n/a | 1.5× (1.1 to 1.8) |
 
 The table has not been re-measured since 0.13.0; each release since is
-gated against the previous one instead. v0.14.0 against v0.15.0 with
-`make bench-ab` on laravel, symfony/demo and drupal: warm and no-op within
-noise on all three (drupal warm 309 ms to 290 ms, laravel 40 ms to 42 ms,
-symfony 50 ms to 48 ms).
+gated against the previous one instead. v0.15.0 against v0.16.0 with
+`make bench-ab` on laravel, symfony/demo and drupal: warm and no-op flat
+or faster on all three (drupal warm 296 ms to 285 ms, laravel 41 ms to
+39 ms, symfony 47 ms to 47 ms; no-op within 0.2 ms).
 
 A warm update still revalidates every package's metadata with the registry,
 one conditional request each, even when nothing changed. `--metadata-ttl
@@ -426,7 +424,7 @@ keep their original copyright notices; MIT permits their use here.[^16]
 
 [^1]: viv relinks every package from its own content-addressed store into `vendor/`, using hardlinks so files aren't copied or re-extracted.
 [^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
-[^3]: The skips are packages Composer itself refuses to resolve — security advisories blocking every matching version, a `dev-master`-only package under the default `minimum-stability`, a dependency whose only versions require a framework the root cannot take — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.13.0.md`](compat/results/v0.13.0.md).
+[^3]: The skips are packages Composer itself refuses to resolve — security advisories blocking every matching version, a `dev-master`-only package under the default `minimum-stability`, a dependency whose only versions require a framework the root cannot take — not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.16.0.md`](compat/results/v0.16.0.md).
 [^4]: Of viv's 10 pinned compatibility projects, the one that needs `--no-plugins` is `symfony/demo`, for `symfony/flex`. Flex does its work in `composer require`, so installing from a committed lock loses nothing; see [`docs/plugin-strategy.md`](docs/plugin-strategy.md).
 [^6]: riff's phpunit/phpunit cold and warm times (7.4 s and 7.3 s) are an outlier against its other rows in this corpus; kept in the range, not dropped; see [`bench/results/corpus.md`](bench/results/corpus.md).
 [^7]: roots/bedrock, drupal/recommended-project, yiisoft/yii2-app-basic and craftcms/craft, recorded in [`bench/skips.txt`](bench/skips.txt) against vivacity 0.6.0 so a newer release is retried. A refusal is an `n/a` cell, never a slow one.
