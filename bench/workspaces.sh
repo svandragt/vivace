@@ -190,27 +190,58 @@ build_aggregate() {
       '. + [{dir:$dir, name:$name, json:$json[0]}]' "$manifest" > "$manifest.tmp"
     mv "$manifest.tmp" "$manifest"
   done
-  jq '{
-    name: "vivace-bench/workspace-aggregate",
-    "minimum-stability": "dev",
-    "prefer-stable": true,
-    require: (map({(.name): "*"}) | add // {}),
-    repositories: (
-      (map({type: "package", package: (.json + {version: "dev-workspace", dist: {type: "path", url: .dir}})}))
-      + (map(.json.repositories // {}) | map(if type == "array" then .[] else (to_entries[] | .value) end))
-      | unique_by(.package.name // .url // .type)
-    )
-  }' "$manifest" > "$agg_dir/composer.json"
+  # A sibling's own require is a real constraint (illuminate/queue really
+  # does say "illuminate/collections": "^13.0"), not "*" like the aggregate
+  # root's own require above, so each member's synthetic package version
+  # has to satisfy it or every sibling-to-sibling require in a framework
+  # split into components (Laravel, Sylius, TYPO3...) fails to solve. No
+  # other member's constraint on this one: any version does, so a synthetic
+  # dev version is fine. "-dev" suffixed always, not just for an explicit
+  # "@dev"/"dev-" constraint (TYPO3's sysext siblings use "15.0.*@dev"): a
+  # dev-stability version numerically in range still satisfies a plain
+  # "^13.0" too, since minimum-stability is "dev" for this whole root.
+  jq '
+    def constraint_version:
+      if test("[0-9]") then
+        (capture("(?<op>[\\^~]?)[<>=]*\\s*(?<maj>[0-9]+)(\\.(?<min>[0-9]+))?")) as $c
+        | ($c.maj // "0") as $maj | ($c.min // "0") as $min
+        | if ($c.op == "^" or $c.op == "~") then "\($maj).\($min).999-dev" else "\($maj).\($min).0-dev" end
+      else "dev-workspace"
+      end;
+    . as $all
+    | map(
+        . as $m
+        | ([$all[] | (.json.require[$m.name]? // .json["require-dev"][$m.name]?) | select(. != null)] | first) as $needed
+        | {type: "package", package: ($m.json + {version: ($needed | if . then constraint_version else "dev-workspace" end), dist: {type: "path", url: $m.dir}})}
+      ) as $packages
+    | {
+        name: "vivace-bench/workspace-aggregate",
+        "minimum-stability": "dev",
+        "prefer-stable": true,
+        require: (map({(.name): "*"}) | add // {}),
+        repositories: (
+          $packages
+          + (map(.json.repositories // {}) | map(if type == "array" then .[] else (to_entries[] | .value) end))
+          | unique_by(.package.name // .url // .type)
+        )
+      }
+  ' "$manifest" > "$agg_dir/composer.json"
   rm -f "$manifest"
 }
 
 # Row 4 ("differ|compared") for one member: versions its own require keys
-# (excluding php/ext-*) resolve to in $1 (standalone lock) versus $2
-# (aggregate lock), for $3 the member's own composer.json.
+# (excluding php/ext-* and any *other member of this same repository*) resolve
+# to in $1 (standalone lock) versus $2 (aggregate lock), for $3 the member's
+# own composer.json. A sibling is excluded because it always shows a
+# different version string between the two — a real package number
+# standalone, the aggregate's own dev/path version once linked — without
+# that being the drift #279 asks about (a shared *external* package landing
+# on two different versions); $4 is the sibling name list, one per line.
 compare_member_versions() {
-  local standalone_lock=$1 agg_lock=$2 member_json=$3 pkg v_alone v_agg differ=0 compared=0
+  local standalone_lock=$1 agg_lock=$2 member_json=$3 siblings=$4 pkg v_alone v_agg differ=0 compared=0
   while read -r pkg; do
     [ -n "$pkg" ] || continue
+    grep -qxF "$pkg" "$siblings" && continue
     v_alone=$(jq -r --arg p "$pkg" '((.packages // [])+(."packages-dev" // [])) | .[] | select(.name==$p) | .version' \
       "$standalone_lock" 2>/dev/null | head -1)
     v_agg=$(jq -r --arg p "$pkg" '((.packages // [])+(."packages-dev" // [])) | .[] | select(.name==$p) | .version' \
@@ -283,6 +314,12 @@ run_rows4_5() {
   for d in "${members[@]}"; do
     mdir="$work/standalone-$safe/$(basename "$d")"
     rm -rf "$mdir"; mkdir -p "$mdir"
+    # The full source tree, not just composer.json: row 5's install actually
+    # scans the member's own classmap/psr-4 paths (e.g. "includes/") to
+    # generate its autoloader, which a composer.json-only scratch copy
+    # doesn't have and fails on.
+    cp -a "$d/." "$mdir/"
+    rm -rf "$mdir/vendor"
     member_manifest "$d" > "$mdir/composer.json"
     if ! XDG_CACHE_HOME="$cache/indep" "$viv_bin" update -d "$mdir" --no-install --ignore-platform-reqs \
         --no-plugins --no-scripts > "$mdir.log" 2>&1; then
@@ -307,10 +344,13 @@ run_rows4_5() {
     return
   fi
 
+  local siblings_file="$work/siblings-$safe"
+  for d in "${members[@]}"; do jq -r '.name // empty' "$d/composer.json" 2>/dev/null; done > "$siblings_file"
+
   local differ=0 compared=0 pair d2
   for d in "${standalone_dirs[@]}"; do
     mdir="$work/standalone-$safe/$(basename "$d")"
-    pair=$(compare_member_versions "$mdir/composer.lock" "$agg_dir/composer.lock" "$d/composer.json")
+    pair=$(compare_member_versions "$mdir/composer.lock" "$agg_dir/composer.lock" "$d/composer.json" "$siblings_file")
     differ=$((differ + ${pair%%|*}))
     compared=$((compared + ${pair##*|}))
   done
