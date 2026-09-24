@@ -420,7 +420,15 @@ fn run_probe() -> Option<Probe> {
 /// The `php` a bare `Command::new("php")` would run: a manual `PATH` scan
 /// (same pattern as `bin/composer.rs`'s `real_composer`) so its identity can
 /// be hashed for the cache key below without itself shelling out.
-fn resolve_php_path() -> Option<PathBuf> {
+///
+/// `pub(crate)`: `install::verify_platform_requirements` (#300) checks this
+/// itself before probing at all — no `php` on PATH means [`cached_platform_packages`]
+/// can only ever fall back to its own "assume php 8.3.0, no extensions"
+/// guess, and refusing an install on that guess (rather than the plain
+/// `WARN_NO_PHP` warning [`cached_platform_packages`] already prints) would
+/// break the "build vendor/ before the php-fpm layer exists" case that
+/// worked before this check existed.
+pub(crate) fn resolve_php_path() -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     std::env::split_paths(&path_var)
         .map(|dir| dir.join("php"))
@@ -444,7 +452,12 @@ fn default_ini_mtime(php_path: &Path) -> Option<std::time::SystemTime> {
 /// actually-loaded `php.ini` path — an ini reachable only through some other
 /// `-c`/env mechanism this key doesn't cover is missed until `viv cache
 /// clean`, the trade-off the design accepts for never shelling out to ask.
-fn cache_key(php_path: &Path) -> Option<String> {
+///
+/// `pub(crate)`: `install::verify_platform_requirements` (#300) folds this
+/// same key into its own verdict cache, so a `php` upgrade (or a
+/// `PHP_INI_SCAN_DIR`/`PHPRC` change) invalidates a cached "already checked,
+/// still OK" the same way it already invalidates the probe cache here.
+pub(crate) fn cache_key(php_path: &Path) -> Option<String> {
     let meta = fs_err::metadata(php_path).ok()?;
     let mtime = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
     let ini_scan_dir = std::env::var("PHP_INI_SCAN_DIR").unwrap_or_default();

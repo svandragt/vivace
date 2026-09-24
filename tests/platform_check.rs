@@ -132,3 +132,31 @@ fn install_refuses_a_php_version_mismatch_from_config_platform() {
         "a refused install must not write vendor/ at all"
     );
 }
+
+/// #300 follow-up: no `php` on `PATH` at all must not turn into a false
+/// refusal — `cached_platform_packages`'s own "assume php 8.3.0, no
+/// extensions" fallback is exactly the wrong assumption for a lock that
+/// needs a real extension (`acme/hello` here), and `viv install` worked
+/// without `php` installed before this check existed (a container build
+/// stage producing `vendor/` ahead of its `php-fpm` layer is a real case).
+/// `PATH` set to an empty temp dir, same as `tests/update.rs`'s own
+/// `update_warns_once_when_no_php_binary_is_on_path` (unset PATH could still
+/// resolve to a shell builtin/hash lookup on some platforms).
+#[test]
+fn install_without_php_on_path_still_installs() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_sources(&fixture(), project);
+    let empty_path = tempfile::tempdir().unwrap();
+
+    ctx.viv()
+        .arg("install")
+        .env("PATH", empty_path.path())
+        .assert()
+        .success();
+
+    assert!(
+        project.join("vendor/acme/hello").exists(),
+        "no php on PATH must skip the check, not refuse the install"
+    );
+}

@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::lock::PlatformCheck;
@@ -24,7 +25,11 @@ pub struct PlatformInput<'a> {
 }
 
 /// `--ignore-platform-reqs` / `--ignore-platform-req=<name>` (with `*`).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// `Serialize`/`Deserialize`: #300's install-time verdict cache
+/// (`install::PlatformCheckVerdict`) folds this into its own cache key, so a
+/// changed `--ignore-platform-req` invalidates a cached "already checked"
+/// the same way any other input to the check does.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum IgnorePlatform {
     #[default]
     None,

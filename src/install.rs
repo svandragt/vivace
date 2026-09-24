@@ -271,14 +271,55 @@ pub(crate) fn ignore_platform(all: bool, req: &[String]) -> IgnorePlatform {
 /// Composer's exact wording, and `SolverError::for_install` for the
 /// header/`  Problem N` layout `update`/`require`/`remove`'s own solver
 /// failures already print.
+///
+/// Two follow-ups to the original #300 landing, both found by measuring
+/// `viv install --no-scripts` on `bench/laravel` with `hyperfine` rather than
+/// only `bench-ab`'s own scenarios:
+///
+/// - No `php` on PATH at all skips the check outright (`resolve_php_path`
+///   below) rather than running it against `cached_platform_packages`'s own
+///   "assume php 8.3.0, no extensions" fallback — that fallback is right for
+///   `platform_check.php` (a runtime guard for whatever host eventually runs
+///   it), but wrong as an `install`-time verdict on *this* host: it refused
+///   Laravel's own lock (`ext-xmlwriter` "missing") even though `viv install`
+///   worked here before this check existed (a container build stage
+///   producing `vendor/` ahead of its `php-fpm` layer is a real case of
+///   exactly this).
+/// - [`PlatformCheckVerdict`] caches the last-verified-OK inputs so a repeat
+///   install with nothing platform-relevant changed skips constraint parsing
+///   entirely: `semver::parse_constraint`/`normalize` compile their
+///   `LazyLock` regexes on first use (~4 ms, `regex_automata::meta`), and
+///   this check was the first thing on the no-op path ever calling either,
+///   which `bench-ab`'s warm/noop regression traced back to. Keyed on a
+///   content hash, not mtime/size: `bench/run.sh`'s own noop scenario
+///   re-copies `composer.json`/`composer.lock` ahead of every timed run
+///   (`cp $json_src/composer.json $lock_src/composer.lock .`), which gives
+///   each rep a fresh mtime over identical bytes — a stat-based key missed
+///   every single time, paying the full regex-compile cost on every "noop"
+///   rep and reproducing the exact regression this cache exists to fix.
 fn verify_platform_requirements(
     root: &Root,
     lock: &Lock,
     dev: bool,
     ignore: &IgnorePlatform,
     cache_dir: Option<&Path>,
+    project_dir: &Path,
+    composer_json: &[u8],
 ) -> Result<()> {
     if *ignore == IgnorePlatform::All {
+        return Ok(());
+    }
+    let Some(php_path) = crate::solver::platform::resolve_php_path() else {
+        return Ok(());
+    };
+
+    let sidecar = cache_dir
+        .map(|dir| crate::store::platform_check_sidecar(dir, &project_dir.display().to_string()));
+    let verdict =
+        PlatformCheckVerdict::compute(root, dev, ignore, &php_path, project_dir, composer_json)?;
+    if let Some(sidecar) = &sidecar
+        && read_verdict(sidecar).as_ref() == Some(&verdict)
+    {
         return Ok(());
     }
 
@@ -358,9 +399,70 @@ fn verify_platform_requirements(
     }
 
     if problems.is_empty() {
+        if let Some(sidecar) = &sidecar
+            && let Ok(bytes) = serde_json::to_vec(&verdict)
+        {
+            let _ = write_atomic(sidecar, &bytes);
+        }
         return Ok(());
     }
     Err(SolverError::for_install(problems).into())
+}
+
+/// [`verify_platform_requirements`]'s verdict-cache key: every input that
+/// could change its answer. `composer_json`/`composer_lock` are content
+/// hashes (`Sha256`, already a dependency via `crate::store::hex`), not
+/// mtime/size: a stat-based key looked cheaper but missed on any rewrite
+/// that preserves content — a fresh `cp`/checkout/container `COPY` layer —
+/// which includes `bench/run.sh`'s own noop scenario (it re-copies both
+/// files ahead of every timed rep), so it paid the full regex-compile cost
+/// this cache exists to skip on every single "noop" measurement. Hashing
+/// costs well under the ~4 ms `semver::parse_constraint`/`normalize` compile
+/// this cache avoids (sub-millisecond even on Symfony Demo's larger lock),
+/// and `composer.lock` is read once more here rather than threading its
+/// bytes through `read_lock` — a bigger, less surgical change for a read
+/// this cheap. A stored verdict is only ever written after the check
+/// actually passed (never a refusal, matching `cached_probe`'s own "a write
+/// failure just means next time re-checks" trade-off): a match here means
+/// "checked before with these exact inputs, and it was fine", not "trust
+/// this blindly".
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+struct PlatformCheckVerdict {
+    composer_json_sha256: String,
+    composer_lock_sha256: String,
+    /// `None` when `cache_key` itself can't stat `php_path` (rare: it
+    /// resolved a moment ago via `resolve_php_path`), same "just re-check"
+    /// fallback as a cache-miss.
+    php_probe_key: Option<String>,
+    platform_overrides: Map<String, Value>,
+    ignore: IgnorePlatform,
+    dev: bool,
+}
+
+impl PlatformCheckVerdict {
+    fn compute(
+        root: &Root,
+        dev: bool,
+        ignore: &IgnorePlatform,
+        php_path: &Path,
+        project_dir: &Path,
+        composer_json: &[u8],
+    ) -> Result<Self> {
+        let composer_lock = fs_err::read(project_dir.join("composer.lock"))
+            .context("reading composer.lock for the platform-check verdict cache")?;
+        Ok(PlatformCheckVerdict {
+            composer_json_sha256: hex(Sha256::digest(composer_json)),
+            composer_lock_sha256: hex(Sha256::digest(&composer_lock)),
+            php_probe_key: crate::solver::platform::cache_key(php_path),
+            platform_overrides: root.config.platform.clone(),
+            ignore: ignore.clone(),
+            dev,
+        })
+    }
+}
+
+fn read_verdict(sidecar: &Path) -> Option<PlatformCheckVerdict> {
+    serde_json::from_slice(&fs_err::read(sidecar).ok()?).ok()
 }
 
 /// `entry` (a `composer.lock` package, `Package::raw`) reduced to just its
@@ -616,7 +718,15 @@ fn run_impl(
         Some(dir) => dir.to_path_buf(),
         None => crate::update::default_cache_dir()?,
     };
-    verify_platform_requirements(&root, &lock, dev, &ignore_platform_reqs, Some(&cache_dir))?;
+    verify_platform_requirements(
+        &root,
+        &lock,
+        dev,
+        &ignore_platform_reqs,
+        Some(&cache_dir),
+        &project_dir,
+        &composer_json,
+    )?;
 
     let selected: Vec<&Package> = lock.packages(dev).collect();
     for package in &selected {
