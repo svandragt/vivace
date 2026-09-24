@@ -297,8 +297,22 @@ separately.[^13]
 
 ## Reasons to use viv
 
-Besides matching Composer's output faster, viv does three things Composer
+Besides matching Composer's output faster, viv does four things Composer
 does not.
+
+### Merging composer.lock without conflicts
+
+Two branches that each ran `update` conflict in `composer.lock` almost
+every time, because git merges it line by line and the file is one large
+JSON array. viv merges it as a git merge driver, record by record, and
+re-solves only the packages the two branches changed differently. `viv
+init` writes the `.gitattributes` line and `viv install` wires the driver
+into each clone, so after the first install nobody runs anything extra.
+Replayed over 355 real merges from four client projects, `composer.lock`
+conflicted 228 times under git and 51 times with the driver; the rest
+were branch heads the registry had since overwritten or packages it no
+longer lists, which viv marks and names.[^19] The setup is described under
+"Everyday commands".
 
 ### Running tools without installing them
 
@@ -437,3 +451,4 @@ keep their original copyright notices; MIT permits their use here.[^16]
 [^16]: `src/autoload/templates/` contains Composer's `ClassLoader.php`, `InstalledVersions.php` and licence, copied verbatim under Composer's MIT licence. `src/spdx-licenses.json` is `composer/spdx-licenses`' own resource file, also copied verbatim under its MIT licence. Test fixtures under `tests/fixtures/composer/` are Composer's own, also MIT.
 [^17]: [`docs/stability.md`](docs/stability.md) states what a minor release may and may not change.
 [^18]: `drupal/core-composer-scaffold`, `johnpbloch/wordpress-core-installer` and `roots/wordpress-core-installer` are all GPL-2.0-or-later. Their `or later` term is what allows GPL-3.0 here. See [#245](https://github.com/svandragt/vivace/issues/245) for the provenance of each port.
+[^19]: The replay and its counts are in [`bench/results/lockmerge.md`](bench/results/lockmerge.md); the design and the remaining cases are chapter 1 of [`docs/research.md`](docs/research.md). Client projects are anonymised.
