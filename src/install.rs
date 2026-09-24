@@ -230,8 +230,11 @@ struct AutoloadFlags {
 
 /// Composer's `--ignore-platform-reqs` wins over any `--ignore-platform-req`
 /// entries when both are given
-/// (`PlatformRequirementFilterFactory::fromBoolOrList`).
-fn ignore_platform(all: bool, req: &[String]) -> IgnorePlatform {
+/// (`PlatformRequirementFilterFactory::fromBoolOrList`). `pub(crate)`: #242
+/// reuses this from `update.rs`/`require.rs` to build the same
+/// `IgnorePlatform` for the solve, not just the autoload/lock-verify steps
+/// here.
+pub(crate) fn ignore_platform(all: bool, req: &[String]) -> IgnorePlatform {
     if all {
         IgnorePlatform::All
     } else if req.is_empty() {
@@ -247,15 +250,27 @@ fn ignore_platform(all: bool, req: &[String]) -> IgnorePlatform {
 /// satisfy exits before any fetch/plan/link work, `vendor/` untouched.
 ///
 /// No fresh solve: a pool built from just the detected platform packages
-/// plus one [`crate::solver::pool::Package`] per locked entry
-/// (`pool_builder::package_from_lock_entry`) already carries every
-/// provider a real solve's pool would — a locked package's own
+/// plus one [`crate::solver::pool::Package`] per locked entry that names a
+/// platform package anywhere in its own `require`/`provide`/`replace`
+/// (`pool_builder::package_from_lock_entry`, fed a name/version-only entry
+/// filtered to those links by [`platform_relevant_entry`]) already carries
+/// every provider a real solve's pool would — a locked package's own
 /// `provide`/`replace` links count the same way — so `Pool::what_provides`
 /// alone answers "does anything here satisfy this link" without generating
-/// rules or running the SAT solver. Reuses `problem::missing_package_reason`/
-/// `missing_package_suffix` for Composer's exact wording, and
-/// `SolverError::for_install` for the header/`  Problem N` layout
-/// `update`/`require`/`remove`'s own solver failures already print.
+/// rules or running the SAT solver.
+///
+/// The filter matters for speed, not just correctness: every `install`
+/// pays this on the warm/no-op path too (below), so parsing a lock's every
+/// ordinary dependency link and cloning its full raw JSON entry
+/// (`Package::raw`) — none of which this check ever reads — measurably
+/// regressed `bench-ab`'s warm/noop numbers on a 100+ package lock before
+/// this narrowed it to the (usually very few, often zero) platform-named
+/// links.
+///
+/// Reuses `problem::missing_package_reason`/`missing_package_suffix` for
+/// Composer's exact wording, and `SolverError::for_install` for the
+/// header/`  Problem N` layout `update`/`require`/`remove`'s own solver
+/// failures already print.
 fn verify_platform_requirements(
     root: &Root,
     lock: &Lock,
@@ -271,10 +286,9 @@ fn verify_platform_requirements(
     let mut packages =
         crate::solver::platform::cached_platform_packages(&root.config.platform, cache_dir)?;
     for package in lock.packages(dev) {
-        packages.push(pool_builder::package_from_lock_entry(
-            &package.raw,
-            &mut cache,
-        )?);
+        if let Some(entry) = platform_relevant_entry(&package.raw) {
+            packages.push(pool_builder::package_from_lock_entry(&entry, &mut cache)?);
+        }
     }
     let pool = Pool::new(packages);
     // Never populated (`Pool::with_removed` is a real-solve-only concern,
@@ -347,6 +361,35 @@ fn verify_platform_requirements(
         return Ok(());
     }
     Err(SolverError::for_install(problems).into())
+}
+
+/// `entry` (a `composer.lock` package, `Package::raw`) reduced to just its
+/// `name`/`version` plus whichever `require`/`provide`/`replace` links
+/// target a platform package — `None` when none do, the common case, so
+/// [`verify_platform_requirements`] never even calls
+/// `pool_builder::package_from_lock_entry` (let alone constraint-parses or
+/// clones the entry) for a package this check has no reason to care about.
+fn platform_relevant_entry(entry: &Value) -> Option<Value> {
+    let obj = entry.as_object()?;
+    let mut filtered = Map::new();
+    filtered.insert("name".to_string(), obj.get("name")?.clone());
+    filtered.insert("version".to_string(), obj.get("version")?.clone());
+    let mut relevant = false;
+    for key in ["require", "provide", "replace"] {
+        let Some(links) = obj.get(key).and_then(Value::as_object) else {
+            continue;
+        };
+        let kept: Map<String, Value> = links
+            .iter()
+            .filter(|(name, _)| crate::repository::is_platform_package(name))
+            .map(|(name, constraint)| (name.clone(), constraint.clone()))
+            .collect();
+        if !kept.is_empty() {
+            relevant = true;
+            filtered.insert(key.to_string(), Value::Object(kept));
+        }
+    }
+    relevant.then_some(Value::Object(filtered))
 }
 
 impl From<&InstallArgs> for AutoloadFlags {
@@ -560,7 +603,20 @@ fn run_impl(
     }
     let ignore_platform_reqs =
         ignore_platform(args.ignore_platform_reqs, &args.ignore_platform_req);
-    verify_platform_requirements(&root, &lock, dev, &ignore_platform_reqs, cache_dir)?;
+    // Resolved here, ahead of everything else that wants it (the platform
+    // probe's own cache immediately below, `Store::open` further down):
+    // `cached_platform_packages` treats an unresolved `None` as "no cache
+    // dir yet" and probes fresh every time, which is exactly right for a
+    // caller that truly has none yet but was silently paying a fresh `php`
+    // shell-out on every `install` here otherwise, `--cache-dir`-less
+    // invocations (`XDG_CACHE_HOME` only, `bench/run.sh`'s own setup) most
+    // of all — measured as the full warm/noop regression `bench-ab` exists
+    // to catch, not the "one stat" this cache was supposed to cost.
+    let cache_dir = match cache_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => crate::update::default_cache_dir()?,
+    };
+    verify_platform_requirements(&root, &lock, dev, &ignore_platform_reqs, Some(&cache_dir))?;
 
     let selected: Vec<&Package> = lock.packages(dev).collect();
     for package in &selected {
@@ -664,10 +720,6 @@ fn run_impl(
     let start = Instant::now();
     fs_err::create_dir_all(&vendor_dir)?;
 
-    let cache_dir = match cache_dir {
-        Some(dir) => dir.to_path_buf(),
-        None => crate::update::default_cache_dir()?,
-    };
     let store = Arc::new(Store::open(&cache_dir)?);
 
     // Path (#13's local-directory case), dist-less git-source (#13's VCS
