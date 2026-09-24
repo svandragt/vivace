@@ -360,6 +360,9 @@ pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
 
 /// `Installer::requirePackagesForUpdate`'s non-`updateMirrors` branch: root
 /// `require` then `require-dev`, in that order (`Installer.php:1061-1067`).
+/// `require`/`require_dev` have already had `self.version` resolved
+/// ([`resolve_self_version`], called before either map reaches here or the
+/// closure walk), so this never has to special-case it.
 fn root_requires(
     require: &Map<String, Value>,
     require_dev: &Map<String, Value>,
@@ -538,8 +541,12 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     as_of: Option<i64>,
     ignore: &IgnorePlatform,
 ) -> Result<BuildResult> {
-    let require = string_map(root, "require");
-    let require_dev = string_map(root, "require-dev");
+    // #304: resolved once, up front, so the closure walk below and
+    // `root_requires` at the end both just see an ordinary version string
+    // in place of a literal `self.version`.
+    let own_pretty_version = root_pretty_version(root);
+    let require = resolve_self_version(string_map(root, "require"), &own_pretty_version);
+    let require_dev = resolve_self_version(string_map(root, "require-dev"), &own_pretty_version);
 
     let minimum_stability = root
         .get("minimum-stability")
@@ -1291,6 +1298,38 @@ pub(crate) fn root_replaced_names(root: &Value) -> HashSet<String> {
         .collect()
 }
 
+/// `RootPackageLoader::load`: `$config['version'] = '1.0.0'` when nothing
+/// (no `version` key, no VCS guess) supplies one. Shared by [`root_package`]
+/// and [`resolve_self_version`], which both need the root's own version
+/// before either the pool or `self.version` substitution can be built.
+fn root_pretty_version(root: &Value) -> String {
+    root.get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("1.0.0")
+        .to_string()
+}
+
+/// #304: a root require's own `self.version` (`ArrayLoader::parseLinks`)
+/// resolved against the root's own version before anything downstream ever
+/// sees it — the closure walk's `discover` calls and [`root_requires`] both
+/// read `require`/`require_dev` straight through `parse_constraint`, with
+/// no `self.version` case of their own, same as `parse_links` already
+/// leans on [`link_constraint_text`] rather than teaching every dependency
+/// walker about the literal.
+fn resolve_self_version(map: Map<String, Value>, own_pretty_version: &str) -> Map<String, Value> {
+    map.into_iter()
+        .map(|(name, value)| {
+            let value = match value.as_str() {
+                Some(raw) => {
+                    Value::String(link_constraint_text(own_pretty_version, raw).to_string())
+                }
+                None => value,
+            };
+            (name, value)
+        })
+        .collect()
+}
+
 /// The root `composer.json` package as a fixed pool member
 /// (`Installer::createRequest`'s `$request->fixPackage($rootPackage)`,
 /// `RootPackageLoader`): carries `replace`/`provide` as `Link`s so
@@ -1306,13 +1345,7 @@ pub(crate) fn root_package(root: &Value, cache: &mut ConstraintCache) -> Result<
         .and_then(Value::as_str)
         .unwrap_or("__root__")
         .to_ascii_lowercase();
-    // `RootPackageLoader::load`: `$config['version'] = '1.0.0'` when
-    // nothing (no `version` key, no VCS guess) supplies one.
-    let pretty_version = root
-        .get("version")
-        .and_then(Value::as_str)
-        .unwrap_or("1.0.0")
-        .to_string();
+    let pretty_version = root_pretty_version(root);
     let version = semver::normalize(&pretty_version)?;
     let stability = semver::stability(version.as_str());
 
