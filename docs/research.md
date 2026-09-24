@@ -323,7 +323,7 @@ so `prune` cannot delete a live archive (#286), corpus boot harness and
 measurement (#287). Depends on nothing in chapter 1. The boot harness is
 worth building first: it decides whether the rest is worth writing.
 
-## Chapter 3: workspaces (measured, hold)
+## Chapter 3: workspaces (measured, not pursued)
 
 **Question.** When a repository holds several `composer.json` files, does
 a workspace, one root that names its members and one lock over all of
@@ -399,16 +399,20 @@ repositories shaped most like a workspace out of rows 4 and 5, Sylius
 (every component declares a `path` repository to its siblings, #305)
 and Neos (24 of 29 members use `self.version`, #304).
 
-**Verdict.** Measured, hold. On the evidence, a workspace removes drift
-nobody in this corpus experiences, so #277 and #278 stay unbuilt. The
-hold, rather than a close, is for the coverage gap: once #304 and #305
-are fixed, rows 4 and 5 rerun on Sylius and Neos. If those two also show
-no drift on members installed alone, the chapter closes as "measured,
-not pursued" like chapter 2.
+**Verdict.** Measured, not pursued. The rerun after #304 and #305
+(same results file, second section) covered the two repositories the
+first pass missed: all 17 Sylius components solve alone and agree with
+the aggregate on every one of 73 shared requirements; the Neos members
+that require siblings at `self.version` cannot be solved alone by
+Composer either, since the sibling version a standalone member asks
+for is not published. On every repository whose members are installed
+alone, a workspace would remove no drift. #277 and #278 are closed as
+not planned; `viv workspace list` (#276) stays as the discovery tool.
 
 **Work.** Done: #276 (member discovery and `viv workspace list`), #279
-(corpus and measurement). Waiting on #304 and #305 for the rerun. Not
-started, gated on the rerun: #277, #278.
+(corpus and measurement, plus the rerun). Closed as not planned: #277,
+#278. Side results: #304 and #305 fixed, both compat gaps on real
+published `composer.json` files.
 
 ## Candidate chapters
 

@@ -110,3 +110,18 @@ Row 4 and row 5 use a generated aggregate root: every solved member registered a
 ## Answering the question, in numbers
 
 Row 1 gives evidence members are installed alone (a committed lock or a CI workflow installing a member on its own) on **3 of the 10 repositories**: automattic/newspack-workspace, woocommerce/woocommerce, bagisto/bagisto. Of those 3, row 4 shows **0** with measurable drift on the external packages they could compare (8, 8 and 6 comparisons respectively — every member solved standalone happened to already agree with the aggregate on its own external requirements). The one repository with large, unambiguous row-4 drift, laravel/framework, has no row-1 evidence its members are installed alone *as this repository is used today* — the drift there is real for the published-split components this repository sources, not for the dev monorepo itself.
+
+## 2026-09-24 rerun of rows 4 and 5 after #304 and #305
+
+viv at a05c2b6 (path repositories, `self.version` in a root require and in the dev-split solve).
+
+| Repository | Members solved standalone | Aggregate drift removed | Install cold/warm, store (indep→aggregate) |
+|---|---|---|---|
+| sylius/sylius | 17 of 17 | 0/73 differ | cold 6.960s→1.949s, warm 0.566s→0.036s, store 67717736→36845913 bytes |
+| neos/neos-development-collection | 5 of 29 | 0/26 differ | cold 9.332s→2.439s, warm 0.217s→0.057s, store 272430738→94358177 bytes |
+
+Sylius: every component now solves standalone through its own `path` repository, and none of the 73 external requirements the components share picks a different version alone than under the aggregate root. Row 1 is unchanged: no component has its own lock or CI, so Sylius does not install members alone.
+
+Neos: the 24 members that require siblings at `self.version` get past the parser and fail the way Composer 2.10.2 fails on the same checkout, because a member solved alone asks for its siblings at the root's own version and that version is not on Packagist (Composer guesses `dev-<commit>` and fails the same way, viv defaults to `1.0.0`). Those members cannot be installed alone by either tool, so they add nothing to row 4. The five members without sibling requirements agree with the aggregate on all 26 comparisons.
+
+The corpus verdict does not move: on every repository whose members are installed alone, standalone and aggregate solves agree.
