@@ -1401,3 +1401,29 @@ The next chapter is the append-only ledger lock (#306).
 One process slip: a merge went to main with a compile error in a test
 because the gate and the push were chained with `;`. Fixed within six
 minutes; the gate and the push are separate commands from now on.
+
+## 2026-09-25: ledger lock measured, workspace init, one cache snapshot
+
+**Candidate A, the ledger lock (#306).** The lock as an append-only
+ledger of record changes, merged by `git merge-file --union` and folded
+at read time, replayed against `viv lock merge` on 381 merges. The fold
+never finished a merge over a real conflict: silent fold is zero, so the
+format is safe. It finishes 277 merges to the driver's 329, because a
+real conflict needs a re-solve and the fold has none. Fourteen of its
+refusals were one side's record carrying `notification-url` and the
+other not; hashing name, version and reference would clear them. Whether
+to build it for merges that need no re-solve is left open in
+`docs/research.md`.
+
+**`viv workspace init` (#315).** Writes the aggregate root from path
+patterns, then resolves and installs; `viv workspace add` appends one
+package. The test installs the written root with Composer and with viv
+and compares `vendor/` file by file. macOS CI failed it on
+`composer/LICENSE`: `composer.phar` writes two extra blank lines, a known
+difference `tests/new.rs` already skipped.
+
+**One Snapshot per run (#311).** The four install caches key on one
+struct; lock hash and php probe stay lazy. `bench-ab` reported noop
++0.8 ms on Laravel twice. A 60-run hyperfine gave 5.2 ms to both binaries
+on quiet rounds, the difference coming from two browser processes
+holding a core each. Interleaved A/B absorbs steady load, not bursts.
