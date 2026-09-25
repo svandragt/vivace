@@ -208,19 +208,18 @@ two branches that each add a dependency merge cleanly instead of fighting
 over ordering. `install` and `update` never touch `composer.json`.[^11]
 
 A repository with several `composer.json` files can share one resolve and
-one `vendor/` through a top-level root: `viv workspace init plugins/*
-themes/*` writes one `path` repository per pattern, one `require` line for
-every package a pattern matches, and `minimum-stability`/`prefer-stable`
-unless the file already sets them, then resolves and installs the same way
-`add` does (`--no-install` stops after writing the file and its lock). Run
-it with no patterns to print every `composer.json` under the current
-directory instead, grouped by the directory a pattern for it would target,
-without writing anything — copy the pattern you want into the real command.
-`viv workspace add plugins/new-one` appends one more member's `require` line
-to an existing root and resolves again. The file `init`/`add` write is
-ordinary Composer input, so `composer install` accepts it too. `viv
-workspace list` is a separate, read-only report: which of
-`extra.viv.workspace.members`' members require each other.
+one `vendor/` through a top-level root. `viv workspace init plugins/*
+themes/*` writes that root: one `path` repository per pattern, one
+`require` line for each package a pattern matches, and
+`minimum-stability`/`prefer-stable` unless the file already sets them. It
+then resolves and installs the way `add` does; `--no-install` stops after
+writing the file and its lock. With no patterns, it lists every
+`composer.json` below the current directory, grouped by parent directory,
+and writes nothing, so you can copy the patterns you want.
+`viv workspace add plugins/new-one` adds one more package to an existing
+root and resolves again. The file is ordinary Composer input, so
+`composer install` accepts it too. `viv workspace list` reports which
+members in `extra.viv.workspace.members` require each other.
 
 `viv init` writes `composer.lock merge=viv` (and `viv.lock merge=viv` once
 the project has adopted that file) to `.gitattributes`; an existing project
