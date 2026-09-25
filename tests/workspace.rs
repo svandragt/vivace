@@ -357,7 +357,9 @@ fn assert_vendor_matches(composer_vendor: &Path, viv_vendor: &Path) {
 
     let mut mismatches = Vec::new();
     for (relative, is_symlink) in &composer_entries {
-        if *is_symlink {
+        // composer.phar writes a LICENSE with two extra blank lines that a
+        // from-source Composer does not; viv matches the source one (tests/new.rs).
+        if *is_symlink || relative == Path::new("composer/LICENSE") {
             continue;
         }
         let want = fs::read(composer_vendor.join(relative)).unwrap();
