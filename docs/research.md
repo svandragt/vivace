@@ -460,22 +460,25 @@ driver did not. The chapter holds only if the second count is zero.
 **Build if it holds.** A ledger writer and fold in `viv lock convert`,
 then a decision on whether the driver stays for `composer.lock` only.
 
-**Result, 2026-09-25.** The chapter holds: silent fold is zero. Across
-381 merges (the 355-merge client corpus plus koel and pixelfed from the
-public corpus, `bench/lockmerge/run.py --ledger`, `bench/results/
-lockmerge.md`), no merge folded over a real conflict without refusing,
-and no merge where the fold succeeded disagreed with `viv lock merge`'s
-own result. 276 merges are identical between the two; 104 the fold
-refused, 90 of them a genuine real conflict (a package both sides
-changed to different results) and 14 a package both sides moved to the
-same version and source reference where one side's record carried a
-metadata field the other's did not, which the fold's full-record hash
-reads as a fork though the driver's identity check does not; one merge
-the fold resolved and the driver's re-solve did not, a malformed
-`composer.json` the fold never has to parse. Nothing is built from this:
-the measurement decides only whether chapter 1's driver stays the
-approach, and it does — a name-keyed record merge with a re-solve, not a
-line-oriented ledger fold with `merge=union`.
+**Result, 2026-09-25.** The chapter holds: the silent-fold count is
+zero. `bench/lockmerge/run.py --ledger` replayed 381 merges, the 355
+client merges plus 26 from koel and pixelfed (`bench/results/lockmerge.md`).
+The fold never finished a merge in which both sides changed a package to
+different results, and on every merge both finished, the two results match.
+
+Safe is not the same as sufficient. The fold finishes 277 of the 381
+merges and the driver finishes 329; on the client corpus alone, 255 and
+303 of 355. The 104 merges the fold refuses are 90 real conflicts and 14
+where both sides moved a package to the same version and source reference
+but one record carries a field the other lacks (`notification-url`). The
+fold hashes the whole record, so it reads those 14 as a fork. Hashing
+name, version and reference instead would finish them. The real conflicts
+need what the driver has and the fold does not: a re-solve. The one merge
+the fold finishes and the driver refuses has a malformed `composer.json`,
+which the fold never reads.
+
+Open decision: build the ledger as the format for merges that need no
+re-solve and keep the driver for the rest, or keep the driver alone.
 
 ### Candidate B: install from a lock years later
 
