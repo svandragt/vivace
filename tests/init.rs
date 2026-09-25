@@ -140,6 +140,37 @@ fn no_autoload_entry_without_src_or_the_flag() {
     assert!(written.get("autoload").is_none());
 }
 
+/// `--repository type:url` (#315), repeatable: one entry per flag, in
+/// order, appended to `repositories`.
+#[test]
+fn repository_flag_appends_entries() {
+    let ctx = TestContext::new();
+
+    ctx.viv()
+        .args([
+            "init",
+            "--name",
+            "acme/my-app",
+            "--repository",
+            "path:packages/*",
+            "--repository",
+            "composer:https://satis.example/",
+        ])
+        .assert()
+        .success();
+
+    let written: serde_json::Value =
+        serde_json::from_slice(&fs::read(ctx.project.path().join("composer.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        written["repositories"],
+        serde_json::json!([
+            {"type": "path", "url": "packages/*"},
+            {"type": "composer", "url": "https://satis.example/"},
+        ])
+    );
+}
+
 /// End-to-end: `viv init --require psr/log` produces a composer.json,
 /// composer.lock and vendor/ Composer itself accepts (#143's "done when").
 /// Gated on `VIVACE_TEST_NETWORK=1` so a bare `cargo nextest run` stays

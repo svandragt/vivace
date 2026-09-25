@@ -150,8 +150,9 @@ enum Command {
     /// cache, auth sources (names only), PHP/git/Composer, platform
     /// packages and the plugin decision per lock entry.
     Diagnose(DiagnoseArgs),
-    /// Chapter 3's `extra.viv.workspace` (#276): discover members from the
-    /// root composer.json and report inter-member requirements.
+    /// `list` (#276): discover `extra.viv.workspace` members and report
+    /// inter-member requirements. `init`/`add` (#315): write the aggregate
+    /// root composer.json from member glob patterns and resolve/install.
     Workspace(WorkspaceArgs),
 }
 
@@ -302,13 +303,15 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Command::Workspace(args) => match workspace::run(&args) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                err_out(&format!("{err:#}"));
-                ExitCode::from(1)
+        Command::Workspace(args) => {
+            // `init`/`add` (#315) chain into the same `partial_update` `add`
+            // runs, so a dependency-resolution failure there is a
+            // `SolverError` too, same exit code as `add`'s own.
+            match workspace::run(&args, cli.cache_dir.as_deref(), offline) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => resolver_error(&err),
             }
-        },
+        }
     }
 }
 
