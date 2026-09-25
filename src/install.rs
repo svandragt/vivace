@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -244,6 +244,67 @@ pub(crate) fn ignore_platform(all: bool, req: &[String]) -> IgnorePlatform {
     }
 }
 
+/// #311: one `install`/`update` run's shared identity for every cache below
+/// that used to hash or read the same `composer.json`/`composer.lock`/`php`/
+/// project directory on its own — the no-op [`State`] cache, [`PlatformCheckVerdict`]
+/// (#300), the php probe cache's own key (#178), and the root classmap
+/// cache's sidecar path (#269, [`crate::store::root_classmap_sidecar`]).
+/// `composer_json_sha256`/`root_fingerprint` are cheap (no I/O beyond the
+/// `composer.json` read `run_impl` already does, and a `Path` already
+/// canonicalized) and almost every run needs both anyway, so they're plain
+/// fields; `lock_sha256`/`php_probe_key` cost a fresh read/`stat` and are
+/// skipped entirely on some runs (`--ignore-platform-reqs all`, no `php` on
+/// `PATH`), so both stay behind a `OnceLock`, computed at most once and only
+/// the first time something actually asks — building a `Snapshot` must not
+/// make a run that never needed either pay for them anyway.
+struct Snapshot {
+    composer_json_sha256: String,
+    /// The project directory's identity for a sidecar's file name
+    /// (`store::root_classmap_sidecar`/`platform_check_sidecar`, both keyed
+    /// on "a hash of the project's canonicalized base dir") — `project_dir`
+    /// is already canonical by the time `run_impl` builds this, so this is
+    /// just its string form, not a second `canonicalize`.
+    root_fingerprint: String,
+    lock_path: PathBuf,
+    lock_sha256: OnceLock<String>,
+    php_probe_key: OnceLock<Option<String>>,
+}
+
+impl Snapshot {
+    fn new(project_dir: &Path, composer_json: &[u8]) -> Self {
+        Snapshot {
+            composer_json_sha256: hex(Sha256::digest(composer_json)),
+            root_fingerprint: project_dir.display().to_string(),
+            lock_path: project_dir.join("composer.lock"),
+            lock_sha256: OnceLock::new(),
+            php_probe_key: OnceLock::new(),
+        }
+    }
+
+    /// A raw content hash of `composer.lock`'s bytes — not
+    /// [`Lock::content_hash`], Composer's own algorithm over `composer.json`
+    /// (already parsed, no re-read needed) — for [`PlatformCheckVerdict`],
+    /// read from disk at most once no matter how many callers ask.
+    fn lock_sha256(&self) -> Result<&str> {
+        if let Some(hash) = self.lock_sha256.get() {
+            return Ok(hash);
+        }
+        let bytes = fs_err::read(&self.lock_path)
+            .context("reading composer.lock for the platform-check verdict cache")?;
+        let hash = hex(Sha256::digest(&bytes));
+        Ok(self.lock_sha256.get_or_init(|| hash))
+    }
+
+    /// [`crate::solver::platform::cache_key`] for `php_path`, memoized so a
+    /// future cache that also wants it (the ticket's own "next cache needs a
+    /// one-line key") doesn't pay a second `stat`.
+    fn php_probe_key(&self, php_path: &Path) -> Option<&str> {
+        self.php_probe_key
+            .get_or_init(|| crate::solver::platform::cache_key(php_path))
+            .as_deref()
+    }
+}
+
 /// #300: `Installer::doInstall`'s "Verifying lock file contents can be
 /// installed on current platform" step — a `php`/`ext-*`/`lib-*` root or
 /// locked-package requirement this host (or `config.platform`) can't
@@ -303,8 +364,7 @@ fn verify_platform_requirements(
     dev: bool,
     ignore: &IgnorePlatform,
     cache_dir: Option<&Path>,
-    project_dir: &Path,
-    composer_json: &[u8],
+    snapshot: &Snapshot,
 ) -> Result<()> {
     if *ignore == IgnorePlatform::All {
         return Ok(());
@@ -313,10 +373,9 @@ fn verify_platform_requirements(
         return Ok(());
     };
 
-    let sidecar = cache_dir
-        .map(|dir| crate::store::platform_check_sidecar(dir, &project_dir.display().to_string()));
-    let verdict =
-        PlatformCheckVerdict::compute(root, dev, ignore, &php_path, project_dir, composer_json)?;
+    let sidecar =
+        cache_dir.map(|dir| crate::store::platform_check_sidecar(dir, &snapshot.root_fingerprint));
+    let verdict = PlatformCheckVerdict::compute(root, dev, ignore, &php_path, snapshot)?;
     if let Some(sidecar) = &sidecar
         && read_verdict(sidecar).as_ref() == Some(&verdict)
     {
@@ -410,22 +469,17 @@ fn verify_platform_requirements(
 }
 
 /// [`verify_platform_requirements`]'s verdict-cache key: every input that
-/// could change its answer. `composer_json`/`composer_lock` are content
-/// hashes (`Sha256`, already a dependency via `crate::store::hex`), not
-/// mtime/size: a stat-based key looked cheaper but missed on any rewrite
-/// that preserves content — a fresh `cp`/checkout/container `COPY` layer —
-/// which includes `bench/run.sh`'s own noop scenario (it re-copies both
-/// files ahead of every timed rep), so it paid the full regex-compile cost
-/// this cache exists to skip on every single "noop" measurement. Hashing
-/// costs well under the ~4 ms `semver::parse_constraint`/`normalize` compile
-/// this cache avoids (sub-millisecond even on Symfony Demo's larger lock),
-/// and `composer.lock` is read once more here rather than threading its
-/// bytes through `read_lock` — a bigger, less surgical change for a read
-/// this cheap. A stored verdict is only ever written after the check
-/// actually passed (never a refusal, matching `cached_probe`'s own "a write
-/// failure just means next time re-checks" trade-off): a match here means
-/// "checked before with these exact inputs, and it was fine", not "trust
-/// this blindly".
+/// could change its answer. `composer_json_sha256`/`composer_lock_sha256`
+/// come from [`Snapshot`] rather than hashing either file again here: a
+/// stat-based key looked cheaper but missed on any rewrite that preserves
+/// content — a fresh `cp`/checkout/container `COPY` layer — which includes
+/// `bench/run.sh`'s own noop scenario (it re-copies both files ahead of
+/// every timed rep), so it paid the full regex-compile cost this cache
+/// exists to skip on every single "noop" measurement. A stored verdict is
+/// only ever written after the check actually passed (never a refusal,
+/// matching `cached_probe`'s own "a write failure just means next time
+/// re-checks" trade-off): a match here means "checked before with these
+/// exact inputs, and it was fine", not "trust this blindly".
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 struct PlatformCheckVerdict {
     composer_json_sha256: String,
@@ -445,15 +499,12 @@ impl PlatformCheckVerdict {
         dev: bool,
         ignore: &IgnorePlatform,
         php_path: &Path,
-        project_dir: &Path,
-        composer_json: &[u8],
+        snapshot: &Snapshot,
     ) -> Result<Self> {
-        let composer_lock = fs_err::read(project_dir.join("composer.lock"))
-            .context("reading composer.lock for the platform-check verdict cache")?;
         Ok(PlatformCheckVerdict {
-            composer_json_sha256: hex(Sha256::digest(composer_json)),
-            composer_lock_sha256: hex(Sha256::digest(&composer_lock)),
-            php_probe_key: crate::solver::platform::cache_key(php_path),
+            composer_json_sha256: snapshot.composer_json_sha256.clone(),
+            composer_lock_sha256: snapshot.lock_sha256()?.to_string(),
+            php_probe_key: snapshot.php_probe_key(php_path).map(str::to_string),
             platform_overrides: root.config.platform.clone(),
             ignore: ignore.clone(),
             dev,
@@ -598,6 +649,11 @@ fn run_impl(
     log_composer_noop_flags(args.no_interaction, args.prefer_dist, args.no_suggest);
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
+    // #311: one `Snapshot` per run, built as soon as its two cheap fields
+    // (`composer_json` is already in hand; `project_dir` was canonicalized
+    // above) are available, so every cache below shares it instead of each
+    // hashing/reading its own copy of the same inputs.
+    let snapshot = Snapshot::new(&project_dir, &composer_json);
     // Parsed once (#122) and threaded through the freshness check and the
     // scripts runner below, instead of each re-parsing the same bytes.
     let composer_json_value: Value =
@@ -724,8 +780,7 @@ fn run_impl(
         dev,
         &ignore_platform_reqs,
         Some(&cache_dir),
-        &project_dir,
-        &composer_json,
+        &snapshot,
     )?;
 
     let selected: Vec<&Package> = lock.packages(dev).collect();
@@ -799,7 +854,7 @@ fn run_impl(
     let state = State {
         content_hash: lock.content_hash.clone(),
         dev,
-        composer_json_sha256: hex(Sha256::digest(&composer_json)),
+        composer_json_sha256: snapshot.composer_json_sha256.clone(),
         patches_fingerprint: patches_fingerprint(&plugins, &root, &project_dir)?,
     };
     let mut scripts = scripts::Runner::new(
@@ -1008,6 +1063,7 @@ fn run_impl(
         Some(&archive_dirs),
         &plugins,
         true,
+        Some(&snapshot.root_fingerprint),
     )?;
 
     if plan.is_noop() {
@@ -1071,6 +1127,10 @@ fn regenerate_vendor_metadata(
     archive_dirs: Option<&HashMap<String, PathBuf>>,
     plugins: &plugins::Plugins,
     is_install: bool,
+    // #311: `Snapshot::root_fingerprint`, `None` for `dump_autoload`'s own
+    // call (no `Snapshot` there, out of this ticket's scope) — `generate`
+    // falls back to deriving the same string from `base_dir` itself.
+    root_fingerprint: Option<&str>,
 ) -> Result<()> {
     let bin_dir = project_dir.join(root.config.bin_dir());
     let bin_packages: Vec<(&Package, PathBuf)> = packages
@@ -1100,6 +1160,7 @@ fn regenerate_vendor_metadata(
         archive_dirs,
         plugins,
         &bin_packages,
+        root_fingerprint,
     )?;
     tracing::debug!(
         elapsed_ms = autoload_started.elapsed().as_millis(),
@@ -1233,6 +1294,9 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
         None,
         &plugins,
         false,
+        // No `Snapshot` here (#311 scopes it to `install`/`update`); `generate`
+        // derives the same identity from `base_dir` itself, same as before.
+        None,
     )?;
 
     out("Generated autoload files");
@@ -1332,6 +1396,7 @@ fn write_autoload(
     archive_dirs: Option<&HashMap<String, PathBuf>>,
     plugins: &plugins::Plugins,
     plugin_packages: &[(&Package, PathBuf)],
+    root_fingerprint: Option<&str>,
 ) -> Result<()> {
     let plugin_ctx = plugins::Ctx {
         root,
@@ -1423,6 +1488,7 @@ fn write_autoload(
         suffix,
         vendor_dir: vendor_dir.to_path_buf(),
         base_dir: project_dir.to_path_buf(),
+        root_fingerprint: root_fingerprint.map(String::from),
         platform_check: platform_body.is_some(),
         prepend_autoloader: root.config.prepend_autoloader,
         classmap_authoritative,
@@ -1994,7 +2060,50 @@ fn confirm_adopt() -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{prune_empty_ancestors, sweep_link_litter};
+    use sha2::{Digest, Sha256};
+
+    use super::{Snapshot, prune_empty_ancestors, sweep_link_litter};
+    use crate::store::hex;
+
+    /// #311: every field a cache reads off `Snapshot` must still be the
+    /// exact bytes the pre-`Snapshot` ad hoc computation produced — an
+    /// on-disk `PlatformCheckVerdict`/root-classmap sidecar written before
+    /// this refactor must still hit.
+    #[test]
+    fn snapshot_fields_match_the_ad_hoc_hashes_they_replaced() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let composer_json = br#"{"name": "acme/project"}"#;
+        let lock_bytes = br#"{"packages": [], "packages-dev": []}"#;
+        fs_err::write(project_dir.path().join("composer.json"), composer_json).unwrap();
+        fs_err::write(project_dir.path().join("composer.lock"), lock_bytes).unwrap();
+        let project_dir = fs_err::canonicalize(project_dir.path()).unwrap();
+
+        let snapshot = Snapshot::new(&project_dir, composer_json);
+
+        assert_eq!(
+            snapshot.composer_json_sha256,
+            hex(Sha256::digest(composer_json)),
+            "composer_json_sha256 must match a plain sha256 of the same bytes"
+        );
+        assert_eq!(
+            snapshot.root_fingerprint,
+            project_dir.display().to_string(),
+            "root_fingerprint must match the project dir string the old sidecar calls used"
+        );
+        assert_eq!(
+            snapshot.lock_sha256().unwrap(),
+            hex(Sha256::digest(lock_bytes)),
+            "lock_sha256 must match a plain sha256 of composer.lock's own bytes"
+        );
+
+        // Any real file stands in for a `php` binary: `cache_key` only stats it.
+        let php_path = project_dir.join("composer.json");
+        assert_eq!(
+            snapshot.php_probe_key(&php_path),
+            crate::solver::platform::cache_key(&php_path).as_deref(),
+            "php_probe_key must match solver::platform::cache_key's own result"
+        );
+    }
 
     /// #56/#37a: `vendor/<vendor>/` is pruned once its last package's dir is
     /// removed, whether that dir is a plain `vendor/<vendor>/<name>` or a

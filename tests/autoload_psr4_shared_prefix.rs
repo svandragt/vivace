@@ -99,6 +99,7 @@ fn shared_psr4_prefix_matches_composer_order() {
         suffix: root.config.autoloader_suffix.clone().unwrap(),
         vendor_dir: vendor_dir.clone(),
         base_dir: project.clone(),
+        root_fingerprint: None,
         platform_check: true,
         prepend_autoloader: root.config.prepend_autoloader,
         classmap_authoritative: false,
