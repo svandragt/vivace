@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::install::{self, InstallArgs};
 use crate::link::LinkMode;
@@ -102,6 +102,10 @@ pub struct RequireArgs {
     /// (this flag wins); `--offline` always wins over either.
     #[arg(long)]
     pub metadata_ttl: Option<u64>,
+    /// `type:url`, repeatable; appended to `repositories` (#315), e.g.
+    /// `--repository path:packages/*`.
+    #[arg(long = "repository", value_name = "TYPE:URL")]
+    pub repository: Vec<String>,
 }
 
 /// `viv rm` flags.
@@ -175,6 +179,11 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
     if !root.is_object() {
         bail!("composer.json must be a JSON object");
     }
+    append_repositories(
+        root.as_object_mut()
+            .context("composer.json must be a JSON object")?,
+        &args.repository,
+    )?;
 
     let link_type = if args.dev { "require-dev" } else { "require" };
     let remove_key = if args.dev { "require" } else { "require-dev" };
@@ -690,7 +699,12 @@ mod version_selector {
 /// [`Value`], edit the map, and let `normalize` reindent and resort
 /// (including the require/require-dev section itself, so there is no
 /// `sort-packages` handling to port either).
-fn add_link(root: &mut Value, link_type: &str, package: &str, constraint: &str) -> Result<()> {
+pub(crate) fn add_link(
+    root: &mut Value,
+    link_type: &str,
+    package: &str,
+    constraint: &str,
+) -> Result<()> {
     let obj = root
         .as_object_mut()
         .context("composer.json must be a JSON object")?;
@@ -707,6 +721,29 @@ fn add_link(root: &mut Value, link_type: &str, package: &str, constraint: &str) 
         links.remove(&existing_key);
     }
     links.insert(package.to_string(), Value::String(constraint.to_string()));
+    Ok(())
+}
+
+/// `--repository type:url` (#315, repeatable on `viv init`/`viv add`) and
+/// `workspace init`'s own per-pattern `path` entries: append one entry to
+/// `repositories`, creating the array if it isn't there yet. `spec` splits
+/// on the first `:` only, so a URL that has one of its own (`https://...`)
+/// still parses as `("composer", "https://...")`.
+pub(crate) fn append_repositories(root: &mut Map<String, Value>, specs: &[String]) -> Result<()> {
+    if specs.is_empty() {
+        return Ok(());
+    }
+    let repositories = root
+        .entry("repositories")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .context("\"repositories\" must be an array")?;
+    for spec in specs {
+        let (repo_type, url) = spec
+            .split_once(':')
+            .with_context(|| format!("--repository {spec:?} must be \"type:url\""))?;
+        repositories.push(json!({"type": repo_type, "url": url}));
+    }
     Ok(())
 }
 
@@ -841,6 +878,7 @@ mod tests {
             no_blocking: false,
             no_security_blocking: false,
             metadata_ttl: None,
+            repository: Vec::new(),
         };
         let err = run_require(&args, None, true).unwrap_err();
         assert!(err.to_string().contains("composer.json"), "{err:#}");

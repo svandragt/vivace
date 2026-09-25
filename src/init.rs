@@ -57,6 +57,10 @@ pub struct InitArgs {
     /// `vendor/package[:constraint]` for `require-dev`, repeatable.
     #[arg(long = "require-dev")]
     pub require_dev: Vec<String>,
+    /// `type:url`, repeatable; appended to `repositories` (#315), e.g.
+    /// `--repository path:packages/*`.
+    #[arg(long = "repository", value_name = "TYPE:URL")]
+    pub repository: Vec<String>,
     /// Write composer.json (and, with `--require`/`--require-dev`,
     /// composer.lock) but don't install.
     #[arg(long = "no-install")]
@@ -112,6 +116,7 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
         );
     }
     root.insert("config".to_string(), json!({"sort-packages": true}));
+    require::append_repositories(&mut root, &args.repository)?;
 
     let mut allow_list = Vec::new();
     for (key, specs) in [
@@ -235,8 +240,10 @@ fn autoload_entry(
 }
 
 /// `git config user.name`, falling back to `project_dir`'s directory name,
-/// both slugged: `<vendor>/<project>`.
-fn default_name(project_dir: &std::path::Path) -> String {
+/// both slugged: `<vendor>/<project>`. `pub(crate)`: `workspace.rs`'s own
+/// `viv workspace init` (#315) fills its aggregate root's `name` the same
+/// way.
+pub(crate) fn default_name(project_dir: &std::path::Path) -> String {
     let vendor = slug(&git_user_name().unwrap_or_else(os_user_name));
     let vendor = if vendor.is_empty() {
         "user".to_string()
@@ -319,6 +326,7 @@ pub(crate) fn write_defaults(
             autoload: None,
             require: Vec::new(),
             require_dev: Vec::new(),
+            repository: Vec::new(),
             no_install: false,
             force: false,
             project_dir: project_dir.to_path_buf(),
