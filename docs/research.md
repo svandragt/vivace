@@ -434,7 +434,7 @@ names its control and a measurement that costs days, not weeks, and
 none starts a build before that measurement is in. They are in the
 order worth running them.
 
-### Candidate A: an append-only ledger lock
+### Candidate A: an append-only ledger lock (measured, hold)
 
 **Question.** If the lock is written as an ordered ledger of record
 changes, one line per package change with the change that caused it,
@@ -459,6 +459,23 @@ driver did not. The chapter holds only if the second count is zero.
 
 **Build if it holds.** A ledger writer and fold in `viv lock convert`,
 then a decision on whether the driver stays for `composer.lock` only.
+
+**Result, 2026-09-25.** The chapter holds: silent fold is zero. Across
+381 merges (the 355-merge client corpus plus koel and pixelfed from the
+public corpus, `bench/lockmerge/run.py --ledger`, `bench/results/
+lockmerge.md`), no merge folded over a real conflict without refusing,
+and no merge where the fold succeeded disagreed with `viv lock merge`'s
+own result. 276 merges are identical between the two; 104 the fold
+refused, 90 of them a genuine real conflict (a package both sides
+changed to different results) and 14 a package both sides moved to the
+same version and source reference where one side's record carried a
+metadata field the other's did not, which the fold's full-record hash
+reads as a fork though the driver's identity check does not; one merge
+the fold resolved and the driver's re-solve did not, a malformed
+`composer.json` the fold never has to parse. Nothing is built from this:
+the measurement decides only whether chapter 1's driver stays the
+approach, and it does — a name-keyed record merge with a re-solve, not a
+line-oriented ledger fold with `merge=union`.
 
 ### Candidate B: install from a lock years later
 
