@@ -174,6 +174,7 @@ over a configured window.
 
 ```sh
 viv init                  # write a composer.json for a new project and stop
+viv init --repository path:packages/*   # append a repositories entry (repeatable, also on add)
 viv new demo               # same, in a directory that doesn't exist yet
 viv new laravel/laravel:^11 my-app   # download a package skeleton and install it
 viv install            # in a project with composer.json and composer.lock
@@ -193,6 +194,8 @@ viv cache prune
 viv diagnose              # environment/config report to paste into a bug report
 viv lock convert          # translate an existing composer.lock into viv.lock
 viv lock merge base ours theirs   # git merge driver for composer.lock/viv.lock
+viv workspace init packages/*   # write a top-level composer.json requiring every match, then resolve/install
+viv workspace add plugins/new-one   # add one more member to that file and resolve again
 viv workspace list        # list a workspace's members and their inter-requirements
 viv update --lock native  # resolves normally, also writes viv.lock beside composer.lock (implied once viv.lock exists)
 ```
@@ -203,6 +206,21 @@ unless you pass `--no-scripts`.[^10]
 `add`, `rm` and `init` also tidy up `composer.json` when they write it, so
 two branches that each add a dependency merge cleanly instead of fighting
 over ordering. `install` and `update` never touch `composer.json`.[^11]
+
+A repository with several `composer.json` files can share one resolve and
+one `vendor/` through a top-level root: `viv workspace init plugins/*
+themes/*` writes one `path` repository per pattern, one `require` line for
+every package a pattern matches, and `minimum-stability`/`prefer-stable`
+unless the file already sets them, then resolves and installs the same way
+`add` does (`--no-install` stops after writing the file and its lock). Run
+it with no patterns to print every `composer.json` under the current
+directory instead, grouped by the directory a pattern for it would target,
+without writing anything — copy the pattern you want into the real command.
+`viv workspace add plugins/new-one` appends one more member's `require` line
+to an existing root and resolves again. The file `init`/`add` write is
+ordinary Composer input, so `composer install` accepts it too. `viv
+workspace list` is a separate, read-only report: which of
+`extra.viv.workspace.members`' members require each other.
 
 `viv init` writes `composer.lock merge=viv` (and `viv.lock merge=viv` once
 the project has adopted that file) to `.gitattributes`; an existing project
@@ -382,7 +400,7 @@ Commands viv runs itself, with the same output as Composer:
   `update-lock`, `add` (`require`), `rm` (`remove`), `dump-autoload`,
   `normalize`.
 - Inspect: `show`, `tree`, `why`, `outdated`, `audit`, `validate`.
-- Maintain: `lock` (convert, merge), `workspace` (list).
+- Maintain: `lock` (convert, merge), `workspace` (list, init, add).
 - Run: `run`, `exec`, the lifecycle scripts, and the cache commands.
 - `diagnose` prints viv's own report, not Composer's.
 
