@@ -52,6 +52,7 @@ LOCKMERGE_CORPUS (corpus.toml path), LOCKMERGE_REPORT (output path), VIV
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -217,6 +218,220 @@ def real_conflict_names(base: dict, ours: dict, theirs: dict) -> set[str]:
 
 def real_conflicts(base: dict, ours: dict, theirs: dict) -> int:
     return len(real_conflict_names(base, ours, theirs))
+
+
+# --- ledger fold (#306) --------------------------------------------------
+# Candidate A (docs/research.md): the lock written as an ordered ledger of
+# package-record changes, `merge=union`'d and folded, compared against
+# `viv lock merge`'s own result on the same merge -- a measurement only, no
+# ledger writer or reader lands in viv from this.
+
+
+def ledger_key(section: str, name: str) -> str:
+    return f"{section}/{name}"
+
+
+def lock_records(raw: bytes) -> dict[str, dict] | None:
+    """key ("packages/<name>" or "packages-dev/<name>") -> the package's
+    full JSON object, the ledger's record unit. Top-level fields
+    (content-hash, plugin-api-version, ...) never become ledger lines --
+    content-hash is recomputed from composer.json, so carrying it would
+    fork every merge."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    records: dict[str, dict] = {}
+    for section in ("packages", "packages-dev"):
+        for pkg in data.get(section) or []:
+            name = pkg.get("name")
+            if not name:
+                continue
+            records[ledger_key(section, name)] = pkg
+    return records
+
+
+def canonical_record_text(pkg: dict) -> str:
+    return json.dumps(pkg, sort_keys=True, separators=(",", ":"))
+
+
+def record_hash(pkg: dict) -> str:
+    return hashlib.sha1(canonical_record_text(pkg).encode()).hexdigest()
+
+
+def base_ledger_lines(records: dict[str, dict]) -> list[str]:
+    """Genesis line per package, sorted by key. No cause token (`-`):
+    nothing appended it, it's the shared start both parent ledgers embed
+    verbatim, so it must come out byte-identical on both sides."""
+    return [
+        f"set {key} - {record_hash(records[key])} - {canonical_record_text(records[key])}"
+        for key in sorted(records)
+    ]
+
+
+def parent_ledger_lines(
+    base_records: dict[str, dict], side_records: dict[str, dict], cause: str
+) -> list[str]:
+    """The base ledger unchanged, plus one appended line per package that
+    differs from base: `set` with the new record, or `del`. `prev` chains
+    to the base record's own hash (`-` for a package base never had).
+    `cause` (the parent commit's short sha) makes two sides' lines differ
+    textually even when the change agrees byte-for-byte, so `merge=union`
+    can't collapse an agreement into a single line before the fold ever
+    gets to reason about it."""
+    lines = base_ledger_lines(base_records)
+    base_hash = {key: record_hash(pkg) for key, pkg in base_records.items()}
+    for key in sorted(set(base_records) | set(side_records)):
+        base_pkg, side_pkg = base_records.get(key), side_records.get(key)
+        if base_pkg is not None and side_pkg is not None and base_hash[key] == record_hash(side_pkg):
+            continue  # unchanged from base on this side
+        prev = base_hash.get(key, "-")
+        if side_pkg is None:
+            lines.append(f"del {key} {prev} - {cause} -")
+        else:
+            lines.append(f"set {key} {prev} {record_hash(side_pkg)} {cause} {canonical_record_text(side_pkg)}")
+    return lines
+
+
+@dataclass
+class LedgerLine:
+    op: str
+    key: str
+    prev: str
+    result_hash: str
+    cause: str
+    payload: str
+
+
+def parse_ledger_line(raw: str) -> LedgerLine | None:
+    """Fields are fixed-width up to `cause`; `payload` (JSON, may itself
+    contain spaces) is everything after, which is why it's last and the
+    split is bounded."""
+    parts = raw.split(" ", 5)
+    if len(parts) != 6 or parts[0] not in ("set", "del"):
+        return None
+    op, key, prev, result_hash, cause, payload = parts
+    return LedgerLine(op, key, prev, result_hash, cause, payload)
+
+
+def fold_ledger(lines: list[str]) -> tuple[dict[str, dict] | None, str | None]:
+    """Replays a unioned ledger's lines and returns (records, None) --
+    key -> final package dict, a deleted key simply absent -- or
+    (None, reason) when the fold refuses. Per key, lines chain by `prev`:
+    two lines with the same `prev` and the same result (op, hash) are the
+    same change seen twice (agreement, apply once); the same `prev` with
+    different results is a fork; a line whose `prev` doesn't match the
+    key's current head (the genesis hash, or `-` when there is none) also
+    refuses. Grouping by key rather than replaying line order makes the
+    fold order-independent, as required."""
+    parsed: list[LedgerLine] = []
+    for raw in lines:
+        if not raw.strip():
+            continue
+        pl = parse_ledger_line(raw)
+        if pl is None:
+            return None, f"unparseable ledger line: {raw!r}"
+        parsed.append(pl)
+
+    by_key: dict[str, list[LedgerLine]] = {}
+    for pl in parsed:
+        by_key.setdefault(pl.key, []).append(pl)
+
+    result: dict[str, dict] = {}
+    for key, entries in by_key.items():
+        genesis = [e for e in entries if e.cause == "-"]
+        appended = [e for e in entries if e.cause != "-"]
+        if len(genesis) > 1:
+            return None, f"{key}: duplicate genesis line"
+        head_hash = genesis[0].result_hash if genesis else "-"
+
+        for e in appended:
+            if e.prev != head_hash:
+                return None, f"{key}: prev {e.prev!r} does not match head {head_hash!r}"
+
+        if not appended:
+            if genesis:
+                result[key] = json.loads(genesis[0].payload)
+            continue
+
+        signatures = {(e.op, e.result_hash) for e in appended}
+        if len(signatures) > 1:
+            return None, f"{key}: fork ({len(appended)} divergent results for the same prev)"
+
+        winner = appended[0]
+        if winner.op != "del":
+            result[key] = json.loads(winner.payload)
+
+    return result, None
+
+
+def record_identity(pkg: dict) -> tuple[str | None, str | None]:
+    return pkg.get("version"), (pkg.get("source") or {}).get("reference")
+
+
+def keyed_identity(records: dict[str, dict]) -> dict[str, tuple[str | None, str | None]]:
+    return {key: record_identity(pkg) for key, pkg in records.items()}
+
+
+def union_merge_ledger(
+    work: Path, ours_lines: list[str], base_lines: list[str], theirs_lines: list[str]
+) -> tuple[str | None, str | None]:
+    """`git merge-file --union` of the three ledgers, in `work` -- pure
+    appends on top of an identical shared prefix, so union has nothing to
+    pick a side on; this only concatenates the two sides' own appended
+    lines onto the shared base."""
+    paths = {}
+    for label, content_lines in (("ours", ours_lines), ("base", base_lines), ("theirs", theirs_lines)):
+        p = work / f"ledger-{label}"
+        p.write_text("\n".join(content_lines) + ("\n" if content_lines else ""))
+        paths[label] = p
+    result = subprocess.run(
+        ["git", "merge-file", "--union", "-p", str(paths["ours"]), str(paths["base"]), str(paths["theirs"])],
+        capture_output=True,
+    )
+    if result.returncode < 0:
+        return None, f"git merge-file --union crashed (signal {-result.returncode})"
+    return result.stdout.decode(), None
+
+
+def classify_ledger(
+    work: Path,
+    base_records: dict[str, dict],
+    ours_records: dict[str, dict],
+    theirs_records: dict[str, dict],
+    ours_cause: str,
+    theirs_cause: str,
+    real_names: set[str],
+    driver_conflicted: bool,
+    driver_lock: bytes | None,
+) -> tuple[str, str | None]:
+    """Compares the ledger fold against `viv lock merge`'s own result on
+    the same merge. `driver_conflicted` must already be a known bool (the
+    caller excludes a crashed driver run before calling this -- it isn't a
+    control). Returns (category, detail); category is one of "identical",
+    "silent_fold" (the chapter-breaking outcome -- either a real conflict
+    folded without refusal, or the fold's result disagrees with the
+    driver's), "fold_refused_driver_ok", "both_refused",
+    "fold_ok_driver_refused"."""
+    ours_lines = parent_ledger_lines(base_records, ours_records, ours_cause)
+    theirs_lines = parent_ledger_lines(base_records, theirs_records, theirs_cause)
+    base_lines = base_ledger_lines(base_records)
+    union_text, err = union_merge_ledger(work, ours_lines, base_lines, theirs_lines)
+    fold_records, fold_err = (None, err) if err else fold_ledger(union_text.splitlines())
+
+    if fold_records is None:
+        return ("both_refused" if driver_conflicted else "fold_refused_driver_ok"), fold_err
+
+    if real_names:
+        return "silent_fold", f"real conflict(s) folded without refusal ({len(real_names)} package(s))"
+
+    if driver_conflicted:
+        return "fold_ok_driver_refused", None
+
+    driver_records = lock_records(driver_lock) if driver_lock is not None else None
+    if driver_records is None or keyed_identity(fold_records) != keyed_identity(driver_records):
+        return "silent_fold", "fold result differs from the driver's merged lock"
+    return "identical", None
 
 
 # --- resolution archaeology (#273 addendum) -----------------------------
@@ -592,7 +807,7 @@ def declare_contemporaneous_platform(composer_json: bytes, ours_lock: bytes, the
 def driver_conflict(
     viv_bin: str, work: Path, cache_dir: Path, repo_dir: Path, sha: str,
     composer_json: bytes | None, base: bytes, ours: bytes, theirs: bytes,
-) -> tuple[bool | None, str | None, int | None, int]:
+) -> tuple[bool | None, str | None, int | None, int, bytes | None]:
     """`viv lock merge` on the composer.lock trio, run from a directory
     holding the merge commit's own composer.json with its platform
     declared contemporaneous (`declare_contemporaneous_platform`) and
@@ -621,14 +836,18 @@ def driver_conflict(
     produced -- a byte comparison against the merge commit's own
     composer.lock would be comparing apples to a platform, and now a
     registry state, that was never real.
-    Returns (None, error, None, 0) on anything else (a crash, or
+    Returns (None, error, None, 0, None) on anything else (a crash, or
     composer.json missing at that revision). The third and fourth values
     are `parse_resolution`'s own (#296): the rung a successful resolve
     reached, and how many packages it named as moved outside the divergent
     set -- both `None`/0 on a conflict or a crash, since neither prints
-    that pair."""
+    that pair. The fifth is the merged `composer.lock` bytes on a clean
+    (exit 0) run, read back off `ours` -- `merge_composer_lock` writes its
+    result there unconditionally (#306: the ledger fold's own control
+    needs the driver's actual merged content, not just whether it
+    conflicted)."""
     if composer_json is None:
-        return None, "composer.json missing at the merge commit", None, 0
+        return None, "composer.json missing at the merge commit", None, 0, None
     composer_json = declare_contemporaneous_platform(composer_json, ours, theirs)
     tmpdir = work / "driver-src"
     tmpdir.mkdir(exist_ok=True)
@@ -648,13 +867,13 @@ def driver_conflict(
     result = subprocess.run(command, capture_output=True)
     if result.returncode not in (0, 1):
         stderr = result.stderr.decode(errors="replace").strip()
-        return None, (summarize_resolve_failure(stderr) if stderr else f"viv lock merge crashed ({result.returncode})"), None, 0
+        return None, (summarize_resolve_failure(stderr) if stderr else f"viv lock merge crashed ({result.returncode})"), None, 0, None
     if result.returncode == 1:
         stderr = result.stderr.decode(errors="replace").strip()
-        return True, (summarize_resolve_failure(stderr) if stderr else None), None, 0
+        return True, (summarize_resolve_failure(stderr) if stderr else None), None, 0, None
     stderr = result.stderr.decode(errors="replace").strip()
     rung, moved = parse_resolution(stderr)
-    return False, None, rung, moved
+    return False, None, rung, moved, paths["ours"].read_bytes()
 
 
 def native_lock_text(viv_bin: str, work: Path, composer_json: bytes | None, composer_lock: bytes) -> tuple[bytes | None, str | None]:
@@ -687,6 +906,7 @@ class MergeOutcome:
     driver_error: str | None = None
     driver_rung: int | None = None
     driver_moved: int = 0
+    ledger_category: str | None = None  # #306, only set with --ledger
 
 
 @dataclass
@@ -717,7 +937,7 @@ def clone_or_reuse(cache_root: Path, project: Project) -> Path:
 
 def run_repo(
     project: Project, cache_root: Path, cap: int, viv_bin: str, native_available: bool,
-    driver_available: bool,
+    driver_available: bool, ledger: bool = False,
 ) -> RepoReport:
     report = RepoReport(project=project)
     repo_dir = clone_or_reuse(cache_root, project)
@@ -789,9 +1009,10 @@ def run_repo(
             driver_err: str | None = None
             driver_rung: int | None = None
             driver_moved = 0
+            driver_lock: bytes | None = None
             if driver_available:
                 merge_json = blob(repo_dir, m.sha, "composer.json")
-                driver_conflicted, driver_err, driver_rung, driver_moved = driver_conflict(
+                driver_conflicted, driver_err, driver_rung, driver_moved, driver_lock = driver_conflict(
                     viv_bin, work, driver_cache, repo_dir, m.sha,
                     merge_json, base_lock, ours_lock, theirs_lock,
                 )
@@ -800,9 +1021,18 @@ def run_repo(
                         f"{m.sha[:12]}: viv lock merge re-solve did not finish: {driver_err}"
                     )
 
+            ledger_category: str | None = None
+            if ledger and driver_conflicted is not None:
+                ledger_category, ledger_detail = classify_ledger(
+                    work, lock_records(base_lock), lock_records(ours_lock), lock_records(theirs_lock),
+                    m.ours[:12], m.theirs[:12], real_names, driver_conflicted, driver_lock,
+                )
+                if ledger_category == "silent_fold":
+                    report.footnotes.append(f"{m.sha[:12]}: ledger silent fold: {ledger_detail}")
+
             report.merges.append(MergeOutcome(
                 m.sha, composer_conflicts, native_conflicts, native_error, real,
-                driver_conflicted, driver_err, driver_rung, driver_moved,
+                driver_conflicted, driver_err, driver_rung, driver_moved, ledger_category,
             ))
 
     return report
@@ -877,9 +1107,37 @@ def render_archaeology(items: list[ArchOutcome]) -> list[str]:
     return lines
 
 
+def render_ledger(merges: list[MergeOutcome]) -> list[str]:
+    """#306: the ledger fold's outcome against `viv lock merge`'s own
+    result on the same merge, for merges where both are known (a crashed
+    driver run isn't a control and is excluded already at collection
+    time, so this table's total can be smaller than "Merges examined")."""
+    counted = [m for m in merges if m.ledger_category is not None]
+    lines = ["### Ledger lock fold (#306)", ""]
+    if not counted:
+        lines.append("No merge had both a ledger fold and a driver result to compare.")
+        lines.append("")
+        return lines
+    categories = ["identical", "silent_fold", "fold_refused_driver_ok", "both_refused", "fold_ok_driver_refused"]
+    counts = {c: sum(1 for m in counted if m.ledger_category == c) for c in categories}
+    lines.append(
+        "| Merges examined | Identical | Silent fold | Fold refused, driver succeeded | "
+        "Both refused | Fold succeeded, driver refused |"
+    )
+    lines.append("|---|---|---|---|---|---|")
+    lines.append(
+        f"| {len(counted)} | {counts['identical']} | {counts['silent_fold']} | "
+        f"{counts['fold_refused_driver_ok']} | {counts['both_refused']} | "
+        f"{counts['fold_ok_driver_refused']} |"
+    )
+    lines.append("")
+    return lines
+
+
 def render(
     reports: list[RepoReport], cap: int, viv_bin: str, viv_version: str,
     native_available: bool, viv_commit: str | None, driver_available: bool,
+    ledger: bool = False,
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     commit_note = f", commit `{viv_commit}`" if viv_commit else ""
@@ -993,6 +1251,8 @@ def render(
             lines.append("")
 
         lines.extend(render_archaeology(r.archaeology))
+        if ledger:
+            lines.extend(render_ledger(r.merges))
 
     lines.append("### Totals")
     lines.append("")
@@ -1020,6 +1280,9 @@ def render(
 
     all_archaeology = [a for r in reports for a in r.archaeology]
     lines.extend(render_archaeology(all_archaeology))
+    if ledger:
+        all_merges = [m for r in reports for m in r.merges]
+        lines.extend(render_ledger(all_merges))
     return "\n".join(lines)
 
 
@@ -1040,9 +1303,12 @@ Corpus and the range actually swept: `bench/lockmerge/corpus.toml`. Harness:
 
 
 def main() -> int:
-    only = sys.argv[1].split(",") if len(sys.argv) > 1 and sys.argv[1] != "--self-test" else []
-    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+    argv = sys.argv[1:]
+    ledger = "--ledger" in argv  # #306: adds the ledger-fold-vs-driver counts to the report
+    argv = [a for a in argv if a != "--ledger"]
+    if argv and argv[0] == "--self-test":
         return self_test()
+    only = argv[0].split(",") if argv else []
 
     corpus_path = Path(os.environ.get("LOCKMERGE_CORPUS", ROOT / "bench/lockmerge/corpus.toml"))
     report_path = Path(os.environ.get("LOCKMERGE_REPORT", ROOT / "bench/results/lockmerge.md"))
@@ -1070,14 +1336,14 @@ def main() -> int:
     reports = []
     for project in projects:
         log(f"{project.name}: starting")
-        r = run_repo(project, cache_root, cap, viv_bin, native_available, driver_available)
+        r = run_repo(project, cache_root, cap, viv_bin, native_available, driver_available, ledger)
         reports.append(r)
         if r.skipped_reason:
             update_corpus_note(corpus_path, project.name, f'skip = "{r.skipped_reason}"')
         else:
             update_corpus_note(corpus_path, project.name, f'examined = "{r.range_note}"')
 
-    section = render(reports, cap, viv_bin, viv_version, native_available, viv_commit, driver_available)
+    section = render(reports, cap, viv_bin, viv_version, native_available, viv_commit, driver_available, ledger)
     if not report_path.exists():
         report_path.write_text(HEADER)
     with open(report_path, "a") as f:
@@ -1241,6 +1507,69 @@ def self_test() -> int:
         )
         assert (rung, moved) == (2, 1), f"expected rung 2 with 1 moved package, got {(rung, moved)}"
         assert parse_resolution("") == (None, 0), "no stderr means no rung to report"
+
+    # #306: ledger fold unit cases -- disjoint changes, agreement, a real
+    # fork, and delete-vs-update, plus order-independence and an
+    # unparseable line, all without a repo or a viv binary.
+    with tempfile.TemporaryDirectory(prefix="lockmerge-ledger-selftest-") as tmp:
+        work = Path(tmp)
+        pkg_a = {"name": "a/a", "version": "1.0.0", "source": {"reference": "aaa"}}
+        pkg_b = {"name": "b/b", "version": "1.0.0", "source": {"reference": "bbb"}}
+        base_records = {"packages/a": pkg_a, "packages/b": pkg_b}
+        base_lines = base_ledger_lines(base_records)
+
+        def bump(pkg: dict, version: str, reference: str) -> dict:
+            return {**pkg, "version": version, "source": {"reference": reference}}
+
+        # disjoint changes -> identical: each side's own change applies, no fork.
+        ours = {"packages/a": bump(pkg_a, "1.1.0", "aa1"), "packages/b": pkg_b}
+        theirs = {"packages/a": pkg_a, "packages/b": bump(pkg_b, "2.0.0", "bb2")}
+        ours_lines = parent_ledger_lines(base_records, ours, "c0ffee1")
+        theirs_lines = parent_ledger_lines(base_records, theirs, "c0ffee2")
+        union_text, err = union_merge_ledger(work, ours_lines, base_lines, theirs_lines)
+        assert err is None, err
+        folded, fold_err = fold_ledger(union_text.splitlines())
+        assert fold_err is None, fold_err
+        assert folded["packages/a"]["version"] == "1.1.0"
+        assert folded["packages/b"]["version"] == "2.0.0"
+        shuffled, shuffled_err = fold_ledger(list(reversed(union_text.splitlines())))
+        assert shuffled_err is None and shuffled == folded, "fold must not depend on line order"
+
+        # same package, same change, both sides -> agreement, not a fork.
+        agree = {"packages/a": bump(pkg_a, "1.1.0", "aa1"), "packages/b": pkg_b}
+        ours_lines = parent_ledger_lines(base_records, agree, "c0ffee1")
+        theirs_lines = parent_ledger_lines(base_records, agree, "c0ffee2")
+        union_text, err = union_merge_ledger(work, ours_lines, base_lines, theirs_lines)
+        assert err is None, err
+        assert len(union_text.splitlines()) == len(base_lines) + 2, (
+            "the cause token must keep the two sides' identical change on two distinct lines"
+        )
+        folded, fold_err = fold_ledger(union_text.splitlines())
+        assert fold_err is None and folded["packages/a"]["version"] == "1.1.0"
+
+        # same package, different change, both sides -> fork, fold refuses.
+        ours = {"packages/a": bump(pkg_a, "1.1.0", "aa1"), "packages/b": pkg_b}
+        theirs = {"packages/a": bump(pkg_a, "1.2.0", "aa2"), "packages/b": pkg_b}
+        ours_lines = parent_ledger_lines(base_records, ours, "c0ffee1")
+        theirs_lines = parent_ledger_lines(base_records, theirs, "c0ffee2")
+        union_text, err = union_merge_ledger(work, ours_lines, base_lines, theirs_lines)
+        assert err is None, err
+        folded, fold_err = fold_ledger(union_text.splitlines())
+        assert folded is None and fold_err is not None, "a genuine fork must refuse"
+
+        # one side deletes, the other updates the same package -> refuse.
+        ours = {"packages/b": pkg_b}  # a/a deleted
+        theirs = {"packages/a": bump(pkg_a, "1.1.0", "aa1"), "packages/b": pkg_b}
+        ours_lines = parent_ledger_lines(base_records, ours, "c0ffee1")
+        theirs_lines = parent_ledger_lines(base_records, theirs, "c0ffee2")
+        union_text, err = union_merge_ledger(work, ours_lines, base_lines, theirs_lines)
+        assert err is None, err
+        folded, fold_err = fold_ledger(union_text.splitlines())
+        assert folded is None and fold_err is not None, "delete-vs-update must refuse"
+
+        # unparseable text (union having mangled a line) refuses too.
+        folded, fold_err = fold_ledger(["not a ledger line"])
+        assert folded is None and fold_err is not None, "an unparseable line must refuse"
 
     print("lockmerge: self-test OK")
     return 0

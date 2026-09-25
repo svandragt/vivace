@@ -1072,3 +1072,38 @@ Leaf cause of the 51 the driver still cannot finish:
 None of the 51 is a constraint chain or the harness's platform heuristic
 any more: the deeper rungs push those to a `dev-*` or missing-package
 leaf, which no replay can reproduce.
+
+## Ledger lock, candidate A (#306), 2026-09-25
+
+Candidate A (`docs/research.md`): the lock written as an ordered ledger of
+package-record changes, `git merge-file --union`'d and folded, compared
+against `viv lock merge`'s own result on the same merge
+(`bench/lockmerge/run.py --ledger`). Same 355 client merges as above, plus
+the public corpus (koel, pixelfed; flarum has no committed lock, monica
+has no qualifying merge). viv `0.16.0`, commit `59366290e69106c8fccf7514d83a990d662e65b3`.
+
+| Corpus | Merges examined | Identical | Silent fold | Fold refused, driver succeeded | Both refused | Fold succeeded, driver refused |
+|---|---|---|---|---|---|---|
+| Client (anonymised, four projects) | 355 | 254 | 0 | 49 | 51 | 1 |
+| Public | 26 | 22 | 0 | 4 | 0 | 0 |
+| **Total** | **381** | **276** | **0** | **53** | **51** | **1** |
+
+Silent fold is zero: no merge where the fold succeeded despite a real
+conflict (a package both sides changed to different results), and no
+merge where the fold's successful result disagreed with the driver's.
+
+The 104 merges where the fold refused (53 "fold refused, driver
+succeeded" plus 51 "both refused") split cleanly into two kinds. 90 are
+genuine real conflicts, a package both sides changed to different
+results -- the fold refusing every one of these, with no exception, is
+the silent-fold count above being zero. The other 14 (one in the public
+corpus, thirteen in the client corpus) are not real conflicts at all:
+both sides moved a package to the identical version and source
+reference, but one side's lock entry carried a metadata field the
+other's did not (`notification-url`, confirmed by hand on one client
+case) -- the fold's full-record hash reads that as a fork and refuses,
+where the driver's version/reference/dev identity check does not. The
+single "fold succeeded, driver refused" merge is the malformed-
+`composer.json` case already named in the leaf-cause table above: the
+fold never reads `composer.json`, so a manifest parse error that blocks
+the driver's re-solve doesn't block it.
