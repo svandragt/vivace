@@ -414,6 +414,16 @@ not planned; `viv workspace list` (#276) stays as the discovery tool.
 #278. Side results: #304 and #305 fixed, both compat gaps on real
 published `composer.json` files.
 
+**What the chapter produced instead.** The measurement never scored
+experience, and the aggregate root has one cost the numbers do not
+show: someone writes the root `composer.json` with its `path`
+repositories and one `require` per member, and keeps it in step. #315
+(`viv workspace init` writes the aggregate root from member globs)
+takes chapter 3's discovery code and turns it into that command, with
+a proposing dry run instead of autodiscovery that writes. The file it
+produces is plain Composer, so the compat contract holds and the
+chapter's control becomes the thing viv sets up.
+
 ## Candidate chapters
 
 Three chapters in, the pattern is clear. Chapter 1 held because it
