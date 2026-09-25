@@ -95,6 +95,7 @@ fn check(dev_mode: bool, expected_dir: &str) {
         suffix: root.config.autoloader_suffix.clone().unwrap(),
         vendor_dir: vendor_dir.clone(),
         base_dir: project.clone(),
+        root_fingerprint: None,
         platform_check: true,
         prepend_autoloader: root.config.prepend_autoloader,
         classmap_authoritative: false,

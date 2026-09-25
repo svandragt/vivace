@@ -75,6 +75,13 @@ pub struct Input {
     pub vendor_dir: PathBuf,
     /// The project directory (`composer.json`'s), Composer's `$basePath`.
     pub base_dir: PathBuf,
+    /// #311: `base_dir`'s identity as `install::Snapshot::root_fingerprint`
+    /// already computed it, reused for the root classmap cache's sidecar
+    /// path (#269, `root_classmap_sidecar`) instead of canonicalizing
+    /// `base_dir` a second time here. `None` for every caller without a
+    /// `Snapshot` (`dump_autoload`, every test in this module) — `generate`
+    /// falls back to deriving it from `base_dir` itself, unchanged.
+    pub root_fingerprint: Option<String>,
     /// Whether `platform_check.php` is written, so `autoload_real.php` requires it.
     pub platform_check: bool,
     pub prepend_autoloader: bool,
@@ -247,8 +254,12 @@ pub fn generate(input: &Input) -> Result<Generated> {
         vendor: &vendor,
         excluded: &autoloads.exclude,
         archives: ArchiveIndex::build(&input.packages),
-        root_sidecar: cache_root(&input.packages)
-            .map(|root| crate::store::root_classmap_sidecar(&root, &base)),
+        root_sidecar: cache_root(&input.packages).map(|root| {
+            crate::store::root_classmap_sidecar(
+                &root,
+                input.root_fingerprint.as_deref().unwrap_or(&base),
+            )
+        }),
         map: BTreeMap::new(),
         scanned: HashSet::new(),
         warnings: Vec::new(),
@@ -2533,6 +2544,7 @@ mod tests {
                 suffix: "abc123".into(),
                 vendor_dir: vendor_dir.to_path_buf(),
                 base_dir: dir.path().to_path_buf(),
+                root_fingerprint: None,
                 platform_check: false,
                 prepend_autoloader: true,
                 classmap_authoritative: false,
