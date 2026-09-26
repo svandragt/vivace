@@ -1480,3 +1480,22 @@ Composer itself failed to resolve or a platform requirement wasn't met
 0.17.0 ships `viv workspace init`/`viv workspace add` and `--repository`
 on `init`/`add` (#315), the one-`Snapshot`-per-run cache key (#311), and
 the three candidate write-ups above.
+
+## 2026-09-26, afternoon: candidate B, offline pin
+
+**Candidate B (#307).** viv installed all 40 old locks in the corpus,
+dated 2015 to 2025, from empty caches; Composer installed 39. No dist was
+gone and no hash was wrong, so a lock carrying tree hashes would have
+saved nothing. The first grouping was wrong: `git log -1 --before=<date>
+-- composer.lock` returns the last commit that touched the lock, so a
+project that stopped committing its lock filed a 2015 lock under "one
+year". The old locks reached code the pinned corpus never does and turned
+up three compatibility bugs: #317, #318, #319.
+
+**Offline pin (#314).** `viv lock merge --offline-rung` keeps one parent's
+pin when the two locks' own data says it fits. Run before the registry
+re-solve, it disagreed with the registry in 23 of 34 merges; run after
+the re-solve fails, it cannot disagree, and it still finishes 37 of the
+52 client merges that ended in conflict markers. It stays off by default.
+The replay harness drops a crashed merge from every count without a
+note; filed separately.
