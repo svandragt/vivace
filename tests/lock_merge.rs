@@ -18,9 +18,9 @@ use std::time::Duration;
 #[macro_use]
 mod common;
 
-use common::{FixtureTransport, TestContext, fixtures_root};
+use common::{FixtureTransport, PanicTransport, TestContext, fixtures_root};
 use serde_json::{Value, json};
-use vivace::lock_merge::{Entry, Identity, Moved, Scope, escalate_resolve};
+use vivace::lock_merge::{Entry, Identity, Moved, Scope, escalate_resolve, try_offline_rung};
 use vivace::repository::Repository;
 
 fn fixtures() -> PathBuf {
@@ -546,6 +546,221 @@ async fn rung_3_moves_a_two_hop_dependent_and_leaves_an_unrelated_package_pinned
     assert_eq!(
         untouched.pretty_version, "1.0.0",
         "preferred must keep an unrelated package at its locked version, not update it to 1.5.0"
+    );
+}
+
+// --- rung 0, --offline-rung (#314) --------------------------------------
+
+/// A `Repository` over [`PanicTransport`], with every source disabled
+/// (`lock_merge::try_offline_resolve_composer_lock`'s own
+/// `neutered_repositories`, reproduced here rather than exposed, so this
+/// test proves the guarantee independently of that helper): zero sources
+/// means the pool-building walk below has nothing to fetch from even
+/// before `PanicTransport` would refuse it, and a panic here would mean
+/// the repository-construction step itself changed, not the function
+/// under test.
+async fn offline_repo(root: &Value, cache: &Path) -> Repository<&'static PanicTransport> {
+    let mut neutered = root.clone();
+    neutered["repositories"] = json!([{"packagist.org": false}]);
+    Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &neutered,
+        cache,
+        &PanicTransport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap()
+}
+
+/// (a): `d/dep` is the one divergent name, ours pinned 1.0.0, theirs 2.0.0.
+/// Root wants `^1.0 || ^2.0` (either satisfies) and nothing else pins a
+/// `require` against it, so `ours` — tried first — already satisfies
+/// everything the two locks record. Rung 0 must accept it without ever
+/// calling `PanicTransport::get`.
+#[tokio::test]
+async fn offline_rung_accepts_ours_pin_when_it_already_satisfies_everything() {
+    let root = json!({"require": {"d/dep": "^1.0 || ^2.0"}});
+    let cache = tempfile::tempdir().unwrap();
+    let repo = offline_repo(&root, cache.path()).await;
+
+    let merged = BTreeMap::new();
+    let mut divergent = BTreeSet::new();
+    divergent.insert("d/dep".to_string());
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "1.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+
+    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs)
+        .await
+        .expect("ours' pin satisfies the merged set; rung 0 must accept it");
+    let d_dep = result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "d/dep")
+        .expect("d/dep must be in the result");
+    assert_eq!(d_dep.pretty_version, "1.0.0", "ours is tried first");
+}
+
+/// (b): `e/dependent` (non-divergent, pinned both sides) locks its own
+/// `require` to `d/dep ^2.0`. Ours' pin (1.0.0) violates that sibling's
+/// require, so the all-`ours` attempt fails; theirs' pin (2.0.0) satisfies
+/// it, so the all-`theirs` attempt must be the one rung 0 accepts.
+#[tokio::test]
+async fn offline_rung_falls_back_to_theirs_when_ours_violates_a_siblings_require() {
+    let root = json!({"require": {"d/dep": "^1.0 || ^2.0", "e/dependent": "^1.0"}});
+    let cache = tempfile::tempdir().unwrap();
+    let repo = offline_repo(&root, cache.path()).await;
+
+    let e_dependent = pinned(
+        "e/dependent",
+        "1.0.0",
+        &json!({"php": ">=7.4.0", "d/dep": "^2.0"}),
+    );
+    let mut merged = BTreeMap::new();
+    merged.insert("e/dependent".to_string(), e_dependent);
+
+    let mut divergent = BTreeSet::new();
+    divergent.insert("d/dep".to_string());
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "1.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+
+    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs)
+        .await
+        .expect("theirs' pin satisfies e/dependent's own require; rung 0 must accept it");
+    let d_dep = result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "d/dep")
+        .expect("d/dep must be in the result");
+    assert_eq!(d_dep.pretty_version, "2.0.0", "theirs, since ours failed");
+}
+
+/// (c): `e/dependent` pins `d/dep` to exactly `2.5.0`; neither ours' 1.0.0
+/// nor theirs' 3.0.0 satisfies that sibling's own require, so both
+/// attempts fail and rung 0 must fall through (`None`) with no fetch.
+#[tokio::test]
+async fn offline_rung_falls_through_when_neither_pin_satisfies_a_siblings_require() {
+    let root = json!({"require": {"d/dep": "^1.0 || ^2.0 || ^3.0", "e/dependent": "^1.0"}});
+    let cache = tempfile::tempdir().unwrap();
+    let repo = offline_repo(&root, cache.path()).await;
+
+    let e_dependent = pinned(
+        "e/dependent",
+        "1.0.0",
+        &json!({"php": ">=7.4.0", "d/dep": "2.5.0"}),
+    );
+    let mut merged = BTreeMap::new();
+    merged.insert("e/dependent".to_string(), e_dependent);
+
+    let mut divergent = BTreeSet::new();
+    divergent.insert("d/dep".to_string());
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "1.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "3.0.0", &json!({"php": ">=7.4.0"})),
+    );
+
+    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs).await;
+    assert!(
+        result.is_none(),
+        "neither pin satisfies e/dependent's own require; rung 0 must fall through"
+    );
+}
+
+/// (d): the merged root's own `require` (`^4.0`) excludes both ours'
+/// 1.0.0 and theirs' 2.0.0 outright, with no sibling involved at all.
+/// Rung 0 must fall through with no fetch, same as (c) but from the root
+/// requirement rather than a locked package's own.
+#[tokio::test]
+async fn offline_rung_falls_through_when_the_root_requirement_excludes_both_pins() {
+    let root = json!({"require": {"d/dep": "^4.0"}});
+    let cache = tempfile::tempdir().unwrap();
+    let repo = offline_repo(&root, cache.path()).await;
+
+    let merged = BTreeMap::new();
+    let mut divergent = BTreeSet::new();
+    divergent.insert("d/dep".to_string());
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "1.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+
+    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs).await;
+    assert!(
+        result.is_none(),
+        "the root's own requirement excludes both pins; rung 0 must fall through"
+    );
+}
+
+/// The CLI wiring end to end: `psr/log` diverges (ours 3.0.99, theirs
+/// 3.0.50), root wants `^3.0`, and `monolog/monolog`'s own locked
+/// `require` (`^2.0 || ^3.0`) accepts either — so `ours`, tried first,
+/// already satisfies everything the two locks record, and `--offline-rung`
+/// must accept it without building a real `HttpTransport` at all (the CLI
+/// process has no network access in this test environment; a rung-1
+/// escalation attempt here would hang or fail, not silently pass).
+#[test]
+fn offline_rung_resolves_the_cli_fixture_with_no_network_transport_built() {
+    let ctx = TestContext::new();
+    let dir = ctx.project.path();
+    for name in ["composer.json", "base.lock", "ours.lock", "theirs.lock"] {
+        fs::copy(fixtures().join(name), dir.join(name)).unwrap();
+    }
+
+    let output = ctx
+        .viv()
+        .args(["lock", "merge"])
+        .arg(dir.join("base.lock"))
+        .arg(dir.join("ours.lock"))
+        .arg(dir.join("theirs.lock"))
+        .arg("-d")
+        .arg(dir)
+        .arg("--offline-rung")
+        .output()
+        .expect("failed to run viv");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("resolved via rung 0 (offline): psr/log"),
+        "stderr: {stderr}"
+    );
+    let got = fs::read_to_string(dir.join("ours.lock")).unwrap();
+    assert!(!got.contains("<<<<<<<"));
+    assert!(
+        got.contains("\"version\": \"3.0.99\""),
+        "ours' pin, tried first, already satisfies everything"
     );
 }
 

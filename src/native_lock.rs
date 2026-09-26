@@ -90,6 +90,15 @@ pub enum LockCommand {
         /// non-divergent locked version but pins none of them hard.
         #[arg(long, value_enum, default_value = "seeded")]
         max_scope: crate::lock_merge::Scope,
+        /// Try rung 0 first (#314): for a `composer.lock` merge, one
+        /// parent's own pinned record per divergent name (`ours` first,
+        /// then `theirs`), checked against the two locks' own
+        /// `require`/`conflict`/`replace`/`provide`/platform data with no
+        /// registry fetch at all. Falls through to rung 1 unchanged when
+        /// no candidate passes. Off by default; a no-op for `viv.lock`,
+        /// whose records carry none of the fields the check needs.
+        #[arg(long)]
+        offline_rung: bool,
     },
 }
 
@@ -110,6 +119,7 @@ pub fn run(args: &LockArgs, cache_dir: Option<&Path>, offline: bool) -> Result<u
             no_resolve,
             as_of,
             max_scope,
+            offline_rung,
         } => crate::lock_merge::run(
             base,
             ours,
@@ -120,6 +130,7 @@ pub fn run(args: &LockArgs, cache_dir: Option<&Path>, offline: bool) -> Result<u
             cache_dir,
             offline,
             *max_scope,
+            *offline_rung,
         ),
     }
 }

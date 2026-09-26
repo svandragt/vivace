@@ -172,6 +172,7 @@ pub fn resolve_composer_lock_conflict(
         cache_dir,
         offline,
         Scope::Seeded,
+        false, // --offline-rung (#314) is opt-in; this fallback path keeps default behaviour.
     )?;
     fs_err::write(lock_path, &text).with_context(|| format!("writing {}", lock_path.display()))?;
     if status == 0 {

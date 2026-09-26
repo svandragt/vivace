@@ -97,6 +97,23 @@ impl Transport for &FixtureTransport {
     }
 }
 
+/// A [`Transport`] that panics on any `get`, for a claim that a code path
+/// makes zero network calls (`tests/lock_merge.rs`'s rung-0/`--offline-rung`
+/// tests, #314): a [`FixtureTransport`] can only show *what* was fetched,
+/// never prove *nothing* was.
+pub(crate) struct PanicTransport;
+
+impl Transport for &PanicTransport {
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn get(
+        &self,
+        url: &reqwest::Url,
+        _if_modified_since: Option<&str>,
+    ) -> anyhow::Result<vivace::fetch::Conditional> {
+        panic!("offline rung must never fetch, but something requested {url}");
+    }
+}
+
 pub(crate) struct TestContext {
     pub(crate) project: TempDir,
     pub(crate) cache: TempDir,
