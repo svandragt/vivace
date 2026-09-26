@@ -1438,3 +1438,13 @@ appended one line per side to a `merge=union` file as not mergeable, the
 same as a control without the attribute: a bare repository ignores
 in-tree `.gitattributes` unless `attr.tree` is set. Locally the merge
 still stops on the committed `composer.lock`. The driver stays.
+
+## 2026-09-26: candidate C already built
+
+Candidate C asked whether a one-package update wastes time fetching
+packages that stay locked (#308). It does not. `viv update <pkg>` fetched
+one provider file on all three bench projects, `laravel/framework`
+included, because `build_partial` never queues metadata for a package the
+lock fixes. Plain `viv update` fetches one file per locked package, and it
+has to: whether a newer version exists is a question for the registry.
+Measured against a local mirror, so no live network in the numbers.
