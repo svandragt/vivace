@@ -60,6 +60,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -259,18 +260,46 @@ def record_hash(pkg: dict) -> str:
     return hashlib.sha1(canonical_record_text(pkg).encode()).hexdigest()
 
 
-def base_ledger_lines(records: dict[str, dict]) -> list[str]:
+def record_reference(pkg: dict) -> str | None:
+    """Source reference, falling back to the dist reference when there is
+    no `source` block -- a dist-only entry (no VCS) still has a reference
+    worth comparing, just not under `source`."""
+    source = pkg.get("source") or {}
+    if source.get("reference"):
+        return source["reference"]
+    return (pkg.get("dist") or {}).get("reference")
+
+
+def identity_hash(pkg: dict) -> str:
+    """The hybrid fold's fast-path hash (#306 follow-up): version +
+    reference only, not the whole record -- so a package both sides move
+    to the same place agrees even when one side's record carries an extra
+    metadata field the other's doesn't (`notification-url`, the 14-merge
+    false-fork the full-record hash gave in the first candidate-A
+    measurement)."""
+    text = json.dumps([pkg.get("version"), record_reference(pkg)], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(text.encode()).hexdigest()
+
+
+def base_ledger_lines(records: dict[str, dict], hash_fn=record_hash) -> list[str]:
     """Genesis line per package, sorted by key. No cause token (`-`):
     nothing appended it, it's the shared start both parent ledgers embed
-    verbatim, so it must come out byte-identical on both sides."""
+    verbatim, so it must come out byte-identical on both sides. `hash_fn`
+    swaps in `identity_hash` for the hybrid fold; default keeps every
+    existing caller's full-record behaviour."""
     return [
-        f"set {key} - {record_hash(records[key])} - {canonical_record_text(records[key])}"
+        f"set {key} - {hash_fn(records[key])} - {canonical_record_text(records[key])}"
         for key in sorted(records)
     ]
 
 
 def parent_ledger_lines(
-    base_records: dict[str, dict], side_records: dict[str, dict], cause: str
+    base_records: dict[str, dict],
+    side_records: dict[str, dict],
+    cause: str,
+    hash_fn=record_hash,
+    base_lines: list[str] | None = None,
+    base_hash: dict[str, str] | None = None,
 ) -> list[str]:
     """The base ledger unchanged, plus one appended line per package that
     differs from base: `set` with the new record, or `del`. `prev` chains
@@ -278,18 +307,24 @@ def parent_ledger_lines(
     `cause` (the parent commit's short sha) makes two sides' lines differ
     textually even when the change agrees byte-for-byte, so `merge=union`
     can't collapse an agreement into a single line before the fold ever
-    gets to reason about it."""
-    lines = base_ledger_lines(base_records)
-    base_hash = {key: record_hash(pkg) for key, pkg in base_records.items()}
+    gets to reason about it. `base_lines`/`base_hash` let a caller
+    precompute the shared base once per merge and pass the same values to
+    both sides -- so timing the fold can charge that one-off cost once,
+    not twice."""
+    if base_lines is None:
+        base_lines = base_ledger_lines(base_records, hash_fn)
+    if base_hash is None:
+        base_hash = {key: hash_fn(pkg) for key, pkg in base_records.items()}
+    lines = list(base_lines)
     for key in sorted(set(base_records) | set(side_records)):
         base_pkg, side_pkg = base_records.get(key), side_records.get(key)
-        if base_pkg is not None and side_pkg is not None and base_hash[key] == record_hash(side_pkg):
+        if base_pkg is not None and side_pkg is not None and base_hash[key] == hash_fn(side_pkg):
             continue  # unchanged from base on this side
         prev = base_hash.get(key, "-")
         if side_pkg is None:
             lines.append(f"del {key} {prev} - {cause} -")
         else:
-            lines.append(f"set {key} {prev} {record_hash(side_pkg)} {cause} {canonical_record_text(side_pkg)}")
+            lines.append(f"set {key} {prev} {hash_fn(side_pkg)} {cause} {canonical_record_text(side_pkg)}")
     return lines
 
 
@@ -314,23 +349,31 @@ def parse_ledger_line(raw: str) -> LedgerLine | None:
     return LedgerLine(op, key, prev, result_hash, cause, payload)
 
 
-def fold_ledger(lines: list[str]) -> tuple[dict[str, dict] | None, str | None]:
-    """Replays a unioned ledger's lines and returns (records, None) --
-    key -> final package dict, a deleted key simply absent -- or
-    (None, reason) when the fold refuses. Per key, lines chain by `prev`:
-    two lines with the same `prev` and the same result (op, hash) are the
-    same change seen twice (agreement, apply once); the same `prev` with
-    different results is a fork; a line whose `prev` doesn't match the
-    key's current head (the genesis hash, or `-` when there is none) also
-    refuses. Grouping by key rather than replaying line order makes the
-    fold order-independent, as required."""
+def fold_ledger(lines: list[str]) -> tuple[dict[str, dict] | None, str | None, bool]:
+    """Replays a unioned ledger's lines and returns (records, None,
+    picked) -- key -> final package dict, a deleted key simply absent --
+    or (None, reason, False) when the fold refuses. Per key, lines chain
+    by `prev`: two lines with the same `prev` and the same result (op,
+    hash) are the same change seen twice (agreement, apply once); the
+    same `prev` with different results is a fork; a line whose `prev`
+    doesn't match the key's current head (the genesis hash, or `-` when
+    there is none) also refuses. Grouping by key rather than replaying
+    line order makes the fold order-independent, as required.
+
+    `picked` is True when two agreeing entries (same op, same hash) carry
+    different payload text -- only possible under the hybrid fold's
+    identity hash (#306 follow-up), where "same version and reference"
+    doesn't mean "byte-identical record". The winner is then the entry
+    whose canonical JSON payload sorts first, a deterministic pick rather
+    than an arbitrary one; under the full-record hash a matching hash
+    already implies matching text, so `picked` never fires there."""
     parsed: list[LedgerLine] = []
     for raw in lines:
         if not raw.strip():
             continue
         pl = parse_ledger_line(raw)
         if pl is None:
-            return None, f"unparseable ledger line: {raw!r}"
+            return None, f"unparseable ledger line: {raw!r}", False
         parsed.append(pl)
 
     by_key: dict[str, list[LedgerLine]] = {}
@@ -338,16 +381,17 @@ def fold_ledger(lines: list[str]) -> tuple[dict[str, dict] | None, str | None]:
         by_key.setdefault(pl.key, []).append(pl)
 
     result: dict[str, dict] = {}
+    picked = False
     for key, entries in by_key.items():
         genesis = [e for e in entries if e.cause == "-"]
         appended = [e for e in entries if e.cause != "-"]
         if len(genesis) > 1:
-            return None, f"{key}: duplicate genesis line"
+            return None, f"{key}: duplicate genesis line", False
         head_hash = genesis[0].result_hash if genesis else "-"
 
         for e in appended:
             if e.prev != head_hash:
-                return None, f"{key}: prev {e.prev!r} does not match head {head_hash!r}"
+                return None, f"{key}: prev {e.prev!r} does not match head {head_hash!r}", False
 
         if not appended:
             if genesis:
@@ -356,13 +400,15 @@ def fold_ledger(lines: list[str]) -> tuple[dict[str, dict] | None, str | None]:
 
         signatures = {(e.op, e.result_hash) for e in appended}
         if len(signatures) > 1:
-            return None, f"{key}: fork ({len(appended)} divergent results for the same prev)"
+            return None, f"{key}: fork ({len(appended)} divergent results for the same prev)", False
 
-        winner = appended[0]
+        winner = min(appended, key=lambda e: e.payload)
+        if len({e.payload for e in appended}) > 1:
+            picked = True
         if winner.op != "del":
             result[key] = json.loads(winner.payload)
 
-    return result, None
+    return result, None, picked
 
 
 def record_identity(pkg: dict) -> tuple[str | None, str | None]:
@@ -417,7 +463,7 @@ def classify_ledger(
     theirs_lines = parent_ledger_lines(base_records, theirs_records, theirs_cause)
     base_lines = base_ledger_lines(base_records)
     union_text, err = union_merge_ledger(work, ours_lines, base_lines, theirs_lines)
-    fold_records, fold_err = (None, err) if err else fold_ledger(union_text.splitlines())
+    fold_records, fold_err, _picked = (None, err, False) if err else fold_ledger(union_text.splitlines())
 
     if fold_records is None:
         return ("both_refused" if driver_conflicted else "fold_refused_driver_ok"), fold_err
@@ -432,6 +478,83 @@ def classify_ledger(
     if driver_records is None or keyed_identity(fold_records) != keyed_identity(driver_records):
         return "silent_fold", "fold result differs from the driver's merged lock"
     return "identical", None
+
+
+# --- hybrid fold (#306 follow-up, 2026-09-25) ---------------------------
+# Candidate A's open decision: build the ledger for merges that need no
+# re-solve and keep the driver for the rest, or keep the driver alone.
+# This measures Option 2 (ledger union + the identity-hash fold, falling
+# back to the driver when the fold refuses) against Option 1 (the driver
+# alone, `classify_ledger`'s own control) on the same merges, including
+# per-merge timing -- still a measurement only, no hybrid path lands in
+# viv from this.
+
+
+@dataclass
+class HybridOutcome:
+    identity_finished: bool  # the identity-hash fold alone produced a result
+    silent: bool  # that result folded over a real conflict (real_conflict_names)
+    picked: bool  # fold_ledger's deterministic tie-break fired (metadata-only difference)
+    finished: bool  # the hybrid pipeline as a whole (fold, else driver) produced a result
+    ne_driver: bool  # hybrid and driver both finished, package identity sets differ
+    metadata_diff: bool  # identity sets agree, but a shared record's full JSON differs
+    time: float  # seconds: the fold alone, or fold + driver on the fallback path
+
+
+def classify_hybrid(
+    base_records: dict[str, dict],
+    ours_records: dict[str, dict],
+    theirs_records: dict[str, dict],
+    ours_cause: str,
+    theirs_cause: str,
+    real_names: set[str],
+    driver_conflicted: bool,
+    driver_lock: bytes | None,
+    driver_time: float | None,
+    work: Path,
+) -> HybridOutcome:
+    """Timed from here: building each side's ledger lines against an
+    already-computed base state, the union, and the fold -- deliberately
+    excluding the one-off cost of building that base state itself (paid
+    once per merge below, not once per side, the same way a real hybrid
+    implementation would only ever convert `base` once)."""
+    base_lines = base_ledger_lines(base_records, identity_hash)
+    base_hash = {key: identity_hash(pkg) for key, pkg in base_records.items()}
+
+    start = time.perf_counter()
+    ours_lines = parent_ledger_lines(base_records, ours_records, ours_cause, identity_hash, base_lines, base_hash)
+    theirs_lines = parent_ledger_lines(base_records, theirs_records, theirs_cause, identity_hash, base_lines, base_hash)
+    union_text, err = union_merge_ledger(work, ours_lines, base_lines, theirs_lines)
+    fold_records, fold_err, picked = (None, err, False) if err else fold_ledger(union_text.splitlines())
+    fold_time = time.perf_counter() - start
+
+    identity_finished = fold_records is not None
+    silent = identity_finished and bool(real_names)
+    driver_finished = driver_conflicted is False
+    finished = identity_finished or driver_finished
+
+    if identity_finished:
+        hybrid_records, hybrid_time = fold_records, fold_time
+    elif driver_finished:
+        hybrid_records = lock_records(driver_lock) if driver_lock is not None else None
+        hybrid_time = fold_time + (driver_time or 0.0)
+    else:
+        hybrid_records, hybrid_time = None, fold_time
+
+    ne_driver = metadata_diff = False
+    if driver_finished and hybrid_records is not None:
+        driver_records = lock_records(driver_lock) if driver_lock is not None else None
+        if driver_records is not None:
+            if keyed_identity(hybrid_records) != keyed_identity(driver_records):
+                ne_driver = True
+            elif any(
+                canonical_record_text(hybrid_records[k]) != canonical_record_text(driver_records[k])
+                for k in hybrid_records
+                if k in driver_records
+            ):
+                metadata_diff = True
+
+    return HybridOutcome(identity_finished, silent, picked, finished, ne_driver, metadata_diff, hybrid_time)
 
 
 # --- resolution archaeology (#273 addendum) -----------------------------
@@ -906,7 +1029,9 @@ class MergeOutcome:
     driver_error: str | None = None
     driver_rung: int | None = None
     driver_moved: int = 0
+    driver_time: float | None = None  # seconds, the driver_conflict() call itself
     ledger_category: str | None = None  # #306, only set with --ledger
+    hybrid: "HybridOutcome | None" = None  # #306 follow-up, only set with --hybrid
 
 
 @dataclass
@@ -937,7 +1062,7 @@ def clone_or_reuse(cache_root: Path, project: Project) -> Path:
 
 def run_repo(
     project: Project, cache_root: Path, cap: int, viv_bin: str, native_available: bool,
-    driver_available: bool, ledger: bool = False,
+    driver_available: bool, ledger: bool = False, hybrid: bool = False,
 ) -> RepoReport:
     report = RepoReport(project=project)
     repo_dir = clone_or_reuse(cache_root, project)
@@ -1010,29 +1135,49 @@ def run_repo(
             driver_rung: int | None = None
             driver_moved = 0
             driver_lock: bytes | None = None
+            driver_time: float | None = None
             if driver_available:
                 merge_json = blob(repo_dir, m.sha, "composer.json")
+                driver_start = time.perf_counter()
                 driver_conflicted, driver_err, driver_rung, driver_moved, driver_lock = driver_conflict(
                     viv_bin, work, driver_cache, repo_dir, m.sha,
                     merge_json, base_lock, ours_lock, theirs_lock,
                 )
+                driver_time = time.perf_counter() - driver_start
                 if driver_conflicted and driver_err:
                     report.footnotes.append(
                         f"{m.sha[:12]}: viv lock merge re-solve did not finish: {driver_err}"
                     )
 
             ledger_category: str | None = None
-            if ledger and driver_conflicted is not None:
+            hybrid_outcome: HybridOutcome | None = None
+            if (ledger or hybrid) and driver_conflicted is not None:
+                base_records, ours_records, theirs_records = (
+                    lock_records(base_lock), lock_records(ours_lock), lock_records(theirs_lock)
+                )
                 ledger_category, ledger_detail = classify_ledger(
-                    work, lock_records(base_lock), lock_records(ours_lock), lock_records(theirs_lock),
+                    work, base_records, ours_records, theirs_records,
                     m.ours[:12], m.theirs[:12], real_names, driver_conflicted, driver_lock,
                 )
                 if ledger_category == "silent_fold":
                     report.footnotes.append(f"{m.sha[:12]}: ledger silent fold: {ledger_detail}")
 
+                if hybrid:
+                    hybrid_outcome = classify_hybrid(
+                        base_records, ours_records, theirs_records,
+                        m.ours[:12], m.theirs[:12], real_names, driver_conflicted, driver_lock,
+                        driver_time, work,
+                    )
+                    if hybrid_outcome.silent:
+                        report.footnotes.append(
+                            f"{m.sha[:12]}: hybrid silent fold (identity hash): "
+                            f"real conflict(s) folded without refusal ({len(real_names)} package(s))"
+                        )
+
             report.merges.append(MergeOutcome(
                 m.sha, composer_conflicts, native_conflicts, native_error, real,
-                driver_conflicted, driver_err, driver_rung, driver_moved, ledger_category,
+                driver_conflicted, driver_err, driver_rung, driver_moved, driver_time,
+                ledger_category, hybrid_outcome,
             ))
 
     return report
@@ -1134,10 +1279,79 @@ def render_ledger(merges: list[MergeOutcome]) -> list[str]:
     return lines
 
 
+def percentile(vals: list[float], p: float) -> float:
+    """Linear-interpolation percentile -- no `statistics.quantiles` edge
+    cases to juggle for a corpus as small as 2 merges (koel)."""
+    s = sorted(vals)
+    if len(s) <= 1:
+        return s[0] if s else 0.0
+    k = (len(s) - 1) * p
+    lo = int(k)
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] if lo == hi else s[lo] + (s[hi] - s[lo]) * (k - lo)
+
+
+def fmt_ms(seconds: float) -> str:
+    return f"{seconds * 1000:.1f}"
+
+
+def render_hybrid(merges: list[MergeOutcome]) -> list[str]:
+    """#306 follow-up: Option 2 (ledger union + the identity-hash fold,
+    falling back to the driver when the fold refuses) against Option 1
+    (the driver alone, `classify_ledger`'s own control), timed per merge.
+    `classify_hybrid`'s own docstring says exactly what each timing
+    includes and excludes."""
+    counted = [m for m in merges if m.hybrid is not None]
+    lines = ["### Hybrid fold vs driver alone (#306 follow-up)", ""]
+    if not counted:
+        lines.append("No merge had both a hybrid fold and a driver result to compare.")
+        lines.append("")
+        return lines
+
+    n = len(counted)
+    driver_only = sum(1 for m in counted if m.driver_conflict is False)
+    hybrid_finished = sum(1 for m in counted if m.hybrid.finished)
+    full_hash_finished = sum(
+        1 for m in counted if m.ledger_category not in ("fold_refused_driver_ok", "both_refused")
+    )
+    identity_finished = sum(1 for m in counted if m.hybrid.identity_finished)
+    silent = sum(1 for m in counted if m.hybrid.silent)
+    picked = sum(1 for m in counted if m.hybrid.picked)
+    ne_driver = sum(1 for m in counted if m.hybrid.ne_driver)
+    metadata_diff = sum(1 for m in counted if m.hybrid.metadata_diff)
+
+    driver_times = [m.driver_time for m in counted if m.driver_time is not None]
+    hybrid_times = [m.hybrid.time for m in counted]
+
+    lines.append(
+        "| Merges examined | Finished, driver only | Finished, hybrid (identity fold) | "
+        "Finished by the fold alone (full hash) | Finished by the fold alone (identity hash) | "
+        "Silent fold (identity hash) | Fold picks on metadata-only difference | "
+        "Hybrid result ≠ driver result (both finished) | Median ms, driver only | "
+        "p95 ms, driver only | Median ms, hybrid | p95 ms, hybrid |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append(
+        f"| {n} | {driver_only} | {hybrid_finished} | {full_hash_finished} | {identity_finished} | "
+        f"{silent} | {picked} | {ne_driver} | "
+        f"{fmt_ms(statistics.median(driver_times)) if driver_times else 'n/a'} | "
+        f"{fmt_ms(percentile(driver_times, 0.95)) if driver_times else 'n/a'} | "
+        f"{fmt_ms(statistics.median(hybrid_times))} | {fmt_ms(percentile(hybrid_times, 0.95))} |"
+    )
+    lines.append("")
+    if metadata_diff:
+        lines.append(
+            f"{metadata_diff} merge(s) where the hybrid and driver package identity sets "
+            "agree but the full record differs (metadata only)."
+        )
+        lines.append("")
+    return lines
+
+
 def render(
     reports: list[RepoReport], cap: int, viv_bin: str, viv_version: str,
     native_available: bool, viv_commit: str | None, driver_available: bool,
-    ledger: bool = False,
+    ledger: bool = False, hybrid: bool = False,
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     commit_note = f", commit `{viv_commit}`" if viv_commit else ""
@@ -1253,6 +1467,8 @@ def render(
         lines.extend(render_archaeology(r.archaeology))
         if ledger:
             lines.extend(render_ledger(r.merges))
+        if hybrid:
+            lines.extend(render_hybrid(r.merges))
 
     lines.append("### Totals")
     lines.append("")
@@ -1283,6 +1499,9 @@ def render(
     if ledger:
         all_merges = [m for r in reports for m in r.merges]
         lines.extend(render_ledger(all_merges))
+    if hybrid:
+        all_merges = [m for r in reports for m in r.merges]
+        lines.extend(render_hybrid(all_merges))
     return "\n".join(lines)
 
 
@@ -1304,8 +1523,9 @@ Corpus and the range actually swept: `bench/lockmerge/corpus.toml`. Harness:
 
 def main() -> int:
     argv = sys.argv[1:]
-    ledger = "--ledger" in argv  # #306: adds the ledger-fold-vs-driver counts to the report
-    argv = [a for a in argv if a != "--ledger"]
+    hybrid = "--hybrid" in argv  # #306 follow-up: adds the hybrid-vs-driver-alone table, implies --ledger
+    ledger = "--ledger" in argv or hybrid  # #306: adds the ledger-fold-vs-driver counts to the report
+    argv = [a for a in argv if a not in ("--ledger", "--hybrid")]
     if argv and argv[0] == "--self-test":
         return self_test()
     only = argv[0].split(",") if argv else []
@@ -1336,14 +1556,16 @@ def main() -> int:
     reports = []
     for project in projects:
         log(f"{project.name}: starting")
-        r = run_repo(project, cache_root, cap, viv_bin, native_available, driver_available, ledger)
+        r = run_repo(project, cache_root, cap, viv_bin, native_available, driver_available, ledger, hybrid)
         reports.append(r)
         if r.skipped_reason:
             update_corpus_note(corpus_path, project.name, f'skip = "{r.skipped_reason}"')
         else:
             update_corpus_note(corpus_path, project.name, f'examined = "{r.range_note}"')
 
-    section = render(reports, cap, viv_bin, viv_version, native_available, viv_commit, driver_available, ledger)
+    section = render(
+        reports, cap, viv_bin, viv_version, native_available, viv_commit, driver_available, ledger, hybrid,
+    )
     if not report_path.exists():
         report_path.write_text(HEADER)
     with open(report_path, "a") as f:
@@ -1528,11 +1750,12 @@ def self_test() -> int:
         theirs_lines = parent_ledger_lines(base_records, theirs, "c0ffee2")
         union_text, err = union_merge_ledger(work, ours_lines, base_lines, theirs_lines)
         assert err is None, err
-        folded, fold_err = fold_ledger(union_text.splitlines())
+        folded, fold_err, picked = fold_ledger(union_text.splitlines())
         assert fold_err is None, fold_err
+        assert not picked, "disjoint changes never need the tie-break"
         assert folded["packages/a"]["version"] == "1.1.0"
         assert folded["packages/b"]["version"] == "2.0.0"
-        shuffled, shuffled_err = fold_ledger(list(reversed(union_text.splitlines())))
+        shuffled, shuffled_err, _ = fold_ledger(list(reversed(union_text.splitlines())))
         assert shuffled_err is None and shuffled == folded, "fold must not depend on line order"
 
         # same package, same change, both sides -> agreement, not a fork.
@@ -1544,7 +1767,7 @@ def self_test() -> int:
         assert len(union_text.splitlines()) == len(base_lines) + 2, (
             "the cause token must keep the two sides' identical change on two distinct lines"
         )
-        folded, fold_err = fold_ledger(union_text.splitlines())
+        folded, fold_err, _ = fold_ledger(union_text.splitlines())
         assert fold_err is None and folded["packages/a"]["version"] == "1.1.0"
 
         # same package, different change, both sides -> fork, fold refuses.
@@ -1554,7 +1777,7 @@ def self_test() -> int:
         theirs_lines = parent_ledger_lines(base_records, theirs, "c0ffee2")
         union_text, err = union_merge_ledger(work, ours_lines, base_lines, theirs_lines)
         assert err is None, err
-        folded, fold_err = fold_ledger(union_text.splitlines())
+        folded, fold_err, _ = fold_ledger(union_text.splitlines())
         assert folded is None and fold_err is not None, "a genuine fork must refuse"
 
         # one side deletes, the other updates the same package -> refuse.
@@ -1564,12 +1787,56 @@ def self_test() -> int:
         theirs_lines = parent_ledger_lines(base_records, theirs, "c0ffee2")
         union_text, err = union_merge_ledger(work, ours_lines, base_lines, theirs_lines)
         assert err is None, err
-        folded, fold_err = fold_ledger(union_text.splitlines())
+        folded, fold_err, _ = fold_ledger(union_text.splitlines())
         assert folded is None and fold_err is not None, "delete-vs-update must refuse"
 
         # unparseable text (union having mangled a line) refuses too.
-        folded, fold_err = fold_ledger(["not a ledger line"])
+        folded, fold_err, _ = fold_ledger(["not a ledger line"])
         assert folded is None and fold_err is not None, "an unparseable line must refuse"
+
+        # #306 follow-up, identity-hash variant: both sides move a/a to the
+        # same version and reference, but one record carries an extra
+        # metadata field the other lacks -- the false-fork case the first
+        # candidate-A measurement found in 14 client/public merges. The
+        # full-record hash above still forks on this; the identity hash
+        # must agree, with a deterministic pick recorded.
+        base_id_lines = base_ledger_lines(base_records, identity_hash)
+        ours = {"packages/a": bump(pkg_a, "1.1.0", "aa1"), "packages/b": pkg_b}
+        theirs_pkg_a = {**bump(pkg_a, "1.1.0", "aa1"), "notification-url": "https://packagist.example/"}
+        theirs = {"packages/a": theirs_pkg_a, "packages/b": pkg_b}
+
+        full_ours_lines = parent_ledger_lines(base_records, ours, "c0ffee1")
+        full_theirs_lines = parent_ledger_lines(base_records, theirs, "c0ffee2")
+        full_union, err = union_merge_ledger(work, full_ours_lines, base_lines, full_theirs_lines)
+        assert err is None, err
+        full_folded, full_err, _ = fold_ledger(full_union.splitlines())
+        assert full_folded is None and full_err is not None, (
+            "the full-record hash must still treat a metadata-only difference as a fork"
+        )
+
+        id_ours_lines = parent_ledger_lines(base_records, ours, "c0ffee1", identity_hash)
+        id_theirs_lines = parent_ledger_lines(base_records, theirs, "c0ffee2", identity_hash)
+        id_union, err = union_merge_ledger(work, id_ours_lines, base_id_lines, id_theirs_lines)
+        assert err is None, err
+        id_folded, id_err, id_picked = fold_ledger(id_union.splitlines())
+        assert id_err is None, id_err
+        assert id_picked, "same version+reference but differing metadata must trigger the deterministic pick"
+        expected = min(canonical_record_text(ours["packages/a"]), canonical_record_text(theirs_pkg_a))
+        assert canonical_record_text(id_folded["packages/a"]) == expected, (
+            "the pick must choose the record whose canonical JSON sorts first"
+        )
+
+        # #306 follow-up: a genuine version difference still forks under
+        # the identity hash -- it isn't a hash that agrees on everything.
+        ours = {"packages/a": bump(pkg_a, "1.1.0", "aa1"), "packages/b": pkg_b}
+        theirs = {"packages/a": bump(pkg_a, "1.2.0", "aa2"), "packages/b": pkg_b}
+        id_ours_lines = parent_ledger_lines(base_records, ours, "c0ffee1", identity_hash)
+        id_theirs_lines = parent_ledger_lines(base_records, theirs, "c0ffee2", identity_hash)
+        id_union, err = union_merge_ledger(work, id_ours_lines, base_id_lines, id_theirs_lines)
+        assert err is None, err
+        id_folded, id_err, id_picked = fold_ledger(id_union.splitlines())
+        assert id_folded is None and id_err is not None, "a version fork must refuse under the identity hash too"
+        assert not id_picked
 
     print("lockmerge: self-test OK")
     return 0

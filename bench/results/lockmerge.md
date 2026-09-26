@@ -1107,3 +1107,46 @@ single "fold succeeded, driver refused" merge is the malformed-
 `composer.json` case already named in the leaf-cause table above: the
 fold never reads `composer.json`, so a manifest parse error that blocks
 the driver's re-solve doesn't block it.
+
+## Hybrid against driver only, candidate A (#306), 2026-09-25
+
+Same 381 merges (355 client, 26 public), same `bench/lockmerge/run.py
+--hybrid` (implies `--ledger`). Adds an identity-hash fold variant --
+`(op, name, version, source reference, dist reference when there is no
+source, section)` instead of the full record -- and, per merge, times the
+fold (building each side's ledger lines against an already-computed base
+state, the union, and the fold; excludes the one-off cost of building
+that base state, paid once per merge) against the driver's existing `viv
+lock merge` call. Option 1 is the driver alone; option 2 ("hybrid") is
+the identity-hash fold first, falling back to the driver only when the
+fold refuses. viv `0.16.0`, commit `36de58067d4c36fa39e5b698b9c758a65b431ec3`.
+Load average at the start of the client run: 3.45, 3.20, 2.66; at the
+end: 2.48, 2.32, 2.33.
+
+| Corpus | Merges examined | Finished, driver only | Finished, hybrid | Fold alone, full hash | Fold alone, identity hash | Silent fold (identity hash) | Fold picks, metadata-only | Hybrid ≠ driver (both finished) | Driver median / p95 (ms) | Hybrid median / p95 (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Client (anonymised, four projects) | 355 | 303 | 304 | 255 | 268 | 0 | 1 | 0 | 42 / 15114 | 6 / 10017 |
+| Public | 26 | 26 | 26 | 22 | 23 | 0 | 1 | 0 | 49 / 3135 | 7 / 3143 |
+| **Total** | **381** | **329** | **330** | **277** | **291** | **0** | **2** | **0** | n/a (medians don't pool across two separately run corpora) | n/a |
+
+Silent fold (identity hash) is zero on both corpora: no merge finishes
+over a real conflict under the coarser hash either. Hybrid result ≠
+driver result is also zero: every merge both paths finish agrees on
+package identity (name, version, reference per section). The identity
+hash closes exactly the 14 false forks the full-record hash gave (291 vs
+277 finished by the fold alone): 2 needed the fold's deterministic pick
+(the record whose canonical JSON sorts first) because both sides carried
+the same version and reference but a metadata field only one side had;
+the other 12 needed no pick, because the identity hash already read one
+side as unchanged from base. Separately, in 20 client and 3 public merges
+(23 total) the hybrid and driver package identity sets agree but the full
+lock record still differs -- the driver always re-solves and rewrites the
+content hash and platform declaration, and the fold never does, so
+agreement on which versions to keep does not mean byte-identical output.
+
+Timing: the driver's median stays under 50ms per merge on both corpora,
+but its p95 runs into seconds (15.1s client, 3.1s public) where a real
+re-solve hits the network. The fold's median is roughly a seventh of the
+driver's (6-7ms) because most merges never reach the driver at all; its
+p95 tracks the driver's own, since the slow tail is the same real
+conflicts a re-solve either way must pay for.
