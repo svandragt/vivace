@@ -97,20 +97,37 @@ impl Transport for &FixtureTransport {
     }
 }
 
-/// A [`Transport`] that panics on any `get`, for a claim that a code path
-/// makes zero network calls (`tests/lock_merge.rs`'s rung-0/`--offline-rung`
-/// tests, #314): a [`FixtureTransport`] can only show *what* was fetched,
-/// never prove *nothing* was.
-pub(crate) struct PanicTransport;
+/// Wraps a [`FixtureTransport`] with an atomic call counter
+/// (`tests/lock_merge.rs`'s offline-pin tests, #314): the registry
+/// escalation genuinely needs to fetch (and fail) before the offline pin
+/// is tried at all, so a transport that panics on any `get` can't prove
+/// this step adds nothing — counting calls before and after it can.
+pub(crate) struct CountingTransport {
+    pub(crate) inner: FixtureTransport,
+    pub(crate) calls: std::sync::atomic::AtomicUsize,
+}
 
-impl Transport for &PanicTransport {
-    #[allow(clippy::unused_async_trait_impl)]
+impl CountingTransport {
+    pub(crate) fn new(inner: FixtureTransport) -> Self {
+        CountingTransport {
+            inner,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Transport for &CountingTransport {
     async fn get(
         &self,
         url: &reqwest::Url,
-        _if_modified_since: Option<&str>,
+        if_modified_since: Option<&str>,
     ) -> anyhow::Result<vivace::fetch::Conditional> {
-        panic!("offline rung must never fetch, but something requested {url}");
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        (&self.inner).get(url, if_modified_since).await
     }
 }
 

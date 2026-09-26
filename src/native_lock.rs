@@ -90,13 +90,16 @@ pub enum LockCommand {
         /// non-divergent locked version but pins none of them hard.
         #[arg(long, value_enum, default_value = "seeded")]
         max_scope: crate::lock_merge::Scope,
-        /// Try rung 0 first (#314): for a `composer.lock` merge, one
-        /// parent's own pinned record per divergent name (`ours` first,
-        /// then `theirs`), checked against the two locks' own
-        /// `require`/`conflict`/`replace`/`provide`/platform data with no
-        /// registry fetch at all. Falls through to rung 1 unchanged when
-        /// no candidate passes. Off by default; a no-op for `viv.lock`,
-        /// whose records carry none of the fields the check needs.
+        /// Try one further, offline rung (#314) once the registry
+        /// escalation above has already failed at every rung `--max-scope`
+        /// allowed: one parent's own pinned record per divergent name
+        /// (`ours` first, then `theirs`), checked against the two locks'
+        /// own `require`/`conflict`/`replace`/`provide`/platform data with
+        /// no registry fetch at all. Only ever a last resort before
+        /// conflict markers, so it can never disagree with a registry
+        /// answer that also finished — it only ever fires when there
+        /// wasn't one. Off by default; a no-op for `viv.lock`, whose
+        /// records carry none of the fields the check needs.
         #[arg(long)]
         offline_rung: bool,
     },
