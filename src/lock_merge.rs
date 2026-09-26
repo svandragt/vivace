@@ -216,7 +216,7 @@ fn detect_format(path: &Path) -> Result<Format> {
 #[expect(
     clippy::too_many_arguments,
     reason = "the three merge-driver paths plus --no-resolve/--as-of/--cache-dir/--offline/\
-              --max-scope"
+              --max-scope/--offline-rung"
 )]
 pub fn run(
     base: &Path,
@@ -228,6 +228,7 @@ pub fn run(
     cache_dir: Option<&Path>,
     offline: bool,
     max_scope: Scope,
+    offline_rung: bool,
 ) -> Result<u8> {
     let as_of = as_of
         .map(|value| {
@@ -262,7 +263,13 @@ pub fn run(
             cache_dir,
             offline,
             max_scope,
+            offline_rung,
         ),
+        // #314's rung 0 needs a divergent name's own `require`/`conflict`/
+        // `replace`/`provide`, which a `viv.lock` record never carries (this
+        // module's own doc comment on why); `--offline-rung` is a no-op here
+        // rather than a refusal, the same tolerance `--max-scope` already
+        // has for a flag that happens not to matter to this format.
         Format::VivLock => merge_viv_lock(
             base,
             ours,
@@ -319,8 +326,8 @@ fn has_conflict_markers(content: &[u8]) -> bool {
 /// real `composer.lock`, for `install`'s fallback).
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors run's own --no-resolve/--as-of/--cache-dir/--offline/--max-scope, plus the \
-              three inputs"
+    reason = "mirrors run's own --no-resolve/--as-of/--cache-dir/--offline/--max-scope/\
+              --offline-rung, plus the three inputs"
 )]
 pub(crate) fn merge_composer_lock_bytes(
     base: &[u8],
@@ -332,6 +339,7 @@ pub(crate) fn merge_composer_lock_bytes(
     cache_dir: Option<&Path>,
     offline: bool,
     max_scope: Scope,
+    offline_rung: bool,
 ) -> Result<(String, u8)> {
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path)
@@ -369,9 +377,10 @@ pub(crate) fn merge_composer_lock_bytes(
             cache_dir,
             offline,
             max_scope,
+            offline_rung,
         ) {
-            Ok((text, scope, moved)) => {
-                print_resolution(&divergent, scope, &moved);
+            Ok((text, rung, name, moved)) => {
+                print_resolution(&divergent, rung, name, &moved);
                 return Ok((text, 0));
             }
             Err(err) => {
@@ -418,8 +427,8 @@ pub(crate) fn merge_composer_lock_bytes(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors run's own --no-resolve/--as-of/--cache-dir/--offline/--max-scope, plus the \
-              three paths"
+    reason = "mirrors run's own --no-resolve/--as-of/--cache-dir/--offline/--max-scope/\
+              --offline-rung, plus the three paths"
 )]
 fn merge_composer_lock(
     base: &Path,
@@ -431,6 +440,7 @@ fn merge_composer_lock(
     cache_dir: Option<&Path>,
     offline: bool,
     max_scope: Scope,
+    offline_rung: bool,
 ) -> Result<u8> {
     let base_bytes = fs_err::read(base).with_context(|| format!("reading {}", base.display()))?;
     let ours_bytes = fs_err::read(ours).with_context(|| format!("reading {}", ours.display()))?;
@@ -446,6 +456,7 @@ fn merge_composer_lock(
         cache_dir,
         offline,
         max_scope,
+        offline_rung,
     )?;
     fs_err::write(ours, text)?;
     Ok(status)
@@ -772,8 +783,9 @@ fn write_resolved_lock(result: &solver::UpdateResult, composer_json: &[u8]) -> R
 /// reports why the resolve didn't happen.
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors merge_composer_lock's own --as-of/--cache-dir/--offline/--max-scope, plus \
-              the ours/theirs maps escalate_resolve's moved-package report needs"
+    reason = "mirrors merge_composer_lock's own --as-of/--cache-dir/--offline/--max-scope/\
+              --offline-rung, plus the ours/theirs maps escalate_resolve's moved-package report \
+              needs"
 )]
 fn try_resolve_composer_lock(
     merged: &BTreeMap<String, Entry<Value>>,
@@ -786,7 +798,8 @@ fn try_resolve_composer_lock(
     cache_dir: Option<&Path>,
     offline: bool,
     max_scope: Scope,
-) -> Result<(String, Scope, Vec<Moved>)> {
+    offline_rung: bool,
+) -> Result<(String, u8, &'static str, Vec<Moved>)> {
     let root: Value = serde_json::from_slice(composer_json).context("parsing composer.json")?;
     let prefer_stable = root
         .get("prefer-stable")
@@ -806,7 +819,7 @@ fn try_resolve_composer_lock(
         let metadata_ttl = update::metadata_ttl(None, offline);
         let repo = update::build_repository(project_dir, &root, &cache_dir, &fetcher, metadata_ttl)
             .await?;
-        let resolved = escalate_resolve(
+        let resolved = escalate_then_offline_pin(
             &repo,
             &root,
             prefer_stable,
@@ -817,25 +830,27 @@ fn try_resolve_composer_lock(
             as_of,
             Some(&cache_dir),
             max_scope,
+            offline_rung,
         )
         .await;
         update::forget_repo(repo);
-        let resolved = resolved?;
-        let text = write_resolved_lock(&resolved.result, composer_json)?;
-        Ok((text, resolved.scope, resolved.moved))
+        let (result, rung, name, moved) = resolved?;
+        let text = write_resolved_lock(&result, composer_json)?;
+        Ok((text, rung, name, moved))
     })
 }
 
 /// #296's "say what moved": the rung reached and the divergent names it
 /// resolved, then one line per [`Moved`] package. A rung-1 resolution
 /// prints nothing beyond the first line, matching `docs/research.md`'s own
-/// wording.
-fn print_resolution(divergent: &BTreeSet<String>, scope: Scope, moved: &[Moved]) {
+/// wording. `rung`/`name` rather than a [`Scope`] directly: rung 0
+/// (`--offline-rung`, #314) never escalates and so has no `Scope` variant
+/// of its own, and every other caller already has a `Scope` in hand to
+/// pass as `scope.rung()`/`scope.name()`.
+fn print_resolution(divergent: &BTreeSet<String>, rung: u8, name: &str, moved: &[Moved]) {
     let names: Vec<&str> = divergent.iter().map(String::as_str).collect();
     warn_out(&format!(
-        "viv lock merge: resolved via rung {} ({}): {}",
-        scope.rung(),
-        scope.name(),
+        "viv lock merge: resolved via rung {rung} ({name}): {}",
         names.join(", ")
     ));
     for m in moved {
@@ -843,6 +858,160 @@ fn print_resolution(divergent: &BTreeSet<String>, scope: Scope, moved: &[Moved])
             "viv lock merge: {} moved outside the divergent set: {} -> {}",
             m.name, m.before, m.after
         ));
+    }
+}
+
+/// The offline pin check (#314), `--offline-rung`: tried only once the
+/// registry escalation (rungs 1-3) has already failed
+/// ([`escalate_then_offline_pin`] is the caller that enforces this
+/// ordering). For every divergent name, one parent's own pinned record —
+/// `ours` first, then `theirs` — stands in for a fresh fetch, and the
+/// whole candidate set is checked with [`solver::solve_partial_update`]'s
+/// own empty-allow-list path: [`solver::pool_builder::build_partial_seeded`]
+/// loads every locked-out name — which, with nothing left in the allow
+/// list, is now everyone — straight from its own lock entry
+/// (`package_from_lock_entry`, `install.rs`'s #300 check reuses the same
+/// primitive for the same reason), so the real rule generator and CDCL
+/// solver run over a pool built without a single fetch. This is that
+/// machinery, not a second constraint checker: a candidate that conflicts
+/// with a sibling's `require`, or that the merged `composer.json`'s own
+/// `require`/`require-dev`/`conflict` rules out, fails the solve the same
+/// way a live re-solve would.
+///
+/// Whichever side is tried, every divergent name takes that side's own
+/// pin in one attempt — never a per-name mix of `ours` and `theirs` — so
+/// there are at most two attempts regardless of how many names diverged,
+/// matching how rungs 1-3 already treat the divergent set as one unit
+/// rather than escalating name by name. `None` when a name has no entry
+/// on the side being tried (removed on that side) or neither attempt
+/// solves; the caller reads that as "the conflict stands, fall back to
+/// markers".
+///
+/// `pub`, generic over [`Transport`] like [`escalate_resolve`]: reuses
+/// whichever `repo` the failed escalation already built (never a fresh
+/// one of its own) — the empty allow list is what keeps this fetch-free,
+/// not the transport underneath it, so a test can drive this against a
+/// real fixture-backed repo that just finished failing rungs 1-3 and
+/// prove, by counting calls, that this step adds none.
+pub async fn try_offline_rung<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    merged: &BTreeMap<String, Entry<Value>>,
+    divergent: &BTreeSet<String>,
+    ours: &BTreeMap<String, Entry<Value>>,
+    theirs: &BTreeMap<String, Entry<Value>>,
+) -> Option<solver::UpdateResult> {
+    for (primary, fallback) in [(ours, theirs), (theirs, ours)] {
+        let mut locked_by_name = locked_by_name_from_merge(merged);
+        let mut complete = true;
+        for name in divergent {
+            let Some(entry) = primary.get(name).or_else(|| fallback.get(name)) else {
+                complete = false;
+                break;
+            };
+            locked_by_name.insert(name.clone(), entry.payload.clone());
+        }
+        if !complete {
+            continue;
+        }
+        if let Ok(result) = solver::solve_partial_update(
+            repo,
+            root,
+            prefer_stable,
+            false,
+            &locked_by_name,
+            &[],
+            UpdateAllowMode::OnlyListed,
+        )
+        .await
+        {
+            return Some(result);
+        }
+    }
+    None
+}
+
+/// The offline pin's own rung tag (#314): never a [`Scope`] variant,
+/// since it never escalates further itself and only ever runs once every
+/// `Scope` rung `max_scope` allowed has already failed — one further rung
+/// past the highest of the three, not a fourth choice among them.
+const OFFLINE_PIN_RUNG: u8 = 4;
+const OFFLINE_PIN_NAME: &str = "offline_pin";
+
+/// Escalate first ([`escalate_resolve`]); only on failure, and only when
+/// `offline_rung` asks for it, try the offline pin
+/// ([`try_offline_rung`]) as a last resort before conflict markers.
+/// Reusing the very `repo` the failed escalation just finished with,
+/// rather than building a second one: [`try_offline_rung`]'s own
+/// empty-allow-list call is what keeps it fetch-free (`build_partial_seeded`'s
+/// "everyone locked out" path), not which `Transport` sits underneath, so
+/// there is nothing a second `Repository` would buy here.
+///
+/// This ordering is why the offline pin can never disagree with a
+/// registry answer that also finished: by the time it runs, this same
+/// `repo` has already tried and failed to produce one at every rung
+/// `max_scope` allowed. `docs/research.md`'s own measurement is what
+/// found the *previous* order (offline first) disagreed with the registry
+/// on two-thirds of the merges where both could run at all; moving it
+/// here is that finding acted on, not merely recorded.
+///
+/// `pub`, generic over [`Transport`]: `tests/lock_merge.rs` drives this
+/// with a fixture-backed repo whose escalation genuinely fails (a
+/// requirement the fixture's own registry data cannot satisfy at any
+/// rung), then a call-counting wrapper proves the offline branch adds no
+/// further fetch, and a separate case proves this never even reaches the
+/// offline branch when escalation succeeds.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors escalate_resolve's own arguments plus the offline_rung switch"
+)]
+pub async fn escalate_then_offline_pin<T: Transport>(
+    repo: &Repository<T>,
+    root: &Value,
+    prefer_stable: bool,
+    merged: &BTreeMap<String, Entry<Value>>,
+    divergent: &BTreeSet<String>,
+    ours: &BTreeMap<String, Entry<Value>>,
+    theirs: &BTreeMap<String, Entry<Value>>,
+    as_of: Option<i64>,
+    cache_dir: Option<&Path>,
+    max_scope: Scope,
+    offline_rung: bool,
+) -> Result<(solver::UpdateResult, u8, &'static str, Vec<Moved>)> {
+    match escalate_resolve(
+        repo,
+        root,
+        prefer_stable,
+        merged,
+        divergent,
+        ours,
+        theirs,
+        as_of,
+        cache_dir,
+        max_scope,
+    )
+    .await
+    {
+        Ok(resolved) => Ok((
+            resolved.result,
+            resolved.scope.rung(),
+            resolved.scope.name(),
+            resolved.moved,
+        )),
+        Err(escalate_err) => {
+            if !offline_rung {
+                return Err(escalate_err);
+            }
+            match try_offline_rung(repo, root, prefer_stable, merged, divergent, ours, theirs).await
+            {
+                Some(result) => {
+                    let moved = moved_packages(&result, divergent, ours, theirs);
+                    Ok((result, OFFLINE_PIN_RUNG, OFFLINE_PIN_NAME, moved))
+                }
+                None => Err(escalate_err),
+            }
+        }
     }
 }
 
@@ -1213,7 +1382,7 @@ pub(crate) fn merge_viv_lock_bytes(
                         "viv lock merge: also re-wrote {} so it stays a companion to viv.lock",
                         composer_lock_path.display()
                     ));
-                    print_resolution(&divergent, scope, &moved);
+                    print_resolution(&divergent, scope.rung(), scope.name(), &moved);
                     return Ok((viv_text, Some(composer_text), 0));
                 }
                 Err(err) => {

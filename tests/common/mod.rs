@@ -97,6 +97,40 @@ impl Transport for &FixtureTransport {
     }
 }
 
+/// Wraps a [`FixtureTransport`] with an atomic call counter
+/// (`tests/lock_merge.rs`'s offline-pin tests, #314): the registry
+/// escalation genuinely needs to fetch (and fail) before the offline pin
+/// is tried at all, so a transport that panics on any `get` can't prove
+/// this step adds nothing — counting calls before and after it can.
+pub(crate) struct CountingTransport {
+    pub(crate) inner: FixtureTransport,
+    pub(crate) calls: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingTransport {
+    pub(crate) fn new(inner: FixtureTransport) -> Self {
+        CountingTransport {
+            inner,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Transport for &CountingTransport {
+    async fn get(
+        &self,
+        url: &reqwest::Url,
+        if_modified_since: Option<&str>,
+    ) -> anyhow::Result<vivace::fetch::Conditional> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        (&self.inner).get(url, if_modified_since).await
+    }
+}
+
 pub(crate) struct TestContext {
     pub(crate) project: TempDir,
     pub(crate) cache: TempDir,

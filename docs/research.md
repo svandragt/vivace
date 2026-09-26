@@ -524,6 +524,26 @@ stops on `composer.lock`; saving that stop means taking `composer.lock`
 out of git. A second lock format does not pay for 36 ms. The driver
 stays the only merge path.
 
+### Offline pin (#314)
+
+**Question.** When the registry re-solve cannot finish a merge, does one
+parent's own pinned record satisfy every constraint the two locks
+already record?
+
+**Result, 2026-09-26: safe, off by default.** `viv lock merge
+--offline-rung` tries the offline pin only after rungs 1 to 3 have
+failed: `ours`' pin first, then `theirs`', checked by the solver itself
+over a pool built from the two locks' `require`, `conflict`, `replace`,
+`provide` and platform data, with nothing fetched. It reports the result
+as the rung `offline_pin`. On the 355 client merges it finishes 37 of the
+52 that otherwise end in conflict markers (34 `dev-*` heads, 3 packages
+Packagist no longer lists). The other 15 stay markers (10 `dev-*` heads,
+4 packages gone, 1 malformed `composer.json`). Because it runs only after
+the registry has failed, it never overrides a registry answer, so the
+safety number is zero on both corpora. Tried before the registry instead,
+it kept an older pin than the registry chose in 23 of 34 merges, which is
+why it runs last. Whether to turn it on by default is a separate decision.
+
 ### Candidate B: install from a lock years later (measured, not built)
 
 **Question.** How many committed locks still install today, byte for

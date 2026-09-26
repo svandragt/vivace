@@ -18,9 +18,11 @@ use std::time::Duration;
 #[macro_use]
 mod common;
 
-use common::{FixtureTransport, TestContext, fixtures_root};
+use common::{CountingTransport, FixtureTransport, TestContext, fixtures_root};
 use serde_json::{Value, json};
-use vivace::lock_merge::{Entry, Identity, Moved, Scope, escalate_resolve};
+use vivace::lock_merge::{
+    Entry, Identity, Moved, Scope, escalate_resolve, escalate_then_offline_pin, try_offline_rung,
+};
 use vivace::repository::Repository;
 
 fn fixtures() -> PathBuf {
@@ -546,6 +548,372 @@ async fn rung_3_moves_a_two_hop_dependent_and_leaves_an_unrelated_package_pinned
     assert_eq!(
         untouched.pretty_version, "1.0.0",
         "preferred must keep an unrelated package at its locked version, not update it to 1.5.0"
+    );
+}
+
+// --- offline pin, --offline-rung (#314) ---------------------------------
+//
+// `z/nonexistent` names a divergent package with no fixture file at all
+// (`tests/fixtures/packagist/repo.packagist.org/p2/` has no `z/`
+// directory), so any registry attempt to load it — rung 1, 2 and 3 alike
+// — gets a genuine `NotFound` and the escalation fails for real, the same
+// way an unresolvable root requirement fails against the live registry.
+// That failure is what makes each of these a fair test of the *new*
+// ordering: the offline pin is only ever tried once escalation already
+// lost, never instead of it.
+
+/// (a): ours pinned 1.0.0, theirs 2.0.0, root wants `^1.0 || ^2.0` (either
+/// satisfies) and nothing else pins a `require` against it. Escalation
+/// fails (the registry has no `z/nonexistent` at any rung); the offline
+/// pin then accepts `ours` — tried first — with no further fetch, proven
+/// by the call count being unchanged from right after escalation's own
+/// failed attempt.
+#[tokio::test]
+async fn offline_pin_accepts_ours_after_escalation_fails_with_no_further_fetch() {
+    let root = json!({"require": {"z/nonexistent": "^1.0 || ^2.0"}});
+    let transport = CountingTransport::new(FixtureTransport {
+        root: fixtures_root(),
+    });
+    let cache = tempfile::tempdir().unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+
+    let merged = BTreeMap::new();
+    let mut divergent = BTreeSet::new();
+    divergent.insert("z/nonexistent".to_string());
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "z/nonexistent".to_string(),
+        pinned("z/nonexistent", "1.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "z/nonexistent".to_string(),
+        pinned("z/nonexistent", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+
+    escalate_resolve(
+        &repo,
+        &root,
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Seeded,
+    )
+    .await
+    .err()
+    .expect("z/nonexistent has no fixture; every rung must fail to find it");
+    let fetches_during_escalation = transport.count();
+    assert!(
+        fetches_during_escalation > 0,
+        "the escalation attempt itself must have actually tried the registry"
+    );
+
+    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs)
+        .await
+        .expect("ours' pin satisfies the merged set; the offline pin must accept it");
+    assert_eq!(
+        transport.count(),
+        fetches_during_escalation,
+        "the offline pin must add no fetch beyond escalation's own failed attempt"
+    );
+    let pkg = result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "z/nonexistent")
+        .expect("z/nonexistent must be in the result");
+    assert_eq!(pkg.pretty_version, "1.0.0", "ours is tried first");
+
+    // Same case through the actual production entry point: reported as
+    // rung 4 ("offline_pin"), never a `Scope` variant.
+    let (result, rung, name, _moved) = escalate_then_offline_pin(
+        &repo,
+        &root,
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Seeded,
+        true,
+    )
+    .await
+    .expect("escalation fails, offline_rung is set, and the offline pin accepts ours");
+    assert_eq!((rung, name), (4, "offline_pin"));
+    assert_eq!(
+        result
+            .non_dev
+            .iter()
+            .find(|p| p.name == "z/nonexistent")
+            .unwrap()
+            .pretty_version,
+        "1.0.0"
+    );
+}
+
+/// (b): `e/dependent` (non-divergent, pinned both sides, never fetched —
+/// it is locked out of both escalation and the offline pin alike) locks
+/// its own `require` to `z/nonexistent ^2.0`. Ours' pin (1.0.0) violates
+/// that sibling's require, so the all-`ours` attempt fails; theirs' pin
+/// (2.0.0) satisfies it, so the all-`theirs` attempt is the one the
+/// offline pin accepts.
+#[tokio::test]
+async fn offline_pin_falls_back_to_theirs_when_ours_violates_a_siblings_require() {
+    let root = json!({"require": {"z/nonexistent": "^1.0 || ^2.0", "e/dependent": "^1.0"}});
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let cache = tempfile::tempdir().unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+
+    let e_dependent = pinned(
+        "e/dependent",
+        "1.0.0",
+        &json!({"php": ">=7.4.0", "z/nonexistent": "^2.0"}),
+    );
+    let mut merged = BTreeMap::new();
+    merged.insert("e/dependent".to_string(), e_dependent);
+
+    let mut divergent = BTreeSet::new();
+    divergent.insert("z/nonexistent".to_string());
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "z/nonexistent".to_string(),
+        pinned("z/nonexistent", "1.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "z/nonexistent".to_string(),
+        pinned("z/nonexistent", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+
+    escalate_resolve(
+        &repo,
+        &root,
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Seeded,
+    )
+    .await
+    .err()
+    .expect("z/nonexistent has no fixture; escalation must fail");
+
+    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs)
+        .await
+        .expect("theirs' pin satisfies e/dependent's own require; the offline pin must accept it");
+    let pkg = result
+        .non_dev
+        .iter()
+        .find(|p| p.name == "z/nonexistent")
+        .expect("z/nonexistent must be in the result");
+    assert_eq!(pkg.pretty_version, "2.0.0", "theirs, since ours failed");
+}
+
+/// (c): `e/dependent` pins `z/nonexistent` to exactly `2.5.0`; neither
+/// ours' 1.0.0 nor theirs' 3.0.0 satisfies that sibling's own require, so
+/// after escalation fails, both offline attempts fail too and the
+/// conflict stands.
+#[tokio::test]
+async fn offline_pin_falls_through_when_neither_pin_satisfies_a_siblings_require() {
+    let root = json!({"require": {"z/nonexistent": "^1.0 || ^2.0 || ^3.0", "e/dependent": "^1.0"}});
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let cache = tempfile::tempdir().unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+
+    let e_dependent = pinned(
+        "e/dependent",
+        "1.0.0",
+        &json!({"php": ">=7.4.0", "z/nonexistent": "2.5.0"}),
+    );
+    let mut merged = BTreeMap::new();
+    merged.insert("e/dependent".to_string(), e_dependent);
+
+    let mut divergent = BTreeSet::new();
+    divergent.insert("z/nonexistent".to_string());
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "z/nonexistent".to_string(),
+        pinned("z/nonexistent", "1.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "z/nonexistent".to_string(),
+        pinned("z/nonexistent", "3.0.0", &json!({"php": ">=7.4.0"})),
+    );
+
+    escalate_resolve(
+        &repo,
+        &root,
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Seeded,
+    )
+    .await
+    .err()
+    .expect("z/nonexistent has no fixture; escalation must fail");
+
+    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs).await;
+    assert!(
+        result.is_none(),
+        "neither pin satisfies e/dependent's own require; the offline pin must fall through"
+    );
+}
+
+/// (d): the merged root's own `require` (`^4.0`) excludes both ours'
+/// 1.0.0 and theirs' 2.0.0 outright, with no sibling involved at all —
+/// same as (c) but from the root requirement rather than a locked
+/// package's own, and it is *also* why escalation itself fails.
+#[tokio::test]
+async fn offline_pin_falls_through_when_the_root_requirement_excludes_both_pins() {
+    let root = json!({"require": {"z/nonexistent": "^4.0"}});
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let cache = tempfile::tempdir().unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+
+    let merged = BTreeMap::new();
+    let mut divergent = BTreeSet::new();
+    divergent.insert("z/nonexistent".to_string());
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "z/nonexistent".to_string(),
+        pinned("z/nonexistent", "1.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "z/nonexistent".to_string(),
+        pinned("z/nonexistent", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+
+    escalate_resolve(
+        &repo,
+        &root,
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Seeded,
+    )
+    .await
+    .err()
+    .expect("root wants ^4.0; the registry has no z/nonexistent at all, let alone ^4.0");
+
+    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs).await;
+    assert!(
+        result.is_none(),
+        "the root's own requirement excludes both pins; the offline pin must fall through"
+    );
+}
+
+/// The other half of the ordering: when the registry escalation succeeds,
+/// the offline pin must never be tried at all, regardless of
+/// `offline_rung`. `d/dep`'s own fixture (unlike `z/nonexistent`) really
+/// does offer 2.0.0/2.0.1, so rung 1 alone resolves it — reported as rung
+/// 1 ("closure"), never rung 4 ("`offline_pin`"), which is the only way
+/// this test can tell the two apart from the outside.
+#[tokio::test]
+async fn offline_pin_never_runs_when_the_registry_escalation_succeeds() {
+    let root = json!({"require": {"d/dep": "^2.0"}});
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let cache = tempfile::tempdir().unwrap();
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+
+    let merged = BTreeMap::new();
+    let mut divergent = BTreeSet::new();
+    divergent.insert("d/dep".to_string());
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.0", &json!({"php": ">=7.4.0"})),
+    );
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "d/dep".to_string(),
+        pinned("d/dep", "2.0.1", &json!({"php": ">=7.4.0"})),
+    );
+
+    let (_result, rung, name, _moved) = escalate_then_offline_pin(
+        &repo,
+        &root,
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Seeded,
+        true,
+    )
+    .await
+    .expect("d/dep resolves at rung 1 against its real fixture");
+    assert_eq!(
+        (rung, name),
+        (1, "closure"),
+        "rung 1 alone resolves d/dep; the offline pin must never be tried"
     );
 }
 
