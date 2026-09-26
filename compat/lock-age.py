@@ -64,7 +64,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -135,6 +135,32 @@ def years_before(today, n: int):
         return today.replace(year=today.year - n)
     except ValueError:  # 29 Feb with no leap year that far back
         return today.replace(year=today.year - n, day=28)
+
+
+# The 1yr/2yr/4yr labels below are how a pair was *sampled* (the cutoff a
+# `git log --before` query used) -- a project that stopped committing its
+# lock returns the same, much older commit for every cutoff still on or
+# after it (`laravel/laravel`'s 2015 commit satisfies "on or before 1yr" as
+# much as "on or before 4yr"), so the label is not the age. Report tables
+# bucket by the commit's real age against this fixed reference instead
+# (#307 review); it's the date the corpus was queried, not "now", so a
+# `--report-only` regeneration later doesn't drift.
+REPORT_AGE_REFERENCE = date(2026, 9, 26)
+AGE_BUCKET_ORDER = ["<=1yr", "2-3yr", "4-6yr", "7yr+"]
+
+
+def age_bucket(commit_date: str) -> str:
+    if commit_date == "-":
+        return "-"
+    y, m, d = (int(x) for x in commit_date.split("-"))
+    age_years = (REPORT_AGE_REFERENCE - date(y, m, d)).days / 365.25
+    if age_years <= 1:
+        return "<=1yr"
+    if age_years <= 3:
+        return "2-3yr"
+    if age_years <= 6:
+        return "4-6yr"
+    return "7yr+"
 
 
 # --- git plumbing ------------------------------------------------------------
@@ -465,6 +491,22 @@ def is_dist_related_failure(outcome: str) -> bool:
     )
 
 
+def vendor_diff_category(detail: str) -> str:
+    """Groups a `differs` pair by which file(s) `compare_vendor` named, from
+    the signatures a hand check (#307 review) confirmed: a package's own
+    directory name-cased differently is always paired with an
+    `autoload_psr4`/`autoload_static` difference too, so check it first."""
+    if "jeremeamia" in detail:
+        return "legacy mixed-case package name (vendor dir case)"
+    if "autoload_classmap.php" in detail or "autoload_static.php" in detail:
+        return "ambiguous classmap entry (duplicate class name)"
+    if "installed.json" in detail:
+        return "installed.json time format"
+    if "installed.php" in detail:
+        return "installed.php only, unexplained"
+    return "other"
+
+
 def iterative_classify(tool: str, install_fn, project_dir, packages_by_name: dict, dead_names: set[str],
                         results: dict, max_rounds: int = 25) -> None:
     """Re-runs `install_fn` on `project_dir`'s lock with `dead_names` (from
@@ -703,8 +745,13 @@ def write_report(pairs: list[PairResult], out: Path) -> None:
         " `compat/corpus.toml` and the public projects in `compat/hunted.md`"
         " (via `compat/platform-drift.py`'s `CORPUS`, minus a few large or"
         " already-all-skip repos named in `compat/lock-age.py`), the last commit"
-        " touching `composer.lock` at or before 1, 2 and 4 years before the run"
-        " date. `viv install --no-scripts --ignore-platform-reqs` and the control"
+        " touching `composer.lock` at or before 1, 2 and 4 years before"
+        f" {REPORT_AGE_REFERENCE.isoformat()}, the date the corpus was queried."
+        " That cutoff is how a pair was *sampled*, not its age: a project that"
+        " stopped committing its lock returns the same, older commit for every"
+        " cutoff still on or after it, so the tables below bucket every pair by"
+        " the commit's real age against that date instead."
+        " `viv install --no-scripts --ignore-platform-reqs` and the control"
         " `composer install --no-scripts --no-plugins --ignore-platform-reqs`"
         " from that lock, no update, each in an isolated, empty cache. The"
         " network is what's measured, not a timing variable: a rerun on another"
@@ -722,23 +769,28 @@ def write_report(pairs: list[PairResult], out: Path) -> None:
     lines.append("|---|---|---|---|---|")
     for p in pairs:
         result = p.skip or "measured"
-        lines.append(f"| {p.project} | {p.age_label} | {p.commit} | {p.commit_date} | {result} |")
+        lines.append(f"| {p.project} | {age_bucket(p.commit_date)} | {p.commit} | {p.commit_date} | {result} |")
     lines.append("")
 
     measured = [p for p in pairs if not p.skip]
     lines.append(f"{len(measured)} project-commit pairs measured, {len(pairs) - len(measured)} skipped.")
+    unique_pairs = {(p.project, p.commit) for p in measured}
+    lines.append(f"{len(unique_pairs)} of {len(measured)} measured pairs are distinct project+commit pairs"
+                  f" ({len(measured) - len(unique_pairs)} duplicate).")
+    oldest = min(measured, key=lambda p: p.commit_date)
+    lines.append(f"Oldest lock measured: {oldest.project} at {oldest.commit_date} ({oldest.commit}).")
     lines.append("")
 
     lines.append("## Per-pair outcome")
     lines.append("")
-    lines.append("| Project | Age | Platform | viv | composer | vendor/ |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| Project | Age | Commit | Platform | viv | composer | vendor/ |")
+    lines.append("|---|---|---|---|---|---|---|")
     for p in measured:
         platform = f"refuses ({p.platform_detail})" if p.platform_refuses else "ok"
         viv = "installs" if p.viv_ok else "fails"
         composer = "installs" if p.composer_ok else "fails"
         vendor = p.vendor_diff or "-"
-        lines.append(f"| {p.project} | {p.age_label} | {platform} | {viv} | {composer} | {vendor} |")
+        lines.append(f"| {p.project} | {age_bucket(p.commit_date)} | {p.commit} | {platform} | {viv} | {composer} | {vendor} |")
     lines.append("")
 
     lines.append("## Package failure classes")
@@ -749,28 +801,29 @@ def write_report(pairs: list[PairResult], out: Path) -> None:
     saves_pairs = set()
     total_dist_related = 0
     for p in measured:
+        bucket = age_bucket(p.commit_date)
         viv_bad = {n: r for n, r in p.viv_packages.items() if r.outcome != "installs"}
         composer_bad = {n: r for n, r in p.composer_packages.items() if r.outcome != "installs"}
         for n, r in viv_bad.items():
-            class_totals.setdefault(p.age_label, {}).setdefault(r.outcome, 0)
-            class_totals[p.age_label][r.outcome] += 1
+            class_totals.setdefault(bucket, {}).setdefault(r.outcome, 0)
+            class_totals[bucket][r.outcome] += 1
             if is_dist_related_failure(r.outcome):
                 total_dist_related += 1
                 if r.source_fetchable:
                     saves += 1
-                    saves_pairs.add((p.project, p.age_label))
+                    saves_pairs.add((p.project, p.commit))
         viv_only = set(viv_bad) - set(composer_bad)
         composer_only = set(composer_bad) - set(viv_bad)
         if viv_only:
-            diffs.append(f"- {p.project} {p.age_label}: viv fails, Composer installs: {', '.join(sorted(viv_only))}")
+            diffs.append(f"- {p.project} {p.commit} ({p.commit_date}): viv fails, Composer installs: {', '.join(sorted(viv_only))}")
         if composer_only:
-            diffs.append(f"- {p.project} {p.age_label}: Composer fails, viv installs: {', '.join(sorted(composer_only))}")
+            diffs.append(f"- {p.project} {p.commit} ({p.commit_date}): Composer fails, viv installs: {', '.join(sorted(composer_only))}")
 
     lines.append("| Age | Class | Packages |")
     lines.append("|---|---|---|")
-    for age_label, _ in AGES:
-        for outcome, count in sorted(class_totals.get(age_label, {}).items()):
-            lines.append(f"| {age_label} | {outcome} | {count} |")
+    for bucket in AGE_BUCKET_ORDER:
+        for outcome, count in sorted(class_totals.get(bucket, {}).items()):
+            lines.append(f"| {bucket} | {outcome} | {count} |")
     lines.append("")
 
     lines.append(f"Tree-hash-saves: {saves} of {total_dist_related} dist-related failed packages"
@@ -794,22 +847,51 @@ def write_report(pairs: list[PairResult], out: Path) -> None:
     if differs:
         lines.append(f"## Vendor byte differences ({len(differs)} of {len(measured)} measured pairs)")
         lines.append("")
-        lines.append("Not counted as viv bugs unless filed; listed as potential compat issues,"
-                      " checked by hand this run rather than by the classifier above (the task"
-                      " only classifies install failures, not vendor-tree content):")
+        lines.append("Not counted as viv bugs unless filed. Grouped by which files differed"
+                      " (`vendor_diff_detail` in `lock-age.raw.jsonl`), then checked by hand"
+                      f" against a fresh install of one pair per group, {REPORT_AGE_REFERENCE.isoformat()}"
+                      " (the task classifies install failures, not vendor-tree content, so this"
+                      " grouping is a manual read, not the classifier above):")
         lines.append("")
-        lines.append("- `vendor/composer/installed.json`/`installed.php`'s `time` field: Composer"
-                      " writes ISO 8601 (`2015-06-28T21:39:13+00:00`), viv writes"
-                      " `2015-06-28 21:39:13` -- the majority of the differs rows below.")
-        lines.append("- a legacy mixed-case Packagist name (`jeremeamia/SuperClosure`, predating"
-                      " today's lowercase-only naming rule) installs at `vendor/jeremeamia/"
-                      "SuperClosure` under Composer and `vendor/jeremeamia/superclosure` under viv"
-                      " (`laravel/laravel` 1yr).")
-        lines.append("- `phpunit/phpunit`'s own test suite deliberately declares ambiguous"
-                      " duplicate class names as end-to-end fixtures; the two tools' classmaps"
-                      " pick a different one of the two files for the ambiguous entry.")
+        groups: dict[str, list] = {}
+        for p in differs:
+            groups.setdefault(vendor_diff_category(p.vendor_diff_detail), []).append(p)
+        for cat, ps in sorted(groups.items()):
+            names = ", ".join(f"{p.project} {p.commit} ({p.commit_date})" for p in ps)
+            lines.append(f"- **{cat}** ({len(ps)}): {names}")
         lines.append("")
-        lines.append(", ".join(f"{p.project} {p.age_label}" for p in differs))
+        lines.append("Exact reproduction, one pair per confirmed cause (checked by hand, not"
+                      " reproducible purely from the jsonl -- vendor content isn't stored):")
+        lines.append("")
+        lines.append("- `installed.json` time format --"
+                      " `yiisoft/yii2-app-basic` `3be9b8507dc1` (2016-07-25),"
+                      " `vendor/composer/installed.json`, package `behat/gherkin` v4.4.1."
+                      " The lock's own `time` for that package is `\"2015-12-30 14:47:00\"`."
+                      " Composer's `installed.json` writes"
+                      " `\"time\": \"2015-12-30T14:47:00+00:00\"`; viv's writes"
+                      " `\"time\": \"2015-12-30 14:47:00\"` -- unchanged from the lock, where"
+                      " Composer reformats to ISO 8601.")
+        lines.append("- legacy mixed-case package name --"
+                      " `laravel/laravel` `d15ab4b82ed3` (2015-10-14), `vendor/jeremeamia/`."
+                      " The lock names the package `\"jeremeamia/SuperClosure\"`. Composer"
+                      " installs it at `vendor/jeremeamia/SuperClosure`; viv installs it at"
+                      " `vendor/jeremeamia/superclosure`.")
+        lines.append("- phpunit ambiguous classmap entry --"
+                      " `phpunit/phpunit` `9109547f3e73` (2024-09-17),"
+                      " `vendor/composer/autoload_classmap.php`, class"
+                      " `PHPUnit\\TestFixture\\AlternativeSuffixTest` (one of several; phpunit's"
+                      " own end-to-end tests declare duplicate fixture class names on purpose)."
+                      " Composer's classmap points it at"
+                      " `tests/end-to-end/_files/coverage-annotation-based-filter/tests/"
+                      "AnnotationFilterTest.php`; viv's points it at"
+                      " `tests/_files/AlternativeSuffixTest.test.php`.")
+        if "installed.php only, unexplained" in groups:
+            lines.append("- the `installed.php`-only group did not reproduce: re-installing"
+                          " `composer/composer` `8fc94c5e9972` and `phpmyadmin/phpmyadmin`"
+                          f" `9dfedff70b3f` fresh on {REPORT_AGE_REFERENCE.isoformat()} produced"
+                          " byte-identical `installed.php` on both sides. `installed.php` carries"
+                          " no `time` field, so the time-format explanation doesn't apply to it;"
+                          " the original difference isn't classified.")
         lines.append("")
 
     out.write_text("\n".join(lines) + "\n")
