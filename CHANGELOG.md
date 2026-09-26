@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-26
+### Added
+- `viv workspace init <pattern>...` writes the aggregate root's `composer.json` — one `path` repository and one `require` line per matched pattern — then resolves and installs; `viv workspace add <path>` adds one more member to an existing root and resolves again. `--repository type:url` on `viv init` and `viv add`, repeatable, appends a repository entry directly instead of needing a follow-up edit ([#315](https://github.com/svandragt/vivace/issues/315))
+
+### Changed
+- One `install::Snapshot` keys every install cache for the run instead of each cache computing its own; no behaviour change. `make bench-ab` measured warm within ±15 ms and no-op within ±1.1 ms on laravel/drupal/symfony, the sign flipping between runs; a 60-run laravel no-op hyperfine gave 5.2 ms to both binaries either side of the change ([#311](https://github.com/svandragt/vivace/issues/311))
+- The workspace vendor-tree comparison test skips `composer/LICENSE`, which `composer.phar` writes with two extra blank lines — a known difference `tests/new.rs` already worked around ([#266](https://github.com/svandragt/vivace/issues/266))
+
+### Research
+- Candidate A, an append-only ledger lock merged by git's own `merge=union` with no driver: replaying 381 merges finds zero silent folds, so the format is safe, but the fold-then-driver hybrid only finishes 330 of them to the driver's 329, and GitHub reports a hosted pull request with no real conflict in a `merge=union` file as not mergeable regardless. Not built; `viv lock merge` stays the only merge path ([#306](https://github.com/svandragt/vivace/issues/306))
+- Candidate C, lock-seeded solving for a one-package `update`: already how it works — `pool_builder::build_partial` fetches one provider file per named update on every bench project, hub packages with 37 to 45 dependents included, because it never queues metadata for a package the lock already fixes ([#308](https://github.com/svandragt/vivace/issues/308))
+- Candidate D, locks solved on one PHP and installed on another: of 20 corpus projects with a committed lock, 3 drift below a PHP their own CI already tests against, and all 3 are caught by [#300](https://github.com/svandragt/vivace/issues/300)'s platform check the day that PHP joins their CI matrix, so a platform snapshot in the lock would add nothing. Nothing to build ([#309](https://github.com/svandragt/vivace/issues/309))
+
 ## [0.16.0] - 2026-09-24
 ### Added
 - `viv install` refuses, with Composer's Problem wording and exit code 2, when the lock needs a PHP version, extension or library the detected platform lacks, before anything is written; `config.platform`, `--ignore-platform-reqs` and `--ignore-platform-req` are honoured. The verdict is cached in the store so an unchanged project costs one stat and one small read; with no `php` on PATH the check is skipped ([#300](https://github.com/svandragt/vivace/issues/300))
