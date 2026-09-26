@@ -434,7 +434,7 @@ names its control and a measurement that costs days, not weeks, and
 none starts a build before that measurement is in. They are in the
 order worth running them.
 
-### Candidate A: an append-only ledger lock (measured, hold)
+### Candidate A: an append-only ledger lock (measured, not built)
 
 **Question.** If the lock is written as an ordered ledger of record
 changes, one line per package change with the change that caused it,
@@ -506,13 +506,20 @@ the p95 is the same re-solve on both paths. The fold runs under git's
 built-in `merge=union` and needs no configuration. The driver needs
 `merge.viv.driver` in `.git/config`, which `viv install` sets
 (`src/merge_driver.rs`), so a clone that never ran `viv install` merges
-the lock as text. Whether a hosted merge, such as the GitHub
-merge button, applies `merge=union` is not measured here.
+the lock as text. A hosted merge does not help either format.
+GitHub reports a pull request whose only change is one appended line per
+side in a `merge=union` file as `mergeable: false`, the same as a control
+pull request with the same edits and no attribute (2026-09-26, a private
+two-file repository). Locally, `git merge-tree --write-tree` in a bare
+clone conflicts on the union file too unless `attr.tree` is set: a bare
+repository does not read `.gitattributes` from the tree by default.
 
-The choice: build the ledger writer and identity-hash fold as the
-default merge path, with the driver for the 90 merges that need a
-re-solve, or keep the driver as the only path. The fold adds a second
-lock format; it saves the driver setup and about 36 ms per merge.
+**Decision, 2026-09-26: not built.** The fold's advantages over the
+driver are the setup it skips and about 36 ms per merge. `install`
+already runs the driver's merge in a clone with no driver configured
+(#299), and the hosted merge that neither can reach does not apply
+`merge=union`. A second lock format does not pay for 36 ms. The driver
+stays the only merge path.
 
 ### Candidate B: install from a lock years later
 
