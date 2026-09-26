@@ -548,7 +548,7 @@ install": content hashes of the extracted trees and a platform snapshot
 in chapter 1's format, so an install can be verified against trees the
 store still has when the URLs are gone.
 
-### Candidate C: lock-seeded solving
+### Candidate C: lock-seeded solving (measured, already built)
 
 **Question.** On an `update` that changes one package, how much of the
 time goes to fetching and solving packages that end up unchanged?
@@ -567,6 +567,22 @@ to the registry only for names the solver cannot satisfy from the
 lock. Composer's partial update already keeps the rest locked; this
 changes what is fetched, not what is chosen, so the compat sweep with
 `COMPAT_LOCKS=1` is the gate.
+
+**Result, 2026-09-26: already built.** `bench/results/profile.md` §14
+ran `viv update <leaf>`, `viv update <hub>` and plain `viv update` on the
+three bench projects, against their committed locks and a local mirror,
+cold and warm, median of 5 runs. A one-package update fetches one
+provider file on every project, including the hub packages
+(`laravel/framework` with 37 dependencies, `drupal/core-recommended` with
+45), and 99 to 100% of the lock survives. `pool_builder::build_partial`
+never queues metadata for a package the lock already fixes, which is the
+lock-seeded pool this candidate proposed.
+
+Plain `viv update` fetches one provider file per locked package (101, 68
+and 153), and the fetch is the largest phase at 48 to 72% of the time.
+Only 83.2%, 73.5% and 51.0% of the lock survives. Seeding cannot remove
+that fetch: an update with no argument asks whether each package has a
+newer version, and only the registry can answer. Nothing to build.
 
 ### Candidate D: locks solved on one PHP, installed on another
 
