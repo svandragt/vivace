@@ -584,7 +584,7 @@ Only 83.2%, 73.5% and 51.0% of the lock survives. Seeding cannot remove
 that fetch: an update with no argument asks whether each package has a
 newer version, and only the registry can answer. Nothing to build.
 
-### Candidate D: locks solved on one PHP, installed on another
+### Candidate D: locks solved on one PHP, installed on another (measured, not built)
 
 **Question.** How often does a lock solved on a developer's PHP refuse
 on the PHP that runs it, and would a lock that carries its platform
@@ -608,6 +608,29 @@ would refuse, and on which requirement (`php`, `ext-*`). All from
 `--platform` target on `update`, so the lock says what it was solved
 for and `install` reports a mismatch as a solve problem, not a runtime
 one.
+
+**Result, 2026-09-26: nothing to build.** `compat/platform-drift.py`
+read `composer.json`, `composer.lock` and `.github/workflows/*.yml` at a
+pinned commit for every project in `compat/corpus.toml` and every public
+project in `compat/hunted.md` (`compat/results/platform-drift.md`). Of 53
+projects, 20 commit a lock and cloned; 32 commit no lock and 1 failed to
+clone. A CI matrix entry such as `8.2` is read as the newest 8.2 patch,
+because `setup-php` installs that.
+
+Drift, a locked package refusing a PHP that root `require.php` accepts,
+shows in 3 of the 20: phpmyadmin/phpmyadmin, mautic/mautic and
+kimai/kimai. Every case is an upper bound (`vimeo/psalm`,
+`ezyang/htmlpurifier`, `openspout/openspout` among them) below the newest
+PHP the project's own CI tests. All 3 set `config.platform.php`, which
+pins the PHP a solve targets but does not check the lock against the
+range `require.php` claims.
+
+All 3 install from the committed lock in CI, so #300's platform check
+already fails that CI job on the day the new PHP joins the matrix. A
+`viv update` warning could fire no earlier: a lock solved before PHP 8.5
+existed cannot know that a package caps below it. A platform snapshot in
+the lock adds nothing either, since `platform` and `platform-overrides`
+already record what the solve targeted and none of the 3 lacked them.
 
 ### Parked, with reasons
 
