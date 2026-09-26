@@ -1427,3 +1427,14 @@ struct; lock hash and php probe stay lazy. `bench-ab` reported noop
 +0.8 ms on Laravel twice. A 60-run hyperfine gave 5.2 ms to both binaries
 on quiet rounds, the difference coming from two browser processes
 holding a core each. Interleaved A/B absorbs steady load, not bursts.
+
+## 2026-09-26: candidate A not built
+
+The hybrid (ledger fold first, `viv lock merge` as fallback) finished 330
+of 381 replayed merges to the driver's 329, with no silent fold, once the
+fold compared name, version and reference instead of the whole record.
+Its case rested on hosted merges. GitHub reported a pull request that only
+appended one line per side to a `merge=union` file as not mergeable, the
+same as a control without the attribute: a bare repository ignores
+in-tree `.gitattributes` unless `attr.tree` is set. Locally the merge
+still stops on the committed `composer.lock`. The driver stays.
