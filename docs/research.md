@@ -489,26 +489,30 @@ full-record hash saw a change. Silent fold stays zero for the identity
 hash too: no merge finishes over a real conflict, and every merge both
 paths finish agrees on which package versions and references to keep.
 
-Hybrid (the fold first, the driver only when the fold refuses) finishes
-330 of 381 merges, one more than the driver's 329, because the fold
-reaches the merge with a malformed `composer.json` that blocks the
-driver's re-solve. The fold's 291 finish with no re-solve and no network
-call; every one of the driver's 329 already re-solved, online, `viv lock
-merge`'s own docstring in `bench/lockmerge/run.py` confirms exit 0 never
-skips the solve. Median latency drops from 42ms (driver alone) to 6ms
-(hybrid) on the client corpus, and from 49ms to 7ms on the public corpus,
-because most merges never reach the driver. p95 latency stays close to
-the driver's own, since the slow tail is the same real conflicts needing
-a re-solve either way. In 23 of the merges both paths finish, the chosen
-package versions agree but the full lock record still differs, because
-the driver always re-solves and rewrites the content hash and platform
-declaration, and the fold never does.
+Hybrid, the fold first and the driver only when the fold refuses,
+finishes 330 of 381 merges to the driver's 329. The extra merge has a
+malformed `composer.json`, which blocks the driver's re-solve and which
+the fold never reads. On every merge both finish, the package versions
+and references agree. In 23 of them the full lock still differs, because
+the driver rewrites `content-hash` and the platform fields and the fold
+does not.
 
-The choice is between building the ledger writer and the identity-hash
-fold as a fast, offline path for the 291 merges with no real divergence,
-keeping the driver only for the 90 that need a re-solve, or keeping the
-driver as the only merge path, online for every merge, at one merge less
-finished and roughly seven times the median latency.
+Neither path needs the network for a merge with no real conflict: the
+driver re-solves only when a package diverged (`src/lock_merge.rs`,
+`divergent.is_empty()`). The measured differences are elsewhere. The
+median merge takes 6 ms with the fold first against 42 ms with the
+driver alone on the client corpus (7 ms and 49 ms on the public one);
+the p95 is the same re-solve on both paths. The fold runs under git's
+built-in `merge=union` and needs no configuration. The driver needs
+`merge.viv.driver` in `.git/config`, which `viv install` sets
+(`src/merge_driver.rs`), so a clone that never ran `viv install` merges
+the lock as text. Whether a hosted merge, such as the GitHub
+merge button, applies `merge=union` is not measured here.
+
+The choice: build the ledger writer and identity-hash fold as the
+default merge path, with the driver for the 90 merges that need a
+re-solve, or keep the driver as the only path. The fold adds a second
+lock format; it saves the driver setup and about 36 ms per merge.
 
 ### Candidate B: install from a lock years later
 

@@ -1140,8 +1140,8 @@ the same version and reference but a metadata field only one side had;
 the other 12 needed no pick, because the identity hash already read one
 side as unchanged from base. Separately, in 20 client and 3 public merges
 (23 total) the hybrid and driver package identity sets agree but the full
-lock record still differs -- the driver always re-solves and rewrites the
-content hash and platform declaration, and the fold never does, so
+lock record still differs -- the driver rewrites the content hash and
+platform declaration, and the fold never does, so
 agreement on which versions to keep does not mean byte-identical output.
 
 Timing: the driver's median stays under 50ms per merge on both corpora,
