@@ -477,8 +477,42 @@ need what the driver has and the fold does not: a re-solve. The one merge
 the fold finishes and the driver refuses has a malformed `composer.json`,
 which the fold never reads.
 
-Open decision: build the ledger as the format for merges that need no
-re-solve and keep the driver for the rest, or keep the driver alone.
+**Hybrid, 2026-09-25.** Hashing name, version and reference instead of
+the whole record finishes the 14 merges the full-record hash missed as
+false forks. The fold alone now reaches 291 of 381 merges (268 of 355
+client, 23 of 26 public), up from 277. Two of the 14 needed the fold's
+deterministic pick, the record whose canonical JSON sorts first, because
+both sides moved the package to the same version and reference but
+disagreed on a metadata field. The other twelve needed no pick: the
+identity hash already reads one side as unchanged from base, where the
+full-record hash saw a change. Silent fold stays zero for the identity
+hash too: no merge finishes over a real conflict, and every merge both
+paths finish agrees on which package versions and references to keep.
+
+Hybrid, the fold first and the driver only when the fold refuses,
+finishes 330 of 381 merges to the driver's 329. The extra merge has a
+malformed `composer.json`, which blocks the driver's re-solve and which
+the fold never reads. On every merge both finish, the package versions
+and references agree. In 23 of them the full lock still differs, because
+the driver rewrites `content-hash` and the platform fields and the fold
+does not.
+
+Neither path needs the network for a merge with no real conflict: the
+driver re-solves only when a package diverged (`src/lock_merge.rs`,
+`divergent.is_empty()`). The measured differences are elsewhere. The
+median merge takes 6 ms with the fold first against 42 ms with the
+driver alone on the client corpus (7 ms and 49 ms on the public one);
+the p95 is the same re-solve on both paths. The fold runs under git's
+built-in `merge=union` and needs no configuration. The driver needs
+`merge.viv.driver` in `.git/config`, which `viv install` sets
+(`src/merge_driver.rs`), so a clone that never ran `viv install` merges
+the lock as text. Whether a hosted merge, such as the GitHub
+merge button, applies `merge=union` is not measured here.
+
+The choice: build the ledger writer and identity-hash fold as the
+default merge path, with the driver for the 90 merges that need a
+re-solve, or keep the driver as the only path. The fold adds a second
+lock format; it saves the driver setup and about 36 ms per merge.
 
 ### Candidate B: install from a lock years later
 
