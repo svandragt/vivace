@@ -70,7 +70,7 @@ chain into the lower half and install (`--no-install` opts out).
 | `time` | Civil-date/epoch-day helpers shared by `show` (release-age math), `lock_writer` (normalising a package's `time` field) and `vcs` (VCS timestamp formatting). |
 | `native_lock` | Chapter 1's `viv.lock` writer and reader, and `viv lock convert`, which translates an existing `composer.lock` into it without re-solving. |
 | `lock_merge` | Record-level three-way merge and re-solve for `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver. |
-| `workspace` | Chapter 3's `extra.viv.workspace` member discovery and `viv workspace list`. |
+| `workspace` | Chapter 3's `extra.viv.workspace` member discovery and `viv workspace list`; `viv workspace init`/`viv workspace add` write and grow a plain aggregate root, one `path` repository and `require` line per matched pattern, then resolve and install through `require::partial_update`. |
 | `main.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, `diagnose`, `lock`, `workspace`, plus `--offline` and `--cache-dir`. |
 
 ## Why a store and hardlinks

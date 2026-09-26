@@ -1460,3 +1460,23 @@ warning at `update` time could come sooner. The first pass counted 18 of
 19 by reading a CI `8.2` as 8.2.0 and by counting the root's own
 refusals as drift; the rerun reads it as the newest patch and counts
 only a locked package refusing what root accepts.
+
+## 2026-09-26: compat sweep and 0.17.0
+
+The pre-release sweep found one lock-compare difference among the ten
+pinned projects: craftcms/craft's `yii2-shell` requirement is
+satisfiable by both `2.0.6` and `dev-master`, and which one wins depends
+on whether `dev-master` is blocked by a security advisory at solve time.
+viv picked `2.0.6`, Composer picked `dev-master` on the day the sweep
+ran. Re-run against the same frozen mirror, v0.16.0 picks `2.0.6` too, so
+this is the advisories feed moving underneath the sweep, not a viv
+regression, and the pinned project's install (from a lock Composer
+wrote) is unaffected either way. Filed as #316. Everything else: 20 of 20
+pinned install rows identical, 9 of 10 pinned lock-compares identical,
+and in the random sample 14 of 20 rows identical and 6 skipped where
+Composer itself failed to resolve or a platform requirement wasn't met
+(`compat/results/v0.17.0.md`).
+
+0.17.0 ships `viv workspace init`/`viv workspace add` and `--repository`
+on `init`/`add` (#315), the one-`Snapshot`-per-run cache key (#311), and
+the three candidate write-ups above.
