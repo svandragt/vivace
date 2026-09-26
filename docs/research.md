@@ -544,6 +544,25 @@ safety number is zero on both corpora. Tried before the registry instead,
 it kept an older pin than the registry chose in 23 of 34 merges, which is
 why it runs last. Whether to turn it on by default is a separate decision.
 
+**Does the merged lock install, 2026-09-26.** The maintainer has decided
+`--offline-rung` stays opt-in, not the default. For an opt-in user, of
+the 37 client merges the pin finishes, 30 install today
+(`bench/results/lockmerge.md`); the other 7 fail on one commercially
+licensed package's dist archive, a cause unrelated to the pin itself.
+None crash, and none fail on a moved dist host, a moved source reference
+or a shasum mismatch. Ten of the 37 keep a pin `viv audit --locked`
+flags (14 packages); in every one of those, the side not kept carried
+the same advisory, so switching sides would not have avoided it.
+Thirteen of the 37 keep a divergent package below a version the
+discarded side had already reached. The replay resolves these merges
+today, often years after they happened: a `dev-*` branch head the
+registry now serves differently was usually still current at merge
+time, which is most of why 34 of the 37 finished merges were a `dev-*`
+head at all. In live use the pin only ever fires when a branch head has
+moved or a package has been removed between the lock and the merge --
+both rarer than replaying years-old merges against today's Packagist
+makes them look.
+
 ### Candidate B: install from a lock years later (measured, not built)
 
 **Question.** How many committed locks still install today, byte for

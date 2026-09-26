@@ -1417,3 +1417,175 @@ Residue remaining, by leaf cause:
 None.
 
 Safety number: 0. No merge where rung 0's pin and the registry's own re-solve, when both finished, chose a different package identity.
+
+## 2026-09-26T20:16:33Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `target/release/viv` (viv 0.17.0, commit `d5bb48c91afe8edfb33fad885373fe184e5366f5`).
+
+### flarum/flarum
+
+Skipped: no committed composer.lock at HEAD.
+
+### monicahq/monica
+
+Examined `no qualifying merge found (no merge had both parents touch composer.lock)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Crashed (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 0 | n/a | 0 | 0 | 0 | n/a | 0 | n/a |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Crashed (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Crashed (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 0 | 0 | 25 | 5 | 4 | 3 |
+
+Resolved rung 3 (seeded): 3. 3 merge(s) moved ≥1 package outside the divergent set.
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Crashed (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 0 | 0 | 25 | 5 | 4 | 3 |
+
+Resolved rung 3 (seeded): 3. 3 merge(s) moved ≥1 package outside the divergent set.
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Offline rung vs registry escalation (#314)
+
+| Merges examined | Residue cleared | Residue remaining | Crashed | Clean | Safety number | Network avoided | Median ms, no flag | Median ms, --offline-rung |
+|---|---|---|---|---|---|---|---|---|
+| 26 | 0 | 0 | 0 | 26 | 0 | 0 | 48.0 | 47.8 |
+
+Residue cleared, by the leaf cause it cleared:
+
+None.
+
+Residue remaining, by leaf cause:
+
+None.
+
+Crashed, by reason (either the plain or the `--offline-rung` call):
+
+None.
+
+Safety number: 0. No merge where the offline pin (rung 4) and the registry's own re-solve, when both finished, chose a different package identity.
+
+### Offline pin install check (#314 follow-up)
+
+No merge had an `--install-check` result (none of the offline-rung merges in this run reached rung 4, the offline pin).
+
+## Offline pin, does the merged lock install (#314), 2026-09-26
+
+**Question.** Of the merges `--offline-rung` finishes that would otherwise
+end in conflict markers, how many produce a lock that actually installs
+today, and what does keeping the pin cost?
+
+**Result.** `viv lock merge --offline-rung --install-check`
+(`bench/lockmerge/run.py --offline-rung --install-check`) on the same 355
+client merges (four anonymised projects, `report16.md`) plus the
+26-merge public corpus, both 2026-09-26: for every merge the offline pin
+(rung 4) finished, the merged `composer.lock` and `composer.json` are
+written into a fresh scratch dir and installed with an empty store
+(`viv install --no-scripts --no-plugins --ignore-platform-reqs`); `viv
+audit --locked` runs on the merged lock and on each parent's own lock.
+
+| Corpus | Finished by the pin | Installs | Dist gone | Source ref gone | Shasum mismatch | Other | Crashed |
+|---|---|---|---|---|---|---|---|
+| Client (anonymised, four projects) | 37 | 30 | 0 | 0 | 0 | 7 | 0 |
+| Public | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Advisory count: 10 of the 37 merges keep a pin `viv audit --locked`
+flags (14 packages total); in every one of those 14, the side not kept
+carried the same advisory, so switching sides would not have avoided any
+of them.
+
+Revert count: 13 of the 37 merges keep at least one divergent package
+below a version the discarded side had already reached (45 packages
+total revert this way).
+
+Sides kept: of the 37, 32 keep `ours`, 5 keep `theirs`; none mix within
+a merge, and none resolve to neither parent's own pin.
+
+30 of 37 install cleanly. The 7 that don't all fail the same way: a
+downloaded dist archive that isn't a valid zip (`invalid Zip archive:
+Could not find EOCD`), all for the same single commercially licensed
+package -- consistent with a paywalled plugin whose dist URL no longer
+serves an archive without a licence key this replay doesn't have, not a
+Packagist or VCS host gone missing. No install crashed or timed out, and
+none failed on a dist 404, a moved source reference or a shasum
+mismatch in this replay.
+
+**What this means for the default.** The maintainer has decided
+`--offline-rung` stays opt-in, not the default. This measurement is what
+an opt-in user gets from turning it on: of the 37 merges it finishes, 30
+install; the other 7 fail on a licensed plugin's dist archive, a cause
+unrelated to the pin itself. No flagged advisory here would have been
+avoided by keeping the other side's pin instead, but 13 of the 37 merges
+do keep an older version than the discarded side had already reached --
+a cost of resolving offline from whichever parent's own history is
+closest, not a defect specific to this corpus. The replay resolves these
+merges today, often years after they happened: a `dev-*` branch head the
+registry now serves differently was usually still current at merge time,
+which is most of why 34 of the 37 finished merges were a `dev-*` head at
+all (the offline-rung section above). In live use the pin only ever
+fires when a branch head has moved or a package has been removed between
+the lock and the merge -- both rarer events than replaying years-old
+merges against today's Packagist makes them look.

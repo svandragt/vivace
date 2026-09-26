@@ -46,7 +46,7 @@ Usage:
 
 `--offline-rung` (#314) runs the driver twice per merge, without and with
 that flag, and adds a table comparing the two: residue cleared/remaining,
-the safety number (rung 0 accepted a pin the registry re-solve would have
+the safety number (rung 4, the offline pin, accepted a pin the registry re-solve would have
 picked differently, when it also finished), network avoided, and the
 median time both ways.
 
@@ -636,15 +636,27 @@ def classify_resolution(
     return outcome, higher
 
 
+# The offline pin's own rung number, `src/lock_merge.rs`'s
+# `OFFLINE_PIN_RUNG` -- one further rung past the highest of the three
+# escalation rungs (1-3), not a fourth choice among them, so `viv lock
+# merge`'s own "resolved via rung N" line prints 4, never 0. An earlier
+# pass of this harness assumed 0 (this file's own prior `parse_resolution`
+# self-test example used it too); every check gating on the offline pin
+# having been the one that resolved a merge reads this constant, not a
+# literal, so there is exactly one place left to get it wrong.
+OFFLINE_PIN_RUNG = 4
+
+
 def classify_safety(
     offline_idx: dict, baseline_idx: dict, ours_idx: dict, theirs_idx: dict,
 ) -> str | None:
-    """#314's safety number: `None` when every package rung 0 and the
-    registry re-solve (baseline, no flag) both resolved agrees; otherwise
-    one kind string per differing package, joined, naming which parent
-    rung 0's pin came from and whether the registry chose older or newer.
-    Compares every package, not just the divergent names -- rung 3's own
-    `moved` list (#296) means a *non*-divergent package can differ too."""
+    """#314's safety number: `None` when every package the offline pin
+    (rung 4) and the registry re-solve (baseline, no flag) both resolved
+    agrees; otherwise one kind string per differing package, joined,
+    naming which parent the pin came from and whether the registry chose
+    older or newer. Compares every package, not just the divergent names
+    -- rung 3's own `moved` list (#296) means a *non*-divergent package
+    can differ too."""
     kinds: list[str] = []
     for name in sorted(set(offline_idx) | set(baseline_idx)):
         off, base = offline_idx.get(name), baseline_idx.get(name)
@@ -967,10 +979,64 @@ def declare_contemporaneous_platform(composer_json: bytes, ours_lock: bytes, the
     return json.dumps(data).encode()
 
 
+# --- hang watchdog (#314 step 4) ----------------------------------------
+# A real client-corpus sweep does live network I/O per merge (registry
+# escalation, now also `viv install`'s dist/source fetches); the previous
+# replay saw two `viv lock merge` calls run past a 90-second harness
+# watchdog under real Packagist load. Rather than requiring someone to
+# watch the whole multi-hour sweep and intervene by hand, every long-lived
+# subprocess here runs under this watchdog: past `LOCKMERGE_HANG_TIMEOUT`
+# seconds (default 300, the runbook's own threshold), it captures a few
+# `/proc` diagnostics before killing the process, so a hang leaves a trace
+# instead of an unattended stall -- and the caller still gets back
+# something that looks exactly like a crashed subprocess (negative
+# returncode), no special-casing needed downstream.
+
+HANG_TIMEOUT = int(os.environ.get("LOCKMERGE_HANG_TIMEOUT", "300"))
+
+
+def capture_hang_diagnostics(pid: int, hang_dir: Path, label: str) -> Path:
+    hang_dir.mkdir(parents=True, exist_ok=True)
+    out = hang_dir / f"hang-{label}-{pid}.txt"
+    sections = []
+    for name, cmd in (
+        ("stack", ["cat", f"/proc/{pid}/stack"]),
+        ("fd", ["ls", "-l", f"/proc/{pid}/fd"]),
+        ("cmdline", ["sh", "-c", f"tr '\\0' ' ' < /proc/{pid}/cmdline"]),
+        ("pstree", ["pstree", "-p", str(pid)]),
+    ):
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        sections.append(f"--- {name} ---\n{result.stdout}{result.stderr}")
+    out.write_text("\n\n".join(sections) + "\n")
+    return out
+
+
+def run_with_watchdog(
+    command: list[str], hang_dir: Path | None, label: str, timeout: int = HANG_TIMEOUT
+) -> subprocess.CompletedProcess:
+    """Like `subprocess.run(command, capture_output=True)`, but past
+    `timeout` seconds it captures `/proc/<pid>` diagnostics into `hang_dir`
+    (when given -- `None` skips capture, e.g. under `--self-test`, which
+    never runs anything this slow) before killing the process, returning a
+    result with `returncode=-9` as if the process had been sent SIGKILL
+    directly -- indistinguishable downstream from any other crash."""
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+    except subprocess.TimeoutExpired:
+        if hang_dir is not None:
+            path = capture_hang_diagnostics(proc.pid, hang_dir, label)
+            log(f"{label}: hung past {timeout}s (pid {proc.pid}), diagnostics: {path}")
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        return subprocess.CompletedProcess(command, -9, stdout, stderr)
+
+
 def driver_conflict(
     viv_bin: str, work: Path, cache_dir: Path, repo_dir: Path, sha: str,
     composer_json: bytes | None, base: bytes, ours: bytes, theirs: bytes,
-    offline_rung: bool = False,
+    offline_rung: bool = False, hang_dir: Path | None = None,
 ) -> tuple[bool | None, str | None, int | None, int, bytes | None]:
     """`viv lock merge` on the composer.lock trio, run from a directory
     holding the merge commit's own composer.json with its platform
@@ -1010,7 +1076,7 @@ def driver_conflict(
     result there unconditionally (#306: the ledger fold's own control
     needs the driver's actual merged content, not just whether it
     conflicted). `offline_rung` (#314) appends `--offline-rung`; a
-    successful rung-0 resolve reports rung 0 through the same
+    successful offline-pin resolve reports rung 4 through the same
     `parse_resolution` line, no format change needed here."""
     if composer_json is None:
         return None, "composer.json missing at the merge commit", None, 0, None
@@ -1032,7 +1098,7 @@ def driver_conflict(
         command += ["--as-of", committer_date]
     if offline_rung:
         command.append("--offline-rung")
-    result = subprocess.run(command, capture_output=True)
+    result = run_with_watchdog(command, hang_dir, f"{sha[:12]}-lock-merge")
     if result.returncode not in (0, 1):
         stderr = result.stderr.decode(errors="replace").strip()
         return None, (summarize_resolve_failure(stderr) if stderr else f"viv lock merge crashed ({result.returncode})"), None, 0, None
@@ -1104,19 +1170,190 @@ def leaf_cause_class(reason: str | None) -> str:
     return LEAF_CAUSE_OTHER
 
 
+# --- install check (#314 follow-up) -------------------------------------
+# For every merge the offline pin actually finished (rung 4), does the
+# merged lock it produced still install against today's Packagist, and
+# what did keeping one parent's pin cost -- a security advisory the other
+# side didn't carry, or reverting a divergent package the discarded side
+# had already moved past. Only ever reads counts and kind labels out to
+# the committed report; `reason`/`InstallCheckOutcome.reason` is a
+# footnote/log detail, never client text landing in the repo.
+
+INSTALL_INSTALLS = "installs"
+INSTALL_DIST_GONE = "dist_gone"
+INSTALL_SOURCE_REF_GONE = "source_ref_gone"
+INSTALL_SHASUM_MISMATCH = "shasum_mismatch"
+INSTALL_OTHER = "other"
+INSTALL_CRASHED = "crashed"
+
+
+def classify_install_failure(stderr: str) -> tuple[str, str]:
+    """`viv install`'s stderr, bucketed by the message shape each cause
+    actually produces: `src/fetch.rs`'s `get` wraps a non-2xx dist
+    response in reqwest's own "HTTP status client error (404 ...)" text
+    (dist gone); `src/source.rs`'s git checkout is wrapped in a "checking
+    out {reference}" context (source ref gone); `src/fetch.rs`'s
+    `verify_shasum` says "sha1 mismatch" (shasum mismatch); anything else
+    is quoted verbatim as `other`, a bench-script heuristic same as
+    `summarize_resolve_failure`'s, not an exhaustive parser."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if not lines:
+        return INSTALL_OTHER, "no stderr"
+    text = " ".join(lines)
+    if "sha1 mismatch" in text:
+        return INSTALL_SHASUM_MISMATCH, lines[0]
+    if "checking out" in text:
+        return INSTALL_SOURCE_REF_GONE, lines[0]
+    if re.search(r"\b404\b", text) or "Not Found" in text:
+        return INSTALL_DIST_GONE, lines[0]
+    return INSTALL_OTHER, lines[0]
+
+
+def strip_autoload(composer_json: bytes) -> bytes:
+    """Drops `autoload`/`autoload-dev`: neither is part of `content-hash`
+    (`src/lock.rs`'s own `RELEVANT` key list), so removing them can't stale
+    the lock, and the install-check scratch dir never holds the historical
+    project's own source tree -- a root `classmap`/`files` entry pointing
+    at a directory that isn't there (`install`'s autoload dump scans it
+    eagerly) would fail the install on the *root* package's own layout,
+    nothing to do with whether the merged lock's dependencies still
+    fetch, which is the only thing #314's install check measures."""
+    try:
+        data = json.loads(composer_json)
+    except json.JSONDecodeError:
+        return composer_json
+    data.pop("autoload", None)
+    data.pop("autoload-dev", None)
+    return json.dumps(data).encode()
+
+
+def install_check(
+    viv_bin: str, scratch: Path, hang_dir: Path | None, sha: str,
+    composer_json: bytes, composer_lock: bytes,
+) -> tuple[str, str | None]:
+    """Writes the merged lock+manifest into its own per-merge scratch dir
+    (never the shared per-repo `work` -- it has to survive past the next
+    merge's own driver call reusing that directory) and installs from it
+    with a fresh, empty store: whether the kept pins still resolve to
+    something fetchable today, not whether a warm cache already has it."""
+    scratch.mkdir(parents=True, exist_ok=True)
+    (scratch / "composer.json").write_bytes(strip_autoload(composer_json))
+    (scratch / "composer.lock").write_bytes(composer_lock)
+    result = run_with_watchdog(
+        [
+            viv_bin, "install", "--no-scripts", "--no-plugins", "--ignore-platform-reqs",
+            "--cache-dir", str(scratch / "cache"), "-d", str(scratch),
+        ],
+        hang_dir, f"{sha[:12]}-install",
+    )
+    if result.returncode == 0:
+        return INSTALL_INSTALLS, None
+    if result.returncode < 0:
+        # A negative returncode is Python's own convention for "killed by
+        # signal N" (`run_with_watchdog`'s timeout kill included) -- its
+        # own outcome (#320's own rule, applied here too), not folded into
+        # "other" where an empty/truncated stderr would otherwise land it.
+        return INSTALL_CRASHED, f"install crashed (signal {-result.returncode})"
+    return classify_install_failure(result.stderr.decode(errors="replace").strip())
+
+
+def run_audit_locked(
+    viv_bin: str, cache_dir: Path, scratch: Path, hang_dir: Path | None, sha: str, label: str,
+    composer_json: bytes | None, composer_lock: bytes,
+) -> set[str] | None:
+    """Package names `viv audit --locked --format json` flags with at
+    least one advisory, or `None` when the audit produced no parseable
+    JSON (a network failure, say) -- treated as "unknown", not "clean".
+    `cache_dir` is the repo's shared driver cache (unlike `install_check`'s
+    fresh one): the advisories database, not per-package content, so
+    there's nothing wrong with a warm cache here and every reason to reuse
+    the same fetch across a repo's merges."""
+    scratch.mkdir(parents=True, exist_ok=True)
+    (scratch / "composer.json").write_bytes(composer_json or b"{}")
+    (scratch / "composer.lock").write_bytes(composer_lock)
+    result = run_with_watchdog(
+        [viv_bin, "audit", "--locked", "--cache-dir", str(cache_dir), "--format", "json", "-d", str(scratch)],
+        hang_dir, f"{sha[:12]}-audit-{label}",
+    )
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    advisories = data.get("advisories")
+    return set(advisories.keys()) if isinstance(advisories, dict) else set()
+
+
+@dataclass
+class PinKept:
+    name: str
+    side: str  # "ours" | "theirs" | "neither" | "removed"
+    reverted: bool  # the side NOT kept had already moved to a strictly higher version
+
+
+def classify_kept_pins(
+    merged_idx: dict, ours_idx: dict, theirs_idx: dict, divergent: set[str]
+) -> list[PinKept]:
+    """Per divergent package, which parent's pin the merged lock actually
+    carries (`try_offline_rung`, `src/lock_merge.rs`: one attempt tries
+    every divergent name against one side's own pin, falling back to the
+    other side only for a name that side itself lacks -- so this reads
+    the answer off the merged lock the same way `classify_resolution`
+    reads a human's merge commit, rather than re-deriving which attempt
+    the solver took), and whether the side NOT kept had already moved to
+    a higher version -- the pin reverting a deliberate upgrade."""
+    kept = []
+    for name in sorted(divergent):
+        m, o, t = merged_idx.get(name), ours_idx.get(name), theirs_idx.get(name)
+        if m is None:
+            kept.append(PinKept(name, "removed", False))
+            continue
+        if m == o:
+            side, kept_ver, discarded_ver = "ours", o[0] if o else None, t[0] if t else None
+        elif m == t:
+            side, kept_ver, discarded_ver = "theirs", t[0] if t else None, o[0] if o else None
+        else:
+            side, kept_ver, discarded_ver = "neither", None, None
+        cmp = compare_versions(discarded_ver, kept_ver)
+        kept.append(PinKept(name, side, cmp is not None and cmp > 0))
+    return kept
+
+
+def merge_kept_side(pins: list[PinKept]) -> str:
+    sides = {p.side for p in pins if p.side in ("ours", "theirs")}
+    if len(sides) == 1:
+        return sides.pop()
+    return "mixed" if sides else "n/a"
+
+
+@dataclass
+class InstallCheckOutcome:
+    """#314 follow-up, only set with `--install-check`, and only for a
+    merge the offline pin (rung 4) finished. Counts, not text: `reason` is
+    a footnote/log detail only, never quoted into the committed report."""
+    kind: str
+    reason: str | None
+    kept_side: str  # "ours" | "theirs" | "mixed" | "n/a"
+    divergent: int
+    reverts: int  # divergent packages where the side NOT kept was the higher version
+    kept_advisory_count: int  # kept-pin packages `viv audit --locked` flags
+    kept_advisory_other_side_clean: int  # ... of those, the side NOT kept had none for that package
+
+
 @dataclass
 class OfflineOutcome:
     """`--offline-rung` (#314), compared against the same merge's plain
     `driver_conflict` (no flag) call. `safety_kind` is only set when both
-    finished, rung 0 is the one that finished the flagged run, and some
+    finished, rung 4 (the offline pin) is the one that finished the flagged run, and some
     package's identity differs between the two results -- the safety
-    number's per-case classification (which parent's pin rung 0 kept, and
-    whether the registry re-solve moved to an older or newer version)."""
+    number's per-case classification (which parent's pin the offline rung kept, and
+    whether the registry re-solve moved to an older or newer version).
+    `install` is only set with `--install-check`."""
     conflicted: bool | None
     error: str | None
     rung: int | None
     time: float | None
     safety_kind: str | None = None
+    install: "InstallCheckOutcome | None" = None
 
 
 @dataclass
@@ -1148,6 +1385,7 @@ def clone_or_reuse(cache_root: Path, project: Project) -> Path:
 def run_repo(
     project: Project, cache_root: Path, cap: int, viv_bin: str, native_available: bool,
     driver_available: bool, ledger: bool = False, hybrid: bool = False, offline_rung: bool = False,
+    install_check_flag: bool = False, hang_dir: Path | None = None,
 ) -> RepoReport:
     report = RepoReport(project=project)
     repo_dir = clone_or_reuse(cache_root, project)
@@ -1226,10 +1464,14 @@ def run_repo(
                 driver_start = time.perf_counter()
                 driver_conflicted, driver_err, driver_rung, driver_moved, driver_lock = driver_conflict(
                     viv_bin, work, driver_cache, repo_dir, m.sha,
-                    merge_json, base_lock, ours_lock, theirs_lock,
+                    merge_json, base_lock, ours_lock, theirs_lock, hang_dir=hang_dir,
                 )
                 driver_time = time.perf_counter() - driver_start
-                if driver_conflicted and driver_err:
+                if driver_conflicted is None:
+                    report.footnotes.append(
+                        f"{m.sha[:12]}: viv lock merge crashed: {driver_err or 'no stderr'}"
+                    )
+                elif driver_conflicted and driver_err:
                     report.footnotes.append(
                         f"{m.sha[:12]}: viv lock merge re-solve did not finish: {driver_err}"
                     )
@@ -1264,23 +1506,90 @@ def run_repo(
                 offline_start = time.perf_counter()
                 off_conflicted, off_err, off_rung, _off_moved, off_lock = driver_conflict(
                     viv_bin, work, driver_cache, repo_dir, m.sha,
-                    merge_json, base_lock, ours_lock, theirs_lock, offline_rung=True,
+                    merge_json, base_lock, ours_lock, theirs_lock, offline_rung=True, hang_dir=hang_dir,
                 )
                 off_time = time.perf_counter() - offline_start
-                if off_conflicted and off_err:
+                if off_conflicted is None:
+                    report.footnotes.append(
+                        f"{m.sha[:12]}: --offline-rung crashed: {off_err or 'no stderr'}"
+                    )
+                elif off_conflicted and off_err:
                     report.footnotes.append(
                         f"{m.sha[:12]}: --offline-rung re-solve did not finish: {off_err}"
                     )
                 safety_kind = None
-                if off_rung == 0 and off_conflicted is False and driver_conflicted is False:
+                if off_rung == OFFLINE_PIN_RUNG and off_conflicted is False and driver_conflicted is False:
                     offline_idx, baseline_idx = lock_index(off_lock), lock_index(driver_lock)
                     if offline_idx is not None and baseline_idx is not None:
                         safety_kind = classify_safety(offline_idx, baseline_idx, ours_idx, theirs_idx)
                         if safety_kind:
                             report.footnotes.append(
-                                f"{m.sha[:12]}: offline rung 0 safety difference: {safety_kind}"
+                                f"{m.sha[:12]}: offline rung safety difference: {safety_kind}"
                             )
-                offline_outcome = OfflineOutcome(off_conflicted, off_err, off_rung, off_time, safety_kind)
+
+                install_outcome: InstallCheckOutcome | None = None
+                if install_check_flag and off_rung == OFFLINE_PIN_RUNG and off_conflicted is False:
+                    merged_idx = lock_index(off_lock)
+                    merged_json = (
+                        declare_contemporaneous_platform(merge_json, ours_lock, theirs_lock)
+                        if merge_json is not None else None
+                    )
+                    if merged_idx is None or merged_json is None:
+                        report.footnotes.append(
+                            f"{m.sha[:12]}: install check skipped, merged lock/manifest unavailable"
+                        )
+                    else:
+                        pins = classify_kept_pins(merged_idx, ours_idx, theirs_idx, real_names)
+                        kind, reason = install_check(
+                            viv_bin, work / "install-check" / m.sha[:12], hang_dir, m.sha,
+                            merged_json, off_lock,
+                        )
+                        if kind != INSTALL_INSTALLS:
+                            report.footnotes.append(f"{m.sha[:12]}: install check: {kind}: {reason}")
+
+                        kept_advisory_count = kept_advisory_other_side_clean = 0
+                        merged_advisories = run_audit_locked(
+                            viv_bin, driver_cache, work / "audit-merged" / m.sha[:12], hang_dir,
+                            m.sha, "merged", merged_json, off_lock,
+                        )
+                        if merged_advisories is None:
+                            report.footnotes.append(f"{m.sha[:12]}: audit of the merged lock failed")
+                        else:
+                            kept_names = {p.name for p in pins if p.side in ("ours", "theirs")}
+                            flagged = kept_names & merged_advisories
+                            if flagged:
+                                ours_advisories = run_audit_locked(
+                                    viv_bin, driver_cache, work / "audit-ours" / m.sha[:12], hang_dir,
+                                    m.sha, "ours", blob(repo_dir, m.ours, "composer.json"), ours_lock,
+                                )
+                                theirs_advisories = run_audit_locked(
+                                    viv_bin, driver_cache, work / "audit-theirs" / m.sha[:12], hang_dir,
+                                    m.sha, "theirs", blob(repo_dir, m.theirs, "composer.json"), theirs_lock,
+                                )
+                                if ours_advisories is None:
+                                    report.footnotes.append(f"{m.sha[:12]}: audit of ours' own lock failed")
+                                if theirs_advisories is None:
+                                    report.footnotes.append(f"{m.sha[:12]}: audit of theirs' own lock failed")
+                                for p in pins:
+                                    if p.name not in flagged:
+                                        continue
+                                    kept_advisory_count += 1
+                                    discarded = theirs_advisories if p.side == "ours" else ours_advisories
+                                    if discarded is not None and p.name not in discarded:
+                                        kept_advisory_other_side_clean += 1
+
+                        install_outcome = InstallCheckOutcome(
+                            kind, reason, merge_kept_side(pins), len(pins),
+                            sum(1 for p in pins if p.reverted),
+                            kept_advisory_count, kept_advisory_other_side_clean,
+                        )
+                        if install_outcome.reverts:
+                            report.footnotes.append(
+                                f"{m.sha[:12]}: offline pin reverted {install_outcome.reverts} "
+                                "divergent package(s) past a higher discarded version"
+                            )
+
+                offline_outcome = OfflineOutcome(off_conflicted, off_err, off_rung, off_time, safety_kind, install_outcome)
 
             report.merges.append(MergeOutcome(
                 m.sha, composer_conflicts, native_conflicts, native_error, real,
@@ -1456,16 +1765,41 @@ def render_hybrid(merges: list[MergeOutcome]) -> list[str]:
     return lines
 
 
+def offline_bucket(m: MergeOutcome) -> str:
+    """#320: which of four *mutually exclusive* outcomes a merge lands in,
+    once both the plain and `--offline-rung` driver calls are in. A crash
+    on either call (`driver_conflict`/`offline.conflicted` is `None`, a
+    process killed or exiting by signal, not the driver's own conflict/
+    success exit) always wins the classification -- we don't know what a
+    crashed call would have resolved to, so it can't also count as
+    "cleared", "remaining" or "clean" the way an unfiltered `is True`/
+    `is False` check would let it silently do (the crash that motivated
+    this: two client merges killed past a watchdog timeout, previously
+    absent from every count here)."""
+    if m.driver_conflict is None or m.offline.conflicted is None:
+        return "crashed"
+    if m.driver_conflict is True and m.offline.conflicted is False:
+        return "cleared"
+    if m.offline.conflicted is True:
+        return "remaining"
+    return "clean"  # neither side ever conflicted, nothing for the flag to clear
+
+
 def render_offline(merges: list[MergeOutcome]) -> list[str]:
     """#314: `--offline-rung` against the same merge's plain (no-flag)
-    driver call. Four counts, in the issue's own order -- residue cleared
-    (a merge that used to end in markers and now doesn't, by the leaf
-    cause of the marker it cleared), residue remaining (still markers,
-    same leaf-cause buckets), the safety number (rung 0 accepted a pin the
-    registry re-solve, when it also finished, would have picked
-    differently), and network avoided (rung 0 finished a merge that used
-    to need an escalation rung, no registry contact for it this time) --
-    plus the median time both ways."""
+    driver call. Residue cleared (a merge that used to end in markers and
+    now doesn't, by the leaf cause of the marker it cleared), residue
+    remaining (still markers, same leaf-cause buckets), crashed (#320:
+    either call was killed or exited by signal, so the merge is its own
+    outcome rather than silently missing from every other count), and
+    clean (neither call ever saw a conflict) partition every counted merge
+    exactly once (`offline_bucket`), so the four sum to merges examined.
+    Alongside: the safety number (rung 4, the offline pin, accepted a pin the registry
+    re-solve, when it also finished, would have picked differently) and
+    network avoided (rung 4 finished a merge that used to need an
+    escalation rung, no registry contact for it this time) -- both
+    cross-cutting flags, not additional outcomes -- plus the median time
+    both ways."""
     counted = [m for m in merges if m.offline is not None]
     lines = ["### Offline rung vs registry escalation (#314)", ""]
     if not counted:
@@ -1474,11 +1808,13 @@ def render_offline(merges: list[MergeOutcome]) -> list[str]:
         return lines
 
     n = len(counted)
-    cleared = [m for m in counted if m.driver_conflict is True and m.offline.conflicted is False]
-    remaining = [m for m in counted if m.offline.conflicted is True]
+    cleared = [m for m in counted if offline_bucket(m) == "cleared"]
+    remaining = [m for m in counted if offline_bucket(m) == "remaining"]
+    crashed = [m for m in counted if offline_bucket(m) == "crashed"]
+    clean = [m for m in counted if offline_bucket(m) == "clean"]
     network_avoided = [
         m for m in counted
-        if m.offline.rung == 0 and m.driver_conflict is False and m.driver_rung is not None
+        if m.offline.rung == OFFLINE_PIN_RUNG and m.driver_conflict is False and m.driver_rung is not None
     ]
     safety_cases = [m for m in counted if m.offline.safety_kind]
 
@@ -1498,13 +1834,13 @@ def render_offline(merges: list[MergeOutcome]) -> list[str]:
     offline_times = [m.offline.time for m in counted if m.offline.time is not None]
 
     lines.append(
-        "| Merges examined | Residue cleared | Residue remaining | Safety number | "
-        "Network avoided | Median ms, no flag | Median ms, --offline-rung |"
+        "| Merges examined | Residue cleared | Residue remaining | Crashed | Clean | "
+        "Safety number | Network avoided | Median ms, no flag | Median ms, --offline-rung |"
     )
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     lines.append(
-        f"| {n} | {len(cleared)} | {len(remaining)} | {len(safety_cases)} | "
-        f"{len(network_avoided)} | "
+        f"| {n} | {len(cleared)} | {len(remaining)} | {len(crashed)} | {len(clean)} | "
+        f"{len(safety_cases)} | {len(network_avoided)} | "
         f"{fmt_ms(statistics.median(driver_times)) if driver_times else 'n/a'} | "
         f"{fmt_ms(statistics.median(offline_times)) if offline_times else 'n/a'} |"
     )
@@ -1516,6 +1852,9 @@ def render_offline(merges: list[MergeOutcome]) -> list[str]:
     lines.append("Residue remaining, by leaf cause:")
     lines.append("")
     lines.extend(leaf_table(remaining, lambda m: m.offline.error))
+    lines.append("Crashed, by reason (either the plain or the `--offline-rung` call):")
+    lines.append("")
+    lines.extend(leaf_table(crashed, lambda m: m.driver_error if m.driver_conflict is None else m.offline.error))
 
     if safety_cases:
         kind_counts: dict[str, int] = {}
@@ -1530,9 +1869,71 @@ def render_offline(merges: list[MergeOutcome]) -> list[str]:
             lines.append(f"| {kind} | {c} |")
         lines.append("")
     else:
-        lines.append("Safety number: 0. No merge where rung 0's pin and the registry's own "
+        lines.append("Safety number: 0. No merge where the offline pin (rung 4) and the registry's own "
                       "re-solve, when both finished, chose a different package identity.")
         lines.append("")
+    return lines
+
+
+def render_install_check(merges: list[MergeOutcome]) -> list[str]:
+    """#314 follow-up, only with `--install-check`: of the merges the
+    offline pin finished (rung 4), does the merged lock actually install,
+    and what did keeping its pins cost -- a security advisory the
+    discarded side didn't carry, or reverting a divergent package past a
+    higher version the discarded side had already reached. Counts and
+    kind labels only; `InstallCheckOutcome.reason` never appears here (it
+    is a footnote/log detail, per this repo's client-privacy rule)."""
+    counted = [m for m in merges if m.offline is not None and m.offline.install is not None]
+    lines = ["### Offline pin install check (#314 follow-up)", ""]
+    if not counted:
+        lines.append("No merge had an `--install-check` result (none of the offline-rung "
+                      "merges in this run reached rung 4, the offline pin).")
+        lines.append("")
+        return lines
+
+    n = len(counted)
+    kinds = [
+        INSTALL_INSTALLS, INSTALL_DIST_GONE, INSTALL_SOURCE_REF_GONE, INSTALL_SHASUM_MISMATCH,
+        INSTALL_OTHER, INSTALL_CRASHED,
+    ]
+    counts = {k: sum(1 for m in counted if m.offline.install.kind == k) for k in kinds}
+    lines.append(
+        "| Finished by the pin | Installs | Dist gone | Source ref gone | Shasum mismatch | Other | Crashed |"
+    )
+    lines.append("|---|---|---|---|---|---|---|")
+    lines.append(
+        f"| {n} | {counts[INSTALL_INSTALLS]} | {counts[INSTALL_DIST_GONE]} | "
+        f"{counts[INSTALL_SOURCE_REF_GONE]} | {counts[INSTALL_SHASUM_MISMATCH]} | {counts[INSTALL_OTHER]} | "
+        f"{counts[INSTALL_CRASHED]} |"
+    )
+    lines.append("")
+
+    advisory_merges = sum(1 for m in counted if m.offline.install.kept_advisory_count > 0)
+    advisory_packages = sum(m.offline.install.kept_advisory_count for m in counted)
+    other_side_clean_packages = sum(m.offline.install.kept_advisory_other_side_clean for m in counted)
+    lines.append(
+        f"Advisory count: {advisory_merges} merge(s) where a kept pin carries a `viv audit "
+        f"--locked` advisory ({advisory_packages} package(s) total; {other_side_clean_packages} "
+        "of those had no advisory on the side not kept)."
+    )
+    lines.append("")
+
+    revert_merges = sum(1 for m in counted if m.offline.install.reverts > 0)
+    revert_packages = sum(m.offline.install.reverts for m in counted)
+    lines.append(
+        f"Revert count: {revert_merges} merge(s) with at least one divergent package where the "
+        f"side not kept had already moved to a higher version ({revert_packages} package(s) total)."
+    )
+    lines.append("")
+
+    sides = ["ours", "theirs", "mixed", "n/a"]
+    side_counts = {s: sum(1 for m in counted if m.offline.install.kept_side == s) for s in sides}
+    lines.append("| Sides kept | Ours | Theirs | Mixed | n/a (no divergent package resolved) |")
+    lines.append("|---|---|---|---|---|")
+    lines.append(
+        f"| {n} | {side_counts['ours']} | {side_counts['theirs']} | {side_counts['mixed']} | {side_counts['n/a']} |"
+    )
+    lines.append("")
     return lines
 
 
@@ -1540,6 +1941,7 @@ def render(
     reports: list[RepoReport], cap: int, viv_bin: str, viv_version: str,
     native_available: bool, viv_commit: str | None, driver_available: bool,
     ledger: bool = False, hybrid: bool = False, offline_rung: bool = False,
+    install_check_flag: bool = False,
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     commit_note = f", commit `{viv_commit}`" if viv_commit else ""
@@ -1565,6 +1967,7 @@ def render(
 
     total_merges = total_composer = total_native = total_real = total_wins = 0
     total_composer_conflicting = total_native_conflicting = total_driver_conflicting = 0
+    total_driver_crashed = 0
     native_seen_anywhere = driver_seen_anywhere = False
     total_rung_counts: dict[int, int] = {}
     total_moved_merges = 0
@@ -1585,10 +1988,11 @@ def render(
     header = (
         "| Merges examined | Merges conflicting (composer.lock) | "
         "Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | "
+        "Crashed (viv lock merge) | "
         "Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | "
         "composer.lock conflicted, viv.lock did not |"
     )
-    separator = "|---|---|---|---|---|---|---|---|"
+    separator = "|---|---|---|---|---|---|---|---|---|"
 
     for r in reports:
         lines.append(f"### {r.project.name}")
@@ -1614,12 +2018,16 @@ def render(
             if m.composer_conflicts and m.composer_conflicts > 0 and m.native_conflicts == 0
         )
         wins_display = wins if native_vals else None
-        driver_vals = [m.driver_conflict for m in r.merges if m.driver_conflict is not None]
-        driver_conflicting = sum(driver_vals) if driver_vals else None
+        # `driver_available` (not "any merge happened to return non-None"),
+        # so a repo where the driver crashed on every merge still reports 0
+        # conflicting/n crashed rather than falling back to n/a as if the
+        # driver had never run at all (#320).
+        driver_conflicting = sum(1 for m in r.merges if m.driver_conflict is True) if driver_available else None
+        driver_crashed = sum(1 for m in r.merges if m.driver_conflict is None) if driver_available else None
 
         lines.append(
             f"| {n} | {composer_conflicting} | {fmt_n(native_conflicting)} | "
-            f"{fmt_n(driver_conflicting)} | "
+            f"{fmt_n(driver_conflicting)} | {fmt_n(driver_crashed)} | "
             f"{composer_sum} | {fmt_n(native_sum)} | {real_sum} | {fmt_n(wins_display)} |"
         )
         lines.append("")
@@ -1642,9 +2050,10 @@ def render(
             total_native += native_sum
             total_native_conflicting += native_conflicting
             total_wins += wins
-        if driver_vals:
+        if driver_available:
             driver_seen_anywhere = True
             total_driver_conflicting += driver_conflicting
+            total_driver_crashed += driver_crashed
         total_real += real_sum
 
         for f in r.footnotes:
@@ -1666,6 +2075,7 @@ def render(
         f"| {total_merges} | {total_composer_conflicting} | "
         f"{fmt_n(total_native_conflicting) if native_seen_anywhere else 'n/a'} | "
         f"{fmt_n(total_driver_conflicting) if driver_seen_anywhere else 'n/a'} | "
+        f"{fmt_n(total_driver_crashed) if driver_seen_anywhere else 'n/a'} | "
         f"{total_composer} | "
         f"{fmt_n(total_native) if native_seen_anywhere else 'n/a'} | {total_real} | "
         f"{fmt_n(total_wins) if native_seen_anywhere else 'n/a'} |"
@@ -1693,6 +2103,9 @@ def render(
     if offline_rung:
         all_merges = [m for r in reports for m in r.merges]
         lines.extend(render_offline(all_merges))
+    if install_check_flag:
+        all_merges = [m for r in reports for m in r.merges]
+        lines.extend(render_install_check(all_merges))
     return "\n".join(lines)
 
 
@@ -1717,7 +2130,8 @@ def main() -> int:
     hybrid = "--hybrid" in argv  # #306 follow-up: adds the hybrid-vs-driver-alone table, implies --ledger
     ledger = "--ledger" in argv or hybrid  # #306: adds the ledger-fold-vs-driver counts to the report
     offline_rung = "--offline-rung" in argv  # #314: runs the driver twice, with and without the flag
-    argv = [a for a in argv if a not in ("--ledger", "--hybrid", "--offline-rung")]
+    install_check_flag = "--install-check" in argv  # #314 follow-up: install-checks every merge the pin finished
+    argv = [a for a in argv if a not in ("--ledger", "--hybrid", "--offline-rung", "--install-check")]
     if argv and argv[0] == "--self-test":
         return self_test()
     only = argv[0].split(",") if argv else []
@@ -1730,6 +2144,7 @@ def main() -> int:
     cache_root.mkdir(parents=True, exist_ok=True)
     cap = int(os.environ.get("LOCKMERGE_CAP", "200"))
     viv_bin = os.environ.get("VIV", str(ROOT / "target/release/viv"))
+    hang_dir = Path(os.environ["LOCKMERGE_HANG_DIR"]) if os.environ.get("LOCKMERGE_HANG_DIR") else None
 
     native_available = probe_native(viv_bin)
     viv_version = "unknown"
@@ -1750,7 +2165,7 @@ def main() -> int:
         log(f"{project.name}: starting")
         r = run_repo(
             project, cache_root, cap, viv_bin, native_available, driver_available,
-            ledger, hybrid, offline_rung,
+            ledger, hybrid, offline_rung, install_check_flag, hang_dir,
         )
         reports.append(r)
         if r.skipped_reason:
@@ -1760,7 +2175,7 @@ def main() -> int:
 
     section = render(
         reports, cap, viv_bin, viv_version, native_available, viv_commit, driver_available,
-        ledger, hybrid, offline_rung,
+        ledger, hybrid, offline_rung, install_check_flag,
     )
     if not report_path.exists():
         report_path.write_text(HEADER)
@@ -1925,10 +2340,11 @@ def self_test() -> int:
         )
         assert (rung, moved) == (2, 1), f"expected rung 2 with 1 moved package, got {(rung, moved)}"
         assert parse_resolution("") == (None, 0), "no stderr means no rung to report"
-        # #314: rung 0 (--offline-rung) reads through the same line.
+        # #314: rung 4 (--offline-rung's own pin, `OFFLINE_PIN_RUNG` in
+        # `src/lock_merge.rs`) reads through the same line.
         assert parse_resolution(
-            "viv lock merge: resolved via rung 0 (offline): d/dep\n"
-        ) == (0, 0), "rung 0 must parse the same as any other rung"
+            "viv lock merge: resolved via rung 4 (offline_pin): d/dep\n"
+        ) == (4, 0), "rung 4 must parse the same as any other rung"
 
         # #314: leaf_cause_class buckets a driver_error the same way
         # bench/results/lockmerge.md's existing leaf-cause table does.
@@ -1957,6 +2373,57 @@ def self_test() -> int:
             {"d/dep": ("1.0.0", "aaa", False)}, {"d/dep": ("2.0.0", "bbb", False)}, ours_idx, theirs_idx,
         )
         assert kind == "ours, older pin kept", f"expected ours/older, got {kind}"
+
+        # #320: a driver that exits by signal (killed, not its own
+        # conflict/success exit) must report itself as a crash rather than
+        # matching neither the `is True` nor `is False` check downstream --
+        # a fake `viv` that answers --help/--version but kills itself on
+        # the real invocation, so this needs no real binary.
+        crash_script = Path(tmp) / "fake-viv-crash.sh"
+        crash_script.write_text(
+            "#!/bin/sh\n"
+            "for a in \"$@\"; do\n"
+            "  case \"$a\" in\n"
+            "    --help|--version) exit 0 ;;\n"
+            "  esac\n"
+            "done\n"
+            "kill -9 $$\n"
+        )
+        crash_script.chmod(0o755)
+        crash_conflicted, crash_err, crash_rung, crash_moved, crash_lock = driver_conflict(
+            str(crash_script), work, work / "cache", repo, "deadbeef",
+            b'{"require": {}}', b"{}", b"{}", b"{}",
+        )
+        assert crash_conflicted is None, f"a killed driver must report conflicted=None, got {crash_conflicted}"
+        assert crash_err and "crashed" in crash_err, f"expected a crash reason, got {crash_err!r}"
+        assert crash_rung is None and crash_moved == 0 and crash_lock is None
+
+        # #320: render_offline's own table must give a crashed merge (on
+        # either the plain or the --offline-rung call) its own bucket
+        # rather than drop it from every count -- cleared + remaining +
+        # crashed + clean must sum to merges examined.
+        def offline_merge(sha: str, driver_conflict_val, off_conflicted, off_rung=None) -> MergeOutcome:
+            return MergeOutcome(
+                sha=sha, composer_conflicts=0, native_conflicts=None, native_error=None,
+                real=0, driver_conflict=driver_conflict_val, driver_error="a driver reason",
+                offline=OfflineOutcome(off_conflicted, "an offline reason", off_rung, 0.01),
+            )
+
+        synthetic = [
+            offline_merge("m1", True, False, off_rung=0),  # cleared
+            offline_merge("m2", True, True),  # remaining
+            offline_merge("m3", False, False),  # clean, no residue either way
+            offline_merge("m4", None, True),  # plain driver call crashed
+            offline_merge("m5", False, None),  # --offline-rung call crashed
+        ]
+        assert [offline_bucket(m) for m in synthetic] == [
+            "cleared", "remaining", "clean", "crashed", "crashed",
+        ], "offline_bucket must classify each synthetic case as intended"
+        offline_report = "\n".join(render_offline(synthetic))
+        row = next(l for l in offline_report.splitlines() if l.startswith("| 5 |"))
+        cells = [int(c.strip()) for c in row.strip("|").split("|")[:5]]
+        assert cells == [5, 1, 1, 2, 1], f"expected 5 examined, 1 cleared, 1 remaining, 2 crashed, 1 clean, got {cells}"
+        assert sum(cells[1:]) == cells[0], "offline table's outcome buckets must sum to merges examined"
 
     # #306: ledger fold unit cases -- disjoint changes, agreement, a real
     # fork, and delete-vs-update, plus order-independence and an
