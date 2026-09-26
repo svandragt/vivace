@@ -1229,7 +1229,11 @@ def run_repo(
                     merge_json, base_lock, ours_lock, theirs_lock,
                 )
                 driver_time = time.perf_counter() - driver_start
-                if driver_conflicted and driver_err:
+                if driver_conflicted is None:
+                    report.footnotes.append(
+                        f"{m.sha[:12]}: viv lock merge crashed: {driver_err or 'no stderr'}"
+                    )
+                elif driver_conflicted and driver_err:
                     report.footnotes.append(
                         f"{m.sha[:12]}: viv lock merge re-solve did not finish: {driver_err}"
                     )
@@ -1267,7 +1271,11 @@ def run_repo(
                     merge_json, base_lock, ours_lock, theirs_lock, offline_rung=True,
                 )
                 off_time = time.perf_counter() - offline_start
-                if off_conflicted and off_err:
+                if off_conflicted is None:
+                    report.footnotes.append(
+                        f"{m.sha[:12]}: --offline-rung crashed: {off_err or 'no stderr'}"
+                    )
+                elif off_conflicted and off_err:
                     report.footnotes.append(
                         f"{m.sha[:12]}: --offline-rung re-solve did not finish: {off_err}"
                     )
@@ -1456,16 +1464,41 @@ def render_hybrid(merges: list[MergeOutcome]) -> list[str]:
     return lines
 
 
+def offline_bucket(m: MergeOutcome) -> str:
+    """#320: which of four *mutually exclusive* outcomes a merge lands in,
+    once both the plain and `--offline-rung` driver calls are in. A crash
+    on either call (`driver_conflict`/`offline.conflicted` is `None`, a
+    process killed or exiting by signal, not the driver's own conflict/
+    success exit) always wins the classification -- we don't know what a
+    crashed call would have resolved to, so it can't also count as
+    "cleared", "remaining" or "clean" the way an unfiltered `is True`/
+    `is False` check would let it silently do (the crash that motivated
+    this: two client merges killed past a watchdog timeout, previously
+    absent from every count here)."""
+    if m.driver_conflict is None or m.offline.conflicted is None:
+        return "crashed"
+    if m.driver_conflict is True and m.offline.conflicted is False:
+        return "cleared"
+    if m.offline.conflicted is True:
+        return "remaining"
+    return "clean"  # neither side ever conflicted, nothing for the flag to clear
+
+
 def render_offline(merges: list[MergeOutcome]) -> list[str]:
     """#314: `--offline-rung` against the same merge's plain (no-flag)
-    driver call. Four counts, in the issue's own order -- residue cleared
-    (a merge that used to end in markers and now doesn't, by the leaf
-    cause of the marker it cleared), residue remaining (still markers,
-    same leaf-cause buckets), the safety number (rung 0 accepted a pin the
-    registry re-solve, when it also finished, would have picked
-    differently), and network avoided (rung 0 finished a merge that used
-    to need an escalation rung, no registry contact for it this time) --
-    plus the median time both ways."""
+    driver call. Residue cleared (a merge that used to end in markers and
+    now doesn't, by the leaf cause of the marker it cleared), residue
+    remaining (still markers, same leaf-cause buckets), crashed (#320:
+    either call was killed or exited by signal, so the merge is its own
+    outcome rather than silently missing from every other count), and
+    clean (neither call ever saw a conflict) partition every counted merge
+    exactly once (`offline_bucket`), so the four sum to merges examined.
+    Alongside: the safety number (rung 0 accepted a pin the registry
+    re-solve, when it also finished, would have picked differently) and
+    network avoided (rung 0 finished a merge that used to need an
+    escalation rung, no registry contact for it this time) -- both
+    cross-cutting flags, not additional outcomes -- plus the median time
+    both ways."""
     counted = [m for m in merges if m.offline is not None]
     lines = ["### Offline rung vs registry escalation (#314)", ""]
     if not counted:
@@ -1474,8 +1507,10 @@ def render_offline(merges: list[MergeOutcome]) -> list[str]:
         return lines
 
     n = len(counted)
-    cleared = [m for m in counted if m.driver_conflict is True and m.offline.conflicted is False]
-    remaining = [m for m in counted if m.offline.conflicted is True]
+    cleared = [m for m in counted if offline_bucket(m) == "cleared"]
+    remaining = [m for m in counted if offline_bucket(m) == "remaining"]
+    crashed = [m for m in counted if offline_bucket(m) == "crashed"]
+    clean = [m for m in counted if offline_bucket(m) == "clean"]
     network_avoided = [
         m for m in counted
         if m.offline.rung == 0 and m.driver_conflict is False and m.driver_rung is not None
@@ -1498,13 +1533,13 @@ def render_offline(merges: list[MergeOutcome]) -> list[str]:
     offline_times = [m.offline.time for m in counted if m.offline.time is not None]
 
     lines.append(
-        "| Merges examined | Residue cleared | Residue remaining | Safety number | "
-        "Network avoided | Median ms, no flag | Median ms, --offline-rung |"
+        "| Merges examined | Residue cleared | Residue remaining | Crashed | Clean | "
+        "Safety number | Network avoided | Median ms, no flag | Median ms, --offline-rung |"
     )
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     lines.append(
-        f"| {n} | {len(cleared)} | {len(remaining)} | {len(safety_cases)} | "
-        f"{len(network_avoided)} | "
+        f"| {n} | {len(cleared)} | {len(remaining)} | {len(crashed)} | {len(clean)} | "
+        f"{len(safety_cases)} | {len(network_avoided)} | "
         f"{fmt_ms(statistics.median(driver_times)) if driver_times else 'n/a'} | "
         f"{fmt_ms(statistics.median(offline_times)) if offline_times else 'n/a'} |"
     )
@@ -1516,6 +1551,9 @@ def render_offline(merges: list[MergeOutcome]) -> list[str]:
     lines.append("Residue remaining, by leaf cause:")
     lines.append("")
     lines.extend(leaf_table(remaining, lambda m: m.offline.error))
+    lines.append("Crashed, by reason (either the plain or the `--offline-rung` call):")
+    lines.append("")
+    lines.extend(leaf_table(crashed, lambda m: m.driver_error if m.driver_conflict is None else m.offline.error))
 
     if safety_cases:
         kind_counts: dict[str, int] = {}
@@ -1565,6 +1603,7 @@ def render(
 
     total_merges = total_composer = total_native = total_real = total_wins = 0
     total_composer_conflicting = total_native_conflicting = total_driver_conflicting = 0
+    total_driver_crashed = 0
     native_seen_anywhere = driver_seen_anywhere = False
     total_rung_counts: dict[int, int] = {}
     total_moved_merges = 0
@@ -1585,10 +1624,11 @@ def render(
     header = (
         "| Merges examined | Merges conflicting (composer.lock) | "
         "Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | "
+        "Crashed (viv lock merge) | "
         "Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | "
         "composer.lock conflicted, viv.lock did not |"
     )
-    separator = "|---|---|---|---|---|---|---|---|"
+    separator = "|---|---|---|---|---|---|---|---|---|"
 
     for r in reports:
         lines.append(f"### {r.project.name}")
@@ -1614,12 +1654,16 @@ def render(
             if m.composer_conflicts and m.composer_conflicts > 0 and m.native_conflicts == 0
         )
         wins_display = wins if native_vals else None
-        driver_vals = [m.driver_conflict for m in r.merges if m.driver_conflict is not None]
-        driver_conflicting = sum(driver_vals) if driver_vals else None
+        # `driver_available` (not "any merge happened to return non-None"),
+        # so a repo where the driver crashed on every merge still reports 0
+        # conflicting/n crashed rather than falling back to n/a as if the
+        # driver had never run at all (#320).
+        driver_conflicting = sum(1 for m in r.merges if m.driver_conflict is True) if driver_available else None
+        driver_crashed = sum(1 for m in r.merges if m.driver_conflict is None) if driver_available else None
 
         lines.append(
             f"| {n} | {composer_conflicting} | {fmt_n(native_conflicting)} | "
-            f"{fmt_n(driver_conflicting)} | "
+            f"{fmt_n(driver_conflicting)} | {fmt_n(driver_crashed)} | "
             f"{composer_sum} | {fmt_n(native_sum)} | {real_sum} | {fmt_n(wins_display)} |"
         )
         lines.append("")
@@ -1642,9 +1686,10 @@ def render(
             total_native += native_sum
             total_native_conflicting += native_conflicting
             total_wins += wins
-        if driver_vals:
+        if driver_available:
             driver_seen_anywhere = True
             total_driver_conflicting += driver_conflicting
+            total_driver_crashed += driver_crashed
         total_real += real_sum
 
         for f in r.footnotes:
@@ -1666,6 +1711,7 @@ def render(
         f"| {total_merges} | {total_composer_conflicting} | "
         f"{fmt_n(total_native_conflicting) if native_seen_anywhere else 'n/a'} | "
         f"{fmt_n(total_driver_conflicting) if driver_seen_anywhere else 'n/a'} | "
+        f"{fmt_n(total_driver_crashed) if driver_seen_anywhere else 'n/a'} | "
         f"{total_composer} | "
         f"{fmt_n(total_native) if native_seen_anywhere else 'n/a'} | {total_real} | "
         f"{fmt_n(total_wins) if native_seen_anywhere else 'n/a'} |"
@@ -1957,6 +2003,57 @@ def self_test() -> int:
             {"d/dep": ("1.0.0", "aaa", False)}, {"d/dep": ("2.0.0", "bbb", False)}, ours_idx, theirs_idx,
         )
         assert kind == "ours, older pin kept", f"expected ours/older, got {kind}"
+
+        # #320: a driver that exits by signal (killed, not its own
+        # conflict/success exit) must report itself as a crash rather than
+        # matching neither the `is True` nor `is False` check downstream --
+        # a fake `viv` that answers --help/--version but kills itself on
+        # the real invocation, so this needs no real binary.
+        crash_script = Path(tmp) / "fake-viv-crash.sh"
+        crash_script.write_text(
+            "#!/bin/sh\n"
+            "for a in \"$@\"; do\n"
+            "  case \"$a\" in\n"
+            "    --help|--version) exit 0 ;;\n"
+            "  esac\n"
+            "done\n"
+            "kill -9 $$\n"
+        )
+        crash_script.chmod(0o755)
+        crash_conflicted, crash_err, crash_rung, crash_moved, crash_lock = driver_conflict(
+            str(crash_script), work, work / "cache", repo, "deadbeef",
+            b'{"require": {}}', b"{}", b"{}", b"{}",
+        )
+        assert crash_conflicted is None, f"a killed driver must report conflicted=None, got {crash_conflicted}"
+        assert crash_err and "crashed" in crash_err, f"expected a crash reason, got {crash_err!r}"
+        assert crash_rung is None and crash_moved == 0 and crash_lock is None
+
+        # #320: render_offline's own table must give a crashed merge (on
+        # either the plain or the --offline-rung call) its own bucket
+        # rather than drop it from every count -- cleared + remaining +
+        # crashed + clean must sum to merges examined.
+        def offline_merge(sha: str, driver_conflict_val, off_conflicted, off_rung=None) -> MergeOutcome:
+            return MergeOutcome(
+                sha=sha, composer_conflicts=0, native_conflicts=None, native_error=None,
+                real=0, driver_conflict=driver_conflict_val, driver_error="a driver reason",
+                offline=OfflineOutcome(off_conflicted, "an offline reason", off_rung, 0.01),
+            )
+
+        synthetic = [
+            offline_merge("m1", True, False, off_rung=0),  # cleared
+            offline_merge("m2", True, True),  # remaining
+            offline_merge("m3", False, False),  # clean, no residue either way
+            offline_merge("m4", None, True),  # plain driver call crashed
+            offline_merge("m5", False, None),  # --offline-rung call crashed
+        ]
+        assert [offline_bucket(m) for m in synthetic] == [
+            "cleared", "remaining", "clean", "crashed", "crashed",
+        ], "offline_bucket must classify each synthetic case as intended"
+        offline_report = "\n".join(render_offline(synthetic))
+        row = next(l for l in offline_report.splitlines() if l.startswith("| 5 |"))
+        cells = [int(c.strip()) for c in row.strip("|").split("|")[:5]]
+        assert cells == [5, 1, 1, 2, 1], f"expected 5 examined, 1 cleared, 1 remaining, 2 crashed, 1 clean, got {cells}"
+        assert sum(cells[1:]) == cells[0], "offline table's outcome buckets must sum to merges examined"
 
     # #306: ledger fold unit cases -- disjoint changes, agreement, a real
     # fork, and delete-vs-update, plus order-independence and an
