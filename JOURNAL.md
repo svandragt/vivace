@@ -1448,3 +1448,15 @@ included, because `build_partial` never queues metadata for a package the
 lock fixes. Plain `viv update` fetches one file per locked package, and it
 has to: whether a newer version exists is a question for the registry.
 Measured against a local mirror, so no live network in the numbers.
+
+## 2026-09-26: candidate D, nothing to build
+
+Candidate D asked how often a lock refuses the PHP that runs it (#309).
+Of 20 public projects with a committed lock, 3 drift: a locked package
+caps below the newest PHP their CI tests, although root `require.php`
+accepts it. All 3 install from the lock in CI, so the platform check
+from #300 already fails that job the day the new PHP arrives, and no
+warning at `update` time could come sooner. The first pass counted 18 of
+19 by reading a CI `8.2` as 8.2.0 and by counting the root's own
+refusals as drift; the rerun reads it as the newest patch and counts
+only a locked package refusing what root accepts.
