@@ -568,6 +568,35 @@ lock. Composer's partial update already keeps the rest locked; this
 changes what is fetched, not what is chosen, so the compat sweep with
 `COMPAT_LOCKS=1` is the gate.
 
+**Result, 2026-09-26.** `bench/results/profile.md` §14 measured all three
+bench projects against their committed lock, cold and warm HTTP metadata
+cache, median of 5 runs: `viv update <leaf>`, `viv update <hub>` and plain
+`viv update`. The named, single-package update is already what this
+candidate would build: one provider-file request every time (laravel,
+drupal and symfony alike), 99–100% of the lock unchanged, because
+`pool_builder::build_partial` never queues metadata for a package
+`UPDATE_ONLY_LISTED` has already fixed. There is nothing left to seed there.
+The plain, no-argument `viv update` is the one that still walks the whole
+locked closure regardless of how much of it can actually move: 101, 68 and
+153 provider-file requests respectively (one per locked package, every
+time), of which only 83.2% (laravel), 73.5% (drupal) and 51.0% (symfony)
+survive unchanged — the closure fetch is the largest single phase either
+way (48–72% of the four measured phases' combined time).
+
+The issue's threshold — surviving share above 90% and fetch dominating —
+holds on fetch dominating, not on surviving share: 51.0–83.2% is short of
+90% on every project, measured against each corpus project's own committed
+lock, today. The half that fails is surviving share, and it fails on the
+only scenario the build would change (the no-argument update; the
+single-package scenario already has nothing to remove). No follow-up issue
+is drafted: building a pool that starts from the lock and widens only for
+names it cannot satisfy would still need to fetch a majority of the closure
+on this corpus (49–100% of packages did move), so seeding from the lock
+would save less than the issue's own threshold implies, and the actual size
+of that saving depends on which packages moved, not just how many —
+narrower than this measurement can price. The candidate stays measured, not
+built.
+
 ### Candidate D: locks solved on one PHP, installed on another
 
 **Question.** How often does a lock solved on a developer's PHP refuse

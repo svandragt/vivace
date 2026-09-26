@@ -1580,3 +1580,118 @@ Every warm/noop scenario is `ok` (none of them run `-o`, so this is "did the
 new format cost the plain path anything" — it didn't); cold is informational
 only (network/clone variance) and moves both ways. No scenario failed, so
 there was nothing to rerun.
+
+## 14. Update against the lock, candidate C (#308), 2026-09-26
+
+**Question** (`docs/research.md`'s candidate C): on an `update` that changes
+one package, how much of the time goes to fetching and solving packages that
+end up unchanged?
+
+Machine, viv commit and mirror as sections 9–13 (AMD Ryzen 9 7900X3D, ext4,
+`bench/laravel` (101 packages), `drupal/recommended-project` 11.4.6 (68
+packages) and `symfony/demo` at `920d86dc8` (153 packages) checked out the
+way `bench/ab.sh` does, `6d22b42` (branch `308-lock-seeded`, off `main`),
+`uptime` load average 2.1–2.4 across the whole session (idle otherwise).
+Reproduced by `devbox run -- python3 bench/profile/update-lock.sh`, a new
+script (see its own header comment) that: records one `bench/mirror.sh`
+mirror per project (dists + every `p2` provider file the committed lock and
+`composer.json`'s `require`/`require-dev` need — Packagist for laravel/
+symfony, `packages.drupal.org` for drupal, a v1 `providers-url` repository
+`bench/mirror.sh`'s own `#171` fallback already walks), serves it over
+127.0.0.1 with `miniserve` (`bench/run.sh`'s own approach), rewrites each
+project's `composer.json`/`composer.lock` to that mirror only (Packagist
+disabled), then runs `viv update --no-plugins --no-scripts --no-install [-v]`
+under `RUST_LOG=vivace=debug`, parsing the phases the spans already log
+(`loaded metadata closure`, `pruned the pool before rule generation` plus its
+two siblings, `solved pool`, `wrote composer.lock`) and diffing the resulting
+`composer.lock` against the one it started from. No exclusions: every dist
+and provider file for all three projects came from the mirror, including
+drupal's `packages.drupal.org` v1 listing — nothing fell back to the real
+network mid-measurement, confirmed by the log's own dist-completeness check
+(`bench/mirror.sh`'s `missing_py`) passing and no fallback/error lines in the
+run log.
+
+**Scenarios**, per project: `viv update <leaf>` and `viv update <hub>` (two
+direct root requirements — a leaf with few dependents and few of its own
+dependencies, a hub with many of each), and `viv update` with no argument
+(full re-solve). **Cache states**: cold (fresh `XDG_CACHE_HOME` every run,
+mirror already warm) and warm (one untimed warm-up run against a shared
+cache dir, then the timed runs reset only `composer.json`/`composer.lock`
+between them). 5 runs per cell (a loop, not hyperfine — the script needs the
+`-v` log from every run, not just its wall time); every column below is the
+median of those 5.
+
+| Package | Role | Why |
+|---|---|---|
+| `laravel/framework` | hub | root require, 37 of its own deps, central to the whole graph |
+| `fakerphp/faker` | leaf | root require-dev, 2 of its own deps, 0 non-root dependents |
+| `symfony/framework-bundle` | hub | root require, 15 of its own deps, 6 packages depend on it |
+| `symfony/polyfill-intl-messageformatter` | leaf | root require, 0 deps, 0 dependents |
+| `drupal/core-recommended` | hub | root require, 45 of its own deps, wraps `drupal/core` |
+| `composer/installers` | leaf | root require, 0 deps, 0 dependents |
+
+(Dependent/own-dependency counts are from each project's own `composer.lock`
+`require` graph, root `require`/`require-dev` edges included, non-root
+`require-dev` edges excluded since those never resolve anything.)
+
+### `bench/laravel` (101 packages)
+
+| Scenario | cache | closure | pool build | solve | lock write | wall | provider files | packages in lock | unchanged | surviving share | wasted fetch |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `update fakerphp/faker` (leaf) | cold | 42 ms | 25 ms | 0 ms | 1 ms | 87.5 ms | 1 | 101 | 101 | 100.0% | 1/1 |
+| `update fakerphp/faker` (leaf) | warm | 1 ms | 3 ms | 0 ms | 1 ms | 21.9 ms | 1 | 101 | 101 | 100.0% | 1/1 |
+| `update laravel/framework` (hub) | cold | 10 ms | 30 ms | 7 ms | 1 ms | 68.1 ms | 1 | 101 | 100 | 99.0% | 0/1 |
+| `update laravel/framework` (hub) | warm | 9 ms | 6 ms | 7 ms | 1 ms | 44.2 ms | 1 | 101 | 100 | 99.0% | 0/1 |
+| `update` (no argument) | cold | 73 ms | 46 ms | 30 ms | 2 ms | 179.2 ms | 101 | 101 | 84 | 83.2% | 84/101 |
+| `update` (no argument) | warm | 74 ms | 23 ms | 31 ms | 2 ms | 155.6 ms | 101 | 101 | 84 | 83.2% | 84/101 |
+
+### `drupal/recommended-project` (68 packages)
+
+| Scenario | cache | closure | pool build | solve | lock write | wall | provider files | packages in lock | unchanged | surviving share | wasted fetch |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `update composer/installers` (leaf) | cold | 1 ms | 24 ms | 0 ms | 1 ms | 41.6 ms | 1 | 68 | 68 | 100.0% | 1/1 |
+| `update composer/installers` (leaf) | warm | 1 ms | 3 ms | 0 ms | 1 ms | 19.2 ms | 1 | 68 | 68 | 100.0% | 1/1 |
+| `update drupal/core-recommended` (hub) | cold | 7 ms | 25 ms | 0 ms | 1 ms | 47.8 ms | 1 | 68 | 68 | 100.0% | 1/1 |
+| `update drupal/core-recommended` (hub) | warm | 4 ms | 3 ms | 0 ms | 1 ms | 22.6 ms | 1 | 68 | 68 | 100.0% | 1/1 |
+| `update` (no argument) | cold | 75 ms | 38 ms | 7 ms | 1 ms | 141.9 ms | 68 | 68 | 50 | 73.5% | 50/68 |
+| `update` (no argument) | warm | 62 ms | 16 ms | 7 ms | 1 ms | 107.3 ms | 68 | 68 | 50 | 73.5% | 50/68 |
+
+### `symfony/demo` (153 packages)
+
+| Scenario | cache | closure | pool build | solve | lock write | wall | provider files | packages in lock | unchanged | surviving share | wasted fetch |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `update symfony/polyfill-intl-messageformatter` (leaf) | cold | 42 ms | 26 ms | 0 ms | 2 ms | 95.9 ms | 1 | 153 | 153 | 100.0% | 1/1 |
+| `update symfony/polyfill-intl-messageformatter` (leaf) | warm | 1 ms | 4 ms | 0 ms | 2 ms | 30.2 ms | 1 | 153 | 153 | 100.0% | 1/1 |
+| `update symfony/framework-bundle` (hub) | cold | 5 ms | 26 ms | 1 ms | 2 ms | 59.2 ms | 1 | 153 | 153 | 100.0% | 1/1 |
+| `update symfony/framework-bundle` (hub) | warm | 5 ms | 4 ms | 1 ms | 2 ms | 33.1 ms | 1 | 153 | 153 | 100.0% | 1/1 |
+| `update` (no argument) | cold | 120 ms | 66 ms | 35 ms | 2 ms | 256.9 ms | 153 | 153 | 78 | 51.0% | 78/153 |
+| `update` (no argument) | warm | 120 ms | 45 ms | 36 ms | 2 ms | 218.2 ms | 153 | 153 | 78 | 51.0% | 78/153 |
+
+("pool build" sums the platform-detect, closure-to-pool-conversion,
+advisory-filter and `PoolOptimizer` spans; "solve" sums `rule_generation_ms +
+sat_ms` across every `solved pool` line, merged solve plus the dev-split
+second solve. Provider-file bytes: not measurable from the existing spans —
+`fetch hop (body complete)` logs a `bytes` field only for dist downloads,
+never for repository metadata, and this measurement never installs.)
+
+**What dominates.** The named, single-package update (`viv update <leaf|hub>`)
+already fetches almost nothing beyond that one package's own provider file
+(1 request every time, on all three projects) and changes almost nothing
+else (99–100% of the lock survives unchanged) — Composer's own
+`UPDATE_ONLY_LISTED` semantics keep every other package fixed, and `viv`'s
+`pool_builder::build_partial` never queues their metadata at all. There is
+essentially no waste left to remove there: it is already what candidate C's
+"build if it holds" describes. The waste lives in the plain `viv update`
+with no argument: it re-fetches and re-solves the *entire* locked closure
+every time (101/68/153 requests, matching the package count exactly), and on
+this corpus, today, against each project's own committed lock, only
+51.0–83.2% of that closure's packages survive unchanged — the closure fetch
+is consistently the largest single phase (48–72% of the four phases' summed
+time on every no-argument cell), ahead of pool build and comfortably ahead
+of solve, which the `#76`/`PoolOptimizer` work already cut to a few tens of
+milliseconds.
+
+Reproduce: `devbox run -- cargo build --release`, then
+`systemd-inhibit --what=sleep:idle -- devbox run -- python3 bench/profile/update-lock.sh --runs 5 --json /tmp/update-lock.json`
+(`BENCH_WORK` to change the scratch dir, `BENCH_RUNS` to change the run
+count, `--only laravel` to run one project).
