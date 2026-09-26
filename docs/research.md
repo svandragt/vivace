@@ -584,7 +584,7 @@ Only 83.2%, 73.5% and 51.0% of the lock survives. Seeding cannot remove
 that fetch: an update with no argument asks whether each package has a
 newer version, and only the registry can answer. Nothing to build.
 
-### Candidate D: locks solved on one PHP, installed on another
+### Candidate D: locks solved on one PHP, installed on another (measured, not built)
 
 **Question.** How often does a lock solved on a developer's PHP refuse
 on the PHP that runs it, and would a lock that carries its platform
@@ -608,6 +608,59 @@ would refuse, and on which requirement (`php`, `ext-*`). All from
 `--platform` target on `update`, so the lock says what it was solved
 for and `install` reports a mismatch as a solve problem, not a runtime
 one.
+
+**Result, 2026-09-26.** `compat/platform-drift.py` read `composer.json`,
+`composer.lock` and `.github/workflows/*.yml` at a pinned commit for
+every project in `compat/corpus.toml` and every public project in
+`compat/hunted.md`, no installs (`compat/results/platform-drift.md`).
+Of 53 named projects, 33 had nothing to read: 32 never commit a lock
+(most are skeleton or `create-project` templates, which is the normal,
+correct choice for that kind of repository) and 1 failed to clone.
+
+A first pass over-counted refusals by treating a CI matrix's `"8.2"`
+as PHP 8.2.0. `setup-php` installs whichever 8.2.x patch is newest when
+CI actually runs, not `.0`, and a lower-bound constraint a real patch
+already clears (`~8.2.27`) still reads as a refusal against the
+literal `8.2.0`. Evaluating the highest patch of the minor instead
+(`8.2.999`, since the exact patch a past CI run used is not knowable
+statically) reverses two of the original findings outright:
+symfony/demo's and phpmyadmin's headline refusals were this artefact,
+not drift. The revised script also separates two different things a
+refusal can mean, only one of which this chapter is about: the root
+`composer.json` itself refusing a PHP (the project never claimed to
+support it — correct behaviour) versus a locked package refusing a PHP
+the root admits (drift, the only kind now counted).
+
+Of the 20 examined, only 3 — phpmyadmin/phpmyadmin, mautic/mautic and
+kimai/kimai (15%) — show real drift, all of it a locked require-dev
+tool (`vimeo/psalm`, `ezyang/htmlpurifier`, `lcobucci/clock`,
+`laminas/laminas-httphandlerrunner`, `laminas/laminas-diactoros`,
+`openspout/openspout`, `scheb/2fa-*`) capping out below the newest PHP
+the project's own CI already tests —
+an upper bound, never a lower one, and the floor-1 sanity check refused
+as expected in every one of the 19 projects with a checkable floor, so
+the method itself isn't the source of the small count. All 3 already
+set `config.platform.php`; it didn't help, because it pins one PHP a
+solve runs against and was never meant to validate the resolved lock
+against the *whole* range `require.php` advertises.
+
+That last fact does not by itself favour building a check, though.
+All 3 projects' CI installs from the committed lock on the newest PHP
+leg (`ramsey/composer-install`, or a literal `composer install`) — the
+platform check #300 already built refuses that CI run today, live, the
+same day the drift appears, not silently. A `viv update` warning
+(option b) could only ever fire on a developer's own machine, at a
+point no earlier than that same CI run, and it cannot fire earlier
+than the newest PHP existing at all: an `update` run before PHP 8.5
+was released has no way to warn about PHP 8.5. Both routes converge on
+the same moment a dependency actually catches up. The numbers support
+option (a), nothing: 3 of 20, all upper-bound, all at the bleeding
+edge, all already surfaced by a mechanism that exists (#300's platform
+check, running in these projects' own CI). Option (c), a platform
+snapshot, is separately not supported: `composer.lock`'s own `platform`
+and `platform-overrides` keys already record what a solve targeted, so
+a second, chapter-1-shaped copy of the same two facts would not have
+caught any of the 3 gaps either, since none of them lacked a snapshot.
 
 ### Parked, with reasons
 
