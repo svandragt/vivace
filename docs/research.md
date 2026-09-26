@@ -518,7 +518,10 @@ repository does not read `.gitattributes` from the tree by default.
 driver are the setup it skips and about 36 ms per merge. `install`
 already runs the driver's merge in a clone with no driver configured
 (#299), and the hosted merge that neither can reach does not apply
-`merge=union`. A second lock format does not pay for 36 ms. The driver
+`merge=union`. Locally, a clean union merge of the ledger saves nothing
+while `composer.lock` is committed beside it, because the merge still
+stops on `composer.lock`; saving that stop means taking `composer.lock`
+out of git. A second lock format does not pay for 36 ms. The driver
 stays the only merge path.
 
 ### Candidate B: install from a lock years later
