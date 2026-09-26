@@ -41,8 +41,14 @@ re-runs the composer.json merge with each side's file put through
 canonical key order would have prevented on its own.
 
 Usage:
-    bench/lockmerge/run.py [project-name,...]
+    bench/lockmerge/run.py [project-name,...] [--ledger] [--hybrid] [--offline-rung]
     bench/lockmerge/run.py --self-test
+
+`--offline-rung` (#314) runs the driver twice per merge, without and with
+that flag, and adds a table comparing the two: residue cleared/remaining,
+the safety number (rung 0 accepted a pin the registry re-solve would have
+picked differently, when it also finished), network avoided, and the
+median time both ways.
 
 Env: BENCH_CACHE (persistent clone cache, default matches
 bench/storeload.sh's own -- clones live under $BENCH_CACHE/lockmerge/<safe
@@ -630,6 +636,40 @@ def classify_resolution(
     return outcome, higher
 
 
+def classify_safety(
+    offline_idx: dict, baseline_idx: dict, ours_idx: dict, theirs_idx: dict,
+) -> str | None:
+    """#314's safety number: `None` when every package rung 0 and the
+    registry re-solve (baseline, no flag) both resolved agrees; otherwise
+    one kind string per differing package, joined, naming which parent
+    rung 0's pin came from and whether the registry chose older or newer.
+    Compares every package, not just the divergent names -- rung 3's own
+    `moved` list (#296) means a *non*-divergent package can differ too."""
+    kinds: list[str] = []
+    for name in sorted(set(offline_idx) | set(baseline_idx)):
+        off, base = offline_idx.get(name), baseline_idx.get(name)
+        if off == base:
+            continue
+        parent = "neither parent"
+        if off == ours_idx.get(name):
+            parent = "ours"
+        elif off == theirs_idx.get(name):
+            parent = "theirs"
+        off_ver = off[0] if off else None
+        base_ver = base[0] if base else None
+        cmp = compare_versions(off_ver, base_ver)
+        if cmp is None:
+            direction = "unversioned (dev branch)"
+        elif cmp < 0:
+            direction = "older pin kept"
+        elif cmp > 0:
+            direction = "newer chosen"
+        else:
+            direction = "same version, different reference"
+        kinds.append(f"{parent}, {direction}")
+    return "; ".join(kinds) if kinds else None
+
+
 def normalize_composer_json(viv_bin: str, content: bytes) -> tuple[bytes | None, str | None]:
     """`viv normalize -d <tmpdir>` rewrites composer.json in place; no
     --stdout, so write, run, read back."""
@@ -930,6 +970,7 @@ def declare_contemporaneous_platform(composer_json: bytes, ours_lock: bytes, the
 def driver_conflict(
     viv_bin: str, work: Path, cache_dir: Path, repo_dir: Path, sha: str,
     composer_json: bytes | None, base: bytes, ours: bytes, theirs: bytes,
+    offline_rung: bool = False,
 ) -> tuple[bool | None, str | None, int | None, int, bytes | None]:
     """`viv lock merge` on the composer.lock trio, run from a directory
     holding the merge commit's own composer.json with its platform
@@ -968,7 +1009,9 @@ def driver_conflict(
     (exit 0) run, read back off `ours` -- `merge_composer_lock` writes its
     result there unconditionally (#306: the ledger fold's own control
     needs the driver's actual merged content, not just whether it
-    conflicted)."""
+    conflicted). `offline_rung` (#314) appends `--offline-rung`; a
+    successful rung-0 resolve reports rung 0 through the same
+    `parse_resolution` line, no format change needed here."""
     if composer_json is None:
         return None, "composer.json missing at the merge commit", None, 0, None
     composer_json = declare_contemporaneous_platform(composer_json, ours, theirs)
@@ -987,6 +1030,8 @@ def driver_conflict(
     committer_date = git_or_none(repo_dir, "show", "-s", "--format=%cI", sha)
     if committer_date:
         command += ["--as-of", committer_date]
+    if offline_rung:
+        command.append("--offline-rung")
     result = subprocess.run(command, capture_output=True)
     if result.returncode not in (0, 1):
         stderr = result.stderr.decode(errors="replace").strip()
@@ -1032,6 +1077,46 @@ class MergeOutcome:
     driver_time: float | None = None  # seconds, the driver_conflict() call itself
     ledger_category: str | None = None  # #306, only set with --ledger
     hybrid: "HybridOutcome | None" = None  # #306 follow-up, only set with --hybrid
+    offline: "OfflineOutcome | None" = None  # #314, only set with --offline-rung
+
+
+LEAF_CAUSE_DEV_HEAD = "dev-* head"
+LEAF_CAUSE_PACKAGE_GONE = "package gone"
+LEAF_CAUSE_MALFORMED_MANIFEST = "malformed manifest"
+LEAF_CAUSE_OTHER = "other"
+
+
+def leaf_cause_class(reason: str | None) -> str:
+    """Buckets a `driver_error`/`summarize_resolve_failure` reason into the
+    same four leaf-cause classes `bench/results/lockmerge.md`'s existing
+    table names (2026-09-23 section): a `dev-*` branch's current head
+    conflicting with a pinned release, a package Packagist no longer
+    lists, a manifest that doesn't parse, or (#314's own residue, not seen
+    in that table) anything else."""
+    if not reason:
+        return LEAF_CAUSE_OTHER
+    if "could not be found in any version" in reason:
+        return LEAF_CAUSE_PACKAGE_GONE
+    if "dev-" in reason and "conflicts with" in reason:
+        return LEAF_CAUSE_DEV_HEAD
+    if "parsing composer.json" in reason or "composer.json" in reason and "comma" in reason:
+        return LEAF_CAUSE_MALFORMED_MANIFEST
+    return LEAF_CAUSE_OTHER
+
+
+@dataclass
+class OfflineOutcome:
+    """`--offline-rung` (#314), compared against the same merge's plain
+    `driver_conflict` (no flag) call. `safety_kind` is only set when both
+    finished, rung 0 is the one that finished the flagged run, and some
+    package's identity differs between the two results -- the safety
+    number's per-case classification (which parent's pin rung 0 kept, and
+    whether the registry re-solve moved to an older or newer version)."""
+    conflicted: bool | None
+    error: str | None
+    rung: int | None
+    time: float | None
+    safety_kind: str | None = None
 
 
 @dataclass
@@ -1062,7 +1147,7 @@ def clone_or_reuse(cache_root: Path, project: Project) -> Path:
 
 def run_repo(
     project: Project, cache_root: Path, cap: int, viv_bin: str, native_available: bool,
-    driver_available: bool, ledger: bool = False, hybrid: bool = False,
+    driver_available: bool, ledger: bool = False, hybrid: bool = False, offline_rung: bool = False,
 ) -> RepoReport:
     report = RepoReport(project=project)
     repo_dir = clone_or_reuse(cache_root, project)
@@ -1174,10 +1259,33 @@ def run_repo(
                             f"real conflict(s) folded without refusal ({len(real_names)} package(s))"
                         )
 
+            offline_outcome: OfflineOutcome | None = None
+            if offline_rung and driver_available:
+                offline_start = time.perf_counter()
+                off_conflicted, off_err, off_rung, _off_moved, off_lock = driver_conflict(
+                    viv_bin, work, driver_cache, repo_dir, m.sha,
+                    merge_json, base_lock, ours_lock, theirs_lock, offline_rung=True,
+                )
+                off_time = time.perf_counter() - offline_start
+                if off_conflicted and off_err:
+                    report.footnotes.append(
+                        f"{m.sha[:12]}: --offline-rung re-solve did not finish: {off_err}"
+                    )
+                safety_kind = None
+                if off_rung == 0 and off_conflicted is False and driver_conflicted is False:
+                    offline_idx, baseline_idx = lock_index(off_lock), lock_index(driver_lock)
+                    if offline_idx is not None and baseline_idx is not None:
+                        safety_kind = classify_safety(offline_idx, baseline_idx, ours_idx, theirs_idx)
+                        if safety_kind:
+                            report.footnotes.append(
+                                f"{m.sha[:12]}: offline rung 0 safety difference: {safety_kind}"
+                            )
+                offline_outcome = OfflineOutcome(off_conflicted, off_err, off_rung, off_time, safety_kind)
+
             report.merges.append(MergeOutcome(
                 m.sha, composer_conflicts, native_conflicts, native_error, real,
                 driver_conflicted, driver_err, driver_rung, driver_moved, driver_time,
-                ledger_category, hybrid_outcome,
+                ledger_category, hybrid_outcome, offline_outcome,
             ))
 
     return report
@@ -1348,10 +1456,90 @@ def render_hybrid(merges: list[MergeOutcome]) -> list[str]:
     return lines
 
 
+def render_offline(merges: list[MergeOutcome]) -> list[str]:
+    """#314: `--offline-rung` against the same merge's plain (no-flag)
+    driver call. Four counts, in the issue's own order -- residue cleared
+    (a merge that used to end in markers and now doesn't, by the leaf
+    cause of the marker it cleared), residue remaining (still markers,
+    same leaf-cause buckets), the safety number (rung 0 accepted a pin the
+    registry re-solve, when it also finished, would have picked
+    differently), and network avoided (rung 0 finished a merge that used
+    to need an escalation rung, no registry contact for it this time) --
+    plus the median time both ways."""
+    counted = [m for m in merges if m.offline is not None]
+    lines = ["### Offline rung vs registry escalation (#314)", ""]
+    if not counted:
+        lines.append("No merge had both an `--offline-rung` and a plain driver result to compare.")
+        lines.append("")
+        return lines
+
+    n = len(counted)
+    cleared = [m for m in counted if m.driver_conflict is True and m.offline.conflicted is False]
+    remaining = [m for m in counted if m.offline.conflicted is True]
+    network_avoided = [
+        m for m in counted
+        if m.offline.rung == 0 and m.driver_conflict is False and m.driver_rung is not None
+    ]
+    safety_cases = [m for m in counted if m.offline.safety_kind]
+
+    def leaf_table(items: list[MergeOutcome], reason_of) -> list[str]:
+        if not items:
+            return ["None.", ""]
+        counts: dict[str, int] = {}
+        for m in items:
+            counts[leaf_cause_class(reason_of(m))] = counts.get(leaf_cause_class(reason_of(m)), 0) + 1
+        out = ["| Leaf cause | Merges |", "|---|---|"]
+        for cause, c in sorted(counts.items(), key=lambda kv: -kv[1]):
+            out.append(f"| {cause} | {c} |")
+        out.append("")
+        return out
+
+    driver_times = [m.driver_time for m in counted if m.driver_time is not None]
+    offline_times = [m.offline.time for m in counted if m.offline.time is not None]
+
+    lines.append(
+        "| Merges examined | Residue cleared | Residue remaining | Safety number | "
+        "Network avoided | Median ms, no flag | Median ms, --offline-rung |"
+    )
+    lines.append("|---|---|---|---|---|---|---|")
+    lines.append(
+        f"| {n} | {len(cleared)} | {len(remaining)} | {len(safety_cases)} | "
+        f"{len(network_avoided)} | "
+        f"{fmt_ms(statistics.median(driver_times)) if driver_times else 'n/a'} | "
+        f"{fmt_ms(statistics.median(offline_times)) if offline_times else 'n/a'} |"
+    )
+    lines.append("")
+
+    lines.append("Residue cleared, by the leaf cause it cleared:")
+    lines.append("")
+    lines.extend(leaf_table(cleared, lambda m: m.driver_error))
+    lines.append("Residue remaining, by leaf cause:")
+    lines.append("")
+    lines.extend(leaf_table(remaining, lambda m: m.offline.error))
+
+    if safety_cases:
+        kind_counts: dict[str, int] = {}
+        for m in safety_cases:
+            for kind in m.offline.safety_kind.split("; "):
+                kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        lines.append(f"Safety number: {len(safety_cases)} merge(s), by kind:")
+        lines.append("")
+        lines.append("| Kind | Count |")
+        lines.append("|---|---|")
+        for kind, c in sorted(kind_counts.items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {kind} | {c} |")
+        lines.append("")
+    else:
+        lines.append("Safety number: 0. No merge where rung 0's pin and the registry's own "
+                      "re-solve, when both finished, chose a different package identity.")
+        lines.append("")
+    return lines
+
+
 def render(
     reports: list[RepoReport], cap: int, viv_bin: str, viv_version: str,
     native_available: bool, viv_commit: str | None, driver_available: bool,
-    ledger: bool = False, hybrid: bool = False,
+    ledger: bool = False, hybrid: bool = False, offline_rung: bool = False,
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     commit_note = f", commit `{viv_commit}`" if viv_commit else ""
@@ -1502,6 +1690,9 @@ def render(
     if hybrid:
         all_merges = [m for r in reports for m in r.merges]
         lines.extend(render_hybrid(all_merges))
+    if offline_rung:
+        all_merges = [m for r in reports for m in r.merges]
+        lines.extend(render_offline(all_merges))
     return "\n".join(lines)
 
 
@@ -1525,7 +1716,8 @@ def main() -> int:
     argv = sys.argv[1:]
     hybrid = "--hybrid" in argv  # #306 follow-up: adds the hybrid-vs-driver-alone table, implies --ledger
     ledger = "--ledger" in argv or hybrid  # #306: adds the ledger-fold-vs-driver counts to the report
-    argv = [a for a in argv if a not in ("--ledger", "--hybrid")]
+    offline_rung = "--offline-rung" in argv  # #314: runs the driver twice, with and without the flag
+    argv = [a for a in argv if a not in ("--ledger", "--hybrid", "--offline-rung")]
     if argv and argv[0] == "--self-test":
         return self_test()
     only = argv[0].split(",") if argv else []
@@ -1556,7 +1748,10 @@ def main() -> int:
     reports = []
     for project in projects:
         log(f"{project.name}: starting")
-        r = run_repo(project, cache_root, cap, viv_bin, native_available, driver_available, ledger, hybrid)
+        r = run_repo(
+            project, cache_root, cap, viv_bin, native_available, driver_available,
+            ledger, hybrid, offline_rung,
+        )
         reports.append(r)
         if r.skipped_reason:
             update_corpus_note(corpus_path, project.name, f'skip = "{r.skipped_reason}"')
@@ -1564,7 +1759,8 @@ def main() -> int:
             update_corpus_note(corpus_path, project.name, f'examined = "{r.range_note}"')
 
     section = render(
-        reports, cap, viv_bin, viv_version, native_available, viv_commit, driver_available, ledger, hybrid,
+        reports, cap, viv_bin, viv_version, native_available, viv_commit, driver_available,
+        ledger, hybrid, offline_rung,
     )
     if not report_path.exists():
         report_path.write_text(HEADER)
@@ -1729,6 +1925,38 @@ def self_test() -> int:
         )
         assert (rung, moved) == (2, 1), f"expected rung 2 with 1 moved package, got {(rung, moved)}"
         assert parse_resolution("") == (None, 0), "no stderr means no rung to report"
+        # #314: rung 0 (--offline-rung) reads through the same line.
+        assert parse_resolution(
+            "viv lock merge: resolved via rung 0 (offline): d/dep\n"
+        ) == (0, 0), "rung 0 must parse the same as any other rung"
+
+        # #314: leaf_cause_class buckets a driver_error the same way
+        # bench/results/lockmerge.md's existing leaf-cause table does.
+        assert leaf_cause_class(
+            "- roave/security-advisories dev-latest conflicts with wp-coding-standards/wpcs 2.3.0."
+        ) == LEAF_CAUSE_DEV_HEAD
+        assert leaf_cause_class(
+            "- Root composer.json requires x/y, it could not be found in any version, there may "
+            "be a typo in the package name."
+        ) == LEAF_CAUSE_PACKAGE_GONE
+        assert leaf_cause_class("parsing composer.json: trailing comma at line 1") == (
+            LEAF_CAUSE_MALFORMED_MANIFEST
+        )
+        assert leaf_cause_class("some other reason entirely") == LEAF_CAUSE_OTHER
+        assert leaf_cause_class(None) == LEAF_CAUSE_OTHER
+
+        # #314: classify_safety agrees when both sides resolved the same
+        # package identically, and names the parent and direction when a
+        # divergent package's pin differs from the registry's own pick.
+        ours_idx = {"d/dep": ("1.0.0", "aaa", False)}
+        theirs_idx = {"d/dep": ("2.0.0", "bbb", False)}
+        assert classify_safety(
+            {"d/dep": ("1.0.0", "aaa", False)}, {"d/dep": ("1.0.0", "aaa", False)}, ours_idx, theirs_idx,
+        ) is None, "identical resolutions must not count against the safety number"
+        kind = classify_safety(
+            {"d/dep": ("1.0.0", "aaa", False)}, {"d/dep": ("2.0.0", "bbb", False)}, ours_idx, theirs_idx,
+        )
+        assert kind == "ours, older pin kept", f"expected ours/older, got {kind}"
 
     # #306: ledger fold unit cases -- disjoint changes, agreement, a real
     # fork, and delete-vs-update, plus order-independence and an
