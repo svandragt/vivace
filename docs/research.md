@@ -524,7 +524,7 @@ stops on `composer.lock`; saving that stop means taking `composer.lock`
 out of git. A second lock format does not pay for 36 ms. The driver
 stays the only merge path.
 
-### Candidate B: install from a lock years later
+### Candidate B: install from a lock years later (measured, not built)
 
 **Question.** How many committed locks still install today, byte for
 byte, at the commit that wrote them, and what breaks the rest?
@@ -547,6 +547,56 @@ class and per age. Results in `compat/results/lock-age.md`.
 install": content hashes of the extracted trees and a platform snapshot
 in chapter 1's format, so an install can be verified against trees the
 store still has when the URLs are gone.
+
+**Result, 2026-09-26.** The chapter doesn't hold: nothing broke.
+`compat/lock-age.py` swept `compat/corpus.toml` and the public projects
+in `compat/hunted.md` (27 projects, 5 excluded for a first-pass timeout
+on deep git history or a large dependency graph, named in the script)
+for the last commit touching `composer.lock` one, two and four years
+before 2026-09-26. 22 projects had an installable checkout; 19 of them
+had committed a lock inside that window, for 40 project-commit pairs
+(19 at one year, 11 at two, 10 at four -- the rest deduplicate to a
+closer age or have no earlier lock to find). The other three
+(`typo3/cms-base-distribution`, `symfony/skeleton`,
+`laminas/laminas-mvc-skeleton`) have never committed a lock at all.
+`compat/results/lock-age.md` has the full table.
+
+`viv install --no-scripts --ignore-platform-reqs` installed every one
+of the 40 pairs. The control failed exactly once, on
+`codeigniter4/appstarter`'s 2019 lock, and not on a dist or source
+problem: Composer's own package-name validation is stricter now than
+when the lock was written and refuses `require-dev`'s
+`mikey179/vfsStream` for its uppercase letters. Zero packages, across
+all 40 pairs, hit a dist URL gone, a shasum mismatch, a `dev-*` head
+moved, or a package dropped from Packagist's metadata -- so the tree-
+hash-saves count this chapter set out to measure is 0 of 0. Chapter 1's
+"7 packages gone from Packagist" came from a different corpus: real
+client projects, not the actively maintained frameworks and CMSes
+`compat/corpus.toml` and `compat/hunted.md` name. A popular project's
+own direct and transitive dependencies apparently don't churn the way
+an arbitrary client project's do, at least not within four years.
+
+10 of the 40 pairs would refuse today's PHP (devbox's 8.4.24) on the
+lock's own `require.php`, reusing `compat/platform-drift.py`'s checker
+-- a real, separate finding, and one both tools already treat as
+recoverable (`--ignore-platform-reqs`, used here precisely so the
+network question wasn't gated by it). 31 of the 39 pairs both tools
+installed byte-diffed identical; the other 8 differ for reasons
+unrelated to lock age: viv writes `vendor/composer/installed.json`/
+`installed.php`'s `time` field as `2015-06-28 21:39:13` where Composer
+writes ISO 8601 (most of the 8), `laravel/laravel`'s 2015 lock names a
+legacy mixed-case package (`jeremeamia/SuperClosure`) that Composer
+installs under its original case and viv lowercases, and
+`phpunit/phpunit`'s own test suite declares ambiguous duplicate class
+names as fixtures that the two tools' classmaps resolve differently.
+None are filed; `compat/results/lock-age.md` lists the pairs.
+
+A lock carrying tree hashes and a platform snapshot would not have
+saved anything this run, because nothing needed saving. The chapter
+doesn't rule out building it for a corpus with more package churn --
+chapter 1's residue is still real -- but this corpus is not that case,
+and the doc's own rule is not to build ahead of the measurement that
+asked for it.
 
 ### Candidate C: lock-seeded solving (measured, already built)
 
