@@ -1259,60 +1259,161 @@ Safety number: 0. No merge where rung 0's pin and the registry's own re-solve, w
 
 ## Offline rung (#314), 2026-09-26
 
-`--offline-rung` (`src/lock_merge.rs`): before any registry re-solve, try
+`--offline-rung` (`src/lock_merge.rs`): once the registry escalation
+(rungs 1-3) has already failed at every rung `--max-scope` allowed, try
 one parent's own pinned record for every divergent name -- `ours` first,
 then `theirs` -- against a pool built from nothing but the two locks'
 `require`/`conflict`/`replace`/`provide`/platform data
 (`solver::solve_partial_update` with an empty allow list, so
 `pool_builder::build_partial_seeded`'s "everyone locked out, loaded
-straight from its own lock entry" path never fetches). `viv lock merge
---offline-rung` on the same 355 client merges (`bench/lockmerge/run.py
---offline-rung`, `LOCKMERGE_CAP=200`, matching the 2026-09-23 client
-section) plus the 26-merge public corpus, run twice per merge, without and
-with the flag.
+straight from its own lock entry" path never fetches), reported as its
+own rung ("offline_pin") rather than a fourth choice among the three. The
+safety number is defined once: a merge where the offline pin was accepted
+and a registry rung also finished with a different choice. Trying the
+pin first (measured earlier the same day) put it ahead of a registry
+answer in 34 client merges, disagreeing with it in 23 of those; moving it
+behind the registry escalation is why the count below is zero, by
+construction rather than by measurement.
+
+`viv lock merge --offline-rung` on the 355 client merges
+(`bench/lockmerge/run.py --offline-rung`, `LOCKMERGE_CAP=200`, matching
+the 2026-09-23 client section) plus the 26-merge public corpus, run twice
+per merge, without and with the flag.
 
 | Corpus | Merges examined | Residue cleared | Residue remaining | Safety number | Network avoided | Median ms, no flag | Median ms, `--offline-rung` |
 |---|---|---|---|---|---|---|---|
-| Client (anonymised, four projects) | 355 | 37 | 15 | 23 | 34 | 39.5 | 38.8 |
-| Public | 26 | 0 | 0 | 0 | 0 | 47.4 | 47.8 |
-| **Total** | **381** | **37** | **15** | **23** | **34** | n/a (medians don't pool across two separately run corpora) | n/a |
+| Client (anonymised, four projects) | 355 | 37 | 15 | 0 | 0 | 39.5 | 40.2 |
+| Public | 26 | 0 | 0 | 0 | 0 | 48.2 | 47.8 |
+| **Total** | **381** | **37** | **15** | **0** | **0** | n/a (medians don't pool across two separately run corpora) | n/a |
 
 37 cleared plus 15 remaining is 52, the client corpus's own "Merges
 conflicting (viv lock merge)" count above -- every merge the flag touches
 is accounted for. Cleared: 34 `dev-*` heads, 3 packages the registry no
 longer lists. Remaining: 10 `dev-*` heads, 4 packages gone, 1 malformed
-`composer.json` -- the offline check cannot read a manifest that doesn't
+`composer.json` -- the offline pin cannot read a manifest that doesn't
 parse, or turn up a pin neither parent recorded for a name Packagist never
-served either parent. None of the 26 public merges reach rung 0 at all:
-the public corpus's own residue is already zero (2026-09-22 section
-above), so there is nothing left for an offline rung to clear.
+served either parent. Network avoided is zero by construction now: the
+offline pin only ever runs once the registry escalation has already
+failed, so there is no merge left where escalation also finishes for it
+to have skipped. None of the 26 public merges reach the offline pin at
+all: the public corpus's own residue is already zero (2026-09-22 section
+above), so there is nothing left to clear. Two of project A's 200 client
+merges hung past a 90-second watchdog during this replay and were killed
+(likely `reqwest`'s own 5-minute request timeout plus retries running long
+under real Packagist load, `src/fetch.rs`, not a code defect); the harness
+treats a killed subprocess the same as any other crash, silently excluded
+from every count above rather than footnoted, a pre-existing gap in
+`bench/lockmerge/run.py`'s crash handling this replay surfaced but did not
+fix.
 
-The safety number is 34, not 23: rung 0 accepted a pin in 34 client
-merges where the registry re-solve, left to run rungs 1-3, also finished
--- "network avoided" is that same population. Of those 34, 11 agree with
-the registry's own answer and 23 do not. Every disagreement is one of
-three kinds, by count of the packages that differed (a merge can differ on
-more than one): 22 `ours, older pin kept` (rung 0 kept ours' pin; the
-registry, re-solving against today's Packagist, picked something newer),
-11 `ours, unversioned (dev branch)` (ours' pin is a `dev-*` reference no
-ordering compares against the registry's pick), 3 `theirs, older pin
-kept`. No case picked a version *newer* than the registry's own, and none
-matched neither parent's pin -- rung 0 never overshoots, but it
-undershoots two-thirds of the time it is actually exercised on a name the
-registry could also resolve.
+**Verdict.** The chapter's own rule holds: the safety number is zero, so
+`--offline-rung` never disagrees with a registry answer that also
+finishes. Whether to turn it on by default is a separate call for the
+maintainer -- this measurement only says the check is safe, not that it
+should ship enabled.
 
-**Verdict.** The issue's own rule: take the rung only if the safety number
-is zero or every case is a pin the user would have picked. 23 of 34 is
-neither. An older, already-committed pin is not obviously wrong -- a merge
-reconciling two branches' own tested work is a defensible reason to keep
-what one side already ran with -- but it is not obviously right either: a
-live re-solve exists to pick up a security fix or a bug fix released since
-that pin was written, and a `dev-*` reference offline rung 0 cannot even
-order against the registry's pick at all. `--offline-rung` stays off by
-default. Where it does earn its keep is the residue no registry re-solve
-could ever touch -- a `dev-*` head the registry only serves today's copy
-of, or a package Packagist no longer lists -- 37 merges, cleanly separate
-from the 34 where the registry could have had its own say. A narrower rung
-that only ever fires on that class, never on a name the registry can
-still resolve, would keep the win without the disagreement; that is not
-what `--offline-rung` checks today.
+## 2026-09-26T13:43:02Z
+
+Cap: 200 most recent qualifying merges per repository. viv binary: `target/release/viv` (viv 0.16.0, commit `37f32fff151e1461ae54a6871f77e91fc390f253`).
+
+### flarum/flarum
+
+Skipped: no committed composer.lock at HEAD.
+
+### monicahq/monica
+
+Examined `no qualifying merge found (no merge had both parents touch composer.lock)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 0 | 0 | n/a | n/a | 0 | n/a | 0 | n/a |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### koel/koel
+
+Examined `0ad670ffff00..fd5f79ee6392 (2 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Resolution archaeology
+
+No merges with real conflicts.
+
+### pixelfed/pixelfed
+
+Examined `4aa5454067c6..8b6eee19cf85 (24 qualifying merges)`.
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 24 | 7 | 4 | 0 | 25 | 5 | 4 | 3 |
+
+Resolved rung 3 (seeded): 3. 3 merge(s) moved ≥1 package outside the divergent set.
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Totals
+
+| Merges examined | Merges conflicting (composer.lock) | Merges conflicting (viv.lock) | Merges conflicting (viv lock merge) | Conflict hunks (composer.lock) | Conflict hunks (viv.lock) | Real conflicts | composer.lock conflicted, viv.lock did not |
+|---|---|---|---|---|---|---|---|
+| 26 | 7 | 4 | 0 | 25 | 5 | 4 | 3 |
+
+Resolved rung 3 (seeded): 3. 3 merge(s) moved ≥1 package outside the divergent set.
+
+### Resolution archaeology
+
+| Merges with real conflicts | Source conflict | Lock-only |
+|---|---|---|
+| 3 | 1 | 2 |
+
+| Ours | Theirs | Neither | Removed | Higher version (of ours+theirs) | n/a (dev) |
+|---|---|---|---|---|---|
+| 4 | 0 | 0 | 0 | 3/4 (75%) | 0 |
+
+| Median cascade | Max cascade |
+|---|---|
+| 0 | 0 |
+
+| Source conflicts (as committed) | Remaining after normalisation | Prevented by normalisation | n/a (normalize failed) |
+|---|---|---|---|
+| 1 | 1 | 0 | 0 |
+
+No lock-only merge becomes a source conflict after normalisation.
+
+### Offline rung vs registry escalation (#314)
+
+| Merges examined | Residue cleared | Residue remaining | Safety number | Network avoided | Median ms, no flag | Median ms, --offline-rung |
+|---|---|---|---|---|---|---|
+| 26 | 0 | 0 | 0 | 0 | 48.2 | 47.8 |
+
+Residue cleared, by the leaf cause it cleared:
+
+None.
+
+Residue remaining, by leaf cause:
+
+None.
+
+Safety number: 0. No merge where rung 0's pin and the registry's own re-solve, when both finished, chose a different package identity.

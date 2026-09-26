@@ -524,36 +524,35 @@ stops on `composer.lock`; saving that stop means taking `composer.lock`
 out of git. A second lock format does not pay for 36 ms. The driver
 stays the only merge path.
 
-### Offline rung 0 (#314)
+### Offline pin (#314)
 
 **Question.** For each divergent name, does one parent's own pinned
 record already satisfy every constraint the two locks record, with no
 registry fetch at all?
 
-**Result, 2026-09-26.** Measured, not enabled. `--offline-rung`
-(`bench/results/lockmerge.md`) tries `ours`' pin, then `theirs`', against
-a pool built only from the two locks' own `require`/`conflict`/`replace`/
-`provide`/platform data, reusing the solver's own rule generation and
-CDCL solve with an empty allow list rather than a second checker. On the
-355 client merges it clears 37 of the 52 residue merges (34 `dev-*`
-heads, 3 packages Packagist no longer lists) with no fetch, exactly the
-residue a registry re-solve could never touch anyway. But it also fires
-on 34 merges where the registry re-solve, left to run, also finished, and
-disagrees with it on 23 of those 34: 22 keep an older pin the registry
-would have moved past, 11 pin a `dev-*` reference no ordering can compare
-against the registry's own pick, 3 keep the *other* parent's older pin. No
-case picked something newer than the registry would have, but the
-majority pick something older.
+**Result, 2026-09-26.** Measured, not enabled by default. `--offline-rung`
+(`bench/results/lockmerge.md`) runs only once the registry escalation
+(rungs 1-3) has already failed at every rung `--max-scope` allowed, and
+only then tries `ours`' pin, then `theirs`', against a pool built only
+from the two locks' own `require`/`conflict`/`replace`/`provide`/platform
+data, reusing the solver's own rule generation and CDCL solve with an
+empty allow list rather than a second checker. Reported as its own rung,
+"offline_pin", not a fourth choice among the three. Trying the pin first
+disagreed with a registry answer that also finished in 23 of 34 client
+merges; moving it behind the registry escalation instead means it can
+never run alongside a registry answer to disagree with, so the safety
+number -- a merge where the offline pin was accepted and a registry rung
+also finished with a different choice -- is zero on both the 355-merge
+client corpus and the 26-merge public one, by construction.
 
-The issue's own rule: take the rung only if the safety number is zero or
-every case is a pin the user would have picked. 23 of 34 is neither, so
-`--offline-rung` stays off by default. The residue it clears and the risk
-it carries are the same mechanism, not two independent ones -- a check
-that only ever fires when the registry has nothing to add (a `dev-*` head
-whose current version the registry can only serve as of today, a name
-Packagist has dropped) would keep the 37-merge win with none of the
-34-merge disagreement, but distinguishing those two cases offline, before
-attempting the pin, is not what this chapter built or measured.
+On the 355 client merges the pin still clears 37 of the 52 residue merges
+(34 `dev-*` heads, 3 packages Packagist no longer lists) with no fetch,
+exactly the residue a registry re-solve could never touch anyway; the
+other 15 stay markers (10 `dev-*` heads, 4 packages gone, 1 malformed
+`composer.json`). The chapter's own rule holds: the safety number is
+zero. Whether to turn `--offline-rung` on by default is a separate call
+for the maintainer -- this measurement only says the check is safe, not
+that it should ship enabled.
 
 ### Candidate B: install from a lock years later
 
