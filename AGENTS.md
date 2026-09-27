@@ -91,7 +91,9 @@ merge.
 Work is evaluated by chapter, not by ticket count. A chapter is a section
 of `docs/research.md` with a question, a hypothesis, the control (the
 compatible mode), a measurement, and a write-up. Its issues live in a
-milestone named `research N: <theme>`.
+milestone named `research N: <theme>`. Generation 3 work (see `docs/research.md`) uses
+`g3 candidates` for unpicked candidates and `g3 research N: <theme>` once
+one is picked.
 
 - The question and hypothesis are written in `docs/research.md` before code.
 - New behaviour sits behind a flag or manifest setting; the default path

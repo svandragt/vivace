@@ -765,6 +765,8 @@ could be if it no longer had to produce Composer's output.
   generation 3 feature with one command and can move back; no candidate
   needs its own registry to start.
 - Each candidate is measured before anything is built, as in generation 2.
+  Unpicked candidates are issues in the `g3 candidates` milestone; a picked
+  one gets its own `g3 research N: <theme>` milestone.
   A candidate may break byte compatibility with Composer's `vendor/`, but
   its chapter says exactly what differs and why.
 
@@ -793,7 +795,11 @@ distribution packages, a third-party repository, and a downloaded static
 PHP build.
 
 **Build if it holds.** `viv php install <version>` with extensions,
-pinned per project in the manifest, and `viv run` using it.
+pinned per project in the manifest, and `viv run` and `viv x` using it.
+First user story: `viv x wp-cli/wp-cli-bundle` runs WP-CLI on the project's
+pinned PHP and extensions, the same runtime the site uses, on a machine with
+no PHP installed. A WP-CLI that runs on a different PHP from the site, or
+without its extensions, is a common reason `wp` fails to load WordPress.
 
 ### Candidate 3.2: isolate dependencies per plugin
 
