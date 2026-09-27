@@ -46,7 +46,7 @@ chain into the lower half and install (`--no-install` opts out).
 | `lock` | Parse `composer.lock` and the root `composer.json` (`autoload`, `autoload-dev`, `config`). Keeps JSON key order (`serde_json` `preserve_order`) because `installed.json` re-emits lock entries. |
 | `repository` | Packagist v2 and v1 (Satis/Private Packagist) metadata clients, `package` (inline `composer.json` declarations), multi-repository construction from `composer.json`'s `repositories`, an HTTP cache mirroring Composer's disk format. |
 | `solver` | Port of Composer's CDCL dependency solver (`pool`, `pool_builder`, `pool_optimizer`, `rule_set_generator`, `rules`, `watch_graph`, `decisions`, `policy`, `solver`, `transaction`, `request`, `platform`). Full updates only; `viv install` never reaches it. |
-| `lock_writer` | Writes `composer.lock` from a solved transaction: top-level key order, `content-hash`, per-package `ArrayDumper` shape. |
+| `lock_writer` | Writes `composer.lock` from a solved transaction: top-level key order, `content-hash`, per-package `ArrayDumper` shape. Its `normalize_time` (a package's `time` field, rendered the way `ArrayDumper` prints it — an explicit offset kept, not shifted to UTC) is shared with `autoload::installed`, which needs the same rendering for `installed.json`. |
 | `require` | `viv add`/`viv rm`: constraint synthesis and a format-preserving `composer.json` edit, then a partial update of the touched package(s). |
 | `update` | Wires repositories, the solver and `lock_writer` together for `viv update`/`viv update --lock` (`viv update-lock`'s alias). |
 | `plan` | Diff the lock against `vendor/composer/installed.json` to decide what to keep, install, and remove. |
@@ -69,7 +69,7 @@ chain into the lower half and install (`--no-install` opts out).
 | `version`, `semver` | Composer version normalisation and constraint parsing/matching, shared by the solver, `show`, and the autoloader's version dumps. |
 | `time` | Civil-date/epoch-day helpers shared by `show` (release-age math), `lock_writer` (normalising a package's `time` field) and `vcs` (VCS timestamp formatting). |
 | `native_lock` | Chapter 1's `viv.lock` writer and reader, and `viv lock convert`, which translates an existing `composer.lock` into it without re-solving. |
-| `lock_merge` | Record-level three-way merge and re-solve for `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver. |
+| `lock_merge` | Record-level three-way merge and re-solve for `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver. `--offline-rung` (opt-in) tries one parent's own pinned record, checked against the two locks' own `require`/`conflict`/`replace`/`provide`/platform data with no registry fetch, once the registry escalation has already failed at every rung. |
 | `workspace` | Chapter 3's `extra.viv.workspace` member discovery and `viv workspace list`; `viv workspace init`/`viv workspace add` write and grow a plain aggregate root, one `path` repository and `require` line per matched pattern, then resolve and install through `require::partial_update`. |
 | `main.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, `diagnose`, `lock`, `workspace`, plus `--offline` and `--cache-dir`. |
 

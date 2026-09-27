@@ -126,7 +126,7 @@ are planned.
 | `src/show.rs` | `viv show`/`tree`/`why`/`outdated`, read-only inspection of installed packages |
 | `src/diagnose.rs` | `viv diagnose`, environment/config report |
 | `src/native_lock.rs` | `viv.lock` (chapter 1) writer/reader, `viv lock convert` |
-| `src/lock_merge.rs` | `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver |
+| `src/lock_merge.rs` | `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver, and its opt-in `--offline-rung` last resort |
 | `src/workspace.rs` | Chapter 3's `extra.viv.workspace` member discovery, `viv workspace list`, and `viv workspace init`/`add`, which write the aggregate root `composer.json` |
 | `tests/fixtures/composer/` | upstream Composer test corpora, do not edit |
 | `tests/fixtures/monolog/` | end-to-end fixture with Composer's expected output |

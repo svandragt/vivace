@@ -1499,3 +1499,21 @@ the re-solve fails, it cannot disagree, and it still finishes 37 of the
 52 client merges that ended in conflict markers. It stays off by default.
 The replay harness drops a crashed merge from every count without a
 note; filed separately.
+
+## 2026-09-27: 0.18.0
+
+0.18.0 ships `viv lock merge --offline-rung` (#314), off by default, and
+three compatibility fixes the old-lock corpus turned up: `installed.json`'s
+`time` written the way Composer writes it, including an explicit offset
+kept instead of shifted to UTC (#317, and the lock writer's own #121
+shared the same offset bug); a mixed-case package name installing under
+its own casing instead of a lowercased one (#318); and, for a class
+declared twice, the classmap keeping the same file Composer's own
+directory walk reaches first (#319). installed.php also gained a branch
+alias's pretty version in `self.version` replace/provide (#322). Bench-ab
+on laravel, drupal and symfony/demo stayed flat across all four. Tooling:
+`compat/lock-age.py --verify` (a warm, parallel old-lock check, minutes
+instead of hours, #328), a crashed lock merge counted rather than dropped
+from the replay (#320), and two bench harness fixes (#313, #321). The
+pre-release sweep runs separately; its counts land in
+`compat/results/v0.18.0.md` when it finishes.
