@@ -119,8 +119,11 @@ written outside the project and the cache.
 viv's contract is that its output matches Composer's byte for byte. Before
 every release, a compatibility sweep installs a mix of pinned popular
 projects and a random sample of Packagist packages with both Composer and
-viv, then compares the results.[^2] The v0.18.0 sweep: SWEEP_TBD.[^20] In
-the random sample, SWEEP_TBD.[^3]
+viv, then compares the results.[^2] The v0.18.0 sweep: all 20 install rows of the
+pinned corpus are identical, and 9 of 10 pinned projects resolve the same
+lock.[^20] In the random sample, all 8 rows that Composer could install are
+identical; the other 12 were skipped because Composer itself could not
+resolve the project or its platform check failed.[^3]
 
 One pinned project still needs `--no-plugins`, for a plugin viv refuses by
 design rather than one it has yet to port.[^4] See [Plugins](#plugins)
@@ -483,4 +486,4 @@ keep their original copyright notices; MIT permits their use here.[^16]
 [^17]: [`docs/stability.md`](docs/stability.md) states what a minor release may and may not change.
 [^18]: `drupal/core-composer-scaffold`, `johnpbloch/wordpress-core-installer` and `roots/wordpress-core-installer` are all GPL-2.0-or-later. Their `or later` term is what allows GPL-3.0 here. See [#245](https://github.com/svandragt/vivace/issues/245) for the provenance of each port.
 [^19]: The replay and its counts are in [`bench/results/lockmerge.md`](bench/results/lockmerge.md); the design and the remaining cases are chapter 1 of [`docs/research.md`](docs/research.md). Client projects are anonymised.
-[^20]: [#316](https://github.com/svandragt/vivace/issues/316): craftcms/craft's requirements are satisfied by both `yii2-shell` `2.0.6` and `dev-master`; which one wins depends on whether `dev-master` is blocked by a security advisory at solve time, so the two solvers can disagree between sweep runs without either being wrong — the install row, which installs from a lock Composer wrote, is unaffected either way. SWEEP_TBD for which each picked this time.
+[^20]: [#316](https://github.com/svandragt/vivace/issues/316): craftcms/craft's requirements are satisfied by `yii2-shell` `2.0.6` and by `dev-master`. This sweep, Composer picked `dev-master` with `symfony/var-dumper` 7.4.18 and viv picked `2.0.6` with 5.4.48. The two solvers search in a different order, and the security-advisories feed, by changing which versions of other packages are available, decides whether Composer's search ends on `dev-master`. The install row, which installs from a lock Composer wrote, is identical.
