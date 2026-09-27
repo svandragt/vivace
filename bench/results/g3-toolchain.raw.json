@@ -1,0 +1,1436 @@
+{
+  "projects": [
+    {
+      "name": "laravel/laravel",
+      "source": "corpus.toml",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "symfony/demo",
+      "source": "corpus.toml",
+      "commit": "920d86dc809f",
+      "prod_floor": "8.4.1",
+      "root_require_php": ">=8.4",
+      "config_platform_php": "8.4.1",
+      "ci_versions": [
+        "8.4",
+        "8.5"
+      ],
+      "ci_non83": [
+        "8.4",
+        "8.5"
+      ],
+      "excludes_baseline_83": true,
+      "ext_prod": [
+        "ext-ctype",
+        "ext-dom",
+        "ext-filter",
+        "ext-iconv",
+        "ext-mbstring",
+        "ext-pdo_sqlite",
+        "ext-xml"
+      ],
+      "ext_dev_only": [
+        "ext-hash",
+        "ext-json",
+        "ext-libxml",
+        "ext-phar",
+        "ext-simplexml",
+        "ext-tokenizer",
+        "ext-xmlwriter"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-dom",
+        "ext-mbstring",
+        "ext-pdo_sqlite",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlwriter"
+      ],
+      "apt_packages_extra": [
+        "php8.3-mbstring",
+        "php8.3-sqlite3",
+        "php8.3-xml"
+      ]
+    },
+    {
+      "name": "drupal/recommended-project",
+      "source": "corpus.toml",
+      "skip": "no installable git checkout"
+    },
+    {
+      "name": "roots/bedrock",
+      "source": "corpus.toml",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "composer/composer",
+      "source": "corpus.toml",
+      "commit": "85ae0251528d",
+      "prod_floor": "7.2.5",
+      "root_require_php": "^7.2.5 || ^8.0",
+      "config_platform_php": "7.2.5",
+      "ci_versions": [
+        "5.6",
+        "7.2",
+        "7.3",
+        "7.4",
+        "8.0",
+        "8.1",
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5",
+        "8.6"
+      ],
+      "ci_non83": [
+        "5.6",
+        "7.2",
+        "7.3",
+        "7.4",
+        "8.0",
+        "8.1",
+        "8.2",
+        "8.4",
+        "8.5",
+        "8.6"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-filter",
+        "ext-hash",
+        "ext-iconv",
+        "ext-json",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-reflection"
+      ],
+      "ext_dev_only": [
+        "ext-simplexml"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-simplexml"
+      ],
+      "apt_packages_extra": [
+        "php8.3-xml"
+      ]
+    },
+    {
+      "name": "phpunit/phpunit",
+      "source": "corpus.toml",
+      "commit": "2c534d37d8a5",
+      "prod_floor": "8.4",
+      "root_require_php": ">=8.4.1",
+      "config_platform_php": "8.4.1",
+      "ci_versions": [
+        "7.2",
+        "7.3",
+        "7.4",
+        "8.0",
+        "8.1",
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5",
+        "8.6"
+      ],
+      "ci_non83": [
+        "7.2",
+        "7.3",
+        "7.4",
+        "8.0",
+        "8.1",
+        "8.2",
+        "8.4",
+        "8.5",
+        "8.6"
+      ],
+      "excludes_baseline_83": true,
+      "ext_prod": [
+        "ext-dom",
+        "ext-filter",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-phar",
+        "ext-tokenizer",
+        "ext-xmlwriter"
+      ],
+      "ext_dev_only": [],
+      "ext_missing_vs_baseline": [
+        "ext-dom",
+        "ext-mbstring",
+        "ext-xmlwriter"
+      ],
+      "apt_packages_extra": [
+        "php8.3-mbstring",
+        "php8.3-xml"
+      ]
+    },
+    {
+      "name": "slimphp/Slim-Skeleton",
+      "source": "corpus.toml",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "yiisoft/yii2-app-basic",
+      "source": "corpus.toml",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "statamic/statamic",
+      "source": "corpus.toml",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "craftcms/craft",
+      "source": "corpus.toml",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "typo3/cms-base-distribution",
+      "source": "hunted 2026-09-08",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "cakephp/app",
+      "source": "hunted 2026-09-08",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "contao/managed-edition",
+      "source": "hunted 2026-09-08",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "silverstripe/installer",
+      "source": "hunted 2026-09-08",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "shopware/template",
+      "source": "hunted 2026-09-08",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "octobercms/october",
+      "source": "hunted 2026-09-08",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "wp-cli/wp-cli-bundle",
+      "source": "hunted 2026-09-08",
+      "commit": "789ab57db208",
+      "prod_floor": "7.2.24",
+      "root_require_php": ">=7.2.24",
+      "config_platform_php": "7.2.24",
+      "ci_versions": [
+        "5.6",
+        "7.1",
+        "7.2",
+        "7.4",
+        "8.5"
+      ],
+      "ci_non83": [
+        "5.6",
+        "7.1",
+        "7.2",
+        "7.4",
+        "8.5"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-json",
+        "ext-mbstring"
+      ],
+      "ext_dev_only": [
+        "ext-dom",
+        "ext-filter",
+        "ext-iconv",
+        "ext-libxml",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-phar",
+        "ext-reflection",
+        "ext-simplexml",
+        "ext-tokenizer",
+        "ext-xmlreader",
+        "ext-xmlwriter"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-dom",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xmlreader",
+        "ext-xmlwriter"
+      ],
+      "apt_packages_extra": [
+        "php8.3-mbstring",
+        "php8.3-xml"
+      ]
+    },
+    {
+      "name": "bolt/project",
+      "source": "hunted 2026-09-08",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "firstphp/ip2region",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "whoa-php/flute",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "accessd/yii2-rollbar",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "tsg/ar",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "clone failed: fatal: repository 'https://github.com/tsg/ar.git/' not found"
+    },
+    {
+      "name": "tumtum/oxid-inline-translator",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "mozart/event-dispatcher",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "ahmadarif/laravel-pagination",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "tokimikichika/text-analysis",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "8xprovn/microservice",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "dmstr/api-configuration-bundle",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "numesia/all-my-sms",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "gamebetr/provable",
+      "source": "hunted 2026-09-08 (sample)",
+      "commit": "185bb6a6f474",
+      "prod_floor": null,
+      "root_require_php": ">=7.2",
+      "config_platform_php": null,
+      "ci_versions": [],
+      "ci_non83": [],
+      "excludes_baseline_83": true,
+      "ext_prod": [],
+      "ext_dev_only": [
+        "ext-dom",
+        "ext-filter",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-phar",
+        "ext-tokenizer",
+        "ext-xml",
+        "ext-xmlwriter"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-dom",
+        "ext-mbstring",
+        "ext-xml",
+        "ext-xmlwriter"
+      ],
+      "apt_packages_extra": [
+        "php8.3-mbstring",
+        "php8.3-xml"
+      ]
+    },
+    {
+      "name": "thoughtco/statamic-cp-resources",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "gento-arg/module-oca",
+      "source": "hunted 2026-09-08 (sample)",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "reedware/laravel-api",
+      "source": "hunted 2026-09-08 (sample)",
+      "commit": "79246515ccdc",
+      "prod_floor": "7.1.8",
+      "root_require_php": ">=7.1",
+      "config_platform_php": null,
+      "ci_versions": [],
+      "ci_non83": [],
+      "excludes_baseline_83": true,
+      "ext_prod": [
+        "ext-json",
+        "ext-mbstring"
+      ],
+      "ext_dev_only": [],
+      "ext_missing_vs_baseline": [
+        "ext-mbstring"
+      ],
+      "apt_packages_extra": [
+        "php8.3-mbstring"
+      ]
+    },
+    {
+      "name": "symfony/skeleton",
+      "source": "hunted 2026-09-13",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "api-platform/api-platform",
+      "source": "hunted 2026-09-13",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "laminas/laminas-mvc-skeleton",
+      "source": "hunted 2026-09-13",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "spiral/app",
+      "source": "hunted 2026-09-13",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "codeigniter4/appstarter",
+      "source": "hunted 2026-09-13",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "doctrine/orm",
+      "source": "hunted 2026-09-13",
+      "skip": "no committed composer.lock"
+    },
+    {
+      "name": "phpmyadmin/phpmyadmin",
+      "source": "hunted 2026-09-15",
+      "commit": "9e4dc5b5f41f",
+      "prod_floor": "8.2",
+      "root_require_php": "^8.2",
+      "config_platform_php": "8.2.99",
+      "ci_versions": [
+        "7.2",
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5",
+        "8.6"
+      ],
+      "ci_non83": [
+        "7.2",
+        "8.2",
+        "8.4",
+        "8.5",
+        "8.6"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-ctype",
+        "ext-date",
+        "ext-filter",
+        "ext-hash",
+        "ext-iconv",
+        "ext-json",
+        "ext-mysqli",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-sodium",
+        "ext-xml"
+      ],
+      "ext_dev_only": [
+        "ext-curl",
+        "ext-dom",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-phar",
+        "ext-reflection",
+        "ext-simplexml",
+        "ext-spl",
+        "ext-tokenizer",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-curl",
+        "ext-dom",
+        "ext-mbstring",
+        "ext-mysqli",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "apt_packages_extra": [
+        "php8.3-curl",
+        "php8.3-mbstring",
+        "php8.3-mysql",
+        "php8.3-xml",
+        "php8.3-zip"
+      ]
+    },
+    {
+      "name": "matomo-org/matomo",
+      "source": "hunted 2026-09-15",
+      "commit": "bdb35cfd7021",
+      "prod_floor": "8.1",
+      "root_require_php": ">=8.1.0",
+      "config_platform_php": "8.1.0",
+      "ci_versions": [
+        "8.1"
+      ],
+      "ci_non83": [
+        "8.1"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-ctype",
+        "ext-curl",
+        "ext-filter",
+        "ext-gd",
+        "ext-hash",
+        "ext-iconv",
+        "ext-json",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre"
+      ],
+      "ext_dev_only": [
+        "ext-dom",
+        "ext-libxml",
+        "ext-phar",
+        "ext-simplexml",
+        "ext-tokenizer",
+        "ext-xmlwriter"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-curl",
+        "ext-dom",
+        "ext-gd",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xmlwriter"
+      ],
+      "apt_packages_extra": [
+        "php8.3-curl",
+        "php8.3-gd",
+        "php8.3-mbstring",
+        "php8.3-xml"
+      ]
+    },
+    {
+      "name": "monicahq/monica",
+      "source": "hunted 2026-09-15",
+      "commit": "e08e91734170",
+      "prod_floor": "8.2",
+      "root_require_php": "^8.3",
+      "config_platform_php": null,
+      "ci_versions": [
+        "8.3"
+      ],
+      "ci_non83": [],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-bcmath",
+        "ext-ctype",
+        "ext-curl",
+        "ext-date",
+        "ext-dom",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-hash",
+        "ext-iconv",
+        "ext-intl",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-pdo",
+        "ext-session",
+        "ext-simplexml",
+        "ext-spl",
+        "ext-tokenizer",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-zlib"
+      ],
+      "ext_dev_only": [
+        "ext-phar",
+        "ext-reflection",
+        "ext-xml"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-bcmath",
+        "ext-curl",
+        "ext-dom",
+        "ext-intl",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter"
+      ],
+      "apt_packages_extra": [
+        "php8.3-bcmath",
+        "php8.3-curl",
+        "php8.3-intl",
+        "php8.3-mbstring",
+        "php8.3-xml"
+      ]
+    },
+    {
+      "name": "koel/koel",
+      "source": "hunted 2026-09-15",
+      "commit": "8befe78c7900",
+      "prod_floor": "8.3",
+      "root_require_php": ">=8.3",
+      "config_platform_php": "8.3.0",
+      "ci_versions": [
+        "8.3",
+        "8.4"
+      ],
+      "ci_non83": [
+        "8.4"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-bcmath",
+        "ext-ctype",
+        "ext-curl",
+        "ext-date",
+        "ext-dom",
+        "ext-exif",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-gd",
+        "ext-hash",
+        "ext-iconv",
+        "ext-intl",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-pdo_sqlite",
+        "ext-session",
+        "ext-simplexml",
+        "ext-sodium",
+        "ext-spl",
+        "ext-sqlite3",
+        "ext-tokenizer",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-xsl",
+        "ext-zlib"
+      ],
+      "ext_dev_only": [
+        "ext-phar",
+        "ext-reflection"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-bcmath",
+        "ext-curl",
+        "ext-dom",
+        "ext-gd",
+        "ext-intl",
+        "ext-mbstring",
+        "ext-pdo_sqlite",
+        "ext-simplexml",
+        "ext-sqlite3",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-xsl"
+      ],
+      "apt_packages_extra": [
+        "php8.3-bcmath",
+        "php8.3-curl",
+        "php8.3-gd",
+        "php8.3-intl",
+        "php8.3-mbstring",
+        "php8.3-sqlite3",
+        "php8.3-xml",
+        "php8.3-xsl"
+      ]
+    },
+    {
+      "name": "pixelfed/pixelfed",
+      "source": "hunted 2026-09-15",
+      "commit": "472b4c4f40c5",
+      "prod_floor": "8.3",
+      "root_require_php": "^8.3|^8.4|^8.5",
+      "config_platform_php": "8.3.0",
+      "ci_versions": [
+        "8.4",
+        "8.5"
+      ],
+      "ci_non83": [
+        "8.4",
+        "8.5"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-bcmath",
+        "ext-ctype",
+        "ext-curl",
+        "ext-dom",
+        "ext-ffi",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-hash",
+        "ext-iconv",
+        "ext-intl",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcntl",
+        "ext-pcre",
+        "ext-posix",
+        "ext-redis",
+        "ext-session",
+        "ext-simplexml",
+        "ext-sodium",
+        "ext-tokenizer",
+        "ext-zip"
+      ],
+      "ext_dev_only": [
+        "ext-date",
+        "ext-phar",
+        "ext-reflection",
+        "ext-xml",
+        "ext-xmlwriter"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-bcmath",
+        "ext-curl",
+        "ext-dom",
+        "ext-intl",
+        "ext-mbstring",
+        "ext-redis",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "apt_packages_extra": [
+        "php8.3-bcmath",
+        "php8.3-curl",
+        "php8.3-intl",
+        "php8.3-mbstring",
+        "php8.3-redis",
+        "php8.3-xml",
+        "php8.3-zip"
+      ]
+    },
+    {
+      "name": "BookStackApp/BookStack",
+      "source": "hunted 2026-09-15",
+      "commit": "b5641aa00d90",
+      "prod_floor": "8.2",
+      "root_require_php": "^8.2.0",
+      "config_platform_php": "8.2.0",
+      "ci_versions": [],
+      "ci_non83": [],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-ctype",
+        "ext-curl",
+        "ext-dom",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-gd",
+        "ext-hash",
+        "ext-iconv",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-session",
+        "ext-simplexml",
+        "ext-tokenizer",
+        "ext-xml",
+        "ext-zip"
+      ],
+      "ext_dev_only": [
+        "ext-phar",
+        "ext-xmlwriter"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-curl",
+        "ext-dom",
+        "ext-gd",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "apt_packages_extra": [
+        "php8.3-curl",
+        "php8.3-gd",
+        "php8.3-mbstring",
+        "php8.3-xml",
+        "php8.3-zip"
+      ]
+    },
+    {
+      "name": "snipe/snipe-it",
+      "source": "hunted 2026-09-15",
+      "commit": "16362cc6a5cf",
+      "prod_floor": "8.2",
+      "root_require_php": "^8.2",
+      "config_platform_php": null,
+      "ci_versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ],
+      "ci_non83": [
+        "8.2",
+        "8.4",
+        "8.5"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-bcmath",
+        "ext-ctype",
+        "ext-curl",
+        "ext-date",
+        "ext-dom",
+        "ext-exif",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-gd",
+        "ext-hash",
+        "ext-iconv",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-pdo",
+        "ext-session",
+        "ext-simplexml",
+        "ext-sodium",
+        "ext-tokenizer",
+        "ext-zip",
+        "ext-zlib"
+      ],
+      "ext_dev_only": [
+        "ext-phar",
+        "ext-reflection",
+        "ext-xml",
+        "ext-xmlwriter"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-bcmath",
+        "ext-curl",
+        "ext-dom",
+        "ext-gd",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "apt_packages_extra": [
+        "php8.3-bcmath",
+        "php8.3-curl",
+        "php8.3-gd",
+        "php8.3-mbstring",
+        "php8.3-xml",
+        "php8.3-zip"
+      ]
+    },
+    {
+      "name": "mautic/mautic",
+      "source": "hunted 2026-09-15",
+      "commit": "1f0a58c4d787",
+      "prod_floor": "8.2",
+      "root_require_php": null,
+      "config_platform_php": "8.2.0",
+      "ci_versions": [
+        "8.2",
+        "8.3",
+        "8.5"
+      ],
+      "ci_non83": [
+        "8.2",
+        "8.5"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-ctype",
+        "ext-curl",
+        "ext-dom",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-gd",
+        "ext-hash",
+        "ext-iconv",
+        "ext-imap",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-pdo",
+        "ext-reflection",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-zip",
+        "ext-zlib"
+      ],
+      "ext_dev_only": [
+        "ext-date",
+        "ext-phar",
+        "ext-tokenizer"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-curl",
+        "ext-dom",
+        "ext-gd",
+        "ext-imap",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "apt_packages_extra": [
+        "php8.3-curl",
+        "php8.3-gd",
+        "php8.3-imap",
+        "php8.3-mbstring",
+        "php8.3-xml",
+        "php8.3-zip"
+      ]
+    },
+    {
+      "name": "kimai/kimai",
+      "source": "hunted 2026-09-15",
+      "commit": "c7b8f18fbeb1",
+      "prod_floor": "8.2",
+      "root_require_php": ">=8.2",
+      "config_platform_php": "8.2",
+      "ci_versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ],
+      "ci_non83": [
+        "8.2",
+        "8.4",
+        "8.5"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-ctype",
+        "ext-date",
+        "ext-dom",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-gd",
+        "ext-iconv",
+        "ext-intl",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pdo",
+        "ext-simplexml",
+        "ext-tokenizer",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-xsl",
+        "ext-zip",
+        "ext-zlib"
+      ],
+      "ext_dev_only": [
+        "ext-hash",
+        "ext-phar"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-dom",
+        "ext-gd",
+        "ext-intl",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-xsl",
+        "ext-zip"
+      ],
+      "apt_packages_extra": [
+        "php8.3-gd",
+        "php8.3-intl",
+        "php8.3-mbstring",
+        "php8.3-xml",
+        "php8.3-xsl",
+        "php8.3-zip"
+      ]
+    },
+    {
+      "name": "firefly-iii/firefly-iii",
+      "source": "hunted 2026-09-15",
+      "commit": "6143c0f14f49",
+      "prod_floor": "8.5",
+      "root_require_php": ">=8.5",
+      "config_platform_php": "8.5",
+      "ci_versions": [],
+      "ci_non83": [],
+      "excludes_baseline_83": true,
+      "ext_prod": [
+        "ext-bcmath",
+        "ext-ctype",
+        "ext-curl",
+        "ext-dom",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-hash",
+        "ext-iconv",
+        "ext-intl",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-pdo",
+        "ext-session",
+        "ext-simplexml",
+        "ext-sodium",
+        "ext-tokenizer",
+        "ext-xml",
+        "ext-xmlwriter"
+      ],
+      "ext_dev_only": [
+        "ext-date",
+        "ext-phar"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-bcmath",
+        "ext-curl",
+        "ext-dom",
+        "ext-intl",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlwriter"
+      ],
+      "apt_packages_extra": [
+        "php8.3-bcmath",
+        "php8.3-curl",
+        "php8.3-intl",
+        "php8.3-mbstring",
+        "php8.3-xml"
+      ]
+    },
+    {
+      "name": "pterodactyl/panel",
+      "source": "hunted 2026-09-15",
+      "commit": "113ea43d0d48",
+      "prod_floor": "8.2",
+      "root_require_php": "^8.2 || ^8.3",
+      "config_platform_php": "8.2.0",
+      "ci_versions": [
+        "8.2",
+        "8.3"
+      ],
+      "ci_non83": [
+        "8.2"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-bcmath",
+        "ext-ctype",
+        "ext-date",
+        "ext-dom",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-hash",
+        "ext-iconv",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-pdo",
+        "ext-pdo_mysql",
+        "ext-posix",
+        "ext-session",
+        "ext-simplexml",
+        "ext-sodium",
+        "ext-tokenizer",
+        "ext-zip"
+      ],
+      "ext_dev_only": [
+        "ext-curl",
+        "ext-phar",
+        "ext-xmlwriter"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-bcmath",
+        "ext-curl",
+        "ext-dom",
+        "ext-mbstring",
+        "ext-pdo_mysql",
+        "ext-simplexml",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "apt_packages_extra": [
+        "php8.3-bcmath",
+        "php8.3-curl",
+        "php8.3-mbstring",
+        "php8.3-mysql",
+        "php8.3-xml",
+        "php8.3-zip"
+      ]
+    },
+    {
+      "name": "librenms/librenms",
+      "source": "hunted 2026-09-15",
+      "commit": "c0950bab2a46",
+      "prod_floor": "8.2",
+      "root_require_php": "^8.2",
+      "config_platform_php": null,
+      "ci_versions": [
+        "8.2",
+        "8.4"
+      ],
+      "ci_non83": [
+        "8.2",
+        "8.4"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-ctype",
+        "ext-curl",
+        "ext-date",
+        "ext-dom",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-gd",
+        "ext-hash",
+        "ext-iconv",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-pdo",
+        "ext-reflection",
+        "ext-session",
+        "ext-simplexml",
+        "ext-sockets",
+        "ext-tokenizer",
+        "ext-xml",
+        "ext-zlib"
+      ],
+      "ext_dev_only": [
+        "ext-phar",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-curl",
+        "ext-dom",
+        "ext-gd",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "apt_packages_extra": [
+        "php8.3-curl",
+        "php8.3-gd",
+        "php8.3-mbstring",
+        "php8.3-xml",
+        "php8.3-zip"
+      ]
+    },
+    {
+      "name": "humhub/humhub",
+      "source": "hunted 2026-09-15",
+      "commit": "ffb67017b4c4",
+      "prod_floor": "8.2",
+      "root_require_php": ">=8.2",
+      "config_platform_php": "8.2",
+      "ci_versions": [
+        "8.2",
+        "8.3",
+        "8.4"
+      ],
+      "ci_non83": [
+        "8.2",
+        "8.4"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-ctype",
+        "ext-curl",
+        "ext-dom",
+        "ext-exif",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-gd",
+        "ext-hash",
+        "ext-iconv",
+        "ext-intl",
+        "ext-json",
+        "ext-ldap",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-pdo",
+        "ext-phar",
+        "ext-simplexml",
+        "ext-sodium",
+        "ext-tokenizer",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-zip",
+        "ext-zlib"
+      ],
+      "ext_dev_only": [
+        "ext-reflection"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-curl",
+        "ext-dom",
+        "ext-gd",
+        "ext-intl",
+        "ext-ldap",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "apt_packages_extra": [
+        "php8.3-curl",
+        "php8.3-gd",
+        "php8.3-intl",
+        "php8.3-ldap",
+        "php8.3-mbstring",
+        "php8.3-xml",
+        "php8.3-zip"
+      ]
+    },
+    {
+      "name": "akaunting/akaunting",
+      "source": "hunted 2026-09-15",
+      "commit": "50a029304028",
+      "prod_floor": "8.1",
+      "root_require_php": "^8.1",
+      "config_platform_php": null,
+      "ci_versions": [
+        "8.1",
+        "8.2",
+        "8.3"
+      ],
+      "ci_non83": [
+        "8.1",
+        "8.2"
+      ],
+      "excludes_baseline_83": false,
+      "ext_prod": [
+        "ext-bcmath",
+        "ext-ctype",
+        "ext-curl",
+        "ext-dom",
+        "ext-fileinfo",
+        "ext-filter",
+        "ext-gd",
+        "ext-hash",
+        "ext-iconv",
+        "ext-intl",
+        "ext-json",
+        "ext-libxml",
+        "ext-mbstring",
+        "ext-openssl",
+        "ext-pcre",
+        "ext-session",
+        "ext-simplexml",
+        "ext-tokenizer",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-zip",
+        "ext-zlib"
+      ],
+      "ext_dev_only": [
+        "ext-phar",
+        "ext-reflection"
+      ],
+      "ext_missing_vs_baseline": [
+        "ext-bcmath",
+        "ext-curl",
+        "ext-dom",
+        "ext-gd",
+        "ext-intl",
+        "ext-mbstring",
+        "ext-simplexml",
+        "ext-xml",
+        "ext-xmlreader",
+        "ext-xmlwriter",
+        "ext-zip"
+      ],
+      "apt_packages_extra": [
+        "php8.3-bcmath",
+        "php8.3-curl",
+        "php8.3-gd",
+        "php8.3-intl",
+        "php8.3-mbstring",
+        "php8.3-xml",
+        "php8.3-zip"
+      ]
+    }
+  ],
+  "summary": {
+    "projects_total": 53,
+    "projects_analysed": 20,
+    "projects_skipped": 33,
+    "excludes_baseline_83": 5,
+    "ci_tests_non_83": 15,
+    "needs_missing_extension": 20,
+    "extension_ranking": [
+      [
+        "ext-mbstring",
+        19
+      ],
+      [
+        "ext-dom",
+        18
+      ],
+      [
+        "ext-xmlwriter",
+        18
+      ],
+      [
+        "ext-simplexml",
+        17
+      ],
+      [
+        "ext-xml",
+        14
+      ],
+      [
+        "ext-curl",
+        13
+      ],
+      [
+        "ext-zip",
+        10
+      ],
+      [
+        "ext-gd",
+        9
+      ],
+      [
+        "ext-xmlreader",
+        7
+      ],
+      [
+        "ext-bcmath",
+        7
+      ],
+      [
+        "ext-intl",
+        7
+      ],
+      [
+        "ext-pdo_sqlite",
+        2
+      ],
+      [
+        "ext-xsl",
+        2
+      ],
+      [
+        "ext-mysqli",
+        1
+      ],
+      [
+        "ext-sqlite3",
+        1
+      ],
+      [
+        "ext-redis",
+        1
+      ],
+      [
+        "ext-imap",
+        1
+      ],
+      [
+        "ext-pdo_mysql",
+        1
+      ],
+      [
+        "ext-ldap",
+        1
+      ]
+    ],
+    "apt_packages_extra_per_project": [
+      3,
+      1,
+      2,
+      2,
+      2,
+      1,
+      5,
+      4,
+      5,
+      8,
+      7,
+      5,
+      6,
+      6,
+      6,
+      5,
+      6,
+      5,
+      7,
+      7
+    ],
+    "apt_packages_extra_median": 5
+  }
+}
