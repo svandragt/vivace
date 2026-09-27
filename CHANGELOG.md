@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-27
+### Added
+- `viv lock merge --offline-rung` (opt-in): once the registry escalation has failed at every rung `--max-scope` allows, try one parent's own pinned record per divergent name (`ours` first, then `theirs`), checked against the two locks' own `require`/`conflict`/`replace`/`provide`/platform data with no registry fetch. On 355 client merges it finishes 37 of the 52 that otherwise end in conflict markers; 30 of those 37 install from an empty cache, 7 fail on one licence-gated download, and 13 keep a version older than the discarded side's. Off by default: in live merges it only ever fires when a branch head has moved or a package has been removed since the lock was written ([#314](https://github.com/svandragt/vivace/issues/314))
+
+### Fixed
+- `installed.json`'s `time` is written as Composer does: RFC 3339, with an explicit offset kept instead of shifted to UTC; the lock writer's own time normaliser ([#121](https://github.com/svandragt/vivace/issues/121)) shared the same offset bug, fixed here too ([#317](https://github.com/svandragt/vivace/issues/317))
+- A mixed-case package name installs under its own casing — vendor path, install path, autoload paths — instead of a lowercased one; an install over an existing lowercase directory moves it ([#318](https://github.com/svandragt/vivace/issues/318))
+- For a class declared twice, the classmap keeps the same file as Composer: whichever the directory walk reaches first, not whichever sorts first by path ([#319](https://github.com/svandragt/vivace/issues/319))
+- `installed.php` lists a branch alias's (and a lock-level alias's) pretty version where `self.version` appears in that package's own `replace`/`provide` ([#322](https://github.com/svandragt/vivace/issues/322))
+
+### Research
+- Candidate B, install from a lock years later: measured, not built. 40 locks from 2015 to 2025 all install with viv from an empty cache; no dist gone and no hash wrong, so a lock carrying tree hashes would have saved nothing. The old locks reached code the pinned corpus never does, and turned up [#317](https://github.com/svandragt/vivace/issues/317), [#318](https://github.com/svandragt/vivace/issues/318) and [#319](https://github.com/svandragt/vivace/issues/319) ([#307](https://github.com/svandragt/vivace/issues/307))
+
+### Tooling
+- `compat/lock-age.py --verify` checks an old lock against a cached Composer reference, warm caches, four in parallel: about 2 minutes instead of hours ([#328](https://github.com/svandragt/vivace/issues/328))
+- A crashed `viv lock merge` (killed, or exiting by signal) is counted as its own outcome instead of vanishing from every replay table without a note ([#320](https://github.com/svandragt/vivace/issues/320))
+- `run.sh`'s skip-update message names its real source instead of always citing `bench/skips.txt` ([#313](https://github.com/svandragt/vivace/issues/313))
+- `mirror.sh`'s fetch curls time out on a stalled transfer instead of hanging until the retry budget runs out ([#321](https://github.com/svandragt/vivace/issues/321))
+
 ## [0.17.0] - 2026-09-26
 ### Added
 - `viv workspace init <pattern>...` writes the aggregate root's `composer.json` — one `path` repository and one `require` line per matched pattern — then resolves and installs; `viv workspace add <path>` adds one more member to an existing root and resolves again. `--repository type:url` on `viv init` and `viv add`, repeatable, appends a repository entry directly instead of needing a follow-up edit ([#315](https://github.com/svandragt/vivace/issues/315))
