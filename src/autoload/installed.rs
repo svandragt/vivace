@@ -99,6 +99,10 @@ const NO_VERSION_SET: &str = "1.0.0+no-version-set";
 /// one component deep — plain `/` — or `find_shortest_path`'s own
 /// leave-it-absolute case for a *real* top-level split (`/foo` vs `/bar`,
 /// distinct Windows drives or Docker mounts) would fire here too.
+///
+/// Built from `pretty_name()`, the lock's own casing (#318), matching
+/// `src/install.rs`'s `package_dir` — the directory this path names is the
+/// one that fn actually created.
 fn install_path(package: &Package) -> Option<String> {
     if package.r#type == "metapackage" {
         return None;
@@ -106,7 +110,7 @@ fn install_path(package: &Package) -> Option<String> {
     let to = if let Some(dir) = &package.install_dir {
         dir.clone()
     } else {
-        let mut to = format!("vendor/{}", package.name);
+        let mut to = format!("vendor/{}", package.pretty_name());
         if let Some(dir) = &package.target_dir {
             to.push('/');
             to.push_str(dir);

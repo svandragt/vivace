@@ -1820,11 +1820,15 @@ fn prune_empty_ancestors(removed: &Path, boundary: &Path) {
 /// still declares one — or, when `src/plugins.rs` mapped this package
 /// outside `vendor/` (a native `composer/installers`/`wordpress-core`
 /// adapter), that mapped directory under `project_dir` instead.
+///
+/// `<name>` is the lock's own casing (#318), matching Composer's
+/// `LibraryInstaller::getInstallPath` (`getPrettyName()`), not `package.name`
+/// (lowercased for identity everywhere else).
 pub(crate) fn package_dir(vendor_dir: &Path, project_dir: &Path, package: &Package) -> PathBuf {
     if let Some(install_dir) = &package.install_dir {
         return project_dir.join(install_dir);
     }
-    let mut dir = vendor_dir.join(&package.name);
+    let mut dir = vendor_dir.join(package.pretty_name());
     if let Some(target) = package.target_dir.as_deref().filter(|t| !t.is_empty()) {
         dir = dir.join(target);
     }
