@@ -193,8 +193,24 @@ def clone_project(repo: str, dest) -> tuple[bool, str]:
     """`platform_drift.clone_at` with no pinned commit: checks out the
     default branch's HEAD, which also leaves the full (blobless) commit
     graph locally for `git log --before` to walk with no further network
-    access."""
-    return platform_drift.clone_at(repo, None, dest)
+    access. Then detaches `dest`'s own HEAD (#328): every project-commit
+    pair installs from a `git worktree add` off `dest`, never from `dest`
+    itself, but as long as `dest`'s working tree sits on the default
+    branch, that branch shows as "checked out in another worktree"
+    (`git branch -a`'s `+` marker) to every worktree added from it --
+    Composer's root-version guesser refuses to guess from a branch in that
+    state and falls back to a different (and wrong) guess than the one it
+    makes in a plain clone, where the branch isn't checked out anywhere.
+    Detaching here removes that marker for every worktree, matching a
+    plain clone's git state."""
+    ok, label = platform_drift.clone_at(repo, None, dest)
+    if not ok:
+        return ok, label
+    r = subprocess.run(["git", "checkout", "--quiet", "--detach", "HEAD"], cwd=dest,
+                        capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        return False, "detach HEAD failed"
+    return ok, label
 
 
 def lock_commit_before(repo_dir, before_date: str) -> tuple[str, str] | None:
@@ -788,14 +804,33 @@ def ref_vendor_dir(ref_root: Path, project: str, commit: str, plugins_off: bool)
     """Composer's install for a (project, commit) pair depends only on the
     project, commit and install flags, not on viv, so its `vendor/` is cached
     once here and reused across `--verify` runs instead of reinstalling it
-    for every pair. `-v3` plus the plugin mode are both in the key: a v1
+    for every pair. `-v4` plus the plugin mode are both in the key: a v1
     reference was built in a separate checkout from viv's (#325 finding 2),
     a v2 one didn't record the workdir Composer ran in for path folding
-    (#325 finding 3), and neither was tagged by plugin mode (#325 finding
-    1) -- any mismatch would otherwise silently reuse a reference built
-    the wrong way."""
+    (#325 finding 3), neither was tagged by plugin mode (#325 finding 1),
+    and a v3 one was built from a worktree whose sibling clone still sat on
+    its default branch, guessing a different root package version than a
+    plain clone would (#328) -- any mismatch would otherwise silently reuse
+    a reference built the wrong way."""
     mode = "noplugins" if plugins_off else "plugins"
-    return ref_root / project.replace("/", "_") / f"{commit}-v3-{mode}" / "vendor"
+    return ref_root / project.replace("/", "_") / f"{commit}-v4-{mode}" / "vendor"
+
+
+def first_error_line(output: str) -> str:
+    """The one line of a failed tool's own output worth putting in a report
+    row: its first line that mentions an error, or its first non-blank line
+    if none does -- never the whole capture, so a `differs`-vs-`failed` row
+    stays as short as a real difference's. Composer runs via `devbox run --`
+    (#328): drops devbox's own wrapper noise first (`Info: ...`, the generic
+    `Error: error running script ...` devbox appends after Composer's real
+    one), or that generic line -- always present, always mentioning "error"
+    -- would win over Composer's own message every time."""
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+    lines = [ln for ln in lines if not ln.startswith("Info:") and not ln.startswith("Error: error running script")]
+    for ln in lines:
+        if "error" in ln.lower():
+            return ln
+    return lines[0] if lines else "(no output)"
 
 
 def run_parallel(tasks: list, jobs: int) -> list:
@@ -844,24 +879,40 @@ def run_verify_pair(project: str, age_label: str, commit: str, commit_date: str,
     composer_vendor = ref_vendor_dir(ref_root, project, commit, plugins_off)
     workdir_record = composer_vendor.parent / "workdir.txt"
     if not composer_vendor.is_dir():
-        composer_ok, _out, _ms = run_composer_install(work_dir, composer_home, composer_cache, plugins_off)
+        composer_ok, out, _ms = run_composer_install(work_dir, composer_home, composer_cache, plugins_off)
         if composer_ok:
             composer_vendor.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(vendor_dir, composer_vendor)
-            shutil.rmtree(vendor_dir)
+            # Not `shutil.rmtree` (#328): a project can commit a placeholder
+            # inside its otherwise Composer-managed, gitignored vendor dir
+            # (cakephp/app's `vendor/empty`, so git tracks the empty
+            # directory) -- a plain checkout for viv's own run would still
+            # have it, so wiping it here first would blame viv for its
+            # absence. `git clean` drops only what Composer added
+            # (untracked, ignored or not); `checkout` restores anything
+            # tracked that was there before Composer ran.
+            subprocess.run(["git", "clean", "-ffdxq", "--", vendor_dir_name], cwd=work_dir,
+                            capture_output=True, text=True, timeout=60)
+            subprocess.run(["git", "checkout", "--quiet", "--", vendor_dir_name], cwd=work_dir,
+                            capture_output=True, text=True, timeout=60)
             workdir_record.write_text(os.path.realpath(work_dir))
         if not composer_ok:
-            vr.skip = "reference Composer install failed"
+            # A non-zero exit is its own outcome, never `differs` (#328):
+            # nothing to byte-diff against, and folding it into `differs`
+            # would credit viv with a bug Composer alone caused.
+            vr.vendor_status, vr.vendor_detail = "composer failed", first_error_line(out)
             with project_lock:
                 remove_worktree(repo_dir, work_dir)
             return vr
 
-    vr.viv_ok, _out, _ms = run_viv_install(work_dir, viv_cache, plugins_off)
+    vr.viv_ok, out, _ms = run_viv_install(work_dir, viv_cache, plugins_off)
     if vr.viv_ok:
         composer_workdir = Path(workdir_record.read_text()) if workdir_record.is_file() else composer_vendor
         vr.vendor_status, vr.vendor_detail = compare_vendor(composer_vendor, vendor_dir, composer_workdir, work_dir)
         if vr.vendor_detail:
             vr.vendor_detail = "\n".join(vr.vendor_detail.splitlines()[:5])
+    else:
+        vr.vendor_status, vr.vendor_detail = "viv failed", first_error_line(out)
 
     with project_lock:
         remove_worktree(repo_dir, work_dir)
@@ -946,25 +997,22 @@ def write_verify_report(results: list[VerifyResult], out: Path, wall_seconds: fl
         "| Project | Age | Commit | Lock date | viv installs | vendor/ | Time |",
         "|---|---|---|---|---|---|---|",
     ]
-    installs = matches = 0
+    outcome_totals: dict[str, int] = {}
     for r in results:
         if r.skip:
             lines.append(f"| {r.project} | {r.age_label} | {r.commit} | {r.commit_date} | - | {r.skip} | - |")
             continue
-        viv = "yes" if r.viv_ok else "no"
+        viv = "yes" if r.viv_ok else ("no" if r.viv_ok is False else "-")
         vendor = r.vendor_status or "-"
-        if r.viv_ok:
-            installs += 1
-            if r.vendor_status == "identical":
-                matches += 1
+        outcome_totals[vendor] = outcome_totals.get(vendor, 0) + 1
         detail = f" ({r.vendor_detail.splitlines()[0]}, +{len(r.vendor_detail.splitlines()) - 1} more)" \
             if r.vendor_detail and len(r.vendor_detail.splitlines()) > 1 else \
             (f" ({r.vendor_detail})" if r.vendor_detail else "")
         lines.append(f"| {r.project} | {r.age_label} | {r.commit} | {r.commit_date} | {viv} | {vendor}{detail} | {r.seconds}s |")
     measured = [r for r in results if not r.skip]
     lines.append("")
-    lines.append(f"{len(measured)} pairs measured, {len(results) - len(measured)} skipped, "
-                  f"{installs} viv installs, {matches} vendor/ identical.")
+    lines.append(f"{len(measured)} pairs measured, {len(results) - len(measured)} skipped. "
+                  "Outcomes: " + ", ".join(f"{k} {v}" for k, v in sorted(outcome_totals.items())) + ".")
     lines.append("")
     out.write_text("\n".join(lines) + "\n")
 
@@ -1206,11 +1254,35 @@ def self_test() -> None:
     RESULTS_JSONL = real_jsonl
 
     assert ref_vendor_dir(Path("/tmp/x"), "foo/bar", "abc123", plugins_off=True) == \
-        Path("/tmp/x/foo_bar/abc123-v3-noplugins/vendor")
+        Path("/tmp/x/foo_bar/abc123-v4-noplugins/vendor")
     assert ref_vendor_dir(Path("/tmp/x"), "foo/bar", "abc123", plugins_off=False) == \
-        Path("/tmp/x/foo_bar/abc123-v3-plugins/vendor")
+        Path("/tmp/x/foo_bar/abc123-v4-plugins/vendor")
+
+    assert first_error_line("some noise\nFatal error: Class not found\nmore noise") == "Fatal error: Class not found"
+    assert first_error_line("just output\nnothing else notable") == "just output"
+    assert first_error_line("") == "(no output)"
+    assert first_error_line(
+        'Info: Running script "composer" on /repo\n\n  require-dev.foo/Bar is invalid\n\n'
+        'Error: error running script "composer" in Devbox: exit status 1'
+    ) == "require-dev.foo/Bar is invalid"
 
     assert run_parallel([lambda: 1, lambda: 2, lambda: 3], jobs=2) == [1, 2, 3]
+
+    # A non-zero exit from either tool is its own outcome, never `differs`
+    # (#328): the report row and its totals must say so, with the first
+    # error line, not fold it into the byte-diff outcome.
+    with tempfile.TemporaryDirectory() as d:
+        out_md = Path(d) / "lock-age-verify.md"
+        write_verify_report([
+            VerifyResult(project="foo/bar", age_label="1yr", commit="abc123", commit_date="2025-01-01",
+                         viv_ok=False, vendor_status="viv failed", vendor_detail="Fatal error: x", seconds=1.0),
+            VerifyResult(project="foo/bar", age_label="2yr", commit="def456", commit_date="2024-01-01",
+                         vendor_status="composer failed", vendor_detail="Your requirements could not be resolved",
+                         seconds=1.0),
+        ], out_md, wall_seconds=2.0)
+        text = out_md.read_text()
+        assert "differs" not in text, text
+        assert "viv failed 1" in text and "composer failed 1" in text, text
 
     print("self-test ok")
 
