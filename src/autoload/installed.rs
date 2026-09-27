@@ -11,6 +11,7 @@ use serde_json::{Map, Value};
 use crate::autoload::generator::find_shortest_path;
 use crate::autoload::sort::natcmp;
 use crate::lock::{Lock, Package, Root};
+use crate::lock_writer::{is_empty_for_composer, normalize_time};
 use crate::vcs::RootVersion;
 use crate::version;
 
@@ -187,6 +188,18 @@ fn dump_package(package: &Package) -> Result<Value> {
             // `getType()` defaults to `library`, so the key is always present.
             "type" => Value::String(package.r#type.clone()),
             "install-path" => install_path(package).map_or(Value::Null, Value::String),
+            // `ArrayLoader::load`'s `!empty($config['time'])` gate, then
+            // re-normalised to `ArrayDumper`'s `DATE_RFC3339` (#317): a
+            // Composer 1 lock's `Y-m-d H:i:s` must come out the same as a
+            // Composer 2 one's already-RFC3339 string, the same round-trip
+            // #121 gave the lock writer.
+            "time" => match raw.get("time") {
+                Some(v) if !is_empty_for_composer(v) => match v.as_str().and_then(normalize_time) {
+                    Some(t) => Value::String(t),
+                    None => continue,
+                },
+                _ => continue,
+            },
             _ => match raw.get(key) {
                 // `ArrayDumper::dumpValues` drops nulls and empty arrays.
                 None | Some(Value::Null) => continue,
@@ -718,6 +731,49 @@ mod tests {
         // b/replacer has neither dist nor source: reference null.
         assert!(block(&out, "b/replacer").contains("'reference' => null,"));
         assert!(out.starts_with("<?php return array(\n    'root' => array(\n        'name' => '__root__',\n        'pretty_version' => 'dev-master',\n        'version' => 'dev-master',\n"));
+    }
+
+    #[test]
+    fn installed_json_normalizes_a_composer_1_time_to_rfc_3339() {
+        // #317: a lock written by Composer 1 (yiisoft/yii2-app-basic at
+        // 3be9b8507dc1, behat/gherkin v4.4.1) carries `Y-m-d H:i:s`;
+        // Composer 2's installed.json re-normalises it through the same
+        // ArrayLoader/ArrayDumper round-trip #121 already ported for the
+        // lock writer.
+        let mut gherkin = package("behat/gherkin", "v4.4.1", Some("abc"));
+        gherkin.raw = json!({
+            "name": "behat/gherkin",
+            "version": "v4.4.1",
+            "time": "2015-12-30 14:47:00",
+        });
+        let out = installed_json(&[&gherkin], false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["packages"][0]["time"], "2015-12-30T14:47:00+00:00");
+    }
+
+    #[test]
+    fn installed_json_drops_an_unparseable_time() {
+        let mut package = package("a/b", "1.0", Some("abc"));
+        package.raw = json!({"name": "a/b", "version": "1.0", "time": "not a date"});
+        let out = installed_json(&[&package], false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(parsed["packages"][0].get("time").is_none());
+    }
+
+    #[test]
+    fn installed_json_keeps_an_explicit_non_utc_offset() {
+        // The string's own offset wins over `ArrayLoader`'s `UTC` fallback
+        // zone (verified under devbox's PHP), so the wall clock must not
+        // shift to `+00:00`.
+        let mut package = package("a/b", "1.0", Some("abc"));
+        package.raw = json!({
+            "name": "a/b",
+            "version": "1.0",
+            "time": "2020-01-02T03:04:05+02:00",
+        });
+        let out = installed_json(&[&package], false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["packages"][0]["time"], "2020-01-02T03:04:05+02:00");
     }
 
     #[test]

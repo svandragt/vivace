@@ -368,63 +368,118 @@ pub(crate) fn dump_package(raw: &Value) -> Result<Value> {
 /// `ArrayLoader::load`'s `time` handling (`ctype_digit($config['time']) ?
 /// '@'.$config['time'] : $config['time']`, then `new \DateTime($time, new
 /// \DateTimeZone('UTC'))`) and `ArrayDumper::dump`'s `$data['time'] =
-/// $package->getReleaseDate()->format(DATE_RFC3339)` (`Y-m-d\TH:i:sP`):
-/// PHP only falls back to the `UTC` zone argument when
-/// the string carries none of its own, so a `Z` or `±HH:MM` suffix shifts
-/// the clock and `P` always renders UTC as `+00:00`. Handles the shapes
-/// real repositories emit: RFC 3339 with `Z` or an offset (optional
-/// fractional seconds), the space- or `T`-separated `Y-m-d H:i:s` shape
-/// with no zone (taken as UTC, like `ArrayLoader`), and a bare unix
-/// timestamp. Returns `None` for anything else, matching `ArrayLoader`'s
-/// `catch` leaving the release date, and so the dumped `time` key, unset.
-fn normalize_time(value: &str) -> Option<String> {
-    Some(format_utc(parse_time_to_epoch(value)?))
+/// $package->getReleaseDate()->format(DATE_RFC3339)` (`Y-m-d\TH:i:sP`). PHP
+/// only falls back to the `UTC` zone argument when the string carries none
+/// of its own: an explicit `Z` or `±HH(:MM)` offset wins over it and the
+/// wall clock is kept exactly as written, just reformatted (confirmed
+/// against Composer's own classes under devbox's PHP: `new
+/// DateTime("2020-01-01T10:00:00+02:00", new DateTimeZone("UTC"))` renders
+/// back `+02:00`, not a UTC-shifted `+00:00`). Handles the shapes real
+/// repositories emit: RFC 3339 with `Z` or an offset in `HH:MM`/`HHMM`/`HH`
+/// form (optional fractional seconds, always dropped, `DATE_RFC3339` has no
+/// place for them), the space- or `T`-separated `Y-m-d H:i:s` shape with no
+/// zone (taken as UTC, like `ArrayLoader`), and a bare unix timestamp
+/// (always UTC too: `@`-prefixed, PHP ignores the zone argument rather than
+/// falling back to it). Returns `None` for anything else, matching
+/// `ArrayLoader`'s `catch` leaving the release date, and so the dumped
+/// `time` key, unset. `pub(crate)`: `autoload::installed` reuses this for
+/// `installed.json` (#317), the same `ArrayLoader`-then-`ArrayDumper`
+/// round-trip as the lock write, just on a different output.
+pub(crate) fn normalize_time(value: &str) -> Option<String> {
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(format_utc(value.parse().ok()?));
+    }
+    let parsed = split_time(value)?;
+    let offset = match parsed.tail {
+        "" | "Z" => "+00:00".to_string(),
+        tail => {
+            let (sign, h, m) = parse_offset(tail)?;
+            format!("{sign}{h:02}:{m:02}")
+        }
+    };
+    Some(format!("{}T{}{offset}", parsed.date, parsed.hms))
+}
+
+/// A `time` value's date, its `HH:MM:SS` (fractional seconds and any zone
+/// already stripped), and whatever the loader's zone-detection cares about
+/// afterwards: `""` (zoneless), `"Z"`, or an offset. Shared by
+/// [`normalize_time`] and [`parse_time_to_epoch`] so the shape validation
+/// (and the fractional-seconds strip) lives in one place.
+struct SplitTime<'a> {
+    date: &'a str,
+    hms: &'a str,
+    tail: &'a str,
+}
+
+fn split_time(value: &str) -> Option<SplitTime<'_>> {
+    let (date, rest) = value.split_once(['T', ' '])?;
+    let mut parts = date.splitn(3, '-');
+    parts.next()?.parse::<i64>().ok()?;
+    parts.next()?.parse::<u32>().ok()?;
+    parts.next()?.parse::<u32>().ok()?;
+    if rest.len() < 8 || rest.as_bytes()[2] != b':' || rest.as_bytes()[5] != b':' {
+        return None;
+    }
+    rest[0..2].parse::<u32>().ok()?;
+    rest[3..5].parse::<u32>().ok()?;
+    rest[6..8].parse::<u32>().ok()?;
+    let mut tail = &rest[8..];
+    if let Some(frac) = tail.strip_prefix('.') {
+        let digits = frac.bytes().take_while(u8::is_ascii_digit).count();
+        tail = &frac[digits..];
+    }
+    Some(SplitTime {
+        date,
+        hms: &rest[0..8],
+        tail,
+    })
+}
+
+/// `±HH:MM`, `±HHMM` or `±HH` (all three accepted by PHP's `DateTime`
+/// constructor, confirmed under devbox's PHP) as a sign and an hour/minute
+/// pair: [`normalize_time`] renders it straight back out as `±HH:MM`,
+/// [`parse_time_to_epoch`] turns it into seconds to subtract.
+fn parse_offset(tail: &str) -> Option<(char, u32, u32)> {
+    let sign = match tail.as_bytes().first()? {
+        b'+' => '+',
+        b'-' => '-',
+        _ => return None,
+    };
+    let digits = tail[1..].replace(':', "");
+    let (h, m) = match digits.len() {
+        2 => (&digits[0..2], "00"),
+        4 => (&digits[0..2], &digits[2..4]),
+        _ => return None,
+    };
+    Some((sign, h.parse().ok()?, m.parse().ok()?))
 }
 
 /// `normalize_time`'s own parse, minus the final `format_utc` step: the
 /// epoch-seconds (UTC) value itself, for a caller that needs to compare two
 /// timestamps rather than render one (`lock_merge`'s `--as-of`, #275, put
 /// against a provider file's per-version `time`). Same accepted shapes,
-/// same `None` for anything else.
+/// same `None` for anything else. Unlike `normalize_time`, an explicit
+/// offset here does shift the value: this is the true UTC instant, not the
+/// wall-clock string `ArrayDumper` would print.
 #[allow(clippy::many_single_char_names)]
 pub(crate) fn parse_time_to_epoch(value: &str) -> Option<i64> {
     if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
         return value.parse().ok();
     }
-    let (date, rest) = value.split_once(['T', ' '])?;
-    let mut parts = date.splitn(3, '-');
-    let y: i64 = parts.next()?.parse().ok()?;
-    let m: u32 = parts.next()?.parse().ok()?;
-    let d: u32 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    if rest.len() < 8 || rest.as_bytes()[2] != b':' || rest.as_bytes()[5] != b':' {
-        return None;
-    }
-    let h: i64 = rest[0..2].parse().ok()?;
-    let mi: i64 = rest[3..5].parse().ok()?;
-    let s: i64 = rest[6..8].parse().ok()?;
-    let mut tail = &rest[8..];
-    if let Some(frac) = tail.strip_prefix('.') {
-        let digits = frac.bytes().take_while(u8::is_ascii_digit).count();
-        tail = &frac[digits..];
-    }
-    let offset_seconds: i64 = match tail {
+    let parsed = split_time(value)?;
+    let mut date_parts = parsed.date.splitn(3, '-');
+    let y: i64 = date_parts.next()?.parse().ok()?;
+    let m: u32 = date_parts.next()?.parse().ok()?;
+    let d: u32 = date_parts.next()?.parse().ok()?;
+    let h: i64 = parsed.hms[0..2].parse().ok()?;
+    let mi: i64 = parsed.hms[3..5].parse().ok()?;
+    let s: i64 = parsed.hms[6..8].parse().ok()?;
+    let offset_seconds: i64 = match parsed.tail {
         "" | "Z" => 0,
-        _ => {
-            let sign = match tail.as_bytes().first()? {
-                b'+' => 1,
-                b'-' => -1,
-                _ => return None,
-            };
-            let offset = &tail[1..];
-            if offset.len() != 5 || offset.as_bytes()[2] != b':' {
-                return None;
-            }
-            let oh: i64 = offset[0..2].parse().ok()?;
-            let om: i64 = offset[3..5].parse().ok()?;
-            sign * (oh * 3600 + om * 60)
+        tail => {
+            let (sign, oh, om) = parse_offset(tail)?;
+            let seconds = i64::from(oh) * 3600 + i64::from(om) * 60;
+            if sign == '-' { -seconds } else { seconds }
         }
     };
     Some(days_from_civil(y, m, d) * 86_400 + h * 3600 + mi * 60 + s - offset_seconds)
@@ -449,8 +504,9 @@ fn format_utc(epoch_seconds: i64) -> String {
 
 /// PHP's `empty($value)`: null, `false`, `0`, `"0"`, `""` and an empty
 /// array/object are all "empty", unlike this module's usual null/empty-array
-/// check.
-fn is_empty_for_composer(value: &Value) -> bool {
+/// check. `pub(crate)`: `autoload::installed` reuses this for the same
+/// `!empty($config['time'])` gate `ArrayLoader` applies (#317).
+pub(crate) fn is_empty_for_composer(value: &Value) -> bool {
     match value {
         Value::Null => true,
         Value::Bool(b) => !b,
@@ -506,6 +562,8 @@ fn dump_aliases(aliases: &[AliasEntry]) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]
@@ -541,6 +599,12 @@ mod tests {
     }
 
     #[test]
+    fn normalize_time_passes_an_already_canonical_string_through() {
+        let canonical = "2026-05-20T21:56:34+00:00";
+        assert_eq!(normalize_time(canonical).as_deref(), Some(canonical));
+    }
+
+    #[test]
     fn normalize_time_rewrites_z_to_offset() {
         assert_eq!(
             normalize_time("2026-05-20T21:56:34Z").as_deref(),
@@ -549,12 +613,47 @@ mod tests {
     }
 
     #[test]
-    fn normalize_time_shifts_a_non_utc_offset_to_utc() {
-        // 03:04:05+02:00 is 01:04:05Z: the hour must move, not just the
-        // suffix, otherwise this would still read `03:04:05`.
+    fn normalize_time_keeps_an_explicit_non_utc_offset() {
+        // `new DateTime("2020-01-02T03:04:05+02:00", new
+        // DateTimeZone("UTC"))->format(DATE_RFC3339)` (checked under
+        // devbox's PHP) renders back `03:04:05+02:00`: the string's own
+        // offset wins over the constructor's zone argument, so the wall
+        // clock must not shift.
         assert_eq!(
             normalize_time("2020-01-02T03:04:05+02:00").as_deref(),
-            Some("2020-01-02T01:04:05+00:00")
+            Some("2020-01-02T03:04:05+02:00")
+        );
+    }
+
+    #[test]
+    fn normalize_time_accepts_an_hhmm_offset_with_no_colon() {
+        // `+0200`/`-0530` (no colon): also accepted by PHP's `DateTime`,
+        // normalised to `DATE_RFC3339`'s `±HH:MM`.
+        assert_eq!(
+            normalize_time("2020-01-02T03:04:05-0530").as_deref(),
+            Some("2020-01-02T03:04:05-05:30")
+        );
+    }
+
+    #[test]
+    fn normalize_time_accepts_an_hour_only_offset() {
+        assert_eq!(
+            normalize_time("2020-01-02T03:04:05+02").as_deref(),
+            Some("2020-01-02T03:04:05+02:00")
+        );
+    }
+
+    #[test]
+    fn normalize_time_drops_fractional_seconds() {
+        // `DATE_RFC3339` (`Y-m-d\TH:i:sP`) has no place for them, zoneless
+        // or offset alike.
+        assert_eq!(
+            normalize_time("2020-01-02T03:04:05.123456Z").as_deref(),
+            Some("2020-01-02T03:04:05+00:00")
+        );
+        assert_eq!(
+            normalize_time("2020-01-02T03:04:05.5+02:00").as_deref(),
+            Some("2020-01-02T03:04:05+02:00")
         );
     }
 
@@ -577,5 +676,27 @@ mod tests {
     #[test]
     fn normalize_time_is_none_for_unparseable_input() {
         assert_eq!(normalize_time("not a date"), None);
+    }
+
+    #[test]
+    fn parse_time_to_epoch_shifts_a_non_utc_offset_to_the_true_utc_instant() {
+        // Unlike `normalize_time` (which reports Composer's own printed
+        // string), the epoch value `lock_merge`'s `--as-of` compares
+        // against must be the real instant, so this one does shift.
+        assert_eq!(
+            parse_time_to_epoch("2020-01-02T03:04:05+02:00"),
+            parse_time_to_epoch("2020-01-02T01:04:05Z")
+        );
+    }
+
+    #[test]
+    fn dump_package_normalizes_a_non_utc_offset_in_the_lock() {
+        let raw = json!({
+            "name": "a/b",
+            "version": "1.0",
+            "time": "2020-01-02T03:04:05+02:00",
+        });
+        let out = dump_package(&raw).unwrap();
+        assert_eq!(out["time"], "2020-01-02T03:04:05+02:00");
     }
 }

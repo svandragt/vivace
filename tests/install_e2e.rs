@@ -684,6 +684,62 @@ fn autoload_only_run_uses_composers_nothing_to_install_wording() {
     assert!(!stdout.contains("Installed"), "stdout: {stdout}");
 }
 
+/// #317: a lock carrying a Composer 1 `time` (`Y-m-d H:i:s`) still hits the
+/// no-op fast path on a second install — `plan::plan`'s no-op check never
+/// compares `time`, but this guards against a future regression in the
+/// `time`-normalising code making `dump_package` write different bytes on
+/// every run instead of `write_atomic` seeing the same content twice.
+#[test]
+fn second_install_of_a_composer_1_time_is_a_noop() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+    let lock_path = project.join("composer.lock");
+    let mut lock: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&lock_path).unwrap()).unwrap();
+    lock["packages"][0]["time"] = serde_json::json!("2015-12-30 14:47:00");
+    fs::write(&lock_path, serde_json::to_string_pretty(&lock).unwrap()).unwrap();
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Installed 2 packages"));
+
+    let installed_json_path = project.join("vendor/composer/installed.json");
+    let after_first = fs::read_to_string(&installed_json_path).unwrap();
+    assert!(
+        after_first.contains("\"time\": \"2015-12-30T14:47:00+00:00\""),
+        "{after_first}"
+    );
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Nothing to install"));
+
+    // Nothing written the second time, not just the same bytes as a
+    // coincidence of a fresh write landing identically.
+    let mtime_before = fs::metadata(&installed_json_path)
+        .unwrap()
+        .modified()
+        .unwrap();
+    ctx.viv().arg("install").assert().success();
+    let mtime_after = fs::metadata(&installed_json_path)
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(
+        mtime_before, mtime_after,
+        "installed.json must not be rewritten"
+    );
+    assert_eq!(
+        fs::read_to_string(&installed_json_path).unwrap(),
+        after_first
+    );
+}
+
 /// #95: `install` must never write `composer.json` — normalizing moved to
 /// `require`/`remove`/`update`, the commands that already rewrite it. The
 /// path fixture's `composer.json` orders `repositories` before `require`,
