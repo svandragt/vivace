@@ -757,6 +757,22 @@ mod tests {
     }
 
     #[test]
+    fn installed_json_keeps_an_explicit_non_utc_offset() {
+        // The string's own offset wins over `ArrayLoader`'s `UTC` fallback
+        // zone (verified under devbox's PHP), so the wall clock must not
+        // shift to `+00:00`.
+        let mut package = package("a/b", "1.0", Some("abc"));
+        package.raw = json!({
+            "name": "a/b",
+            "version": "1.0",
+            "time": "2020-01-02T03:04:05+02:00",
+        });
+        let out = installed_json(&[&package], false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["packages"][0]["time"], "2020-01-02T03:04:05+02:00");
+    }
+
+    #[test]
     fn installed_json_uses_dot_slash_install_path_for_composer_vendor() {
         // vendor/composer/installers lives in the same directory as
         // installed.json itself (vendor/composer), so the shortest path is
