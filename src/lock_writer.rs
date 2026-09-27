@@ -377,8 +377,32 @@ pub(crate) fn dump_package(raw: &Value) -> Result<Value> {
 /// with no zone (taken as UTC, like `ArrayLoader`), and a bare unix
 /// timestamp. Returns `None` for anything else, matching `ArrayLoader`'s
 /// `catch` leaving the release date, and so the dumped `time` key, unset.
-fn normalize_time(value: &str) -> Option<String> {
+/// `pub(crate)`: `autoload::installed` reuses this for `installed.json`
+/// (#317), the same `ArrayLoader`-then-`ArrayDumper` round-trip as the lock
+/// write, just on a different output.
+pub(crate) fn normalize_time(value: &str) -> Option<String> {
+    // A lock Composer 2 already wrote (the common case, `install`'s hot
+    // path) is already this exact shape: skip the epoch round-trip rather
+    // than reparse a string that would format right back to itself.
+    if is_canonical_rfc3339_utc(value) {
+        return Some(value.to_string());
+    }
     Some(format_utc(parse_time_to_epoch(value)?))
+}
+
+/// `normalize_time`'s own output shape, `Y-m-d\TH:i:s+00:00` fixed-width:
+/// recognizing it lets the common case skip straight to a clone instead of
+/// parsing to epoch seconds and re-formatting.
+fn is_canonical_rfc3339_utc(value: &str) -> bool {
+    let b = value.as_bytes();
+    b.len() == 25
+        && b[19..] == *b"+00:00"
+        && b[..19].iter().enumerate().all(|(i, &c)| match i {
+            4 | 7 => c == b'-',
+            10 => c == b'T',
+            13 | 16 => c == b':',
+            _ => c.is_ascii_digit(),
+        })
 }
 
 /// `normalize_time`'s own parse, minus the final `format_utc` step: the
@@ -449,8 +473,9 @@ fn format_utc(epoch_seconds: i64) -> String {
 
 /// PHP's `empty($value)`: null, `false`, `0`, `"0"`, `""` and an empty
 /// array/object are all "empty", unlike this module's usual null/empty-array
-/// check.
-fn is_empty_for_composer(value: &Value) -> bool {
+/// check. `pub(crate)`: `autoload::installed` reuses this for the same
+/// `!empty($config['time'])` gate `ArrayLoader` applies (#317).
+pub(crate) fn is_empty_for_composer(value: &Value) -> bool {
     match value {
         Value::Null => true,
         Value::Bool(b) => !b,
@@ -538,6 +563,14 @@ mod tests {
             "PLUGIN_API_VERSION {PLUGIN_API_VERSION:?} does not match the installed Composer's \
              bundled plugin API: {line:?}"
         );
+    }
+
+    #[test]
+    fn normalize_time_passes_an_already_canonical_string_through() {
+        // The fast path (`is_canonical_rfc3339_utc`) must agree with the
+        // full parse-then-format round-trip, not just be fast.
+        let canonical = "2026-05-20T21:56:34+00:00";
+        assert_eq!(normalize_time(canonical).as_deref(), Some(canonical));
     }
 
     #[test]
