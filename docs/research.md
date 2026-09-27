@@ -795,11 +795,15 @@ distribution packages, a third-party repository, and a downloaded static
 PHP build.
 
 **Build if it holds.** `viv php install <version>` with extensions,
-pinned per project in the manifest, and `viv run` and `viv x` using it.
-First user story: `viv x wp-cli/wp-cli-bundle` runs WP-CLI on the project's
-pinned PHP and extensions, the same runtime the site uses, on a machine with
-no PHP installed. A WP-CLI that runs on a different PHP from the site, or
-without its extensions, is a common reason `wp` fails to load WordPress.
+pinned per project in the manifest. `viv run <name>` runs in the
+project's context on that PHP, resolving `<name>` as a `scripts` entry
+first (Composer's behaviour, unchanged), then a `vendor/bin` binary, then a
+command on `PATH` with the project's PHP first. `viv x` stays a tool in its
+own isolated environment with no project involved. First user story: `viv
+run wp plugin list` runs the project's WP-CLI on the project's pinned PHP
+and extensions, the same runtime the site uses, on a machine with no PHP
+installed. A WP-CLI that runs on a different PHP from the site, or without
+its extensions, is a common reason `wp` fails to load WordPress.
 
 ### Candidate 3.2: isolate dependencies per plugin
 
