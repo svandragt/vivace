@@ -404,7 +404,13 @@ def fold_prefix(from_dir, to_dir, path) -> str:
     return text.replace(str(from_dir), str(to_dir)).replace(real_from, real_to)
 
 
-def compare_vendor(composer_vendor, viv_vendor) -> tuple[str, str]:
+def compare_vendor(composer_vendor, viv_vendor, composer_workdir=None, viv_workdir=None) -> tuple[str, str]:
+    """`composer_workdir`/`viv_workdir` override the prefix folded by
+    `fold_prefix` (default: `composer_vendor`/`viv_vendor` themselves). Pass
+    them when `composer_vendor` is a cached reference copied out of the
+    directory Composer actually ran in -- an absolute path Composer wrote
+    into a generated file (phpstan/extension-installer's `install_path`,
+    #325 finding 3) names that original directory, not the cache path."""
     if not composer_vendor.is_dir() or not viv_vendor.is_dir():
         return "n/a", "vendor/ missing on one side"
     r = subprocess.run(
@@ -413,6 +419,8 @@ def compare_vendor(composer_vendor, viv_vendor) -> tuple[str, str]:
     )
     if r.returncode == 0:
         return "identical", ""
+    from_dir = composer_workdir if composer_workdir is not None else composer_vendor
+    to_dir = viv_workdir if viv_workdir is not None else viv_vendor
     real_diff_lines = []
     normalised = 0
     for line in r.stdout.splitlines():
@@ -420,7 +428,7 @@ def compare_vendor(composer_vendor, viv_vendor) -> tuple[str, str]:
         if m:
             file_a, file_b = m.group(1), m.group(2)
             try:
-                if fold_prefix(composer_vendor, viv_vendor, file_a) == Path(file_b).read_text(errors="replace"):
+                if fold_prefix(from_dir, to_dir, file_a) == Path(file_b).read_text(errors="replace"):
                     normalised += 1
                     continue
             except OSError:
@@ -780,12 +788,14 @@ def ref_vendor_dir(ref_root: Path, project: str, commit: str, plugins_off: bool)
     """Composer's install for a (project, commit) pair depends only on the
     project, commit and install flags, not on viv, so its `vendor/` is cached
     once here and reused across `--verify` runs instead of reinstalling it
-    for every pair. `-v2` plus the plugin mode are both in the key: a v1
-    reference was built in a separate checkout from viv's (#325 finding 2)
-    and never tagged by plugin mode (#325 finding 1), so either mismatch
-    would otherwise silently reuse a reference built the wrong way."""
+    for every pair. `-v3` plus the plugin mode are both in the key: a v1
+    reference was built in a separate checkout from viv's (#325 finding 2),
+    a v2 one didn't record the workdir Composer ran in for path folding
+    (#325 finding 3), and neither was tagged by plugin mode (#325 finding
+    1) -- any mismatch would otherwise silently reuse a reference built
+    the wrong way."""
     mode = "noplugins" if plugins_off else "plugins"
-    return ref_root / project.replace("/", "_") / f"{commit}-v2-{mode}" / "vendor"
+    return ref_root / project.replace("/", "_") / f"{commit}-v3-{mode}" / "vendor"
 
 
 def run_parallel(tasks: list, jobs: int) -> list:
@@ -832,12 +842,14 @@ def run_verify_pair(project: str, age_label: str, commit: str, commit_date: str,
     vendor_dir = work_dir / vendor_dir_name
 
     composer_vendor = ref_vendor_dir(ref_root, project, commit, plugins_off)
+    workdir_record = composer_vendor.parent / "workdir.txt"
     if not composer_vendor.is_dir():
         composer_ok, _out, _ms = run_composer_install(work_dir, composer_home, composer_cache, plugins_off)
         if composer_ok:
             composer_vendor.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(vendor_dir, composer_vendor)
             shutil.rmtree(vendor_dir)
+            workdir_record.write_text(os.path.realpath(work_dir))
         if not composer_ok:
             vr.skip = "reference Composer install failed"
             with project_lock:
@@ -846,7 +858,8 @@ def run_verify_pair(project: str, age_label: str, commit: str, commit_date: str,
 
     vr.viv_ok, _out, _ms = run_viv_install(work_dir, viv_cache, plugins_off)
     if vr.viv_ok:
-        vr.vendor_status, vr.vendor_detail = compare_vendor(composer_vendor, vendor_dir)
+        composer_workdir = Path(workdir_record.read_text()) if workdir_record.is_file() else composer_vendor
+        vr.vendor_status, vr.vendor_detail = compare_vendor(composer_vendor, vendor_dir, composer_workdir, work_dir)
         if vr.vendor_detail:
             vr.vendor_detail = "\n".join(vr.vendor_detail.splitlines()[:5])
 
@@ -1193,9 +1206,9 @@ def self_test() -> None:
     RESULTS_JSONL = real_jsonl
 
     assert ref_vendor_dir(Path("/tmp/x"), "foo/bar", "abc123", plugins_off=True) == \
-        Path("/tmp/x/foo_bar/abc123-v2-noplugins/vendor")
+        Path("/tmp/x/foo_bar/abc123-v3-noplugins/vendor")
     assert ref_vendor_dir(Path("/tmp/x"), "foo/bar", "abc123", plugins_off=False) == \
-        Path("/tmp/x/foo_bar/abc123-v2-plugins/vendor")
+        Path("/tmp/x/foo_bar/abc123-v3-plugins/vendor")
 
     assert run_parallel([lambda: 1, lambda: 2, lambda: 3], jobs=2) == [1, 2, 3]
 
