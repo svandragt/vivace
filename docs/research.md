@@ -805,43 +805,30 @@ and extensions, the same runtime the site uses, on a machine with no PHP
 installed. A WP-CLI that runs on a different PHP from the site, or without
 its extensions, is a common reason `wp` fails to load WordPress.
 
-**Result, 2026-09-27.** The chapter holds. Static read
-(`bench/g3-toolchain/static.py`, reusing `compat/platform-drift.py`'s
-corpus): of the 20 corpus and `compat/hunted.md` projects that commit a
-lock, all 20 need at least one extension `apt-get install php-cli` on
-Ubuntu 24.04 doesn't provide (mbstring 19, dom 18, xmlwriter 18,
-simplexml 17, xml 14, curl 13, zip 10, gd 9 are the most common), a median
-of 5 extra apt packages per project; 5 of 20 need a PHP outside 8.3's own
-range (3 of those are real applications needing newer than 8.3, not just
-older-capped single-package samples); 15 of 20 test a PHP other than 8.3
-in their own CI, so a developer working across this corpus needs more
-than one PHP to match it. Full table: `bench/results/g3-toolchain.md`.
+**Result, 2026-09-27: holds.** `bench/results/g3-toolchain.md`, from
+`bench/g3-toolchain/static.py` and `setup-time.py`, over the 20 corpus and
+`compat/hunted.md` projects that commit a lock.
 
-Setup time (`bench/g3-toolchain/setup-time.py`), three projects with
-different needs, network excluded: a static-php-cli binary's PHP setup
-step is two orders of magnitude faster than either apt-based way on every
-project (0.07 s versus 3.7-8.5 s), including the one needing no extra
-extension at all, because apt's own dependency bookkeeping dominates, not
-the extension count. The byte cost a real machine would pay scales with
-apt: 15.8 MB for zero extra extensions up to 34.8 MB for the ondrej/php
-PPA route a non-8.3 PHP needs (heavier than Ubuntu's own equivalent
-because the PPA's packages carry a `Recommends` chain -- `cron`, `dbus`,
-`systemd`, `python3-gi` -- Ubuntu's own don't), against a fixed 11.7-12.4 MB
-for the static binary regardless of extension count. The project needing
-PHP >=8.4 fails outright on Ubuntu's own packages (the platform check
-refuses), confirming Part A's range check on a real install, not just a
-static read. static-php-cli's prebuilt set covers every extension this
-measurement's three projects and Part A's wider ranking need except
-`intl` (7 of 20 corpus projects need it, none of the three timed here do).
+The case rests on versions, not extensions. 15 of the 20 test a PHP other
+than 8.3 in their own CI, so matching them takes several PHPs side by
+side. 3 real applications (symfony/demo, phpunit, firefly-iii) need a PHP
+newer than the 8.3.6 Ubuntu 24.04 ships; on Ubuntu's own packages
+symfony/demo fails the platform check. The route to PHP 8.4 there is the
+ondrej/php repository, which needs root and pulled 64 packages, 24 of them
+`Recommends` such as `cron`, `dbus` and `systemd`. Every project also needs
+extensions beyond `php-cli` (mbstring 19, dom 18, curl 13, intl 7, a
+median of 5 extra packages), but each of those is one package away.
 
-Threshold judged by: a clear majority of real projects needing something
-outside the baseline (20 of 20 need an extension, most real applications
-need several), plus an order-of-magnitude setup-time saving and a real,
-not just theoretical, third-party-repository cost. Both hold. Whether to
-build `viv php install`/`viv run` on this is the maintainer's call --
-`intl`'s absence from static-php-cli's prebuilt set is the one gap a build
-would need to plan around (a custom `spc build`, or falling back to apt
-for that one extension).
+A static PHP build from static-php-cli sets up in 0.07 s against 3.7 to
+8.5 s through apt, downloads 11.7 to 12.4 MB whatever the extensions
+against 15.8 to 34.8 MB, and needs no root. The saving in time is seconds
+once per machine; the saving that matters is a per-project PHP version
+with no system package manager. The gap: static-php-cli's prebuilt set
+lacks `intl`, which 7 of 20 projects need, so a build needs a custom
+`spc build` or its own `intl` binary.
+
+Whether to build `viv php install` and the `viv run` described above is
+the maintainer's decision.
 
 ### Candidate 3.2: isolate dependencies per plugin
 
