@@ -776,12 +776,16 @@ class VerifyResult:
     seconds: float = 0.0
 
 
-def ref_vendor_dir(ref_root: Path, project: str, commit: str) -> Path:
+def ref_vendor_dir(ref_root: Path, project: str, commit: str, plugins_off: bool) -> Path:
     """Composer's install for a (project, commit) pair depends only on the
     project, commit and install flags, not on viv, so its `vendor/` is cached
     once here and reused across `--verify` runs instead of reinstalling it
-    for every pair."""
-    return ref_root / project.replace("/", "_") / commit / "vendor"
+    for every pair. `-v2` plus the plugin mode are both in the key: a v1
+    reference was built in a separate checkout from viv's (#325 finding 2)
+    and never tagged by plugin mode (#325 finding 1), so either mismatch
+    would otherwise silently reuse a reference built the wrong way."""
+    mode = "noplugins" if plugins_off else "plugins"
+    return ref_root / project.replace("/", "_") / f"{commit}-v2-{mode}" / "vendor"
 
 
 def run_parallel(tasks: list, jobs: int) -> list:
@@ -800,21 +804,24 @@ def run_verify_pair(project: str, age_label: str, commit: str, commit_date: str,
     start = time.monotonic()
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{project}_{age_label}")
     pair_dir = scratch / "pairs" / safe
-    viv_dir = pair_dir / "viv"
+    # Composer and viv install into the same worktree checkout (#325 finding
+    # 2): the root package's version is guessed from git state, so a second,
+    # separately-created worktree at the same sha isn't guaranteed to match.
+    work_dir = pair_dir / "work"
     pair_dir.mkdir(parents=True, exist_ok=True)
 
     with project_lock:
-        if not checkout_worktree(repo_dir, sha, viv_dir):
+        if not checkout_worktree(repo_dir, sha, work_dir):
             vr.skip = f"worktree checkout of {sha} failed"
             return vr
-    if not (viv_dir / "composer.lock").is_file():
+    if not (work_dir / "composer.lock").is_file():
         vr.skip = "composer.lock missing in the checkout"
         with project_lock:
-            remove_worktree(repo_dir, viv_dir)
+            remove_worktree(repo_dir, work_dir)
         return vr
 
-    lock = json.loads((viv_dir / "composer.lock").read_text())
-    root_text = (viv_dir / "composer.json").read_text() if (viv_dir / "composer.json").is_file() else "{}"
+    lock = json.loads((work_dir / "composer.lock").read_text())
+    root_text = (work_dir / "composer.json").read_text() if (work_dir / "composer.json").is_file() else "{}"
     root = json.loads(root_text)
     vendor_dir_name = (root.get("config") or {}).get("vendor-dir", "vendor")
     _plugin_note, plugin_native = plugin_status_for(lock, root, native_inert)
@@ -822,36 +829,29 @@ def run_verify_pair(project: str, age_label: str, commit: str, commit_date: str,
 
     composer_cache, composer_home = cache_root / "composer-cache", cache_root / "composer-home"
     viv_cache = cache_root / "viv-cache"
+    vendor_dir = work_dir / vendor_dir_name
 
-    composer_vendor = ref_vendor_dir(ref_root, project, commit)
+    composer_vendor = ref_vendor_dir(ref_root, project, commit, plugins_off)
     if not composer_vendor.is_dir():
-        composer_dir = pair_dir / "composer"
-        with project_lock:
-            if not checkout_worktree(repo_dir, sha, composer_dir):
-                vr.skip = f"worktree checkout of {sha} (composer side) failed"
-                with project_lock:
-                    remove_worktree(repo_dir, viv_dir)
-                return vr
-        composer_ok, _out, _ms = run_composer_install(composer_dir, composer_home, composer_cache, plugins_off)
+        composer_ok, _out, _ms = run_composer_install(work_dir, composer_home, composer_cache, plugins_off)
         if composer_ok:
             composer_vendor.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(composer_dir / vendor_dir_name, composer_vendor)
-        with project_lock:
-            remove_worktree(repo_dir, composer_dir)
+            shutil.copytree(vendor_dir, composer_vendor)
+            shutil.rmtree(vendor_dir)
         if not composer_ok:
             vr.skip = "reference Composer install failed"
             with project_lock:
-                remove_worktree(repo_dir, viv_dir)
+                remove_worktree(repo_dir, work_dir)
             return vr
 
-    vr.viv_ok, _out, _ms = run_viv_install(viv_dir, viv_cache, plugins_off)
+    vr.viv_ok, _out, _ms = run_viv_install(work_dir, viv_cache, plugins_off)
     if vr.viv_ok:
-        vr.vendor_status, vr.vendor_detail = compare_vendor(composer_vendor, viv_dir / vendor_dir_name)
+        vr.vendor_status, vr.vendor_detail = compare_vendor(composer_vendor, vendor_dir)
         if vr.vendor_detail:
             vr.vendor_detail = "\n".join(vr.vendor_detail.splitlines()[:5])
 
     with project_lock:
-        remove_worktree(repo_dir, viv_dir)
+        remove_worktree(repo_dir, work_dir)
     vr.seconds = round(time.monotonic() - start, 1)
     return vr
 
@@ -1192,7 +1192,10 @@ def self_test() -> None:
         assert loaded[0].viv_packages["foo/dep"].outcome == "dist URL gone (other host)"
     RESULTS_JSONL = real_jsonl
 
-    assert ref_vendor_dir(Path("/tmp/x"), "foo/bar", "abc123") == Path("/tmp/x/foo_bar/abc123/vendor")
+    assert ref_vendor_dir(Path("/tmp/x"), "foo/bar", "abc123", plugins_off=True) == \
+        Path("/tmp/x/foo_bar/abc123-v2-noplugins/vendor")
+    assert ref_vendor_dir(Path("/tmp/x"), "foo/bar", "abc123", plugins_off=False) == \
+        Path("/tmp/x/foo_bar/abc123-v2-plugins/vendor")
 
     assert run_parallel([lambda: 1, lambda: 2, lambda: 3], jobs=2) == [1, 2, 3]
 
