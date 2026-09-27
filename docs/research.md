@@ -805,6 +805,31 @@ and extensions, the same runtime the site uses, on a machine with no PHP
 installed. A WP-CLI that runs on a different PHP from the site, or without
 its extensions, is a common reason `wp` fails to load WordPress.
 
+**Result, 2026-09-27: holds.** `bench/results/g3-toolchain.md`, from
+`bench/g3-toolchain/static.py` and `setup-time.py`, over the 20 corpus and
+`compat/hunted.md` projects that commit a lock.
+
+The case rests on versions, not extensions. 15 of the 20 test a PHP other
+than 8.3 in their own CI, so matching them takes several PHPs side by
+side. 3 real applications (symfony/demo, phpunit, firefly-iii) need a PHP
+newer than the 8.3.6 Ubuntu 24.04 ships; on Ubuntu's own packages
+symfony/demo fails the platform check. The route to PHP 8.4 there is the
+ondrej/php repository, which needs root and pulled 64 packages, 24 of them
+`Recommends` such as `cron`, `dbus` and `systemd`. Every project also needs
+extensions beyond `php-cli` (mbstring 19, dom 18, curl 13, intl 7, a
+median of 5 extra packages), but each of those is one package away.
+
+A static PHP build from static-php-cli sets up in 0.07 s against 3.7 to
+8.5 s through apt, downloads 11.7 to 12.4 MB whatever the extensions
+against 15.8 to 34.8 MB, and needs no root. The saving in time is seconds
+once per machine; the saving that matters is a per-project PHP version
+with no system package manager. The gap: static-php-cli's prebuilt set
+lacks `intl`, which 7 of 20 projects need, so a build needs a custom
+`spc build` or its own `intl` binary.
+
+Whether to build `viv php install` and the `viv run` described above is
+the maintainer's decision.
+
 ### Candidate 3.2: isolate dependencies per plugin
 
 **Question.** How often do WordPress plugins ship conflicting versions of
