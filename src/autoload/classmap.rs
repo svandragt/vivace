@@ -46,6 +46,16 @@ pub struct ClassMap {
     /// reused by callers (`generator::Scanner`) instead of canonicalizing
     /// the same file a second time.
     pub canonical: HashMap<PathBuf, PathBuf>,
+    /// Every file that declared at least one class, in the order [`scan_paths`]
+    /// visited them — Composer's own tie-break for a class declared twice
+    /// (#319): the file its *directory walk* reaches first wins, not
+    /// whichever sorts first by name. `generator::Scanner::shape_for_merge`
+    /// regroups `map`/`ambiguous` per file for its own cross-file ambiguity
+    /// fold and must replay this order rather than re-deriving one (a
+    /// `BTreeMap<PathBuf, _>` regroup, tried first, sorts by path instead and
+    /// silently disagreed with Composer whenever a walk visits the
+    /// lexicographically-later file first).
+    pub order: Vec<PathBuf>,
 }
 
 impl ClassMap {
@@ -388,8 +398,12 @@ pub fn scan_paths(path: &Path, exclude: Option<&Regex>) -> Result<ClassMap> {
         vec![path.to_path_buf()]
     } else if metadata.is_dir() {
         let mut files = Vec::new();
+        // Not sorted: Composer's own walk (an unsorted Symfony `Finder`, over
+        // `RecursiveDirectoryIterator`) visits files in raw directory order,
+        // and which file wins a class declared twice follows that order
+        // (#319) — sorting here would pick a different winner than Composer
+        // whenever a directory's on-disk order isn't alphabetical.
         walk_dir(path, &mut HashSet::new(), &mut files)?;
-        files.sort();
         files
     } else {
         return Err(does_not_exist(path));
@@ -430,7 +444,11 @@ pub fn scan_paths(path: &Path, exclude: Option<&Regex>) -> Result<ClassMap> {
         }
 
         let source = std::fs::read(&file)?;
-        for class in find_classes(&source) {
+        let classes = find_classes(&source);
+        if !classes.is_empty() {
+            class_map.order.push(file.clone());
+        }
+        for class in classes {
             class_map.record(class, &file);
         }
     }
@@ -576,6 +594,15 @@ struct CachedScan {
     /// object needs string keys, and a class name is raw bytes.
     classes: Vec<(String, PathBuf)>,
     ambiguous: Vec<(String, PathBuf, PathBuf)>,
+    /// [`ClassMap::order`], relative to the scanned root — #319: without
+    /// this a hit would have to re-derive some order for `shape_for_merge`,
+    /// and every derivation but the real one risks disagreeing with
+    /// Composer's walk order again. `#[serde(default)]` so a pre-#319
+    /// sidecar still parses, but [`Self::to_class_map`] then refuses it (an
+    /// entry with classes and no order could only be that stale shape) —
+    /// a well-formed cache miss rather than a silent wrong winner.
+    #[serde(default)]
+    order: Vec<PathBuf>,
 }
 
 fn to_hex(class: &[u8]) -> String {
@@ -605,12 +632,20 @@ impl CachedScan {
                 .iter()
                 .map(|(class, a, b)| (to_hex(class), relative(a), relative(b)))
                 .collect(),
+            order: found.order.iter().map(|p| relative(p)).collect(),
         }
     }
 
     /// Re-root this entry's paths onto `dir`, or `None` for corrupt hex (a
-    /// hand-edited or truncated sidecar) — a cache miss, not an error.
+    /// hand-edited or truncated sidecar) — a cache miss, not an error. Also
+    /// `None` when `order` is empty but `classes` is not: a fresh scan that
+    /// found classes always records at least one file in `order` (#319), so
+    /// that combination only happens on a sidecar written before `order`
+    /// existed.
     fn to_class_map(&self, dir: &Path) -> Option<ClassMap> {
+        if self.order.is_empty() && !self.classes.is_empty() {
+            return None;
+        }
         let mut class_map = ClassMap::default();
         for (class, path) in &self.classes {
             class_map.map.insert(from_hex(class)?, dir.join(path));
@@ -620,6 +655,7 @@ impl CachedScan {
                 .ambiguous
                 .push((from_hex(class)?, dir.join(a), dir.join(b)));
         }
+        class_map.order = self.order.iter().map(|p| dir.join(p)).collect();
         Some(class_map)
     }
 }
