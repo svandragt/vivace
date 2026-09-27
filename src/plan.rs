@@ -79,6 +79,20 @@ pub fn plan<'a>(
                     && was_dev == package.dev
                     && entry.abandoned == abandoned =>
             {
+                // #318: an install written before the pretty-case fix
+                // recorded the wrong (lowercased) directory. Version,
+                // reference etc. all still match, but the package must move
+                // to the lock's own casing, so the old entry is queued for
+                // removal (its stale directory) and the package reinstalled
+                // rather than kept in place — `.remove()` above already took
+                // it out of `installed`, so nothing else will delete it.
+                let expected_path = (package.r#type != "metapackage")
+                    .then(|| crate::install::package_dir(vendor_dir, project_dir, package));
+                if expected_path.is_some() && entry.install_path != expected_path {
+                    plan.install.push(package.clone());
+                    plan.remove.push(entry);
+                    continue;
+                }
                 // installed.json can agree with the lock while the package's
                 // own directory is gone (deleted by hand, a half-finished
                 // previous install): a metapackage owns no directory and is
@@ -96,7 +110,8 @@ pub fn plan<'a>(
             _ => plan.install.push(package.clone()),
         }
     }
-    plan.remove = installed.into_values().map(|(entry, _)| entry).collect();
+    plan.remove
+        .extend(installed.into_values().map(|(entry, _)| entry));
     plan.remove.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(plan)
 }
@@ -516,5 +531,38 @@ mod tests {
         let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
         assert_eq!(names(&plan.keep), ["a/a"]);
         assert!(plan.install.is_empty());
+    }
+
+    /// #318: an install written before the pretty-case fix put a mixed-case
+    /// package under its lowercased directory. Everything else about the
+    /// entry still matches the lock, but the stale directory must be queued
+    /// for removal and the package reinstalled under the lock's own casing,
+    /// not kept in place.
+    #[test]
+    fn mixed_case_name_migrates_off_a_stale_lowercase_dir() {
+        let vendor = tempfile::tempdir().unwrap();
+        installed(
+            vendor.path(),
+            &[(
+                "jeremeamia/SuperClosure",
+                "r1",
+                false,
+                Some("../jeremeamia/superclosure"),
+            )],
+        );
+        let lock = lock(&[("jeremeamia/SuperClosure", "r1", false)]);
+        let plan = plan(&lock, true, vendor.path(), vendor.path()).unwrap();
+        assert_eq!(names(&plan.install), ["jeremeamia/superclosure"]);
+        assert!(plan.keep.is_empty());
+        assert_eq!(
+            plan.remove,
+            [InstalledEntry {
+                name: "jeremeamia/superclosure".into(),
+                version: "1.0.0".into(),
+                reference: Some("r1".into()),
+                install_path: Some(vendor.path().join("jeremeamia/superclosure")),
+                abandoned: None,
+            }]
+        );
     }
 }
