@@ -13,6 +13,8 @@ one question, states a hypothesis, keeps compat mode as the control,
 measures, and ends in a write-up. Behaviour a chapter adds sits behind a flag
 or a manifest setting so the default path stays byte-compatible, and
 `composer.lock` stays exportable so viv never becomes a fork of itself.
+Generation 3, at the end of this document, asks what viv could be without
+that constraint, still opt-in per project.
 
 ## How chapters run
 
@@ -739,8 +741,150 @@ already record what the solve targeted and none of the 3 lacked them.
   stores the shaped classmap beside each archive; the remaining gap on
   Laravel is 14 ms of render, and chapter 2 showed the vendor tree is
   not the cost. A design change would not move the number.
-- **A declared extension model.** The native adapters show most plugins
-  are path mapping, scaffolding and patching, and a manifest could
-  replace emulation. That is product design with the adapter list as
-  its migration table, better scheduled when a client hits the next
-  plugin than measured as a chapter.
+- **A declared extension model.** Moved to generation 3 as candidate G4,
+  where it is a measurement rather than product design.
+
+## Generation 3: a better PHP package manager
+
+Generation 1 answered whether viv could be a faster Composer: it is.
+Generation 2, the chapters and candidates above, asked what a package
+manager that stays compatible with Composer can improve, and mostly found
+that the ceiling is Composer's model rather than viv's implementation:
+GitHub ignores `merge=union`, `dev-*` branch heads move, and old package
+downloads do not disappear. Generation 3 asks what a PHP package manager
+could be if it no longer had to produce Composer's output.
+
+### Rules for generation 3
+
+- Compat mode stays the default and the control. Generation 3 behaviour is
+  opt-in per project, through a manifest setting, and never changes what a
+  project that has not opted in gets.
+- `composer.json` and Packagist stay the way in. A project moves to a
+  generation 3 feature with one command and can move back; no candidate
+  needs its own registry to start.
+- Each candidate is measured before anything is built, as in generation 2.
+  A candidate may break byte compatibility with Composer's `vendor/`, but
+  its chapter says exactly what differs and why.
+
+### Candidate G1: manage the PHP toolchain
+
+**Question.** How often does installing a project depend on a PHP version
+or extension set the machine does not have, and how much does a managed,
+per-project PHP remove?
+
+**Why it might hold.** Composer leaves PHP and its extensions to the
+operating system, Docker or a tool like devbox, which is why platform
+checks, `config.platform` and `--ignore-platform-reqs` exist. uv won
+Python users largely by installing Python itself and running scripts with
+their own inline requirements. Prior art for PHP: static-php-cli builds
+self-contained PHP binaries, and PIE is the PHP Foundation's extension
+installer.
+
+**Control.** The PHP a default distribution ships, plus the project's own
+CI setup.
+
+**Measurement.** Across the compat corpus and `compat/hunted.md`, reuse
+`compat/platform-drift.py` to count projects whose lock or CI needs a PHP
+version or `ext-*` extension that the default PHP of the current Ubuntu LTS
+lacks. Then time a fresh container to a first successful install three ways:
+distribution packages, a third-party repository, and a downloaded static
+PHP build.
+
+**Build if it holds.** `viv php install <version>` with extensions,
+pinned per project in the manifest, and `viv run` using it.
+
+### Candidate G2: isolate dependencies per plugin
+
+**Question.** How often do WordPress plugins ship conflicting versions of
+the same library, and does rewriting namespaces at install time produce
+working code?
+
+**Why it might hold.** PHP has one global class namespace, so two plugins
+that bundle different versions of one library collide at runtime. The
+ecosystem prefixes namespaces after the fact with php-scoper, Mozart and
+Strauss. A package manager that prefixes per plugin at install time would
+solve something Composer cannot.
+
+**Control.** Installing the plugins side by side today.
+
+**Measurement.** A sample of the most-installed plugins on WordPress.org
+that bundle a `vendor/` directory: for each pair, the libraries both bundle
+at different versions, and how many of those are already prefixed. Then
+prefix the unprefixed ones with php-scoper and run each plugin's own test
+suite, where it has one.
+
+**Build if it holds.** An `isolate` setting that prefixes a package's
+dependencies at install time, with the prefix recorded in the lock.
+
+### Candidate G3: a lock that pins commits and merges by record
+
+**Question.** If branch dependencies are pinned to commits and a
+per-record lock is the only lock, what share of merges finish without a
+person?
+
+**Why it might hold.** Chapter 1's driver leaves 51 of 355 client merges
+in conflict markers, and 43 of them are `dev-*` branch heads the registry
+no longer serves at the locked commit. A lock that pins the commit and
+fetches it from source does not depend on the branch head. Candidate A
+showed that merging the lock record by record is safe (no silent merge in
+381); it was not built
+because `composer.lock` stays in git beside it.
+
+**Control.** Chapter 1's `viv lock merge`, on the same corpus.
+
+**Measurement.** Replay the 355 client merges with `dev-*` records treated
+as fixed commits and `viv.lock` as the only lock: merges finished, merges
+left, and how many of the finished ones install from an empty cache.
+
+**Build if it holds.** A generation 3 lock mode in which `viv.lock` is the
+only lock, `composer.lock` is generated on demand, and `dev-*`
+requirements resolve to commits.
+
+### Candidate G4: installs that run no code
+
+**Question.** What share of the Composer plugins projects use could be
+declared as data rather than run as code?
+
+**Why it might hold.** Composer plugins and scripts run arbitrary PHP
+during `install`, which is a supply-chain risk and the reason viv needs one
+adapter per plugin. The adapters show most plugins map install paths,
+scaffold files or apply patches. npm's `--ignore-scripts`, pnpm's allowed
+build list and Bun's trusted dependencies are the prior art for making
+code at install time explicit.
+
+**Control.** Composer's plugin API and scripts.
+
+**Measurement.** The most-installed packages of type `composer-plugin` on
+Packagist, each classified by what it does at install: path mapping,
+scaffolding, patching, code generation, or anything else. Plus, across the
+corpus, how many projects run a plugin or script during install at all.
+
+**Build if it holds.** A declarative manifest section for the common kinds,
+and an explicit allow list for packages that must run code.
+
+### Candidate G5: simpler resolution rules
+
+**Question.** Which of Composer's resolution features do projects use, and
+how many compatibility bugs came from them?
+
+**Why it might hold.** `minimum-stability`, branch aliases, `replace` and
+`provide` with `self.version`, inline aliases and root-version guessing
+caused most of the compatibility bugs found in 0.17 and 0.18 (#312, #316,
+#322). A generation 3 manifest could drop or tighten what few projects use.
+
+**Control.** Composer's full rule set.
+
+**Measurement.** Across the corpus and `compat/hunted.md`, a static count
+of each feature in `composer.json` and `composer.lock`, and a count of
+closed compatibility issues by the feature that caused them.
+
+**Build if it holds.** A generation 3 manifest schema without the unused
+features, with a migration that says what it dropped for each project.
+
+### Order
+
+G1 and G2 first: they help projects today without changing the lock, and
+G2 is a problem Composer cannot solve. G3 and G4 change what a project
+commits, so they follow once a first generation 3 feature has users. G5 is
+cheapest to measure and mostly informs the manifest the others need.
+
