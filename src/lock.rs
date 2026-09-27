@@ -155,6 +155,20 @@ impl Package {
     pub fn is_git_source(&self) -> bool {
         self.dist.is_none() && self.source.as_ref().is_some_and(|s| s.r#type == "git")
     }
+
+    /// The lock's own casing of the name (`getPrettyName()`), for anything
+    /// that touches the filesystem or `installed.json`/`.php`'s presentation
+    /// fields (#318: `jeremeamia/SuperClosure` installs under that exact
+    /// path, not lowercased). `name` itself stays lowercase throughout for
+    /// identity — matching requires/replaces/provides and `installed.json`
+    /// on a later run — the same split `BasePackage::getName()` vs
+    /// `getPrettyName()` makes in Composer.
+    pub fn pretty_name(&self) -> &str {
+        self.raw
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&self.name)
+    }
 }
 
 fn default_type() -> String {
