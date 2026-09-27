@@ -1,6 +1,7 @@
 //! `vendor/composer/installed.json` and `installed.php`, ports of
 //! Composer's `FilesystemRepository::write` and `ArrayDumper`.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::LazyLock;
 
@@ -272,13 +273,26 @@ pub fn installed_php(
     // `extra.branch-alias` applies to the root package like any other
     // `dev-*` package (#128: a detached checkout guessed back to
     // `dev-main` still carries the branch alias declared for it).
-    let root_aliases: Vec<Value> =
-        branch_alias_for(&root_pretty, root.extra.pointer("/branch-alias"))
-            .into_iter()
-            .map(Into::into)
-            .collect();
+    let root_branch_alias = branch_alias_for(&root_pretty, root.extra.pointer("/branch-alias"));
+    let root_aliases: Vec<Value> = root_branch_alias
+        .clone()
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    let root_self_version_extra = self_version_extra(
+        root_branch_alias,
+        lock.aliases
+            .iter()
+            .filter(|alias| alias.package == root_name)
+            .map(|alias| alias.alias.as_str()),
+    );
 
     let mut versions: Map<String, Value> = Map::new();
+    // #322: the extra pretty version(s) a package's `self.version` links
+    // also resolve to, keyed by name — only populated for a package that
+    // actually carries a branch or lock-level alias, so a package without
+    // one costs a hash lookup, not an allocation.
+    let mut self_version_extras: HashMap<&str, Vec<String>> = HashMap::new();
     for package in packages {
         let mut entry = Map::new();
         entry.insert("pretty_version".into(), package.version.clone().into());
@@ -299,7 +313,12 @@ pub fn installed_php(
         // `aliases` array) are independent mechanisms that can both apply to
         // the same package (#found-in-the-wild: a `default-branch` package
         // also root-aliased to a stable version).
-        let mut aliases: Vec<Value> = branch_alias(package).into_iter().map(Into::into).collect();
+        let branch_alias_value = branch_alias(package);
+        let mut aliases: Vec<Value> = branch_alias_value
+            .clone()
+            .into_iter()
+            .map(Into::into)
+            .collect();
         aliases.extend(
             lock.aliases
                 .iter()
@@ -307,6 +326,16 @@ pub fn installed_php(
                 .map(|alias| Value::from(alias.alias.clone())),
         );
         entry.insert("aliases".into(), Value::Array(aliases));
+        let extra = self_version_extra(
+            branch_alias_value,
+            lock.aliases
+                .iter()
+                .filter(|alias| alias.package == package.name)
+                .map(|alias| alias.alias.as_str()),
+        );
+        if !extra.is_empty() {
+            self_version_extras.insert(package.name.as_str(), extra);
+        }
         entry.insert("dev_requirement".into(), package.dev.into());
         versions.insert(package.name.clone(), Value::Object(entry));
     }
@@ -323,17 +352,32 @@ pub fn installed_php(
     // Virtual packages: replaces first, then provides, per package, root
     // included last like `FilesystemRepository::generateInstalledVersions`
     // (the root package is appended to its own package list).
+    let root_extra = (!root_self_version_extra.is_empty()).then_some(&root_self_version_extra);
     let links = packages
         .iter()
-        .map(|p| (&p.replace, &p.provide, &p.version, p.dev))
-        .chain([(&root.replace, &root.provide, &root_pretty, false)])
-        .flat_map(|(replace, provide, version, dev)| {
+        .map(|p| {
+            (
+                &p.replace,
+                &p.provide,
+                &p.version,
+                p.dev,
+                self_version_extras.get(p.name.as_str()),
+            )
+        })
+        .chain([(
+            &root.replace,
+            &root.provide,
+            &root_pretty,
+            false,
+            root_extra,
+        )])
+        .flat_map(|(replace, provide, version, dev, extra)| {
             [
-                (replace, "replaced", version, dev),
-                (provide, "provided", version, dev),
+                (replace, "replaced", version, dev, extra),
+                (provide, "provided", version, dev, extra),
             ]
         });
-    for (map, list_key, pretty_version, is_dev) in links {
+    for (map, list_key, pretty_version, is_dev, extra) in links {
         for (target, constraint) in map {
             if is_platform_package(target) {
                 continue;
@@ -349,17 +393,30 @@ pub fn installed_php(
                 Some(flag) if !is_dev => *flag = false.into(),
                 Some(_) => {}
             }
-            let constraint = match constraint.as_str().unwrap_or_default() {
-                "self.version" => pretty_version.clone(),
-                other => other.to_owned(),
-            };
             let list = entry
                 .entry(list_key)
                 .or_insert_with(|| Value::Array(vec![]))
                 .as_array_mut()
                 .expect("lists are arrays");
-            if !list.iter().any(|v| v.as_str() == Some(&constraint)) {
-                list.push(constraint.into());
+            let mut push = |value: &str| {
+                if !list.iter().any(|v| v.as_str() == Some(value)) {
+                    list.push(value.into());
+                }
+            };
+            match constraint.as_str().unwrap_or_default() {
+                // #322: Composer's installed repository holds a branch- or
+                // lock-aliased package's real entry and its `AliasPackage`
+                // wrapper separately, so `self.version` resolves against
+                // both the package's own pretty version and its alias's.
+                "self.version" => {
+                    push(pretty_version);
+                    if let Some(extra) = extra {
+                        for v in extra {
+                            push(v);
+                        }
+                    }
+                }
+                other => push(other),
             }
         }
     }
@@ -398,6 +455,29 @@ pub fn installed_php(
     );
 
     Ok(format!("<?php return {};\n", dump_to_php_code(&top, 0)))
+}
+
+/// #322: the alias pretty version(s), besides the package's own, that a
+/// `self.version` `replace`/`provide` constraint also resolves to.
+/// `FilesystemRepository::generateInstalledVersions` walks every package in
+/// the installed repository including each `AliasPackage`, and
+/// `AliasPackage::replaceSelfVersionDependencies` resolves that package's own
+/// `self.version` links against `$this->prettyVersion` — the alias's pretty
+/// version, not the aliased package's. A branch alias and a lock-level
+/// (`composer.lock`'s `aliases`) alias are independent `AliasPackage` sources
+/// and both count. The `9999999-dev` `default-branch: true` fallback is
+/// excluded: `replaceSelfVersionDependencies` special-cases that sentinel
+/// back to the aliased package's own pretty version, so it resolves nothing
+/// new.
+fn self_version_extra<'a>(
+    branch_alias: Option<String>,
+    lock_aliases: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    branch_alias
+        .into_iter()
+        .filter(|alias| alias != "9999999-dev")
+        .chain(lock_aliases.map(str::to_owned))
+        .collect()
 }
 
 /// `ArrayLoader::getBranchAlias`: a `dev-*` package following a matching
@@ -564,6 +644,7 @@ mod tests {
 
     use super::{installed_json, installed_php};
     use crate::lock::{Dist, Lock, Package, Root, TransportOptions, read_lock, read_root};
+    use crate::solver::transaction::AliasEntry;
 
     fn fixture(name: &str) -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -833,6 +914,71 @@ mod tests {
             block
                 .contains("'aliases' => array(\n                0 => '3.x-dev',\n            ),\n"),
             "{block}"
+        );
+    }
+
+    /// #322: laravel/laravel at `d15ab4b82ed3` locks `laravel/framework` at
+    /// `dev-master` with `branch-alias: {"dev-master": "5.2-dev"}` and
+    /// `replace: {"illuminate/auth": "self.version"}`. Composer's installed
+    /// repository holds the real `dev-master` package and its
+    /// `AliasPackage` wrapper as two separate entries, and each resolves
+    /// `self.version` against its own pretty version, so `illuminate/auth`
+    /// lists both.
+    #[test]
+    fn installed_php_self_version_replace_lists_the_branch_alias_too() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut framework = package("laravel/framework", "dev-master", Some("abc"));
+        framework.replace = links(&[("illuminate/auth", "self.version")]);
+        framework.provide = links(&[("illuminate/auth-contract", "self.version")]);
+        framework.raw = json!({
+            "name": "laravel/framework",
+            "version": "dev-master",
+            "extra": {"branch-alias": {"dev-master": "5.2-dev"}},
+        });
+        let packages = [&framework];
+        let out = installed_php(&root, &empty_lock(), &packages, false, None).unwrap();
+        let block = |text: &str, name: &str| -> String {
+            let start = text.find(&format!("'{name}' => array(\n")).unwrap();
+            let end = text[start..].find("\n        ),\n").unwrap() + start;
+            text[start..end].to_owned()
+        };
+        assert_eq!(
+            block(&out, "illuminate/auth"),
+            "'illuminate/auth' => array(\n            'dev_requirement' => false,\n            'replaced' => array(\n                0 => '5.2.x-dev',\n                1 => 'dev-master',\n            ),"
+        );
+        assert_eq!(
+            block(&out, "illuminate/auth-contract"),
+            "'illuminate/auth-contract' => array(\n            'dev_requirement' => false,\n            'provided' => array(\n                0 => '5.2.x-dev',\n                1 => 'dev-master',\n            ),"
+        );
+    }
+
+    /// #322 also applies to a lock-level alias (`composer.lock`'s top-level
+    /// `aliases`, `composer.json`'s inline `"acme/lib": "1.0.0 as 1.5.0"`)
+    /// on a tagged, non-dev package: `Locker::getLockedRepository` wraps it
+    /// in a `CompleteAliasPackage` regardless of dev-ness, and that alias
+    /// gets the same `self.version` treatment as a branch alias.
+    #[test]
+    fn installed_php_self_version_replace_lists_a_lock_level_alias_too() {
+        let root: Root = serde_json::from_value(json!({"name": "vendor/root"})).unwrap();
+        let mut lib = package("acme/lib", "1.0.0", Some("abc"));
+        lib.replace = links(&[("acme/other", "self.version")]);
+        let lock = Lock {
+            content_hash: None,
+            packages: vec![],
+            aliases: vec![AliasEntry {
+                package: "acme/lib".into(),
+                version: "1.0.0".into(),
+                alias: "1.5.0".into(),
+                alias_normalized: "1.5.0.0".into(),
+            }],
+        };
+        let packages = [&lib];
+        let out = installed_php(&root, &lock, &packages, false, None).unwrap();
+        let start = out.find("'acme/other' => array(\n").unwrap();
+        let end = out[start..].find("\n        ),\n").unwrap() + start;
+        assert_eq!(
+            &out[start..end],
+            "'acme/other' => array(\n            'dev_requirement' => false,\n            'replaced' => array(\n                0 => '1.0.0',\n                1 => '1.5.0',\n            ),"
         );
     }
 
