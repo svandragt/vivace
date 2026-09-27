@@ -1283,13 +1283,18 @@ impl Scanner<'_> {
         // `found` is owned here, so its map/ambiguous entries can be moved
         // into `per_file` instead of cloned — a class name and a path clone
         // each avoided per entry, which adds up over a package's whole
-        // classmap.
+        // classmap. Grouped by a plain `HashMap`, not a `BTreeMap<PathBuf,
+        // _>`: a path-sorted regroup picks a different file than Composer
+        // whenever the scan's own directory-walk order isn't alphabetical
+        // (#319) — `order` (already exactly that walk order) decides the
+        // sequence `out` is built in instead.
         let ClassMap {
             map,
             ambiguous,
             mut canonical,
+            order,
         } = found;
-        let mut per_file: BTreeMap<PathBuf, Vec<ClassName>> = BTreeMap::new();
+        let mut per_file: HashMap<PathBuf, Vec<ClassName>> = HashMap::new();
         for (class, path) in map {
             per_file.entry(path).or_default().push(class);
         }
@@ -1298,12 +1303,17 @@ impl Scanner<'_> {
         }
 
         let mut out = Vec::with_capacity(per_file.len());
-        for (file, classes) in per_file {
+        for file in order {
+            // A file only ever enters `order` when `find_classes` found at
+            // least one class in it, so it always has a `per_file` entry too
+            // — `remove` rather than `get().cloned()`: each file is only
+            // ever looked up once per task, so taking ownership skips a
+            // `Vec<ClassName>` clone for every one of them.
+            let Some(classes) = per_file.remove(&file) else {
+                continue;
+            };
             // `scan_paths` already canonicalized this file to dedupe
             // symlinked duplicates; reuse it instead of doing so again.
-            // `remove` rather than `get().cloned()`: each file is only ever
-            // looked up once per task, so taking ownership skips a
-            // `PathBuf` clone for every one of them.
             let real = canonical.remove(&file).unwrap_or_else(|| file.clone());
             let file_path = normalized_path_str(&file);
             let classes = match psr {
@@ -2473,6 +2483,50 @@ mod tests {
             "the first task in queue order wins the tie"
         );
         assert_eq!(cold.warnings.len(), 1, "one ambiguous-class warning");
+    }
+
+    /// #319: `phpunit/phpunit` declares `PHPUnit\TestFixture\
+    /// AlternativeSuffixTest` in two files under one `classmap` directory
+    /// (`tests/`) — `end-to-end/.../AnnotationFilterTest.php` and
+    /// `_files/AlternativeSuffixTest.test.php`. Composer's own scan (an
+    /// unsorted `Finder`) reaches the first file before the second on that
+    /// checkout, even though `_files` sorts before `end-to-end`
+    /// alphabetically. This reproduces the merge step on a `ClassMap` built
+    /// by hand, `order` set the way a fresh `scan_paths` would set it for
+    /// that checkout, so the tie-break is checked without depending on any
+    /// one filesystem's own directory order (real disk order is exercised
+    /// by `viv install` against the real checkout instead, not a unit test —
+    /// see the issue). Before #319, `shape_for_merge` regrouped `map`/
+    /// `ambiguous` through a `BTreeMap<PathBuf, _>`, which iterates by path
+    /// and silently picked the alphabetically-first file (`_files/...`)
+    /// instead.
+    #[test]
+    fn shape_for_merge_keeps_composers_winner_even_when_it_sorts_after_the_loser() {
+        let base = "/proj".to_string();
+        let vendor = "/proj/vendor".to_string();
+        let mut scanner = empty_scanner(&base, &vendor);
+
+        let winner = PathBuf::from("/proj/tests/end-to-end/AnnotationFilterTest.php");
+        let loser = PathBuf::from("/proj/tests/_files/AlternativeSuffixTest.test.php");
+        let class = b"PHPUnit\\TestFixture\\AlternativeSuffixTest".to_vec();
+
+        let found = ClassMap {
+            map: BTreeMap::from([(class.clone(), winner.clone())]),
+            ambiguous: vec![(class.clone(), winner.clone(), loser.clone())],
+            canonical: HashMap::new(),
+            // The walk reached `winner` first, same as Composer's Finder on
+            // the real checkout, even though it sorts after `loser`.
+            order: vec![winner.clone(), loser.clone()],
+        };
+
+        let shaped = scanner.shape_for_merge(found, None, "/proj/tests");
+        scanner.append_into_map(shaped);
+
+        assert_eq!(
+            scanner.map.get(class.as_slice()),
+            Some(&normalized_path_str(&winner)),
+            "the file the walk reaches first must win, not the one that sorts first"
+        );
     }
 
     /// #198: with no store archive backing any of these directories,
