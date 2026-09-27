@@ -33,12 +33,25 @@ The network is the object measured here, not a timing variable: a rerun on
 another date can classify differently, and the run records its own start
 time for that reason.
 
+`--verify` (#307 follow-up) skips the network-classification work above
+entirely and answers only "does viv's `vendor/` match Composer's" for each
+pair: Composer's install for a given (project, commit) is cached once under
+`LOCK_AGE_REF` (default `~/.cache/vivace-bench/lock-age-ref`) and reused
+across runs, both tools share one warm cache dir instead of a fresh one per
+pair, and pairs run in parallel (`LOCK_AGE_JOBS`, default 4). Writes
+`compat/results/lock-age-verify.md`, never `lock-age.raw.jsonl` or
+`lock-age.md`.
+
 Env:
   LOCK_AGE_SCRATCH  scratch dir for clones and installs, default a mktemp -d
   LOCK_AGE_ONLY     comma-separated project names to run, skip the rest
   LOCK_AGE_TODAY    ISO date (YYYY-MM-DD) to measure ages from, default today
   LOCK_AGE_FORCE    "1" wipes compat/results/lock-age.raw.jsonl first and
                     re-measures every pair instead of resuming
+  LOCK_AGE_REF      --verify only: persistent Composer-vendor reference cache
+                    dir, default ~/.cache/vivace-bench/lock-age-ref
+  LOCK_AGE_JOBS     --verify only: parallel pairs, default 4
+  LOCK_AGE_VIV      viv binary to run, default target/release/viv
 
 Output: compat/results/lock-age.raw.jsonl (one JSON object per project-commit
 pair, appended as each is measured -- a plain rerun skips a (project, age)
@@ -50,16 +63,20 @@ Usage:
     compat/lock-age.py
     compat/lock-age.py --report-only
     compat/lock-age.py --self-test
+    compat/lock-age.py --verify
 """
 from __future__ import annotations
 
+import concurrent.futures
 import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -69,6 +86,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VIV_BIN = REPO_ROOT / "target" / "release" / "viv"
+
+
+def viv_bin() -> Path:
+    """`LOCK_AGE_VIV` overrides the default release binary -- unset in the
+    normal run, so its behaviour is unchanged."""
+    override = os.environ.get("LOCK_AGE_VIV")
+    return Path(override) if override else VIV_BIN
 # One JSON object per project-commit pair, appended as each is computed (#307
 # review): a corpus this size and this network-bound runs long enough that a
 # shell-level timeout on one slow project shouldn't discard every project
@@ -302,7 +326,7 @@ def registry_has_version(name: str, version: str, reference: str, timeout: int =
 # --- plugin flags (mirrors compat/run.sh's plugin_status_for/enabled_plugins_for) ---
 
 def native_inert_names() -> set[str]:
-    out = subprocess.run([str(VIV_BIN), "diagnose", "--adapters"], capture_output=True, text=True, timeout=30)
+    out = subprocess.run([str(viv_bin()), "diagnose", "--adapters"], capture_output=True, text=True, timeout=30)
     names = {line.split("\t", 1)[0] for line in out.stdout.splitlines() if line.strip()}
     mod_src = (REPO_ROOT / "src" / "plugins" / "mod.rs").read_text()
     m = re.search(r"const KNOWN_INERT.*?\[(.*?)\];", mod_src, re.S)
@@ -363,7 +387,7 @@ def run_viv_install(project_dir, cache_dir, plugins_off: bool) -> tuple[bool, st
         flags.insert(1, "--no-plugins")
     start = time.monotonic()
     try:
-        r = subprocess.run([str(VIV_BIN), *flags], capture_output=True, text=True, timeout=600)
+        r = subprocess.run([str(viv_bin()), *flags], capture_output=True, text=True, timeout=600)
         out = r.stdout + r.stderr
         ok = r.returncode == 0
     except subprocess.TimeoutExpired as e:
@@ -734,6 +758,204 @@ def run_corpus(only: set[str] | None, scratch, today_str: str, done_keys: set[tu
                                   scratch, native_inert, php_version))
 
 
+# --- --verify mode (#307 follow-up): does viv's vendor/ match Composer's? ---
+
+VERIFY_RESULTS_MD = REPO_ROOT / "compat" / "results" / "lock-age-verify.md"
+
+
+@dataclass
+class VerifyResult:
+    project: str
+    age_label: str
+    commit: str
+    commit_date: str
+    skip: str = ""
+    viv_ok: bool | None = None
+    vendor_status: str = ""
+    vendor_detail: str = ""
+    seconds: float = 0.0
+
+
+def ref_vendor_dir(ref_root: Path, project: str, commit: str) -> Path:
+    """Composer's install for a (project, commit) pair depends only on the
+    project, commit and install flags, not on viv, so its `vendor/` is cached
+    once here and reused across `--verify` runs instead of reinstalling it
+    for every pair."""
+    return ref_root / project.replace("/", "_") / commit / "vendor"
+
+
+def run_parallel(tasks: list, jobs: int) -> list:
+    """Runs each zero-arg callable in `tasks`, `jobs` at a time, returning
+    results in task order (`ThreadPoolExecutor.map`, not `as_completed`: the
+    report reads better in corpus order, and each task is I/O-bound
+    subprocess work, not CPU-bound, so the GIL doesn't cost the concurrency)."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
+        return list(ex.map(lambda fn: fn(), tasks))
+
+
+def run_verify_pair(project: str, age_label: str, commit: str, commit_date: str, repo_dir: Path, sha: str,
+                     scratch: Path, ref_root: Path, cache_root: Path, project_lock: threading.Lock,
+                     native_inert: set[str]) -> VerifyResult:
+    vr = VerifyResult(project=project, age_label=age_label, commit=commit, commit_date=commit_date)
+    start = time.monotonic()
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{project}_{age_label}")
+    pair_dir = scratch / "pairs" / safe
+    viv_dir = pair_dir / "viv"
+    pair_dir.mkdir(parents=True, exist_ok=True)
+
+    with project_lock:
+        if not checkout_worktree(repo_dir, sha, viv_dir):
+            vr.skip = f"worktree checkout of {sha} failed"
+            return vr
+    if not (viv_dir / "composer.lock").is_file():
+        vr.skip = "composer.lock missing in the checkout"
+        with project_lock:
+            remove_worktree(repo_dir, viv_dir)
+        return vr
+
+    lock = json.loads((viv_dir / "composer.lock").read_text())
+    root_text = (viv_dir / "composer.json").read_text() if (viv_dir / "composer.json").is_file() else "{}"
+    root = json.loads(root_text)
+    vendor_dir_name = (root.get("config") or {}).get("vendor-dir", "vendor")
+    _plugin_note, plugin_native = plugin_status_for(lock, root, native_inert)
+    plugins_off = not plugin_native
+
+    composer_cache, composer_home = cache_root / "composer-cache", cache_root / "composer-home"
+    viv_cache = cache_root / "viv-cache"
+
+    composer_vendor = ref_vendor_dir(ref_root, project, commit)
+    if not composer_vendor.is_dir():
+        composer_dir = pair_dir / "composer"
+        with project_lock:
+            if not checkout_worktree(repo_dir, sha, composer_dir):
+                vr.skip = f"worktree checkout of {sha} (composer side) failed"
+                with project_lock:
+                    remove_worktree(repo_dir, viv_dir)
+                return vr
+        composer_ok, _out, _ms = run_composer_install(composer_dir, composer_home, composer_cache, plugins_off)
+        if composer_ok:
+            composer_vendor.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(composer_dir / vendor_dir_name, composer_vendor)
+        with project_lock:
+            remove_worktree(repo_dir, composer_dir)
+        if not composer_ok:
+            vr.skip = "reference Composer install failed"
+            with project_lock:
+                remove_worktree(repo_dir, viv_dir)
+            return vr
+
+    vr.viv_ok, _out, _ms = run_viv_install(viv_dir, viv_cache, plugins_off)
+    if vr.viv_ok:
+        vr.vendor_status, vr.vendor_detail = compare_vendor(composer_vendor, viv_dir / vendor_dir_name)
+        if vr.vendor_detail:
+            vr.vendor_detail = "\n".join(vr.vendor_detail.splitlines()[:5])
+
+    with project_lock:
+        remove_worktree(repo_dir, viv_dir)
+    vr.seconds = round(time.monotonic() - start, 1)
+    return vr
+
+
+def run_verify(only: set[str] | None, scratch: Path, today_str: str, ref_root: Path, jobs: int) -> list[VerifyResult]:
+    today = datetime.strptime(today_str, "%Y-%m-%d").date()
+    cutoffs = [(label, years_before(today, n).isoformat()) for label, n in AGES]
+    native_inert = native_inert_names()
+    cache_root = ref_root.parent / "lock-age-cache"
+    for d in (cache_root / "composer-cache", cache_root / "composer-home", cache_root / "viv-cache"):
+        d.mkdir(parents=True, exist_ok=True)
+
+    results: list[VerifyResult] = []
+    tasks: list = []
+    for name, repo, source in PROJECTS:
+        if only and name not in only:
+            continue
+        candidates = [repo] if repo else platform_drift.resolve_repo_candidates(name)
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+        dest = scratch / "src" / safe
+        ok, label = False, "no candidate repo URL"
+        for candidate in candidates:
+            if dest.exists():
+                subprocess.run(["rm", "-rf", str(dest)], check=True)
+            try:
+                ok, label = clone_project(candidate, dest)
+            except subprocess.TimeoutExpired:
+                ok, label = False, "clone timed out"
+            if ok:
+                break
+        if not ok:
+            for age_label, _ in AGES:
+                results.append(VerifyResult(project=name, age_label=age_label, commit="-", commit_date="-",
+                                             skip=f"clone failed: {label}"))
+            continue
+
+        project_lock = threading.Lock()
+        seen_commits: dict[str, str] = {}
+        for age_label, cutoff in cutoffs:
+            found = lock_commit_before(dest, cutoff)
+            if not found:
+                results.append(VerifyResult(project=name, age_label=age_label, commit="-", commit_date="-",
+                                             skip=f"no composer.lock commit on or before {cutoff}"))
+                continue
+            sha, commit_date = found
+            if sha in seen_commits:
+                results.append(VerifyResult(project=name, age_label=age_label, commit=sha[:12], commit_date=commit_date,
+                                             skip=f"same commit as the {seen_commits[sha]} row"))
+                continue
+            seen_commits[sha] = age_label
+            slot = len(results)
+            results.append(None)  # placeholder, filled by the task in task order below
+            tasks.append((slot, name, age_label, sha[:12], commit_date, dest, sha, project_lock))
+
+    def make_task(slot, name, age_label, commit, commit_date, dest, sha, project_lock):
+        def run():
+            print(f"lock-age --verify: {name} {age_label} {commit} ({commit_date})", file=sys.stderr)
+            return slot, run_verify_pair(name, age_label, commit, commit_date, dest, sha, scratch,
+                                          ref_root, cache_root, project_lock, native_inert)
+        return run
+
+    for slot, out in run_parallel([make_task(*t) for t in tasks], jobs):
+        results[slot] = out
+    return results
+
+
+def write_verify_report(results: list[VerifyResult], out: Path, wall_seconds: float) -> None:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines = [
+        "# Lock age --verify: does viv's vendor/ match Composer's? (#307 follow-up)",
+        "",
+        f"Measured {now} in {wall_seconds:.1f}s wall-clock. Composer's install for a"
+        " (project, commit) pair is cached once (`LOCK_AGE_REF`) and reused across"
+        " runs; both tools share one warm cache; pairs run in parallel"
+        " (`LOCK_AGE_JOBS`). Skips the source-ref fetch checks and dist-gone"
+        " classification `lock-age.py`'s normal mode does -- this only answers"
+        " whether the two vendor/ trees match.",
+        "",
+        "| Project | Age | Commit | Lock date | viv installs | vendor/ | Time |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    installs = matches = 0
+    for r in results:
+        if r.skip:
+            lines.append(f"| {r.project} | {r.age_label} | {r.commit} | {r.commit_date} | - | {r.skip} | - |")
+            continue
+        viv = "yes" if r.viv_ok else "no"
+        vendor = r.vendor_status or "-"
+        if r.viv_ok:
+            installs += 1
+            if r.vendor_status == "identical":
+                matches += 1
+        detail = f" ({r.vendor_detail.splitlines()[0]}, +{len(r.vendor_detail.splitlines()) - 1} more)" \
+            if r.vendor_detail and len(r.vendor_detail.splitlines()) > 1 else \
+            (f" ({r.vendor_detail})" if r.vendor_detail else "")
+        lines.append(f"| {r.project} | {r.age_label} | {r.commit} | {r.commit_date} | {viv} | {vendor}{detail} | {r.seconds}s |")
+    measured = [r for r in results if not r.skip]
+    lines.append("")
+    lines.append(f"{len(measured)} pairs measured, {len(results) - len(measured)} skipped, "
+                  f"{installs} viv installs, {matches} vendor/ identical.")
+    lines.append("")
+    out.write_text("\n".join(lines) + "\n")
+
+
 # --- write-up ----------------------------------------------------------------
 
 def write_report(pairs: list[PairResult], out: Path) -> None:
@@ -970,6 +1192,10 @@ def self_test() -> None:
         assert loaded[0].viv_packages["foo/dep"].outcome == "dist URL gone (other host)"
     RESULTS_JSONL = real_jsonl
 
+    assert ref_vendor_dir(Path("/tmp/x"), "foo/bar", "abc123") == Path("/tmp/x/foo_bar/abc123/vendor")
+
+    assert run_parallel([lambda: 1, lambda: 2, lambda: 3], jobs=2) == [1, 2, 3]
+
     print("self-test ok")
 
 
@@ -985,6 +1211,19 @@ def main() -> int:
     only = None
     if os.environ.get("LOCK_AGE_ONLY"):
         only = {n.strip() for n in os.environ["LOCK_AGE_ONLY"].split(",")}
+    if "--verify" in sys.argv:
+        today_str = os.environ.get("LOCK_AGE_TODAY") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        scratch = Path(os.environ.get("LOCK_AGE_SCRATCH") or tempfile.mkdtemp(prefix="lock-age-verify-"))
+        (scratch / "src").mkdir(parents=True, exist_ok=True)
+        (scratch / "pairs").mkdir(parents=True, exist_ok=True)
+        ref_root = Path(os.environ.get("LOCK_AGE_REF") or Path.home() / ".cache" / "vivace-bench" / "lock-age-ref")
+        jobs = int(os.environ.get("LOCK_AGE_JOBS", "4"))
+        start = time.monotonic()
+        results = run_verify(only, scratch, today_str, ref_root, jobs)
+        wall = time.monotonic() - start
+        write_verify_report(results, VERIFY_RESULTS_MD, wall)
+        print(f"wrote {VERIFY_RESULTS_MD} in {wall:.1f}s")
+        return 0
     if os.environ.get("LOCK_AGE_FORCE") == "1":
         RESULTS_JSONL.unlink(missing_ok=True)
     today_str = os.environ.get("LOCK_AGE_TODAY") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
