@@ -741,15 +741,17 @@ already record what the solve targeted and none of the 3 lacked them.
   stores the shaped classmap beside each archive; the remaining gap on
   Laravel is 14 ms of render, and chapter 2 showed the vendor tree is
   not the cost. A design change would not move the number.
-- **A declared extension model.** Moved to generation 3 as candidate G4,
+- **A declared extension model.** Moved to generation 3 as candidate 3.4,
   where it is a measurement rather than product design.
 
 ## Generation 3: a better PHP package manager
 
-Generation 1 answered whether viv could be a faster Composer: it is.
-Generation 2, the chapters and candidates above, asked what a package
-manager that stays compatible with Composer can improve, and mostly found
-that the ceiling is Composer's model rather than viv's implementation:
+Generation 1 is viv before the research chapters, up to 0.14: a faster,
+byte-compatible Composer. Generation 2 is everything since, 0.15 to 0.18:
+the chapters and candidates above, and the compatible features and fixes
+released with them. It asked what a package manager that stays compatible
+with Composer can improve, and mostly found that the ceiling is Composer's
+model rather than viv's implementation:
 GitHub ignores `merge=union`, `dev-*` branch heads move, and old package
 downloads do not disappear. Generation 3 asks what a PHP package manager
 could be if it no longer had to produce Composer's output.
@@ -766,7 +768,7 @@ could be if it no longer had to produce Composer's output.
   A candidate may break byte compatibility with Composer's `vendor/`, but
   its chapter says exactly what differs and why.
 
-### Candidate G1: manage the PHP toolchain
+### Candidate 3.1: manage the PHP toolchain
 
 **Question.** How often does installing a project depend on a PHP version
 or extension set the machine does not have, and how much does a managed,
@@ -793,7 +795,7 @@ PHP build.
 **Build if it holds.** `viv php install <version>` with extensions,
 pinned per project in the manifest, and `viv run` using it.
 
-### Candidate G2: isolate dependencies per plugin
+### Candidate 3.2: isolate dependencies per plugin
 
 **Question.** How often do WordPress plugins ship conflicting versions of
 the same library, and does rewriting namespaces at install time produce
@@ -816,7 +818,7 @@ suite, where it has one.
 **Build if it holds.** An `isolate` setting that prefixes a package's
 dependencies at install time, with the prefix recorded in the lock.
 
-### Candidate G3: a lock that pins commits and merges by record
+### Candidate 3.3: a lock that pins commits and merges by record
 
 **Question.** If branch dependencies are pinned to commits and a
 per-record lock is the only lock, what share of merges finish without a
@@ -840,7 +842,7 @@ left, and how many of the finished ones install from an empty cache.
 only lock, `composer.lock` is generated on demand, and `dev-*`
 requirements resolve to commits.
 
-### Candidate G4: installs that run no code
+### Candidate 3.4: installs that run no code
 
 **Question.** What share of the Composer plugins projects use could be
 declared as data rather than run as code?
@@ -862,7 +864,7 @@ corpus, how many projects run a plugin or script during install at all.
 **Build if it holds.** A declarative manifest section for the common kinds,
 and an explicit allow list for packages that must run code.
 
-### Candidate G5: simpler resolution rules
+### Candidate 3.5: simpler resolution rules
 
 **Question.** Which of Composer's resolution features do projects use, and
 how many compatibility bugs came from them?
@@ -883,8 +885,9 @@ features, with a migration that says what it dropped for each project.
 
 ### Order
 
-G1 and G2 first: they help projects today without changing the lock, and
-G2 is a problem Composer cannot solve. G3 and G4 change what a project
-commits, so they follow once a first generation 3 feature has users. G5 is
-cheapest to measure and mostly informs the manifest the others need.
+Candidates 3.1 and 3.2 first: they help projects today without changing
+the lock, and 3.2 is a problem Composer cannot solve. Candidates 3.3 and
+3.4 change what a project commits, so they follow once a first generation
+3 feature has users. Candidate 3.5 is cheapest to measure and mostly
+informs the manifest the others need.
 
