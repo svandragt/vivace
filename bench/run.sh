@@ -269,7 +269,7 @@ for tool in $tools; do
     *" $tool "*) echo "run.sh: $tool update-warm skipped, install failed" >&2; continue ;;
   esac
   case " $skip_update " in
-    *" $tool "*) echo "run.sh: $tool update-warm skipped (bench/skips.txt)" >&2; continue ;;
+    *" $tool "*) echo "run.sh: $tool update-warm skipped (BENCH_SKIP_UPDATE)" >&2; continue ;;
   esac
   # riff races itself against a mirror: it issues a duplicate conditional
   # GET for the same p2 file within the same request burst, gets a 304 back
@@ -311,7 +311,7 @@ for tool in $tools; do
     *" $tool "*) echo "run.sh: $tool update-offline skipped, install failed" >&2; continue ;;
   esac
   case " $skip_update " in
-    *" $tool "*) echo "run.sh: $tool update-offline skipped (bench/skips.txt)" >&2; continue ;;
+    *" $tool "*) echo "run.sh: $tool update-offline skipped (BENCH_SKIP_UPDATE)" >&2; continue ;;
   esac
   dir="$work/$tool-update"; rm -rf "$dir"; mkdir -p "$dir"
   cp -a "$proj"/. "$dir"/ && rm -rf "$dir/vendor"

@@ -80,12 +80,12 @@ fetch() {
   case $url in
     https://api.github.com/*|https://github.com/*|https://codeload.github.com/*)
       if [ -n "$token" ]; then
-        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -H "Authorization: Bearer $token" -o "$dest.tmp" "$url" || rc=$?
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 --speed-limit 1 --speed-time 60 -H "Authorization: Bearer $token" -o "$dest.tmp" "$url" || rc=$?
       else
-        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$dest.tmp" "$url" || rc=$?
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 --speed-limit 1 --speed-time 60 -o "$dest.tmp" "$url" || rc=$?
       fi
       ;;
-    *) curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o "$dest.tmp" "$url" || rc=$? ;;
+    *) curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 --speed-limit 1 --speed-time 60 -o "$dest.tmp" "$url" || rc=$? ;;
   esac
   # Explicit rc, not just curl's own exit status: a caller using fetch as an
   # `if` condition (record_p2's per-repository fallback, #171) runs under a
@@ -147,7 +147,8 @@ def fetch(url, dest):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".tmp"
     rc = subprocess.run(
-        ["curl", "-fsSL", "--retry", "5", "--retry-all-errors", "--retry-delay", "2", "-o", tmp, url]
+        ["curl", "-fsSL", "--retry", "5", "--retry-all-errors", "--retry-delay", "2",
+         "--connect-timeout", "20", "--speed-limit", "1", "--speed-time", "60", "-o", tmp, url]
     ).returncode
     if rc != 0:
         return False
