@@ -1598,3 +1598,14 @@ in zips viv never installs, and where viv does install plugin
 dependencies the solver fails first, so an install-time `isolate`
 setting has no one to help; prefixing at plugin build time already
 exists. Not built; phase B (php-scoper plus test suites) not run.
+
+## 2026-09-28: candidate 3.5 measured, not built
+
+`bench/g3-rules/features.py` counts Composer's resolution features
+across the 20 corpus projects with a lock and classifies 38 closed
+compatibility bugs by cause. The unused features (inline aliases,
+`provide`, `self.version`) caused no bugs; the bug-prone ones
+(`repositories`, `replace`, `branch-alias`) are used by 8, 5 and 20 of
+20 projects. A simpler manifest would remove nothing that hurt. Not
+built. The census also says where compat work pays: `repositories`
+and `replace`.
