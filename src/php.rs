@@ -176,11 +176,11 @@ fn run_install(version_arg: Option<&str>, cache_dir: Option<&Path>) -> Result<()
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let fetcher = Fetcher::new(Auth::default())?
-        // The base URL is always vivace's own hardcoded `https://` one in
-        // production; only `VIV_PHP_DIST_URL` (test-only, see
-        // `dist_base_url`) ever names a plain `http://` server.
-        .secure_http(false);
+    // Plain http only for the test server named by `VIV_PHP_DIST_URL`;
+    // upstream publishes no checksums, so an http redirect in production
+    // would be an unverified binary.
+    let fetcher =
+        Fetcher::new(Auth::default())?.secure_http(std::env::var_os("VIV_PHP_DIST_URL").is_none());
 
     let resolved_version = match spec {
         VersionSpec::Exact(v) => v,
