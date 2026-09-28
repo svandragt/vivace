@@ -1586,3 +1586,15 @@ an error, `uv run` style; `--offline` keeps the error. The WP-CLI
 story does not fit container-based local dev (Altis, ddev): their
 `wp` runs inside the container, so the README now pitches host-side
 tools and CI instead.
+
+## 2026-09-28: candidate 3.2 measured, not built
+
+`bench/g3-isolation/inventory.py` reads the 100 most popular
+WordPress.org plugin zips in 29 s: 46 bundle `vendor/`, 65 libraries
+are shared, 5% of copies are prefixed. Most shared copies are built to
+coexist; the real collisions are guzzle 6 against 7, monolog 1 against
+2, php-jwt 5 against 6 and a few more, in about 15 plugins. They live
+in zips viv never installs, and where viv does install plugin
+dependencies the solver fails first, so an install-time `isolate`
+setting has no one to help; prefixing at plugin build time already
+exists. Not built; phase B (php-scoper plus test suites) not run.

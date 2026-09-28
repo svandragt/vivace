@@ -34,3 +34,18 @@ Of the 100 plugins examined, 46 bundle a vendor/ directory of their own, and 36 
 
 Wall time: 1.8s.
 
+
+## Classified
+
+Of the 65 shared libraries, the ones whose copies are built to coexist
+(self-versioning registries: `woocommerce/action-scheduler`,
+`automattic/jetpack-*`; guarded polyfills: `paragonie/random_compat`,
+`ralouphie/getallheaders`, `symfony/polyfill-*`; install-time only:
+`composer/installers`; compatible interfaces: `psr/*`) account for most
+of the 157 conflict candidates. The remaining unprefixed, incompatible
+pairs, about 9 libraries in about 15 plugins: `guzzlehttp/guzzle` 6 and 7
+(`psr7` 1 and 2, `promises` 1 and 2), `monolog/monolog` 1 and 2,
+`firebase/php-jwt` 5 and 6, `nikic/php-parser` 4 and 5,
+`enshrined/svg-sanitize` 0.22 and 1.0, `a5hleyrich/wp-background-processing`
+1.0 and 1.4, `wordpress/mcp-adapter` 0.3 to 0.6. Verdict in
+`docs/research.md`, candidate 3.2.

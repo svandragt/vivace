@@ -854,6 +854,39 @@ suite, where it has one.
 **Build if it holds.** An `isolate` setting that prefixes a package's
 dependencies at install time, with the prefix recorded in the lock.
 
+**Result, 2026-09-28: measured, not built.** `bench/results/g3-isolation.md`,
+from `bench/g3-isolation/inventory.py` over the 100 most popular
+WordPress.org plugins (`make bench-g3-isolation`, 29 s).
+
+46 of the 100 bundle a `vendor/` directory; 65 libraries appear in two or
+more plugins, and 157 plugin-library pairs combine a version that differs
+from another plugin's copy with no namespace prefix. Only 19 of 370
+bundled copies (5%) are prefixed. Most of the 157 are libraries built to
+coexist: `woocommerce/action-scheduler` and the `automattic/jetpack-*`
+packages register every copy and load the newest, `paragonie/random_compat`,
+`ralouphie/getallheaders` and `symfony/polyfill-*` guard their
+definitions, `composer/installers` runs at install time only, and the
+`psr/*` interfaces are compatible across the versions seen. The
+collisions that remain are about 9 libraries in about 15 plugins:
+`guzzlehttp/guzzle` 6 against 7 with `psr7` and `promises` 1 against 2,
+`monolog/monolog` 1 against 2, `firebase/php-jwt` 5 against 6,
+`nikic/php-parser` 4 against 5, `enshrined/svg-sanitize` 0.22 against
+1.0, `a5hleyrich/wp-background-processing` 1.0 against 1.4 and
+`wordpress/mcp-adapter` 0.3 to 0.6. Whichever plugin loads first wins.
+
+Not built, for two reasons. The collisions live in `vendor/` directories
+that plugin authors ship inside the zip, and viv never installs those; an
+`isolate` setting could only prefix what viv itself installs. Where viv
+does install a plugin's dependencies, on a site that resolves them through
+Composer, two plugins wanting guzzle 6 and 7 fail in the solver before any
+class loads, and the fix the ecosystem uses is prefixing at plugin build
+time (Strauss, php-scoper), which the 5% already do in production. The
+second half of the measurement, prefixing with php-scoper and running each
+plugin's tests, would re-prove what those plugins prove daily, so it did
+not run. Revisit if a corpus of Composer-managed WordPress sites shows
+solver conflicts on plugin dependencies; nothing in the WordPress.org
+sample can show that.
+
 ### Candidate 3.3: a lock that pins commits and merges by record
 
 **Question.** If branch dependencies are pinned to commits and a
