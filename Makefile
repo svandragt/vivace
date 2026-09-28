@@ -1,7 +1,7 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install install-shim build test check bench bench-check bench-smoke bench-ab bench-corpus profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
+.PHONY: install install-shim build test check bench bench-check bench-smoke bench-ab bench-corpus bench-g3-isolation profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
 
 install:
 	cargo install --path . --locked --bin viv
@@ -61,6 +61,14 @@ bench-ab:
 # whole pinned compat corpus (compat/corpus.toml) instead of just Laravel.
 bench-corpus:
 	scripts/keep-awake.sh "bench: corpus" devbox run -- bench/corpus.sh
+
+# g3 candidate 3.2 (#330), phase A: static inventory of bundled Composer
+# dependencies across the 100 most popular WordPress.org plugins. No
+# bench-g3-toolchain target exists to sit next to (g3 candidate 3.1's own
+# scripts run directly, not through make); this is the first g3-* bench
+# target.
+bench-g3-isolation:
+	devbox run -- python3 bench/g3-isolation/inventory.py > bench/results/g3-isolation.md
 
 # Flamegraphs for #54/#55 (bench/results/profile.md). Needs `perf` access
 # (`perf_event_paranoid <= 2` or `CAP_PERFMON`); errors with a message
