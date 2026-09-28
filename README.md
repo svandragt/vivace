@@ -360,6 +360,25 @@ viv x friendsofphp/php-cs-fixer fix src
 viv x --list                         # environments in the cache
 ```
 
+### A PHP per project
+
+`viv php install 8.4` downloads a self-contained PHP build from
+[static-php-cli](https://static-php-cli.dev) into the store and pins it as
+`config.platform.php` in `composer.json`, with no root and no system
+package manager. `viv run <name>` then runs a `scripts` entry, a
+`vendor/bin` binary or any command on `PATH` with that PHP first, so a
+tool such as WP-CLI runs on the same PHP and extensions as the site:
+
+```sh
+viv php install 8.4          # newest 8.4.x, once per machine
+viv run wp plugin list       # the project's WP-CLI on the pinned PHP
+viv php list                 # builds in the cache
+```
+
+Linux and macOS on x86_64 and aarch64. The build carries the common
+extensions including `intl`; the newest version upstream publishes is
+8.4 today.
+
 ### Automatic normalisation
 
 Every command that writes `composer.json` (`add`, `rm`, `init`) also
