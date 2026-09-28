@@ -1,7 +1,7 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install install-shim build test check bench bench-check bench-smoke bench-ab bench-corpus bench-g3-isolation bench-g3-rules profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
+.PHONY: install install-shim build test check bench bench-check bench-smoke bench-ab bench-corpus bench-g3-isolation bench-g3-rules bench-g3-plugins profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
 
 install:
 	cargo install --path . --locked --bin viv
@@ -75,6 +75,13 @@ bench-g3-isolation:
 # that caused them.
 bench-g3-rules:
 	devbox run -- python3 bench/g3-rules/features.py > bench/results/g3-rules.md
+
+# g3 candidate 3.4 (#332): the 40 most-downloaded Composer plugins classified
+# by what they do at install, plus a corpus census of who runs a plugin or a
+# script during `viv install` today. Output path is compat/results/, not
+# bench/results/, per the issue's own done-when.
+bench-g3-plugins:
+	devbox run -- python3 bench/g3-plugins/census.py > compat/results/g3-plugins.md
 
 # Flamegraphs for #54/#55 (bench/results/profile.md). Needs `perf` access
 # (`perf_event_paranoid <= 2` or `CAP_PERFMON`); errors with a message

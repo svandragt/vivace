@@ -1609,3 +1609,13 @@ compatibility bugs by cause. The unused features (inline aliases,
 20 projects. A simpler manifest would remove nothing that hurt. Not
 built. The census also says where compat work pays: `repositories`
 and `replace`.
+
+## 2026-09-28: candidate 3.4 measured, holds
+
+`bench/g3-plugins/census.py` reads the 40 most-downloaded Composer
+plugins at their latest tag: 25 could be data, 6 partly, 6 not, and
+those 6 are Composer 1 leftovers or git-hook installers. viv already
+has adapters for 13. In the corpus 16 of 20 projects run a plugin or a
+script during install. Holds. Build shape is the open question:
+adapters as data files rather than a manifest section nobody upstream
+would adopt.
