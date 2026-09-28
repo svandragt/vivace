@@ -1181,10 +1181,19 @@ def leaf_cause_class(reason: str | None) -> str:
 # unmodified driver -- offline, since nothing here may fetch (the brief).
 
 DEV_FINISHED = "finished"
+DEV_RESOLVED_BY_TIME = "resolved by time"
 DEV_REAL_CONFLICT = "real conflict"
 DEV_OTHER_CONFLICT = "other conflict"
 DEV_NEEDS_FETCH = "needs fetch"
 DEV_TIMED_OUT = "timed out"
+
+# `dev_commit_pick`'s own, per-record categories -- distinct from the
+# per-merge `DEV_*` outcomes above, which fold a merge's worth of these
+# (plus the residual driver call) into one of the columns the report table
+# names.
+PICK_RESOLVED = "resolved"
+PICK_RESOLVED_BY_TIME = "resolved by time"
+PICK_CONFLICT = "conflict"
 
 
 def is_dev_version(pkg: dict | None) -> bool:
@@ -1211,25 +1220,35 @@ def records_by_name(raw: bytes) -> dict[str, dict] | None:
 
 def dev_commit_pick(
     base_pkg: dict | None, ours_pkg: dict | None, theirs_pkg: dict | None
-) -> tuple[bool, dict | None]:
-    """The three-way pick the brief specifies for a `dev-*` record: same
-    commit both sides or changed on one side only -> take it (`conflict`
-    False, with the winning record or `None` when both sides removed it);
-    changed to different commits on both sides -> a real conflict for a
-    person (`conflict` True). Mirrors `real_conflict_names`'s own o!=b and
-    t!=b and o!=t rule, keyed on `record_reference` instead of the
+) -> tuple[str, dict | None]:
+    """The three-way pick for a `dev-*` record: same commit both sides or
+    changed on one side only -> `PICK_RESOLVED` (the winning record, or
+    `None` when both sides removed it). Mirrors `real_conflict_names`'s own
+    o!=b and t!=b and o!=t rule, keyed on `record_reference` instead of the
     (version, source-ref, dev) triple, since a branch's `version` string
-    never changes even when its head does."""
+    never changes even when its head does.
+
+    Changed to different commits on both sides is a rolling branch that may
+    simply have advanced twice between the two snapshots, not necessarily a
+    disagreement -- so this compares the two records' own `time` field
+    (every lock record carries one) and takes the later one
+    (`PICK_RESOLVED_BY_TIME`), falling back to `PICK_CONFLICT` (a real
+    conflict for a person) only when either side lacks a `time` or the two
+    tie."""
     b_ref = record_reference(base_pkg) if base_pkg else None
     o_ref = record_reference(ours_pkg) if ours_pkg else None
     t_ref = record_reference(theirs_pkg) if theirs_pkg else None
     if o_ref == t_ref:
-        return False, ours_pkg if ours_pkg is not None else theirs_pkg
+        return PICK_RESOLVED, ours_pkg if ours_pkg is not None else theirs_pkg
     if o_ref == b_ref:
-        return False, theirs_pkg
+        return PICK_RESOLVED, theirs_pkg
     if t_ref == b_ref:
-        return False, ours_pkg
-    return True, None
+        return PICK_RESOLVED, ours_pkg
+    ours_time = ours_pkg.get("time") if ours_pkg else None
+    theirs_time = theirs_pkg.get("time") if theirs_pkg else None
+    if ours_time and theirs_time and ours_time != theirs_time:
+        return PICK_RESOLVED_BY_TIME, (ours_pkg if ours_time > theirs_time else theirs_pkg)
+    return PICK_CONFLICT, None
 
 
 def strip_dev_records(raw: bytes, dev_names: set[str]) -> bytes | None:
@@ -1344,7 +1363,7 @@ class DevMergeOutcome:
     leaf_cause: str  # this merge's original (chapter 1) leaf cause, from the filter file
     category: str
     reason: str | None = None
-    fetch_cost: int = 0  # only set when category is DEV_FINISHED
+    fetch_cost: int = 0  # only set when category is DEV_FINISHED or DEV_RESOLVED_BY_TIME
 
 
 def dev_as_commits_merge(
@@ -1374,9 +1393,10 @@ def dev_as_commits_merge(
         name: dev_commit_pick(base_by_name.get(name), ours_by_name.get(name), theirs_by_name.get(name))
         for name in dev_names
     }
-    dev_conflicts = sorted(name for name, (conflict, _) in picks.items() if conflict)
+    dev_conflicts = sorted(name for name, (cat, _) in picks.items() if cat == PICK_CONFLICT)
     if dev_conflicts:
         return DevMergeOutcome(project_name, m.sha, leaf_cause, DEV_REAL_CONFLICT, ", ".join(dev_conflicts))
+    time_resolved = sorted(name for name, (cat, _) in picks.items() if cat == PICK_RESOLVED_BY_TIME)
 
     base2 = strip_dev_records(base_lock, dev_names)
     ours2 = strip_dev_records(ours_lock, dev_names)
@@ -1392,10 +1412,13 @@ def dev_as_commits_merge(
     category, reason = resolve_offline_stripped(
         viv_bin, work, repo_dir, m.sha, merge_json, base2, ours2, theirs2, hang_dir
     )
+    if category == DEV_FINISHED and time_resolved:
+        category = DEV_RESOLVED_BY_TIME
+        reason = ", ".join(time_resolved)
 
     fetch_cost = 0
-    if category == DEV_FINISHED:
-        for name, (_conflict, resolved_pkg) in picks.items():
+    if category in (DEV_FINISHED, DEV_RESOLVED_BY_TIME):
+        for name, (_cat, resolved_pkg) in picks.items():
             if resolved_pkg is None:
                 continue  # removed on both sides, nothing to fetch
             ref = record_reference(resolved_pkg)
@@ -1453,6 +1476,61 @@ def run_dev_as_commits(
     return outcomes
 
 
+def render_dev_outcome_table(outcomes: list[DevMergeOutcome]) -> list[str]:
+    """The counts table, fetch-cost paragraph and per-merge reasons list --
+    shared between a rule's own top-level section and a follow-up rule's
+    subsection appended later (`bench/results/lockmerge.md`'s "Rule A"/
+    "Rule B" split, #331 follow-up: the both-moved tie-break)."""
+    lines: list[str] = []
+
+    def counts(rows: list[DevMergeOutcome]) -> dict[str, int]:
+        c = {
+            DEV_FINISHED: 0, DEV_RESOLVED_BY_TIME: 0, DEV_REAL_CONFLICT: 0,
+            DEV_OTHER_CONFLICT: 0, DEV_NEEDS_FETCH: 0, DEV_TIMED_OUT: 0,
+        }
+        for o in rows:
+            c[o.category] = c.get(o.category, 0) + 1
+        return c
+
+    dev_rows = [o for o in outcomes if o.leaf_cause == LEAF_CAUSE_DEV_HEAD]
+    other_rows = [o for o in outcomes if o.leaf_cause != LEAF_CAUSE_DEV_HEAD]
+
+    lines.append("\n| Group | Merges | Finished | Resolved by time | Real conflict | Other conflict | Needs fetch | Timed out |")
+    lines.append("|---|---|---|---|---|---|---|---|")
+    for label, rows in (("All", outcomes), ("dev-* leaf (chapter 1)", dev_rows), ("Other leaf (chapter 1)", other_rows)):
+        c = counts(rows)
+        lines.append(
+            f"| {label} | {len(rows)} | {c[DEV_FINISHED]} | {c[DEV_RESOLVED_BY_TIME]} | "
+            f"{c[DEV_REAL_CONFLICT]} | {c[DEV_OTHER_CONFLICT]} | {c[DEV_NEEDS_FETCH]} | {c[DEV_TIMED_OUT]} |"
+        )
+
+    finished = [o for o in outcomes if o.category in (DEV_FINISHED, DEV_RESOLVED_BY_TIME)]
+    fetch_total = sum(o.fetch_cost for o in finished)
+    if finished:
+        lines.append(
+            f"\nOf the {len(finished)} merges that now finish (plain or by the "
+            f"time tie-break), {fetch_total} `dev-*` record(s) across them "
+            f"have a commit not in the cached provider data -- the cost an "
+            f"install would pay to fetch it. The install itself was not run "
+            f"(the brief: Packagist's own metadata for an old branch head is "
+            f"gone, so confirming an install would need a real fetch)."
+        )
+    else:
+        lines.append(
+            "\nNo merge finished, so there is no fetch-cost count: every "
+            "finished-merge install check this candidate's third measurement "
+            "asks for is moot on this replay. The install check was not run."
+        )
+
+    reasoned = [o for o in outcomes if o.reason]
+    if reasoned:
+        lines.append("\nReasons, per merge:\n")
+        for o in reasoned:
+            lines.append(f"- {o.project} {o.sha[:12]} ({o.category}): {o.reason}")
+
+    return lines
+
+
 def render_dev_as_commits(
     outcomes: list[DevMergeOutcome], cap: int, viv_bin: str, viv_version: str, viv_commit: str | None,
     only_path: Path, wall_time: float,
@@ -1473,49 +1551,7 @@ def render_dev_as_commits(
         + (f", commit `{viv_commit}`" if viv_commit else "")
         + f"). Wall time: {wall_time:.1f}s.\n",
     ]
-
-    def counts(rows: list[DevMergeOutcome]) -> dict[str, int]:
-        c = {DEV_FINISHED: 0, DEV_REAL_CONFLICT: 0, DEV_OTHER_CONFLICT: 0, DEV_NEEDS_FETCH: 0, DEV_TIMED_OUT: 0}
-        for o in rows:
-            c[o.category] = c.get(o.category, 0) + 1
-        return c
-
-    dev_rows = [o for o in outcomes if o.leaf_cause == LEAF_CAUSE_DEV_HEAD]
-    other_rows = [o for o in outcomes if o.leaf_cause != LEAF_CAUSE_DEV_HEAD]
-
-    lines.append(f"\n| Group | Merges | Finished | Real conflict | Other conflict | Needs fetch | Timed out |")
-    lines.append(f"|---|---|---|---|---|---|---|")
-    for label, rows in (("All", outcomes), ("dev-* leaf (chapter 1)", dev_rows), ("Other leaf (chapter 1)", other_rows)):
-        c = counts(rows)
-        lines.append(
-            f"| {label} | {len(rows)} | {c[DEV_FINISHED]} | {c[DEV_REAL_CONFLICT]} | "
-            f"{c[DEV_OTHER_CONFLICT]} | {c[DEV_NEEDS_FETCH]} | {c[DEV_TIMED_OUT]} |"
-        )
-
-    finished = [o for o in outcomes if o.category == DEV_FINISHED]
-    fetch_total = sum(o.fetch_cost for o in finished)
-    if finished:
-        lines.append(
-            f"\nOf the {len(finished)} finished merges, {fetch_total} `dev-*` "
-            f"record(s) across them have a commit not in the cached provider "
-            f"data -- the cost an install would pay to fetch it. The install "
-            f"itself was not run (the brief: Packagist's own metadata for an "
-            f"old branch head is gone, so confirming an install would need a "
-            f"real fetch)."
-        )
-    else:
-        lines.append(
-            "\nNo merge finished, so there is no fetch-cost count: every "
-            "finished-merge install check this candidate's third measurement "
-            "asks for is moot on this replay. The install check was not run."
-        )
-
-    reasoned = [o for o in outcomes if o.reason]
-    if reasoned:
-        lines.append("\nReasons, per merge:\n")
-        for o in reasoned:
-            lines.append(f"- {o.project} {o.sha[:12]} ({o.category}): {o.reason}")
-
+    lines.extend(render_dev_outcome_table(outcomes))
     lines.append(
         f"\nCorpus, cache and the `--only-conflicting {only_path.name}` filter "
         "(one `<project>\\t<sha12>\\t<leaf cause>` line per merge, built from "
@@ -1526,6 +1562,29 @@ def render_dev_as_commits(
         "BENCH_CACHE=<client clone cache> bench/lockmerge/run.py "
         f"--dev-as-commits --only-conflicting <path to the filter file>`.\n"
     )
+    return "\n".join(lines) + "\n"
+
+
+def render_dev_rule_b(
+    outcomes: list[DevMergeOutcome], viv_bin: str, viv_version: str, viv_commit: str | None, wall_time: float,
+) -> str:
+    """The follow-up rule (#331): both sides moving a `dev-*` record to
+    different commits takes the later `time` instead of an automatic
+    conflict. Appended as a subsection to the same Generation 3 section
+    Rule A's run already wrote, on the same 52-merge filter."""
+    lines = [
+        "\n### Rule B: a later `time` wins\n",
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n",
+        "\nBoth sides moving a `dev-*` record to different commits compares "
+        "the two records' own `time` field, taking the later one "
+        "(`resolved by time`) rather than an automatic conflict; a real "
+        "conflict is only when either side lacks a `time` or the two tie. "
+        f"Same 52-merge filter, same corpus, same cap as Rule A. viv binary: "
+        f"`{viv_bin}` ({viv_version}"
+        + (f", commit `{viv_commit}`" if viv_commit else "")
+        + f"). Wall time: {wall_time:.1f}s.\n",
+    ]
+    lines.extend(render_dev_outcome_table(outcomes))
     return "\n".join(lines) + "\n"
 
 
@@ -2491,6 +2550,7 @@ def main() -> int:
     offline_rung = "--offline-rung" in argv  # #314: runs the driver twice, with and without the flag
     install_check_flag = "--install-check" in argv  # #314 follow-up: install-checks every merge the pin finished
     dev_as_commits = "--dev-as-commits" in argv  # #331 candidate 3.3: dev-* records merge by commit, never re-solved
+    rule_b = "--rule-b" in argv  # #331 follow-up: appends the Rule B subsection instead of a fresh top-level section
     only_conflicting_path: Path | None = None
     if "--only-conflicting" in argv:  # #331: restricts the replay to a prior run's own conflicting merges
         idx = argv.index("--only-conflicting")
@@ -2498,7 +2558,7 @@ def main() -> int:
         argv = argv[:idx] + argv[idx + 2 :]
     argv = [
         a for a in argv
-        if a not in ("--ledger", "--hybrid", "--offline-rung", "--install-check", "--dev-as-commits")
+        if a not in ("--ledger", "--hybrid", "--offline-rung", "--install-check", "--dev-as-commits", "--rule-b")
     ]
     if argv and argv[0] == "--self-test":
         return self_test()
@@ -2536,9 +2596,12 @@ def main() -> int:
         start = time.perf_counter()
         outcomes = run_dev_as_commits(projects, cache_root, viv_bin, only_map, cap, hang_dir)
         wall_time = time.perf_counter() - start
-        section = render_dev_as_commits(
-            outcomes, cap, viv_bin, viv_version, viv_commit, only_conflicting_path, wall_time
-        )
+        if rule_b:
+            section = render_dev_rule_b(outcomes, viv_bin, viv_version, viv_commit, wall_time)
+        else:
+            section = render_dev_as_commits(
+                outcomes, cap, viv_bin, viv_version, viv_commit, only_conflicting_path, wall_time
+            )
         if not report_path.exists():
             report_path.write_text(HEADER)
         with open(report_path, "a") as f:
@@ -2923,12 +2986,27 @@ def self_test() -> int:
         dev_a = {"name": "vendor/dev-pkg", "version": "dev-master", "source": {"reference": "aaa"}}
         dev_a_bumped = {"name": "vendor/dev-pkg", "version": "dev-master", "source": {"reference": "bbb"}}
         dev_a_other = {"name": "vendor/dev-pkg", "version": "dev-master", "source": {"reference": "ccc"}}
-        conflict, resolved = dev_commit_pick(dev_a, dev_a, dev_a)
-        assert not conflict and resolved == dev_a, "unchanged on both sides must not conflict"
-        conflict, resolved = dev_commit_pick(dev_a, dev_a_bumped, dev_a)
-        assert not conflict and resolved == dev_a_bumped, "changed on one side only must take that side"
-        conflict, resolved = dev_commit_pick(dev_a, dev_a_bumped, dev_a_other)
-        assert conflict, "changed to different commits on both sides must conflict"
+        cat, resolved = dev_commit_pick(dev_a, dev_a, dev_a)
+        assert cat == PICK_RESOLVED and resolved == dev_a, "unchanged on both sides must not conflict"
+        cat, resolved = dev_commit_pick(dev_a, dev_a_bumped, dev_a)
+        assert cat == PICK_RESOLVED and resolved == dev_a_bumped, "changed on one side only must take that side"
+
+        # #331 follow-up: both sides moved to different commits takes the
+        # later `time`, and only conflicts when neither has one or they tie.
+        ours_dated = {**dev_a_bumped, "time": "2024-06-01T00:00:00+00:00"}
+        theirs_dated = {**dev_a_other, "time": "2024-07-01T00:00:00+00:00"}
+        cat, resolved = dev_commit_pick(dev_a, ours_dated, theirs_dated)
+        assert cat == PICK_RESOLVED_BY_TIME and resolved == theirs_dated, (
+            "both sides moved to different commits must take the later `time`"
+        )
+        cat, resolved = dev_commit_pick(dev_a, theirs_dated, ours_dated)
+        assert cat == PICK_RESOLVED_BY_TIME and resolved == theirs_dated, (
+            "the later `time` wins regardless of which side (ours/theirs) carries it"
+        )
+        cat, resolved = dev_commit_pick(dev_a, dev_a_bumped, dev_a_other)
+        assert cat == PICK_CONFLICT and resolved is None, "no `time` on either side must still conflict"
+        cat, resolved = dev_commit_pick(dev_a, ours_dated, {**dev_a_other, "time": ours_dated["time"]})
+        assert cat == PICK_CONFLICT and resolved is None, "a `time` tie must still conflict"
 
         lock_bytes = json.dumps({"packages": [dev_a, pkg_b], "packages-dev": []}).encode()
         stripped = strip_dev_records(lock_bytes, {"vendor/dev-pkg"})
