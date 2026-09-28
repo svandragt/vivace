@@ -111,7 +111,7 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
         .first()
         .map(String::as_str)
         .context("viv x needs a package, e.g. `viv x phpunit/phpunit`")?;
-    let pass_args = &args.command[1..];
+    let pass_args = pass_through(&args.command);
     let (name, constraint) = split_spec(spec);
     let name = name.to_ascii_lowercase();
     let constraint = constraint.unwrap_or("*");
@@ -209,7 +209,7 @@ pub fn run_run(args: &RunArgs, cache_dir: Option<&Path>) -> Result<()> {
         .command
         .first()
         .expect("command required without --list");
-    let script_args = &args.command[1..];
+    let script_args = pass_through(&args.command);
 
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
     let bin_dir = project_dir.join(root.config.bin_dir());
@@ -262,7 +262,24 @@ pub fn run_exec(args: &ExecArgs, cache_dir: Option<&Path>) -> Result<()> {
     }
 
     let php_dir = php::project_php_dir(&project_dir, cache_dir)?;
-    exec_with_path(&target, &args.command[1..], php_dir.as_deref(), &bin_dir)
+    exec_with_path(
+        &target,
+        pass_through(&args.command),
+        php_dir.as_deref(),
+        &bin_dir,
+    )
+}
+
+/// The arguments after the tool's name, with one leading `--` dropped: the
+/// `composer run-script test -- --filter X` idiom, which Symfony strips and
+/// which the single trailing positional (#338) would otherwise hand to the
+/// tool as a literal.
+fn pass_through(command: &[String]) -> &[String] {
+    match command.get(1..) {
+        Some([first, rest @ ..]) if first == "--" => rest,
+        Some(rest) => rest,
+        None => &[],
+    }
 }
 
 /// `exec()`'s a `target` binary with `args`, its `PATH` composed the same

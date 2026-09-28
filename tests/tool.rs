@@ -172,6 +172,22 @@ fn exec_passes_a_flag_looking_argument_through_to_the_bin() {
         .stdout("-v\n");
 }
 
+/// Composer's `run-script test -- --filter X` idiom: one leading `--`
+/// after the name is dropped, a second one reaches the tool.
+#[test]
+fn run_drops_one_leading_double_dash_after_the_name() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    std::fs::write(project.join("composer.json"), "{}").unwrap();
+    write_vendor_bin_echoargs(project);
+
+    ctx.viv()
+        .args(["run", "echoargs", "--", "-v", "--"])
+        .assert()
+        .success()
+        .stdout("-v\n--\n");
+}
+
 /// `<cache>/php-v0/<version>-<os>-<arch>/php` (#338): a fake install
 /// mirroring `php::install_dir`'s own naming, no real download — an
 /// executable shell script that echoes an unmistakable marker plus its own
