@@ -469,6 +469,173 @@ def render_part2() -> list[str]:
     return lines
 
 
+# --- Part 3: fixture and corpus coverage per feature ---
+# Same feature list as Part 1 (ALL_COLS), asking a different question: does
+# anything in viv's own test suite exercise it? Three sources, all static:
+#  - tests/fixtures/**/composer.json (+ .before/.after) and a sibling
+#    composer.lock, evaluated with the same features_for() as Part 1 --
+#    nested manifests under a packages/ or vendor/ directory are dependency
+#    fixtures, not the root under test, and are skipped.
+#  - inline composer.json literals in tests/*.rs (whole file) and
+#    src/**/*.rs (text from the first #[cfg(test)] marker on -- every test
+#    module in this repo is one mod tests {..} block at file end, checked
+#    by hand against the files INLINE_PATTERNS matched), one hit per file
+#    per feature, keyed by the feature's JSON key or a quoted-string
+#    literal.
+#  - compat/corpus.toml projects, reusing Part 1's own per-project rows.
+# `no-version` (a key's absence) and `lock-type≠lib/meta` (a lock package's
+# `type` taking any value outside the two defaults) aren't literal
+# substrings a grep can key on, so those two have no inline-literal source.
+
+TESTS_DIR = REPO_ROOT / "tests"
+SRC_DIR = REPO_ROOT / "src"
+FIXTURES_DIR = TESTS_DIR / "fixtures"
+FIXTURE_ROOT_NAMES = ("composer.json", "composer.json.before", "composer.json.after")
+
+INLINE_PATTERNS: dict[str, re.Pattern] = {
+    "min-stab": re.compile(r'"minimum-stability"'),
+    "pref-stable": re.compile(r'"prefer-stable"'),
+    "branch-alias(root)": re.compile(r'"branch-alias"'),
+    "branch-alias(lock)": re.compile(r'"branch-alias"'),
+    "replace": re.compile(r'"replace"'),
+    "provide": re.compile(r'"provide"'),
+    "self.version": re.compile(r'self\.version'),
+    "no-packagist": re.compile(r'"packagist\.org"\s*:\s*false'),
+    "conflict": re.compile(r'"conflict"'),
+    "config.platform": re.compile(r'"platform"\s*:'),
+    "allow-plugins": re.compile(r'"allow-plugins"'),
+    "inline-alias(root)": re.compile(r'"[^"\n]* as [^"\n]*"'),
+    "lock-aliases": re.compile(r'"aliases"'),
+    "dev-*(root)": re.compile(r'"[^"\n]*dev-[^"\n]*"'),
+    "stability-flags(lock)": re.compile(r'"stability-flags"'),
+    "repo:vcs": re.compile(r'"type"\s*:\s*"vcs"'),
+    "repo:path": re.compile(r'"type"\s*:\s*"path"'),
+    "repo:composer": re.compile(r'"type"\s*:\s*"composer"'),
+    "repo:package": re.compile(r'"type"\s*:\s*"package"'),
+    "repo:artifact": re.compile(r'"type"\s*:\s*"artifact"'),
+    "lock-dev-version": re.compile(r'"version"\s*:\s*"dev-'),
+}
+
+
+def _line_no(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1
+
+
+def _is_nested_fixture(path: Path) -> bool:
+    parts = path.relative_to(FIXTURES_DIR).parts[:-1]
+    return "packages" in parts or "vendor" in parts
+
+
+def fixture_root_pairs() -> list[tuple[Path, dict, dict]]:
+    pairs = []
+    for name in FIXTURE_ROOT_NAMES:
+        for path in sorted(FIXTURES_DIR.rglob(name)):
+            if _is_nested_fixture(path):
+                continue
+            try:
+                root = json.loads(path.read_text(errors="replace"))
+            except json.JSONDecodeError:
+                continue
+            lock_path = path.parent / "composer.lock"
+            lock = json.loads(lock_path.read_text(errors="replace")) if lock_path.is_file() else {}
+            pairs.append((path, root, lock))
+    return pairs
+
+
+def fixture_coverage() -> dict[str, list[Path]]:
+    hits: dict[str, list[Path]] = {label: [] for _, label in ALL_COLS}
+    for path, root, lock in fixture_root_pairs():
+        feats = features_for(root, lock)
+        for key, label in ALL_COLS:
+            if feats[key]:
+                hits[label].append(path)
+    return hits
+
+
+def inline_hits() -> dict[str, list[str]]:
+    hits: dict[str, list[str]] = {label: [] for label in INLINE_PATTERNS}
+    sources: list[tuple[Path, str, int]] = [(f, f.read_text(errors="replace"), 0) for f in sorted(TESTS_DIR.glob("*.rs"))]
+    for f in sorted(SRC_DIR.rglob("*.rs")):
+        text = f.read_text(errors="replace")
+        idx = text.find("#[cfg(test)]")
+        if idx != -1:
+            sources.append((f, text, idx))
+    for path, text, start in sources:
+        rel = path.relative_to(REPO_ROOT)
+        for label, pattern in INLINE_PATTERNS.items():
+            m = pattern.search(text, start)
+            if m:
+                hits[label].append(f"{rel}:{_line_no(text, m.start())}")
+    return hits
+
+
+def corpus_examples(rows: list[dict]) -> dict[str, list[str]]:
+    analysed = [r for r in rows if "skip" not in r]
+    return {label: [r["name"] for r in analysed if r[key]] for key, label in ALL_COLS}
+
+
+def render_part3(rows: list[dict], summary: dict) -> list[str]:
+    lines = []
+    lines.append("## Part 3: coverage")
+    lines.append("")
+    lines.append(
+        "Scanned: `tests/fixtures/**/composer.json` (plus the "
+        "`composer.json.before`/`.after` pairs, skipping manifests nested under "
+        "a `packages/` or `vendor/` directory) and any sibling `composer.lock`, "
+        "evaluated with the same `features_for` Part 1 uses; inline composer.json "
+        "literals in `tests/*.rs` (whole file) and `src/**/*.rs` (text from the "
+        "first `#[cfg(test)]` marker on, one hit per file), grepped per feature "
+        "for its JSON key or a quoted-string literal; and `compat/corpus.toml` "
+        "projects, reusing Part 1's per-project rows. `no-version` and "
+        "`lock-type≠lib/meta` aren't literal substrings a grep can key on, "
+        "so those two are fixture-file-only, with no inline-literal hits possible."
+    )
+    lines.append("")
+
+    fx = fixture_coverage()
+    il = inline_hits()
+    corpus = corpus_examples(rows)
+    n_ana = summary["projects_analysed"]
+
+    lines.append("| feature | used by N of 20 | fixture files | corpus projects | example fixtures |")
+    lines.append("|---|---|---|---|---|")
+    used_no_fixture: list[str] = []
+    fixture_no_use: list[str] = []
+    for _, label in ALL_COLS:
+        fixture_paths = [str(p.relative_to(REPO_ROOT)) for p in fx.get(label, [])]
+        inline_paths = il.get(label, [])
+        total_fixture = len(fixture_paths) + len(inline_paths)
+        cproj = corpus.get(label, [])
+        examples = (fixture_paths + inline_paths)[:3]
+        lines.append(
+            f"| {label} | {len(cproj)} of {n_ana} | {total_fixture} | "
+            f"{', '.join(cproj) if cproj else '--'} | "
+            f"{', '.join(examples) if examples else '--'} |"
+        )
+        if cproj and total_fixture == 0:
+            used_no_fixture.append(label)
+        if total_fixture > 0 and not cproj:
+            fixture_no_use.append(label)
+    lines.append("")
+    lines.append(f"**used, no fixture** ({len(used_no_fixture)}): " + (", ".join(used_no_fixture) if used_no_fixture else "none") + ".")
+    lines.append("")
+    lines.append(f"**fixture, no use** ({len(fixture_no_use)}, informational): " + (", ".join(fixture_no_use) if fixture_no_use else "none") + ".")
+    lines.append("")
+    lines.append("### Reading")
+    lines.append("")
+    total_fixture_hits = sum(len(v) for v in fx.values())
+    total_inline_hits = sum(len(v) for v in il.values())
+    lines.append(
+        f"Of the {len(ALL_COLS)} Part 1 features, {len(used_no_fixture)} are used by at least one corpus "
+        f"project but have no fixture-file or inline-literal hit, and {len(fixture_no_use)} have fixture "
+        f"coverage with no corpus project (of {n_ana} analysed) currently using them. The fixture-files "
+        f"column combines {total_fixture_hits} tests/fixtures file hits and {total_inline_hits} inline "
+        f"tests/*.rs and src/**/*.rs #[cfg(test)] literal hits (one hit per file per feature)."
+    )
+    lines.append("")
+    return lines
+
+
 def main() -> int:
     start = time.monotonic()
     rows = run()
@@ -516,6 +683,7 @@ def main() -> int:
     lines.append("")
     lines.append(f"Wall time: {wall:.1f}s.")
     lines.append("")
+    lines.extend(render_part3(rows, summary))
     report = "\n".join(lines)
     print(report)
 
