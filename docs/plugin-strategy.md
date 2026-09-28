@@ -54,6 +54,49 @@ For every package of type `composer-plugin` in the lock that is enabled by
 Plugins that `allow-plugins` sets to `false`, or that are absent from the map,
 are ignored, as Composer ignores them.
 
+## Data file or adapter
+
+A plugin whose install-time effect is a path map, a file list or a patch
+list is a data file in `src/plugins/data/`, not Rust code:
+
+- `composer-installers.toml` — `composer/installers`
+- `johnpbloch-wordpress-core-installer.toml` — `johnpbloch/wordpress-core-installer`
+- `roots-wordpress-core-installer.toml` — `roots/wordpress-core-installer`
+- `drupal-core-composer-scaffold.toml` — `drupal/core-composer-scaffold`
+- `cweagans-composer-patches.toml` — `cweagans/composer-patches`
+
+A plugin that generates code or fetches something stays an adapter in
+`src/plugins/*.rs`:
+
+- `discovery.rs` — code-generation (`php-http/discovery`, the generated
+  discovery file)
+- `symfony_runtime.rs` — code-generation (`symfony/runtime`'s
+  `autoload_runtime.php`)
+- `yii2.rs` — code-generation (`yiisoft/yii2-composer`'s `extensions.php`)
+- `craft.rs` — code-generation (`craftcms/plugin-installer`'s `plugins.php`)
+- `phpcs.rs` — code-generation (`dealerdirect/phpcodesniffer-composer-installer`'s
+  `CodeSniffer.conf`)
+- `phpstan.rs` — code-generation (`phpstan/extension-installer`'s
+  `GeneratedConfig.php`)
+- `pest.rs` — code-generation (`pestphp/pest-plugin`'s `pest-plugins.json`)
+- `spi.rs` — code-generation (`tbachert/spi`'s `GeneratedServiceProviderData.php`)
+- `c3.rs` — scaffolding that copies a bundled file (`codeception/c3`)
+- `private_installer.rs` — download-or-auth (`ffraenz/private-composer-installer`
+  substitutes a dist URL from the environment)
+
+The census of the 40 most-downloaded Composer plugins finds 25 of 40
+declarable as data, 6 partly declarable and 6 not declarable at all; across
+the compat corpus, 16 of 20 projects still run some code (a plugin or a
+script) during `viv install` today. Full numbers and per-plugin evidence are
+in [`compat/results/g3-plugins.md`](../compat/results/g3-plugins.md).
+
+`config.allow-plugins` stays the gate: a plugin viv has neither a data file
+nor an adapter for is reported and never run. `viv install` refuses with:
+
+> No adapter exists for it yet, so the work the plugin would have done is
+> skipped. Check what it writes before you rely on the result. (see
+> docs/plugin-strategy.md, "Data file or adapter")
+
 ## Order of work
 
 1. composer/installers and johnpbloch/wordpress-core-installer, plus the
@@ -95,6 +138,18 @@ where Symfony users should keep using Composer.
 
 ## Adding a native adapter
 
+Check whether a data file covers it first (see "Data file or adapter"
+above) — a path map, a file list or a patch list needs no Rust at all. For
+example, a fixed install-path override is a `named-override` rule
+(`src/plugins/data/roots-wordpress-core-installer.toml`):
+
+```toml
+kind = "named-override"
+type = "wordpress-core"
+key = "wordpress-install-dir"
+```
+
+Only a plugin that generates code or fetches something needs an adapter.
 Every adapter is a unit struct in its own `src/plugins/<name>.rs` implementing
 the internal `Adapter` trait (`src/plugins/mod.rs`): `plugin_names()` and
 `upstream_version()` are required, and a default no-op covers every phase

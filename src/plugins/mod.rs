@@ -330,7 +330,8 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
                 Some((_, reason)) => format!("You lose nothing by doing so: {reason}."),
                 None => "No adapter exists for it yet, so the work the plugin would \
                          have done is skipped. Check what it writes before you rely \
-                         on the result."
+                         on the result. (see docs/plugin-strategy.md, \"Data file or \
+                         adapter\")"
                     .to_string(),
             };
             bail!(
