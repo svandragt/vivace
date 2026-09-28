@@ -68,6 +68,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1170,6 +1171,364 @@ def leaf_cause_class(reason: str | None) -> str:
     return LEAF_CAUSE_OTHER
 
 
+# --- dev-as-commits mode (#331 candidate 3.3) ----------------------------
+# Chapter 1's driver leaves 51 of 355 client merges in conflict
+# (`docs/research.md`, "The 51 are the replay's floor"), 43 of them because a
+# `dev-*` requirement's registry entry only ever shows today's branch head.
+# This mode never sends a `dev-*` record to that re-solve at all: its three-
+# way identity is decided directly off `source.reference` (the commit each
+# side locked), and only the remaining, non-`dev-*` residue goes to the
+# unmodified driver -- offline, since nothing here may fetch (the brief).
+
+DEV_FINISHED = "finished"
+DEV_REAL_CONFLICT = "real conflict"
+DEV_OTHER_CONFLICT = "other conflict"
+DEV_NEEDS_FETCH = "needs fetch"
+DEV_TIMED_OUT = "timed out"
+
+
+def is_dev_version(pkg: dict | None) -> bool:
+    return pkg is not None and str(pkg.get("version") or "").startswith("dev-")
+
+
+def records_by_name(raw: bytes) -> dict[str, dict] | None:
+    """Like `lock_records`, but keyed by plain package name (no section
+    prefix) -- this mode reasons about a package's identity across the
+    merge, not which of `packages`/`packages-dev` it happened to sit in on
+    a given side."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    records: dict[str, dict] = {}
+    for section in ("packages", "packages-dev"):
+        for pkg in data.get(section) or []:
+            name = pkg.get("name")
+            if name:
+                records[name] = pkg
+    return records
+
+
+def dev_commit_pick(
+    base_pkg: dict | None, ours_pkg: dict | None, theirs_pkg: dict | None
+) -> tuple[bool, dict | None]:
+    """The three-way pick the brief specifies for a `dev-*` record: same
+    commit both sides or changed on one side only -> take it (`conflict`
+    False, with the winning record or `None` when both sides removed it);
+    changed to different commits on both sides -> a real conflict for a
+    person (`conflict` True). Mirrors `real_conflict_names`'s own o!=b and
+    t!=b and o!=t rule, keyed on `record_reference` instead of the
+    (version, source-ref, dev) triple, since a branch's `version` string
+    never changes even when its head does."""
+    b_ref = record_reference(base_pkg) if base_pkg else None
+    o_ref = record_reference(ours_pkg) if ours_pkg else None
+    t_ref = record_reference(theirs_pkg) if theirs_pkg else None
+    if o_ref == t_ref:
+        return False, ours_pkg if ours_pkg is not None else theirs_pkg
+    if o_ref == b_ref:
+        return False, theirs_pkg
+    if t_ref == b_ref:
+        return False, ours_pkg
+    return True, None
+
+
+def strip_dev_records(raw: bytes, dev_names: set[str]) -> bytes | None:
+    """Drops every `dev_names` entry from `packages`/`packages-dev` -- this
+    mode has already decided their outcome itself, so the existing driver
+    must never see them as divergent (or at all)."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    for section in ("packages", "packages-dev"):
+        pkgs = data.get(section)
+        if pkgs is not None:
+            data[section] = [p for p in pkgs if p.get("name") not in dev_names]
+    return json.dumps(data).encode()
+
+
+def strip_dev_requires(composer_json: bytes, dev_names: set[str]) -> bytes:
+    """Drops `dev_names` from root `require`/`require-dev` too -- rung 3
+    (`solver::solve_update_seeded`) solves the root manifest's own requires
+    directly, not just the lock's divergent set, so a `dev-*` name would
+    still reach the registry through it if only the lock were stripped."""
+    try:
+        data = json.loads(composer_json)
+    except json.JSONDecodeError:
+        return composer_json
+    for section in ("require", "require-dev"):
+        reqs = data.get(section)
+        if isinstance(reqs, dict):
+            for name in dev_names:
+                reqs.pop(name, None)
+    return json.dumps(data).encode()
+
+
+def dev_ref_cached(cache_root: Path, name: str, ref: str | None) -> bool:
+    """Whether `name`'s cached `~dev` provider file -- under any host
+    directory `--cache-dir` has fetched one for -- currently lists `ref` on
+    one of its own `dev-*` version entries. Packagist's provider only ever
+    serves today's branch head (`docs/research.md`'s own finding), so this
+    is a proxy for "already resident, no source fetch needed" rather than
+    a guarantee: a historical `ref` this cache never happened to see as
+    today's head reads as needing a fetch, correctly."""
+    if not ref:
+        return False
+    encoded = name.replace("/", "$")
+    repo_v0 = cache_root / "repo-v0"
+    if not repo_v0.is_dir():
+        return False
+    for host_dir in repo_v0.iterdir():
+        f = host_dir / f"provider-{encoded}~dev.json"
+        if not f.is_file():
+            continue
+        try:
+            data = json.loads(f.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        for entry in (data.get("packages") or {}).get(name, []):
+            if not str(entry.get("version") or "").startswith("dev-"):
+                continue
+            entry_ref = (entry.get("source") or {}).get("reference") or (
+                entry.get("dist") or {}
+            ).get("reference")
+            if entry_ref == ref:
+                return True
+    return False
+
+
+def resolve_offline_stripped(
+    viv_bin: str, work: Path, repo_dir: Path, sha: str,
+    composer_json: bytes, base: bytes, ours: bytes, theirs: bytes, hang_dir: Path | None,
+) -> tuple[str, str | None]:
+    """`viv lock merge --offline` on the dev-stripped trio: the existing
+    driver, unmodified, deciding only the non-`dev-*` residue. `--offline`
+    means a cache miss fails fast with "Network disabled" (`src/fetch.rs`)
+    instead of fetching, which this classifies as `DEV_NEEDS_FETCH` rather
+    than a real conflict; a `run_with_watchdog` kill (past `HANG_TIMEOUT`,
+    300s by default -- the brief's own cap) is `DEV_TIMED_OUT`. No
+    `--cache-dir`: this reads viv's own default store, whatever earlier,
+    non-bench viv activity on this machine already populated -- the brief's
+    "metadata cache from earlier replays", never fetched fresh here."""
+    composer_json = declare_contemporaneous_platform(composer_json, ours, theirs)
+    tmpdir = work / sha[:12]
+    tmpdir.mkdir(parents=True, exist_ok=True)
+    (tmpdir / "composer.json").write_bytes(composer_json)
+    paths = {}
+    for label, content in (("base", base), ("ours", ours), ("theirs", theirs)):
+        p = tmpdir / f"{label}.lock"
+        p.write_bytes(content)
+        paths[label] = p
+    command = [
+        viv_bin, "--offline", "lock", "merge",
+        str(paths["base"]), str(paths["ours"]), str(paths["theirs"]), "-d", str(tmpdir),
+    ]
+    committer_date = git_or_none(repo_dir, "show", "-s", "--format=%cI", sha)
+    if committer_date:
+        command += ["--as-of", committer_date]
+    result = run_with_watchdog(command, hang_dir, f"{sha[:12]}-dev-commits")
+    if result.returncode == -9:
+        return DEV_TIMED_OUT, None
+    stderr = result.stderr.decode(errors="replace").strip()
+    if result.returncode == 0:
+        return DEV_FINISHED, None
+    if "Network disabled" in stderr:
+        return DEV_NEEDS_FETCH, (stderr.splitlines()[0] if stderr else None)
+    return DEV_OTHER_CONFLICT, (summarize_resolve_failure(stderr) if stderr else f"exit {result.returncode}")
+
+
+@dataclass
+class DevMergeOutcome:
+    project: str
+    sha: str
+    leaf_cause: str  # this merge's original (chapter 1) leaf cause, from the filter file
+    category: str
+    reason: str | None = None
+    fetch_cost: int = 0  # only set when category is DEV_FINISHED
+
+
+def dev_as_commits_merge(
+    repo_dir: Path, work: Path, viv_bin: str, project_name: str, m: Merge, leaf_cause: str,
+    hang_dir: Path | None, cache_root: Path,
+) -> DevMergeOutcome:
+    base_lock = blob(repo_dir, m.base, "composer.lock")
+    ours_lock = blob(repo_dir, m.ours, "composer.lock")
+    theirs_lock = blob(repo_dir, m.theirs, "composer.lock")
+    if base_lock is None or ours_lock is None or theirs_lock is None:
+        return DevMergeOutcome(project_name, m.sha, leaf_cause, DEV_OTHER_CONFLICT, "composer.lock missing on one side")
+
+    base_by_name = records_by_name(base_lock)
+    ours_by_name = records_by_name(ours_lock)
+    theirs_by_name = records_by_name(theirs_lock)
+    if base_by_name is None or ours_by_name is None or theirs_by_name is None:
+        return DevMergeOutcome(project_name, m.sha, leaf_cause, DEV_OTHER_CONFLICT, "composer.lock did not parse as JSON")
+
+    dev_names = {
+        name
+        for side in (base_by_name, ours_by_name, theirs_by_name)
+        for name, pkg in side.items()
+        if is_dev_version(pkg)
+    }
+
+    picks = {
+        name: dev_commit_pick(base_by_name.get(name), ours_by_name.get(name), theirs_by_name.get(name))
+        for name in dev_names
+    }
+    dev_conflicts = sorted(name for name, (conflict, _) in picks.items() if conflict)
+    if dev_conflicts:
+        return DevMergeOutcome(project_name, m.sha, leaf_cause, DEV_REAL_CONFLICT, ", ".join(dev_conflicts))
+
+    base2 = strip_dev_records(base_lock, dev_names)
+    ours2 = strip_dev_records(ours_lock, dev_names)
+    theirs2 = strip_dev_records(theirs_lock, dev_names)
+    if base2 is None or ours2 is None or theirs2 is None:
+        return DevMergeOutcome(project_name, m.sha, leaf_cause, DEV_OTHER_CONFLICT, "composer.lock did not parse as JSON")
+
+    merge_json = blob(repo_dir, m.sha, "composer.json")
+    if merge_json is None:
+        return DevMergeOutcome(project_name, m.sha, leaf_cause, DEV_OTHER_CONFLICT, "composer.json missing at the merge commit")
+    merge_json = strip_dev_requires(merge_json, dev_names)
+
+    category, reason = resolve_offline_stripped(
+        viv_bin, work, repo_dir, m.sha, merge_json, base2, ours2, theirs2, hang_dir
+    )
+
+    fetch_cost = 0
+    if category == DEV_FINISHED:
+        for name, (_conflict, resolved_pkg) in picks.items():
+            if resolved_pkg is None:
+                continue  # removed on both sides, nothing to fetch
+            ref = record_reference(resolved_pkg)
+            if not dev_ref_cached(cache_root, name, ref):
+                fetch_cost += 1
+
+    return DevMergeOutcome(project_name, m.sha, leaf_cause, category, reason, fetch_cost)
+
+
+def parse_only_conflicting(path: Path) -> dict[str, dict[str, str]]:
+    """`--only-conflicting`'s file: `<project>\\t<sha12>\\t<leaf cause>` per
+    line, one merge chapter 1's driver left in conflict -- this replay's
+    own filter, not regenerated here (a fresh, non-`--offline` pass over
+    all 355 merges would re-fetch every registry entry this mode exists to
+    avoid touching)."""
+    result: dict[str, dict[str, str]] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        project, sha, cause = line.split("\t")
+        result.setdefault(project, {})[sha] = cause
+    return result
+
+
+def run_dev_as_commits(
+    projects: list[Project], cache_root: Path, viv_bin: str, only: dict[str, dict[str, str]],
+    cap: int, hang_dir: Path | None,
+) -> list[DevMergeOutcome]:
+    tasks: list[tuple[Path, str, Merge, str]] = []
+    for project in projects:
+        wanted = only.get(project.name)
+        if not wanted:
+            continue
+        repo_dir = clone_or_reuse(cache_root, project)
+        merges, _footnotes, _exhausted = qualifying_merges(repo_dir, cap)
+        by_prefix = {m.sha[:12]: m for m in merges}
+        for sha12, cause in wanted.items():
+            m = by_prefix.get(sha12)
+            if m is None:
+                log(f"{project.name}: {sha12} not found among qualifying merges (cap {cap}), skipped")
+                continue
+            tasks.append((repo_dir, project.name, m, cause))
+
+    outcomes: list[DevMergeOutcome] = []
+    with tempfile.TemporaryDirectory(prefix="lockmerge-dev-commits-") as tmp:
+        work = Path(tmp)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [
+                pool.submit(dev_as_commits_merge, repo_dir, work, viv_bin, name, m, cause, hang_dir, cache_root)
+                for repo_dir, name, m, cause in tasks
+            ]
+            for future in futures:
+                outcomes.append(future.result())
+    return outcomes
+
+
+def render_dev_as_commits(
+    outcomes: list[DevMergeOutcome], cap: int, viv_bin: str, viv_version: str, viv_commit: str | None,
+    only_path: Path, wall_time: float,
+) -> str:
+    lines = [
+        f"\n## Generation 3: dev-* as commits\n",
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n",
+        f"\nCandidate 3.3 (`docs/research.md`, issue #331): replays only the "
+        f"{len(outcomes)} merges chapter 1's driver (`viv lock merge`) left in "
+        f"conflict (`--only-conflicting`, filtered from a prior full client-"
+        f"corpus replay's own footnotes), not all 355. A `dev-*` record's "
+        f"three-way identity is decided directly off its commit "
+        f"(`source.reference`), never sent to the driver's re-solve; every "
+        f"other record follows the unmodified driver, `--offline` (a cache "
+        f"miss is `needs fetch`, never a live fetch). Cap: {cap} most recent "
+        f"qualifying merges per repository, same corpus as chapter 1's. viv "
+        f"binary: `{viv_bin}` ({viv_version}"
+        + (f", commit `{viv_commit}`" if viv_commit else "")
+        + f"). Wall time: {wall_time:.1f}s.\n",
+    ]
+
+    def counts(rows: list[DevMergeOutcome]) -> dict[str, int]:
+        c = {DEV_FINISHED: 0, DEV_REAL_CONFLICT: 0, DEV_OTHER_CONFLICT: 0, DEV_NEEDS_FETCH: 0, DEV_TIMED_OUT: 0}
+        for o in rows:
+            c[o.category] = c.get(o.category, 0) + 1
+        return c
+
+    dev_rows = [o for o in outcomes if o.leaf_cause == LEAF_CAUSE_DEV_HEAD]
+    other_rows = [o for o in outcomes if o.leaf_cause != LEAF_CAUSE_DEV_HEAD]
+
+    lines.append(f"\n| Group | Merges | Finished | Real conflict | Other conflict | Needs fetch | Timed out |")
+    lines.append(f"|---|---|---|---|---|---|---|")
+    for label, rows in (("All", outcomes), ("dev-* leaf (chapter 1)", dev_rows), ("Other leaf (chapter 1)", other_rows)):
+        c = counts(rows)
+        lines.append(
+            f"| {label} | {len(rows)} | {c[DEV_FINISHED]} | {c[DEV_REAL_CONFLICT]} | "
+            f"{c[DEV_OTHER_CONFLICT]} | {c[DEV_NEEDS_FETCH]} | {c[DEV_TIMED_OUT]} |"
+        )
+
+    finished = [o for o in outcomes if o.category == DEV_FINISHED]
+    fetch_total = sum(o.fetch_cost for o in finished)
+    if finished:
+        lines.append(
+            f"\nOf the {len(finished)} finished merges, {fetch_total} `dev-*` "
+            f"record(s) across them have a commit not in the cached provider "
+            f"data -- the cost an install would pay to fetch it. The install "
+            f"itself was not run (the brief: Packagist's own metadata for an "
+            f"old branch head is gone, so confirming an install would need a "
+            f"real fetch)."
+        )
+    else:
+        lines.append(
+            "\nNo merge finished, so there is no fetch-cost count: every "
+            "finished-merge install check this candidate's third measurement "
+            "asks for is moot on this replay. The install check was not run."
+        )
+
+    reasoned = [o for o in outcomes if o.reason]
+    if reasoned:
+        lines.append("\nReasons, per merge:\n")
+        for o in reasoned:
+            lines.append(f"- {o.project} {o.sha[:12]} ({o.category}): {o.reason}")
+
+    lines.append(
+        f"\nCorpus, cache and the `--only-conflicting {only_path.name}` filter "
+        "(one `<project>\\t<sha12>\\t<leaf cause>` line per merge, built from "
+        "a prior full client-corpus replay's own \"re-solve did not finish\" "
+        "footnotes) are held outside the repository, same as the client "
+        "corpus above; reproducible by the maintainer from that clone cache "
+        "and by nobody else. Reproduce: `LOCKMERGE_CORPUS=<client corpus.toml> "
+        "BENCH_CACHE=<client clone cache> bench/lockmerge/run.py "
+        f"--dev-as-commits --only-conflicting <path to the filter file>`.\n"
+    )
+    return "\n".join(lines) + "\n"
+
+
 # --- install check (#314 follow-up) -------------------------------------
 # For every merge the offline pin actually finished (rung 4), does the
 # merged lock it produced still install against today's Packagist, and
@@ -2131,7 +2490,16 @@ def main() -> int:
     ledger = "--ledger" in argv or hybrid  # #306: adds the ledger-fold-vs-driver counts to the report
     offline_rung = "--offline-rung" in argv  # #314: runs the driver twice, with and without the flag
     install_check_flag = "--install-check" in argv  # #314 follow-up: install-checks every merge the pin finished
-    argv = [a for a in argv if a not in ("--ledger", "--hybrid", "--offline-rung", "--install-check")]
+    dev_as_commits = "--dev-as-commits" in argv  # #331 candidate 3.3: dev-* records merge by commit, never re-solved
+    only_conflicting_path: Path | None = None
+    if "--only-conflicting" in argv:  # #331: restricts the replay to a prior run's own conflicting merges
+        idx = argv.index("--only-conflicting")
+        only_conflicting_path = Path(argv[idx + 1])
+        argv = argv[:idx] + argv[idx + 2 :]
+    argv = [
+        a for a in argv
+        if a not in ("--ledger", "--hybrid", "--offline-rung", "--install-check", "--dev-as-commits")
+    ]
     if argv and argv[0] == "--self-test":
         return self_test()
     only = argv[0].split(",") if argv else []
@@ -2159,6 +2527,24 @@ def main() -> int:
     projects = parse_corpus(corpus_path)
     if only:
         projects = [p for p in projects if p.name in only]
+
+    if dev_as_commits:
+        if only_conflicting_path is None:
+            log("--dev-as-commits requires --only-conflicting <path>")
+            return 1
+        only_map = parse_only_conflicting(only_conflicting_path)
+        start = time.perf_counter()
+        outcomes = run_dev_as_commits(projects, cache_root, viv_bin, only_map, cap, hang_dir)
+        wall_time = time.perf_counter() - start
+        section = render_dev_as_commits(
+            outcomes, cap, viv_bin, viv_version, viv_commit, only_conflicting_path, wall_time
+        )
+        if not report_path.exists():
+            report_path.write_text(HEADER)
+        with open(report_path, "a") as f:
+            f.write(section)
+        log(f"report written to {report_path}, wall time {wall_time:.1f}s")
+        return 0
 
     reports = []
     for project in projects:
@@ -2532,6 +2918,41 @@ def self_test() -> int:
         id_folded, id_err, id_picked = fold_ledger(id_union.splitlines())
         assert id_folded is None and id_err is not None, "a version fork must refuse under the identity hash too"
         assert not id_picked
+
+        # #331 candidate 3.3: dev-* records merge by commit, never re-solved.
+        dev_a = {"name": "vendor/dev-pkg", "version": "dev-master", "source": {"reference": "aaa"}}
+        dev_a_bumped = {"name": "vendor/dev-pkg", "version": "dev-master", "source": {"reference": "bbb"}}
+        dev_a_other = {"name": "vendor/dev-pkg", "version": "dev-master", "source": {"reference": "ccc"}}
+        conflict, resolved = dev_commit_pick(dev_a, dev_a, dev_a)
+        assert not conflict and resolved == dev_a, "unchanged on both sides must not conflict"
+        conflict, resolved = dev_commit_pick(dev_a, dev_a_bumped, dev_a)
+        assert not conflict and resolved == dev_a_bumped, "changed on one side only must take that side"
+        conflict, resolved = dev_commit_pick(dev_a, dev_a_bumped, dev_a_other)
+        assert conflict, "changed to different commits on both sides must conflict"
+
+        lock_bytes = json.dumps({"packages": [dev_a, pkg_b], "packages-dev": []}).encode()
+        stripped = strip_dev_records(lock_bytes, {"vendor/dev-pkg"})
+        assert json.loads(stripped)["packages"] == [pkg_b], "strip_dev_records must drop only the named dev entries"
+
+        manifest = json.dumps({"require": {"vendor/dev-pkg": "dev-master", "vendor/b": "^1.0"}}).encode()
+        stripped_manifest = strip_dev_requires(manifest, {"vendor/dev-pkg"})
+        assert json.loads(stripped_manifest)["require"] == {"vendor/b": "^1.0"}, (
+            "strip_dev_requires must drop only the named dev requirement"
+        )
+
+        cache_root = Path(tmp) / "dev-cache"
+        provider_dir = cache_root / "repo-v0" / "repo.packagist.org"
+        provider_dir.mkdir(parents=True)
+        (provider_dir / "provider-vendor$dev-pkg~dev.json").write_text(json.dumps({
+            "packages": {"vendor/dev-pkg": [{"version": "dev-master", "source": {"reference": "bbb"}}]}
+        }))
+        assert dev_ref_cached(cache_root, "vendor/dev-pkg", "bbb"), (
+            "a cached provider entry with a matching reference must read as cached"
+        )
+        assert not dev_ref_cached(cache_root, "vendor/dev-pkg", "aaa"), (
+            "a historical reference the cache never saw as today's head must read as needing a fetch"
+        )
+        assert not dev_ref_cached(cache_root, "vendor/other", "bbb"), "an uncached package must read as needing a fetch"
 
     print("lockmerge: self-test OK")
     return 0
