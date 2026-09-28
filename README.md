@@ -327,7 +327,9 @@ has no PHP runtime, so it can't run one as written. Instead:
   own `--no-plugins` would.
 
 The full list of which plugin falls into which category is documented
-separately.[^13]
+separately.[^13] The rule for when a plugin is a data file rather than an
+adapter lives in
+[`docs/plugin-strategy.md`, "Data file or adapter"](docs/plugin-strategy.md#data-file-or-adapter).
 
 ## Reasons to use viv
 
