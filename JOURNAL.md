@@ -1517,3 +1517,20 @@ instead of hours, #328), a crashed lock merge counted rather than dropped
 from the replay (#320), and two bench harness fixes (#313, #321). The
 pre-release sweep runs separately; its counts land in
 `compat/results/v0.18.0.md` when it finishes.
+
+## 2026-09-27, evening: generation 3 opened, candidate 3.1 measured
+
+Generation 1 was viv up to 0.14, a faster Composer; generation 2 was 0.15
+to 0.18, the research chapters and compatible features. Generation 3 asks
+what a PHP package manager could be without producing Composer's output,
+opt-in per project, with `composer.json` and Packagist as the way in. Five
+candidates, 3.1 to 3.5, are in `docs/research.md` and the `g3 candidates`
+milestone (#329 to #333).
+
+Candidate 3.1, a managed per-project PHP (#329), holds. 15 of 20 corpus
+projects test a PHP other than 8.3 in CI, and 3 real applications need a
+PHP newer than Ubuntu 24.04 ships, reachable there only through a
+third-party repository that needs root. A static-php-cli build sets up in
+0.07 s with no root; its prebuilt set lacks `intl`, which 7 of 20 need.
+Project tools would run through `viv run`, which tries a script, then
+`vendor/bin`, then `PATH` on the pinned PHP; `viv x` stays isolated.
