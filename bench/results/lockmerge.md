@@ -1589,3 +1589,153 @@ all (the offline-rung section above). In live use the pin only ever
 fires when a branch head has moved or a package has been removed between
 the lock and the merge -- both rarer events than replaying years-old
 merges against today's Packagist makes them look.
+## Generation 3: dev-* as commits
+
+2026-09-28T16:05:40Z
+
+
+Candidate 3.3 (`docs/research.md`, issue #331): replays only the 52 merges chapter 1's driver (`viv lock merge`) left in conflict (`--only-conflicting`, filtered from a prior full client-corpus replay's own footnotes), not all 355. A `dev-*` record's three-way identity is decided directly off its commit (`source.reference`), never sent to the driver's re-solve; every other record follows the unmodified driver, `--offline` (a cache miss is `needs fetch`, never a live fetch). Cap: 200 most recent qualifying merges per repository, same corpus as chapter 1's. viv binary: `/home/sander/dev/rust/vivace-lanes/main/target/release/viv` (viv 0.18.0, commit `4d2f7659d56bddfd5d91d1c3c165cd1818c59887`). Wall time: 107.6s.
+
+### Rule A: both-moved is always a conflict
+
+A `dev-*` record both sides moved to different commits is a real conflict for a person, full stop -- the rule this run's own `dev_commit_pick` implemented (commit `3d62b8c`).
+
+| Group | Merges | Finished | Real conflict | Other conflict | Needs fetch | Timed out |
+|---|---|---|---|---|---|---|
+| All | 52 | 0 | 45 | 1 | 6 | 0 |
+| dev-* leaf (chapter 1) | 44 | 0 | 40 | 0 | 4 | 0 |
+| Other leaf (chapter 1) | 8 | 0 | 5 | 1 | 2 | 0 |
+
+No merge finished, so there is no fetch-cost count: every finished-merge install check this candidate's third measurement asks for is moot on this replay. The install check was not run.
+
+Reasons, per merge:
+
+- project A 149a3202d7fc (real conflict): roave/security-advisories
+- project A 16956017309c (real conflict): roave/security-advisories
+- project A 1b8532df9e95 (real conflict): humanmade/sc-shared-publish-workflow
+- project A 258632533266 (real conflict): roave/security-advisories
+- project A 387965e65ee2 (real conflict): roave/security-advisories
+- project A 3eb4b805f5ef (real conflict): roave/security-advisories
+- project A 44de1678a1cb (real conflict): roave/security-advisories
+- project A 671472e243a3 (real conflict): roave/security-advisories
+- project A 69de2588d656 (real conflict): roave/security-advisories
+- project A 71a4036709e4 (real conflict): roave/security-advisories
+- project A 7b15e46a9c1b (real conflict): roave/security-advisories
+- project A 7bccadf74a76 (needs fetch): viv lock merge: re-solving nikic/php-parser, symfony/string, symfony/translation against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 7f45843cc838 (real conflict): roave/security-advisories
+- project A 805012f95c22 (real conflict): roave/security-advisories
+- project A 81257073c74e (real conflict): roave/security-advisories
+- project A 819883426171 (real conflict): humanmade/sc-shared-publish-workflow, roave/security-advisories
+- project A 81dea67fa970 (real conflict): roave/security-advisories
+- project A 84a30ec33622 (needs fetch): viv lock merge: re-solving altis/cloud, altis/cms, altis/dev-tools, altis/dev-tools-command, altis/media, altis/security against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 989c23547fd6 (real conflict): roave/security-advisories
+- project A bd7dcaf2b1e3 (real conflict): humanmade/sc-shared-publish-workflow, roave/security-advisories
+- project A bfca269167fd (real conflict): roave/security-advisories
+- project A c3740b4723e8 (real conflict): humanmade/sc-shared-publish-workflow
+- project A c655ae41ef69 (real conflict): roave/security-advisories
+- project A c750aa891095 (real conflict): roave/security-advisories
+- project A dc9092cb427e (real conflict): roave/security-advisories
+- project A e1c8544243d8 (real conflict): humanmade/sc-shared-publish-workflow, roave/security-advisories
+- project A efd0d62cc570 (real conflict): roave/security-advisories
+- project A f415c1b9489b (other conflict): parsing composer.json: trailing comma at line 208 column 5
+- project A fe3911aa9431 (real conflict): roave/security-advisories
+- project B 00fcb9d416b8 (real conflict): roave/security-advisories
+- project B 2efebd03b513 (real conflict): roave/security-advisories, wikimedia/shiro-wordpress-theme
+- project B 3697ab0794f6 (real conflict): roave/security-advisories
+- project B 3aeb7e197e60 (real conflict): roave/security-advisories, wikimedia/shiro-wordpress-theme
+- project B 3c4dc0b43482 (real conflict): wikimedia/shiro-wordpress-theme
+- project B 47bbe9947f65 (real conflict): roave/security-advisories, wikimedia/shiro-wordpress-theme
+- project B 4a72f7322508 (real conflict): roave/security-advisories
+- project B 9e8946673175 (real conflict): roave/security-advisories
+- project B a34613f08896 (real conflict): wikimedia/shiro-wordpress-theme
+- project B b7adc8bbe763 (real conflict): wikimedia/shiro-wordpress-theme
+- project B bf0ba0d1795f (real conflict): roave/security-advisories, wikimedia/shiro-wordpress-theme
+- project B d5a9c64dabad (real conflict): roave/security-advisories
+- project B e3298da342a3 (real conflict): roave/security-advisories, wikimedia/shiro-wordpress-theme
+- project B f9efbcc1646f (real conflict): roave/security-advisories, wikimedia/shiro-wordpress-theme
+- project C 04e48f571d3d (real conflict): roave/security-advisories
+- project C 41dadb89a70f (real conflict): roave/security-advisories
+- project C 51bfcf249caa (needs fetch): viv lock merge: re-solving nesbot/carbon against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project C 60a67275d6e3 (real conflict): roave/security-advisories
+- project C ba2dcc2ec368 (needs fetch): viv lock merge: re-solving wpackagist-plugin/stream against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project C bd845ad7cb05 (real conflict): unison-theme/unison
+- project C cc918961871c (needs fetch): viv lock merge: re-solving roots/wordpress, roots/wordpress-no-content against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project D 5ebff5e0fa5a (needs fetch): viv lock merge: re-solving altis/cms, altis/core, altis/dev-tools, altis/local-server, altis/security, aws/aws-sdk-php against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project D fab5af602563 (real conflict): roave/security-advisories
+
+Corpus, cache and the `--only-conflicting only-conflicting-52.txt` filter (one `<project>\t<sha12>\t<leaf cause>` line per merge, built from a prior full client-corpus replay's own "re-solve did not finish" footnotes) are held outside the repository, same as the client corpus above; reproducible by the maintainer from that clone cache and by nobody else. Reproduce: `LOCKMERGE_CORPUS=<client corpus.toml> BENCH_CACHE=<client clone cache> bench/lockmerge/run.py --dev-as-commits --only-conflicting <path to the filter file>`.
+
+### Rule B: a later `time` wins
+
+2026-09-28T16:16:27Z
+
+
+Both sides moving a `dev-*` record to different commits compares the two records' own `time` field, taking the later one (`resolved by time`) rather than an automatic conflict; a real conflict is only when either side lacks a `time` or the two tie. Same 52-merge filter, same corpus, same cap as Rule A. viv binary: `/home/sander/dev/rust/vivace-lanes/main/target/release/viv` (viv 0.18.0, commit `3d62b8cb1e1ab56d908aa9d46f34b2e6e7d00ce8`). Wall time: 116.2s.
+
+
+| Group | Merges | Finished | Resolved by time | Real conflict | Other conflict | Needs fetch | Timed out |
+|---|---|---|---|---|---|---|---|
+| All | 52 | 0 | 21 | 1 | 1 | 29 | 0 |
+| dev-* leaf (chapter 1) | 44 | 0 | 17 | 1 | 0 | 26 | 0 |
+| Other leaf (chapter 1) | 8 | 0 | 4 | 0 | 1 | 3 | 0 |
+
+Of the 21 merges that now finish (plain or by the time tie-break), 47 `dev-*` record(s) across them have a commit not in the cached provider data -- the cost an install would pay to fetch it. The install itself was not run (the brief: Packagist's own metadata for an old branch head is gone, so confirming an install would need a real fetch).
+
+Reasons, per merge:
+
+- project A 149a3202d7fc (resolved by time): roave/security-advisories
+- project A 16956017309c (resolved by time): roave/security-advisories
+- project A 1b8532df9e95 (resolved by time): humanmade/sc-shared-publish-workflow
+- project A 258632533266 (resolved by time): roave/security-advisories
+- project A 387965e65ee2 (resolved by time): roave/security-advisories
+- project A 3eb4b805f5ef (needs fetch): viv lock merge: re-solving lucatume/wp-browser, phpunit/phpunit against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 44de1678a1cb (resolved by time): roave/security-advisories
+- project A 671472e243a3 (resolved by time): roave/security-advisories
+- project A 69de2588d656 (needs fetch): viv lock merge: re-solving humanmade/smart-media, johnbillion/query-monitor, lucatume/wp-browser, phpunit/phpunit against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 71a4036709e4 (resolved by time): roave/security-advisories
+- project A 7b15e46a9c1b (needs fetch): viv lock merge: re-solving aws/aws-sdk-php, humanmade/publication-checklist, phpunit/phpunit against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 7bccadf74a76 (needs fetch): viv lock merge: re-solving nikic/php-parser, symfony/string, symfony/translation against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 7f45843cc838 (needs fetch): viv lock merge: re-solving altis/cloud, altis/cms, altis/core, altis/documentation, altis/local-server, altis/security, aws/aws-sdk-php, carbonphp/carbon-doctrine-types, johnpbloch/wordpress, johnpbloch/wordpress-core, nesbot/carbon, phpunit/phpunit, symfony/string against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 805012f95c22 (needs fetch): viv lock merge: re-solving symfony/process, symfony/string against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 81257073c74e (needs fetch): viv lock merge: re-solving altis/cloud, altis/local-server, behat/gherkin, league/uri, league/uri-interfaces, lucatume/wp-browser, nikic/php-parser, psy/psysh, symfony/finder against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 819883426171 (resolved by time): humanmade/sc-shared-publish-workflow, roave/security-advisories
+- project A 81dea67fa970 (needs fetch): viv lock merge: re-solving illuminate/collections, illuminate/conditionable, illuminate/contracts, illuminate/macroable, illuminate/support against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 84a30ec33622 (needs fetch): viv lock merge: re-solving altis/cloud, altis/cms, altis/dev-tools, altis/dev-tools-command, altis/media, altis/security against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A 989c23547fd6 (needs fetch): viv lock merge: re-solving symfony/string against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A bd7dcaf2b1e3 (needs fetch): viv lock merge: re-solving illuminate/collections, illuminate/conditionable, illuminate/contracts, illuminate/macroable, illuminate/support, johnbillion/user-switching, symfony/deprecation-contracts, symfony/service-contracts, symfony/translation-contracts, voku/portable-ascii against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A bfca269167fd (needs fetch): viv lock merge: re-solving illuminate/collections, illuminate/conditionable, illuminate/contracts, illuminate/macroable, illuminate/support against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A c3740b4723e8 (resolved by time): humanmade/sc-shared-publish-workflow
+- project A c655ae41ef69 (resolved by time): roave/security-advisories
+- project A c750aa891095 (resolved by time): roave/security-advisories
+- project A dc9092cb427e (needs fetch): viv lock merge: re-solving altis/cms, altis/core, altis/dev-tools, altis/local-server, altis/media, altis/security, darylldoyle/safe-svg, guzzlehttp/guzzle, humanmade/sc-user-reports, psr/log, symfony/string, symfony/translation against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A e1c8544243d8 (needs fetch): viv lock merge: re-solving altis/cloud against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project A efd0d62cc570 (resolved by time): roave/security-advisories
+- project A f415c1b9489b (other conflict): parsing composer.json: trailing comma at line 208 column 5
+- project A fe3911aa9431 (needs fetch): viv lock merge: re-solving altis/local-server, composer/pcre, guzzlehttp/guzzle, mck89/peast, symfony/console, symfony/string, wp-cli/config-command, wp-cli/i18n-command against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project B 00fcb9d416b8 (needs fetch): viv lock merge: re-solving alleyinteractive/wordpress-fieldmanager, composer/installers, dealerdirect/phpcodesniffer-composer-installer, squizlabs/php_codesniffer, wpackagist-plugin/co-authors-plus, wpackagist-plugin/safe-redirect-manager, wpackagist-plugin/safe-svg against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project B 2efebd03b513 (resolved by time): roave/security-advisories, wikimedia/shiro-wordpress-theme
+- project B 3697ab0794f6 (needs fetch): viv lock merge: re-solving squizlabs/php_codesniffer, wpackagist-plugin/co-authors-plus against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project B 3aeb7e197e60 (resolved by time): roave/security-advisories, wikimedia/shiro-wordpress-theme
+- project B 3c4dc0b43482 (resolved by time): wikimedia/shiro-wordpress-theme
+- project B 47bbe9947f65 (resolved by time): roave/security-advisories, wikimedia/shiro-wordpress-theme
+- project B 4a72f7322508 (resolved by time): roave/security-advisories
+- project B 9e8946673175 (needs fetch): viv lock merge: re-solving wpackagist-plugin/safe-svg against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project B a34613f08896 (resolved by time): wikimedia/shiro-wordpress-theme
+- project B b7adc8bbe763 (resolved by time): wikimedia/shiro-wordpress-theme
+- project B bf0ba0d1795f (needs fetch): viv lock merge: re-solving humanmade/asset-loader, wpackagist-plugin/safe-redirect-manager against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project B d5a9c64dabad (resolved by time): roave/security-advisories
+- project B e3298da342a3 (needs fetch): viv lock merge: re-solving wpackagist-plugin/wordpress-seo against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project B f9efbcc1646f (needs fetch): viv lock merge: re-solving wpackagist-plugin/broken-link-checker, wpackagist-plugin/co-authors-plus, wpackagist-plugin/wordpress-seo against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project C 04e48f571d3d (needs fetch): viv lock merge: re-solving justinrainbow/json-schema against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project C 41dadb89a70f (needs fetch): viv lock merge: re-solving illuminate/collections, illuminate/conditionable, illuminate/contracts, illuminate/macroable, illuminate/support, nesbot/carbon, symfony/filesystem, symfony/polyfill-php83, symfony/process, symfony/string, symfony/translation against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project C 51bfcf249caa (needs fetch): viv lock merge: re-solving nesbot/carbon against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project C 60a67275d6e3 (needs fetch): viv lock merge: re-solving humanmade-pro/gravityforms, justinrainbow/json-schema, squizlabs/php_codesniffer, wpackagist-plugin/jetpack, wpackagist-plugin/redis-cache, wpackagist-plugin/wp-accessibility against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project C ba2dcc2ec368 (needs fetch): viv lock merge: re-solving wpackagist-plugin/stream against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project C bd845ad7cb05 (real conflict): unison-theme/unison
+- project C cc918961871c (needs fetch): viv lock merge: re-solving roots/wordpress, roots/wordpress-no-content against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project D 5ebff5e0fa5a (needs fetch): viv lock merge: re-solving altis/cms, altis/core, altis/dev-tools, altis/local-server, altis/security, aws/aws-sdk-php against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+- project D fab5af602563 (needs fetch): viv lock merge: re-solving altis/aws-analytics, altis/local-chassis, altis/local-server, altis/media, aws/aws-sdk-php, humanmade/publication-checklist, humanmade/s3-uploads, humanmade/smart-media, humanmade/workflows, symfony/polyfill-mbstring, symfony/yaml against the merged composer.json did not finish (https://wpackagist.org/packages.json: Network disabled, request canceled: https://wpackagist.org/packages.json); falling back to conflict markers
+
+Reproduce Rule B: `LOCKMERGE_CORPUS=<client corpus.toml> BENCH_CACHE=<client clone cache> bench/lockmerge/run.py --dev-as-commits --rule-b --only-conflicting <path to the filter file>` (same filter file as Rule A).
+
+**Reading.** Of the 52 merges Rule A left entirely unresolved (0 finished), Rule B's time tie-break resolves the `dev-*` side of 21 (all `resolved by time`, none finish outright) and leaves 1 real conflict (no `time` field or a tie) and 1 unrelated malformed-manifest conflict; the other 29 need a registry fetch this replay's offline cache doesn't have (`needs fetch`), well past Rule A's 6, because letting more merges reach the residual driver call also grows how much it needs to solve. Of the 21 that now finish, 47 `dev-*` records across them still have a commit not in the cached provider data -- the install-time fetch cost Rule A's zero finishes made moot.
