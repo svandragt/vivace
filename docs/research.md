@@ -875,8 +875,11 @@ collisions that remain are about 9 libraries in about 15 plugins:
 `wordpress/mcp-adapter` 0.3 to 0.6. Whichever plugin loads first wins.
 
 Not built, for two reasons. The collisions live in `vendor/` directories
-that plugin authors ship inside the zip, and viv never installs those; an
-`isolate` setting could only prefix what viv itself installs. Where viv
+that plugin authors ship inside the zip. When such a plugin is committed
+to the site's repository or installed from wp-admin, viv never sees it.
+When it arrives through wpackagist, viv writes the bundled `vendor/` as
+opaque package files, so an `isolate` setting could prefix it, at the
+cost of rewriting shipped code on every update. Where viv
 does install a plugin's dependencies, on a site that resolves them through
 Composer, two plugins wanting guzzle 6 and 7 fail in the solver before any
 class loads, and the fix the ecosystem uses is prefixing at plugin build
