@@ -942,6 +942,36 @@ corpus, how many projects run a plugin or script during install at all.
 **Build if it holds.** A declarative manifest section for the common kinds,
 and an explicit allow list for packages that must run code.
 
+**Result, 2026-09-28: holds.** `compat/results/g3-plugins.md`, from
+`bench/g3-plugins/census.py` (`make bench-g3-plugins`, 183 s): the 40
+most-downloaded packages of type `composer-plugin` on Packagist, each read
+at its latest stable tag and classified by what its event handlers do,
+plus the 20 corpus projects that commit a lock.
+
+By kind: code generation 12, path mapping 10, scaffolding 5, download or
+auth 2, command only 2, patching 1, check or audit 1, other 7. Whether the
+effect could be data rather than code: yes 25, partly 6, no 6, and 3 with
+no install-time effect at all. The six that cannot be data are three
+plugins Composer 2 made obsolete (`hirak/prestissimo`,
+`kylekatarnls/update-helper`, `zaporylie/composer-drupal-optimizations`)
+and three that install git hooks or drive a build (`phpro/grumphp`,
+`acquia/blt`, `bamarni/composer-bin-plugin`). viv already carries a
+native adapter for 13 of the 40 (`src/plugins/*.rs`), every one of them
+in the yes or partly group.
+
+In the corpus, 14 of 20 projects lock a plugin, 14 allow one in
+`config.allow-plugins`, 13 define an install-time script, and 16 of 20 run
+some code during install today. So an install that runs no code is
+reachable for most plugins, and the corpus needs it: four projects in
+five would otherwise be running a plugin or script.
+
+Build decision open. Two shapes: a manifest section packages would have
+to adopt, which the 25 upstream authors have no reason to do; or viv's
+own adapters as data, one file per plugin naming its path map, scaffold
+list or patch list, so the next plugin is an entry and not a Rust module.
+The 15 adapter bugs in the 3.5 census argue for the second. The allow
+list already exists as `config.allow-plugins`; viv keeps honouring it.
+
 ### Candidate 3.5: simpler resolution rules
 
 **Question.** Which of Composer's resolution features do projects use, and
