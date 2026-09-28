@@ -888,13 +888,17 @@ not run.
 One setting does reach a site viv installs: a Composer-managed site whose
 own `vendor/` carries a library (`aws/aws-sdk-php` pulls in Guzzle) that
 an active plugin also ships unprefixed in its zip. The solver never sees
-the plugin's copy, so the two collide at runtime. Two client sites have
-hit it. On project A the platform's AWS SDK ran on a plugin's bundled
-`guzzlehttp/promises` and failed with a missing `Aws\Exception` class,
-because the plugin's autoloader registered first; on project B two
-plugins that each bundle Guzzle cannot be updated together. The fix both
-times was by hand: pin Guzzle on the side the site controls to the
-version the plugin ships. An `isolate` setting that
+the plugin's copy, so the two collide at runtime. Three client sites hit
+it between 2020 and 2024. On project A the platform's AWS SDK ran on a
+plugin's bundled `guzzlehttp/promises` and failed with a missing
+`Aws\Exception` class, because the plugin's autoloader registered first,
+and two plugins that each bundle Guzzle cannot be updated together. On
+project B an S3 uploads library and a CDN vendor's library disagreed on
+Guzzle and fataled at boot. On project C a plugin pulled in through a
+submodule brought its own Composer tree. The fix each time was by hand:
+pin Guzzle on the side the site controls to the version the plugin
+ships, and the pin has to be revisited on every update. An `isolate`
+setting that
 prefixed the site's transitive dependencies, leaving direct ones such as
 `Aws\` alone, would let the plugin's copy win. Before building that,
 measure it on the Composer-managed sites to hand (projects A, B, C): how
