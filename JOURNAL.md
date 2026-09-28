@@ -1631,3 +1631,13 @@ override differently upstream. `installers.rs` lost its 288-entry Rust
 table; a fixture generated from that table before deletion checks the
 TOML gives the same path for every entry. `yii2` and `craft` had no
 path rule to move. bench-ab flat. Next: #341 scaffolding and patching.
+
+## 2026-09-28: scaffold and patch bindings as data (#341)
+
+`drupal/core-composer-scaffold` and `cweagans/composer-patches` keep
+their mechanics in Rust (file copying, patch application) and move
+their binding, the package name and the `extra` keys they read, into
+TOML beside the path-mapping files. A first draft carried `event` and
+`mechanic` fields nothing read; they went, and come back with the
+dispatcher when a second package binds to a mechanic. Compat on
+drupal/recommended-project identical; bench-ab flat. Next: #342.
