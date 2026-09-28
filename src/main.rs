@@ -286,14 +286,14 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Command::Run(args) => match tool::run_run(&args) {
+        Command::Run(args) => match tool::run_run(&args, cli.cache_dir.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 err_out(&format!("{err:#}"));
                 ExitCode::from(1)
             }
         },
-        Command::Exec(args) => match tool::run_exec(&args) {
+        Command::Exec(args) => match tool::run_exec(&args, cli.cache_dir.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 err_out(&format!("{err:#}"));

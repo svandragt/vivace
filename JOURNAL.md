@@ -1558,3 +1558,16 @@ Upstream publishes no checksums; viv records its own sha256 on first
 download and refuses plain http outside the test override. Newest
 prebuilt today is 8.4.x, so firefly-iii's `>=8.5` stays out of reach
 until static-php-cli publishes 8.5. Next: #338 `viv run`.
+
+## 2026-09-28: viv run on the pinned PHP (#338)
+
+`viv run <name>` already ran `scripts` entries, so #338 extended it
+rather than adding a command: a name that is not a script falls back
+to `vendor/bin/<name>`, then to `<name>` on `PATH`. When
+`config.platform.php` is pinned and installed, its directory goes
+first on `PATH` for `run`, `exec` and every script the runner
+spawns, so `@php` and a plain `php` in a script hit the pinned build.
+A pin with nothing installed is an error that names `viv php
+install`. Checked by hand: on a machine with no system PHP, `viv run
+php --version` printed the static-php-cli 8.4.23 build. Not checked:
+the WP-CLI story from the issue on a real WordPress project.

@@ -217,15 +217,104 @@ fn run_install(version_arg: Option<&str>, cache_dir: Option<&Path>) -> Result<()
 }
 
 fn pinned_version(composer_json_path: &Path, exists: bool) -> Result<String> {
-    if exists {
-        let root = crate::lock::read_root(composer_json_path)?;
-        if let Some(pin) = root.config.platform.get("php").and_then(Value::as_str) {
-            return Ok(pin.to_string());
-        }
+    if exists && let Some(pin) = read_platform_php_pin(composer_json_path)? {
+        return Ok(pin);
     }
     bail!(
         "no PHP pinned: set config.platform.php in composer.json or run viv php install <version>"
     );
+}
+
+/// `config.platform.php` from a composer.json, or `None` when the file is
+/// absent or names no pin — shared by `pinned_version` (`viv php install`'s
+/// own "no pin" is an error) and [`project_php_dir`] (`viv run`/`viv exec`'s
+/// own "no pin" is just "use whatever's on PATH").
+fn read_platform_php_pin(composer_json_path: &Path) -> Result<Option<String>> {
+    if !composer_json_path.is_file() {
+        return Ok(None);
+    }
+    let root = crate::lock::read_root(composer_json_path)?;
+    Ok(root
+        .config
+        .platform
+        .get("php")
+        .and_then(Value::as_str)
+        .map(str::to_string))
+}
+
+/// The directory holding the project's pinned PHP's `php` binary, or `None`
+/// when `composer.json` is absent or pins nothing — the "just use PATH"
+/// case `viv run`/`viv exec` fall back to. An exact pin (`8.4.17`) or a
+/// minor one already installed (`8.4` -> its newest installed `8.4.x`) that
+/// isn't actually installed is an error, not `None`: a project that *does*
+/// pin a PHP and doesn't have it installed should say so, not silently run
+/// whatever's on the caller's PATH instead.
+pub fn project_php_dir(project_dir: &Path, cache_dir: Option<&Path>) -> Result<Option<PathBuf>> {
+    let composer_json_path = project_dir.join("composer.json");
+    let Some(pin) = read_platform_php_pin(&composer_json_path)? else {
+        return Ok(None);
+    };
+    let cache_dir = resolve_cache_dir(cache_dir)?;
+    let (os, arch) = platform()?;
+    let version = match parse_version(&pin)? {
+        VersionSpec::Exact(v) => v,
+        VersionSpec::Minor(minor) => newest_installed_patch(&cache_dir, &minor, os, arch)?
+            .ok_or_else(|| anyhow::anyhow!(not_installed_message(&pin)))?,
+    };
+    let dest = install_dir(&cache_dir, &version, os, arch);
+    if !dest.join(OK_MARKER).is_file() {
+        bail!(not_installed_message(&pin));
+    }
+    Ok(Some(dest))
+}
+
+fn not_installed_message(pin: &str) -> String {
+    format!("php {pin} is pinned in composer.json but not installed; run viv php install")
+}
+
+/// The newest installed `<minor>.x` for `os`/`arch`, from the same cache
+/// scan [`run_list`] does (no network) — the minor-pin half of
+/// [`project_php_dir`]'s lookup.
+fn newest_installed_patch(
+    cache_dir: &Path,
+    minor: &str,
+    os: &str,
+    arch: &str,
+) -> Result<Option<String>> {
+    let platform = format!("{os}-{arch}");
+    let minor_key = version_key(minor);
+    Ok(installed_entries(cache_dir)?
+        .into_iter()
+        .filter(|(version, entry_platform)| {
+            *entry_platform == platform && version_key(version).starts_with(&minor_key)
+        })
+        .map(|(version, _)| version)
+        .max_by_key(|version| version_key(version)))
+}
+
+/// `<php_dir>:<bin_dir>:<inherited PATH>`, each prefix included only when it
+/// applies (`php_dir` is `Some`; `bin_dir` is an existing directory), and
+/// never re-adding a prefix that already sits first in the inherited PATH —
+/// `scripts.rs`'s own `apply_env` used to do this dedupe just for `bin_dir`;
+/// this is that same check, shared, now covering `php_dir` too, for
+/// `scripts::Runner::apply_env`, `tool::run_exec` and `tool::run_run`'s
+/// vendor/bin and PATH fallbacks (#338).
+pub fn compose_path(php_dir: Option<&Path>, bin_dir: &Path) -> String {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let first = path.split(':').next();
+    let mut prefixes = Vec::new();
+    if let Some(dir) = php_dir {
+        prefixes.push(dir.display().to_string());
+    }
+    if bin_dir.is_dir() {
+        prefixes.push(bin_dir.display().to_string());
+    }
+    prefixes.retain(|prefix| Some(prefix.as_str()) != first);
+    if prefixes.is_empty() {
+        return path;
+    }
+    prefixes.push(path);
+    prefixes.join(":")
 }
 
 async fn resolve_minor(fetcher: &Fetcher, minor: &str, os: &str, arch: &str) -> Result<String> {
@@ -401,8 +490,10 @@ fn version_key(version: &str) -> Vec<u32> {
         .collect()
 }
 
-fn run_list(cache_dir: Option<&Path>) -> Result<()> {
-    let cache_dir = resolve_cache_dir(cache_dir)?;
+/// Every `(version, platform)` installed in the cache (an `.ok` marker
+/// present), for [`run_list`] and [`newest_installed_patch`] to filter/sort
+/// however each needs.
+fn installed_entries(cache_dir: &Path) -> Result<Vec<(String, String)>> {
     let bucket_dir = cache_dir.join(PHP_BUCKET);
     let mut entries: Vec<(String, String)> = Vec::new();
     if bucket_dir.is_dir() {
@@ -420,6 +511,12 @@ fn run_list(cache_dir: Option<&Path>) -> Result<()> {
             }
         }
     }
+    Ok(entries)
+}
+
+fn run_list(cache_dir: Option<&Path>) -> Result<()> {
+    let cache_dir = resolve_cache_dir(cache_dir)?;
+    let mut entries = installed_entries(&cache_dir)?;
     entries.sort_by_key(|(version, _)| version_key(version));
     entries.reverse();
     for (version, platform) in entries {
@@ -430,8 +527,11 @@ fn run_list(cache_dir: Option<&Path>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{
-        VersionSpec, map_platform, newest_patch, parse_version, split_dir_name, version_key,
+        VersionSpec, compose_path, map_platform, newest_installed_patch, newest_patch,
+        parse_version, split_dir_name, version_key,
     };
 
     #[test]
@@ -525,5 +625,68 @@ mod tests {
     #[test]
     fn version_key_sorts_numerically_not_lexically() {
         assert!(version_key("8.4.9") < version_key("8.4.17"));
+    }
+
+    #[test]
+    fn compose_path_prepends_php_dir_then_bin_dir() {
+        let bin_dir = std::env::current_dir().unwrap(); // any existing dir
+        let composed = compose_path(Some(Path::new("/opt/php")), &bin_dir);
+        assert_eq!(
+            composed,
+            format!(
+                "/opt/php:{}:{}",
+                bin_dir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            )
+        );
+    }
+
+    #[test]
+    fn compose_path_skips_a_bin_dir_already_first_in_path() {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let first = path.split(':').next().unwrap();
+        let composed = compose_path(None, Path::new(first));
+        assert_eq!(composed, path);
+    }
+
+    #[test]
+    fn compose_path_skips_a_missing_bin_dir() {
+        let composed = compose_path(None, Path::new("/does/not/exist"));
+        assert_eq!(composed, std::env::var("PATH").unwrap_or_default());
+    }
+
+    /// `<cache>/php-v0/<version>-<os>-<arch>/.ok`, mirroring [`super::install_dir`]
+    /// / [`super::OK_MARKER`] without depending on a real download.
+    fn fake_install(cache_dir: &Path, version: &str, os: &str, arch: &str) {
+        let dir = cache_dir
+            .join(super::PHP_BUCKET)
+            .join(format!("{version}-{os}-{arch}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(super::OK_MARKER), b"").unwrap();
+    }
+
+    #[test]
+    fn newest_installed_patch_picks_the_max_for_the_minor_and_platform() {
+        let cache = tempfile::tempdir().unwrap();
+        fake_install(cache.path(), "8.4.5", "linux", "x86_64");
+        fake_install(cache.path(), "8.4.17", "linux", "x86_64");
+        fake_install(cache.path(), "8.4.9", "linux", "x86_64");
+        fake_install(cache.path(), "8.4.99", "macos", "aarch64");
+
+        assert_eq!(
+            newest_installed_patch(cache.path(), "8.4", "linux", "x86_64").unwrap(),
+            Some("8.4.17".to_string())
+        );
+    }
+
+    #[test]
+    fn newest_installed_patch_none_when_nothing_matches() {
+        let cache = tempfile::tempdir().unwrap();
+        fake_install(cache.path(), "8.3.5", "linux", "x86_64");
+
+        assert_eq!(
+            newest_installed_patch(cache.path(), "8.4", "linux", "x86_64").unwrap(),
+            None
+        );
     }
 }
