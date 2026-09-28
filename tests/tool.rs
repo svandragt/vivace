@@ -10,8 +10,11 @@
 
 mod common;
 
+use std::io::{Read as _, Write as _};
+use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 use common::TestContext;
 use predicates::prelude::*;
@@ -277,8 +280,12 @@ fn run_falls_back_to_path_for_a_binary_not_a_script_or_vendor_bin() {
     ctx.viv().args(["run", "true"]).assert().success();
 }
 
+/// Converted from a plain "not installed is an error" test (#340's own
+/// predecessor) now that a miss installs the pin instead: `--offline` is the
+/// one case that still has to error, since there's nothing left to fall
+/// back to without a network request.
 #[test]
-fn run_and_exec_error_when_the_pinned_php_is_not_installed() {
+fn run_and_exec_error_when_offline_and_the_pinned_php_is_not_installed() {
     let ctx = TestContext::new();
     write_pinned_composer_json(ctx.project.path(), "8.5.0");
     write_executable(
@@ -286,18 +293,176 @@ fn run_and_exec_error_when_the_pinned_php_is_not_installed() {
         "#!/bin/sh\necho TOOL\n",
     );
 
-    let not_installed =
-        "php 8.5.0 is pinned in composer.json but not installed; run viv php install";
+    let not_installed = "php 8.5.0 is pinned in composer.json but not installed, and --offline \
+                          is set; run viv php install";
     ctx.viv()
-        .args(["run", "v"])
+        .args(["--offline", "run", "v"])
         .assert()
         .failure()
         .stderr(predicates::str::contains(not_installed));
     ctx.viv()
-        .args(["exec", "tool"])
+        .args(["--offline", "exec", "tool"])
         .assert()
         .failure()
         .stderr(predicates::str::contains(not_installed));
+}
+
+/// A single-entry (`php`) tar.gz, duplicated from `tests/php.rs`'s own
+/// `build_php_tarball` rather than shared: each integration test file is its
+/// own crate, and this is small.
+fn build_php_tarball(content: &[u8]) -> Vec<u8> {
+    let mut header = tar::Header::new_gnu();
+    header.set_path("php").unwrap();
+    header.set_size(content.len() as u64);
+    header.set_mode(0o755);
+    header.set_cksum();
+    let mut tar_bytes = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        builder.append(&header, content).unwrap();
+        builder.finish().unwrap();
+    }
+    let mut gz_bytes = Vec::new();
+    {
+        let mut encoder =
+            flate2::write::GzEncoder::new(&mut gz_bytes, flate2::Compression::default());
+        encoder.write_all(&tar_bytes).unwrap();
+        encoder.finish().unwrap();
+    }
+    gz_bytes
+}
+
+/// Same shape as `tests/php.rs`'s own `spawn_php_dist_server`, duplicated
+/// here for the same reason `build_php_tarball` is: answers every request on
+/// a loop (`listing_path` -> `listing_html`, `tarball_path` ->
+/// `tarball_bytes`, anything else -> 404) and records each request's path so
+/// a warm second run can assert it made none.
+fn spawn_php_dist_server(
+    listing_path: &'static str,
+    listing_html: String,
+    tarball_path: String,
+    tarball_bytes: Vec<u8>,
+) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let recorded = requests.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stream.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let text = String::from_utf8_lossy(&request);
+            let path = text
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("")
+                .to_string();
+            recorded.lock().unwrap().push(path.clone());
+            let (status, body): (&str, &[u8]) = if path == listing_path {
+                ("200 OK", listing_html.as_bytes())
+            } else if path == tarball_path {
+                ("200 OK", tarball_bytes.as_slice())
+            } else {
+                ("404 Not Found", b"")
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body);
+        }
+    });
+    (addr, requests)
+}
+
+/// `viv run` on a project pinning a `php` minor with nothing installed for
+/// it (#340's own follow-up to #338): a miss now installs it, prints one
+/// line to stderr before the download and nothing else, and a warm second
+/// run touches neither the network nor stdout/stderr for it.
+#[test]
+fn run_installs_the_pinned_php_when_missing_and_only_stderr_reports_it() {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let tarball_bytes = build_php_tarball(b"#!/bin/sh\necho fake-php\n");
+    let listing_html = format!(
+        "<a href=\"php-8.4.7-cli-{os}-{arch}.tar.gz\">php-8.4.7-cli-{os}-{arch}.tar.gz</a>\n"
+    );
+    let tarball_path = format!("/php-8.4.7-cli-{os}-{arch}.tar.gz");
+    let (addr, requests) = spawn_php_dist_server("/", listing_html, tarball_path, tarball_bytes);
+    let dist_url = format!("http://{addr}");
+
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    write_pinned_composer_json(project, "8.4");
+    write_vendor_bin_echoargs(project);
+
+    ctx.viv()
+        .env("VIV_PHP_DIST_URL", &dist_url)
+        .args(["run", "echoargs", "-v"])
+        .assert()
+        .success()
+        .stdout("-v\n")
+        .stderr(predicates::str::contains("installing php 8.4."));
+
+    let ok_marker = ctx
+        .cache
+        .path()
+        .join("php-v0")
+        .join(format!("8.4.7-{os}-{arch}"))
+        .join(".ok");
+    assert!(ok_marker.is_file(), "{}", ok_marker.display());
+
+    let requests_after_install = requests.lock().unwrap().len();
+    ctx.viv()
+        .env("VIV_PHP_DIST_URL", &dist_url)
+        .args(["run", "echoargs", "-v"])
+        .assert()
+        .success()
+        .stdout("-v\n");
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        requests_after_install,
+        "a warm run makes no request to the dist server"
+    );
+}
+
+/// Same miss, `exec`'s own resolution path.
+#[test]
+fn exec_installs_the_pinned_php_when_missing() {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let tarball_bytes = build_php_tarball(b"#!/bin/sh\necho fake-php\n");
+    let listing_html = format!(
+        "<a href=\"php-8.4.7-cli-{os}-{arch}.tar.gz\">php-8.4.7-cli-{os}-{arch}.tar.gz</a>\n"
+    );
+    let tarball_path = format!("/php-8.4.7-cli-{os}-{arch}.tar.gz");
+    let (addr, _requests) = spawn_php_dist_server("/", listing_html, tarball_path, tarball_bytes);
+    let dist_url = format!("http://{addr}");
+
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    write_pinned_composer_json(project, "8.4");
+    write_vendor_bin_echoargs(project);
+
+    ctx.viv()
+        .env("VIV_PHP_DIST_URL", &dist_url)
+        .args(["exec", "echoargs", "-v"])
+        .assert()
+        .success()
+        .stdout("-v\n")
+        .stderr(predicates::str::contains("installing php 8.4."));
 }
 
 #[test]

@@ -192,7 +192,7 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
     Err(anyhow::Error::from(error).context(format!("executing {}", target.display())))
 }
 
-pub fn run_run(args: &RunArgs, cache_dir: Option<&Path>) -> Result<()> {
+pub fn run_run(args: &RunArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
@@ -213,7 +213,7 @@ pub fn run_run(args: &RunArgs, cache_dir: Option<&Path>) -> Result<()> {
 
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
     let bin_dir = project_dir.join(root.config.bin_dir());
-    let php_dir = php::project_php_dir(&project_dir, cache_dir)?;
+    let php_dir = php::project_php_dir(&project_dir, cache_dir, offline)?;
 
     let mut runner = scripts::Runner::new(
         &composer_json_value,
@@ -244,7 +244,7 @@ pub fn run_run(args: &RunArgs, cache_dir: Option<&Path>) -> Result<()> {
     bail!("\"{script}\": not a script in composer.json, not in vendor/bin, and not on PATH");
 }
 
-pub fn run_exec(args: &ExecArgs, cache_dir: Option<&Path>) -> Result<()> {
+pub fn run_exec(args: &ExecArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
@@ -261,7 +261,7 @@ pub fn run_exec(args: &ExecArgs, cache_dir: Option<&Path>) -> Result<()> {
         );
     }
 
-    let php_dir = php::project_php_dir(&project_dir, cache_dir)?;
+    let php_dir = php::project_php_dir(&project_dir, cache_dir, offline)?;
     exec_with_path(
         &target,
         pass_through(&args.command),
