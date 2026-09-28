@@ -15,6 +15,13 @@
 //! mechanisms, not two forms of the same one — `Rule::TypeTemplate` and
 //! `Rule::NamedOverride` name that difference instead of bending one shape
 //! to cover both, or special-casing a plugin name in the loader.
+//!
+//! #341 extends the same loader to adapters that don't map install paths at
+//! all: `Rule::Scaffold` names `drupal/core-composer-scaffold`'s plugin
+//! package and the `extra` key its config lives under, so
+//! `drupal_scaffold.rs` keeps only the file-copy mechanic. `event`/`mechanic`
+//! are read-only, self-documenting fields — there's only one package bound
+//! to `copy-files` today, so nothing dispatches on them yet.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -33,6 +40,7 @@ const FILES: &[&str] = &[
     include_str!("data/composer-installers.toml"),
     include_str!("data/johnpbloch-wordpress-core-installer.toml"),
     include_str!("data/roots-wordpress-core-installer.toml"),
+    include_str!("data/drupal-core-composer-scaffold.toml"),
 ];
 
 #[derive(Deserialize)]
@@ -69,6 +77,22 @@ enum Rule {
         key: String,
         default: String,
     },
+    /// `drupal/core-composer-scaffold`'s scaffold-file copy binding
+    /// (`drupal_scaffold.rs`): never matches [`install_path`] — the plugin
+    /// package and the root/package `extra` key its `ScaffoldOptions`
+    /// section lives under, read by [`scaffold_rule`] instead.
+    Scaffold {
+        package: String,
+        // Self-documenting metadata, not read by any mechanic yet (only one
+        // package is ever bound to `copy-files`) — proved parsed correctly
+        // by `scaffold_rule_matches_the_embedded_file` instead of a caller.
+        #[allow(dead_code)]
+        event: Vec<String>,
+        #[serde(rename = "extra-key")]
+        extra_key: String,
+        #[allow(dead_code)]
+        mechanic: String,
+    },
 }
 
 impl Rule {
@@ -85,6 +109,7 @@ impl Rule {
                 default,
             } => (package.r#type == *r#type)
                 .then(|| named_override_path(key, default, package, root_extra)),
+            Rule::Scaffold { .. } => None,
         }
     }
 }
@@ -215,6 +240,30 @@ pub(super) fn install_path(package: &Package, root_extra: &Value) -> Option<Path
         .map(PathBuf::from)
 }
 
+/// `drupal/core-composer-scaffold`'s parsed binding — `drupal_scaffold.rs`'
+/// only reads of its plugin package name or its `extra` key.
+pub(super) struct ScaffoldRule {
+    pub package: &'static str,
+    pub extra_key: &'static str,
+}
+
+/// The one embedded `Rule::Scaffold` entry. `drupal_scaffold.rs`'s only
+/// caller.
+pub(super) fn scaffold_rule() -> ScaffoldRule {
+    rules()
+        .iter()
+        .find_map(|rule| match rule {
+            Rule::Scaffold {
+                package, extra_key, ..
+            } => Some(ScaffoldRule {
+                package: package.as_str(),
+                extra_key: extra_key.as_str(),
+            }),
+            _ => None,
+        })
+        .expect("embedded drupal-core-composer-scaffold.toml")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +316,30 @@ mod tests {
     #[test]
     fn unhandled_type_returns_none() {
         assert!(install_path(&package("acme/hello", "library"), &json!({})).is_none());
+    }
+
+    /// #341: `drupal-core-composer-scaffold.toml` parses to the package name
+    /// and `extra` key `drupal_scaffold.rs` reads, and its `event`/`mechanic`
+    /// fields are the ones the module doc names.
+    #[test]
+    fn scaffold_rule_matches_the_embedded_file() {
+        let rule = scaffold_rule();
+        assert_eq!(rule.package, "drupal/core-composer-scaffold");
+        assert_eq!(rule.extra_key, "drupal-scaffold");
+
+        let Rule::Scaffold {
+            event, mechanic, ..
+        } = rules()
+            .iter()
+            .find(|r| matches!(r, Rule::Scaffold { .. }))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            event,
+            &["post-install-cmd", "post-update-cmd", "pre-autoload-dump"]
+        );
+        assert_eq!(mechanic, "copy-files");
     }
 }

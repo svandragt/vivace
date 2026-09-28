@@ -1,0 +1,9 @@
+# `drupal/core-composer-scaffold`'s scaffold-file copy binding
+# (`drupal_scaffold.rs`): `Handler::scaffold` runs on `post-install-cmd`/
+# `post-update-cmd`, `Plugin::preAutoloadDump` on `pre-autoload-dump`; both
+# read the root/package `extra.drupal-scaffold` section named here.
+kind = "scaffold"
+package = "drupal/core-composer-scaffold"
+event = ["post-install-cmd", "post-update-cmd", "pre-autoload-dump"]
+extra-key = "drupal-scaffold"
+mechanic = "copy-files"
