@@ -883,9 +883,18 @@ class loads, and the fix the ecosystem uses is prefixing at plugin build
 time (Strauss, php-scoper), which the 5% already do in production. The
 second half of the measurement, prefixing with php-scoper and running each
 plugin's tests, would re-prove what those plugins prove daily, so it did
-not run. Revisit if a corpus of Composer-managed WordPress sites shows
-solver conflicts on plugin dependencies; nothing in the WordPress.org
-sample can show that.
+not run.
+
+One setting does reach a site viv installs: a Composer-managed site whose
+own `vendor/` carries a library (`aws/aws-sdk-php` pulls in Guzzle) that
+an active plugin also ships unprefixed in its zip. The solver never sees
+the plugin's copy, so the two collide at runtime; a maintainer of an
+Altis site reports having hit exactly this. An `isolate` setting that
+prefixed the site's transitive dependencies, leaving direct ones such as
+`Aws\` alone, would let the plugin's copy win. Before building that,
+measure it on the Composer-managed sites to hand (projects A, B, C): how
+many install a library that an active plugin also bundles at another
+version. Nothing in the WordPress.org sample can show that.
 
 ### Candidate 3.3: a lock that pins commits and merges by record
 
