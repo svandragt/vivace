@@ -52,8 +52,12 @@ fn run_executes_a_named_script_and_appends_trailing_args() {
         .stdout("hi extra1 extra2\n");
 }
 
+/// Not a declared script, not in `vendor/bin` (the fixture project has
+/// none), and not on `PATH` either: `viv run`'s three-way fallback chain
+/// (#338) replaces the old plain "Script is not defined" error with one
+/// naming all three lookups it tried.
 #[test]
-fn run_an_unknown_script_fails_naming_it() {
+fn run_an_unknown_script_fails_naming_all_three_lookups() {
     let ctx = TestContext::new();
     setup(ctx.project.path());
 
@@ -62,7 +66,7 @@ fn run_an_unknown_script_fails_naming_it() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "Script \"nope\" is not defined in this package",
+            "\"nope\": not a script in composer.json, not in vendor/bin, and not on PATH",
         ));
 }
 
@@ -110,6 +114,133 @@ fn exec_an_unknown_bin_fails_naming_the_path() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("nope"));
+}
+
+/// `<cache>/php-v0/<version>-<os>-<arch>/php` (#338): a fake install
+/// mirroring `php::install_dir`'s own naming, no real download — an
+/// executable shell script that echoes an unmistakable marker plus its own
+/// args, so a script/bin that runs `php`/`@php` can prove it hit *this*
+/// binary and not whatever real `php` sits on the system PATH.
+fn fake_php_install(cache_dir: &Path, version: &str) {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let dir = cache_dir
+        .join("php-v0")
+        .join(format!("{version}-{os}-{arch}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let php_path = dir.join("php");
+    std::fs::write(
+        &php_path,
+        format!("#!/bin/sh\necho \"FAKE-PHP {version} $@\"\n"),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&php_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(dir.join(".ok"), b"").unwrap();
+}
+
+fn write_executable(path: &Path, script: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// A `config.platform.php`-pinned project's `composer.json`: `pin` is
+/// either a minor (`"8.4"`) or an exact (`"8.5.0"`) version, matching
+/// `config.platform.php`'s own two accepted shapes.
+fn write_pinned_composer_json(project: &Path, pin: &str) {
+    std::fs::write(
+        project.join("composer.json"),
+        format!(
+            "{{\n    \"config\": {{ \"platform\": {{ \"php\": \"{pin}\" }} }},\n    \
+             \"scripts\": {{ \"v\": \"php -v\" }}\n}}\n"
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn run_uses_the_pinned_php_for_a_script() {
+    let ctx = TestContext::new();
+    fake_php_install(ctx.cache.path(), "8.4.17");
+    write_pinned_composer_json(ctx.project.path(), "8.4");
+
+    ctx.viv()
+        .args(["run", "v"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("FAKE-PHP"));
+}
+
+#[test]
+fn run_falls_back_to_vendor_bin_and_the_pinned_php_wins_on_path() {
+    let ctx = TestContext::new();
+    fake_php_install(ctx.cache.path(), "8.4.17");
+    write_pinned_composer_json(ctx.project.path(), "8.4");
+    write_executable(
+        &ctx.project.path().join("vendor/bin/tool"),
+        "#!/bin/sh\necho TOOL\nphp -v\n",
+    );
+
+    ctx.viv()
+        .args(["run", "tool"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("TOOL"))
+        .stdout(predicates::str::contains("FAKE-PHP"));
+}
+
+#[test]
+fn run_falls_back_to_path_for_a_binary_not_a_script_or_vendor_bin() {
+    let ctx = TestContext::new();
+    setup(ctx.project.path());
+
+    ctx.viv().args(["run", "true"]).assert().success();
+}
+
+#[test]
+fn run_and_exec_error_when_the_pinned_php_is_not_installed() {
+    let ctx = TestContext::new();
+    write_pinned_composer_json(ctx.project.path(), "8.5.0");
+    write_executable(
+        &ctx.project.path().join("vendor/bin/tool"),
+        "#!/bin/sh\necho TOOL\n",
+    );
+
+    let not_installed =
+        "php 8.5.0 is pinned in composer.json but not installed; run viv php install";
+    ctx.viv()
+        .args(["run", "v"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(not_installed));
+    ctx.viv()
+        .args(["exec", "tool"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(not_installed));
+}
+
+#[test]
+fn run_uses_the_path_php_when_nothing_is_pinned() {
+    if skip_without_php() {
+        return;
+    }
+    let ctx = TestContext::new();
+    std::fs::write(
+        ctx.project.path().join("composer.json"),
+        "{\n    \"scripts\": { \"v\": \"php -v\" }\n}\n",
+    )
+    .unwrap();
+
+    ctx.viv().args(["run", "v"]).assert().success();
 }
 
 /// `viv x`'s tiny recorded-fixture package: no dependencies beyond `php`/

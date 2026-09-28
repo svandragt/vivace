@@ -70,6 +70,13 @@ pub struct Runner {
     /// dispatch the same way. Empty for every event `install`/`dump-autoload`
     /// dispatch on their own, which never pass extra arguments.
     pass_args: Vec<String>,
+    /// The project's pinned PHP directory (#338, `php::project_php_dir`),
+    /// prepended to `PATH` ahead of `bin_dir` so `@php`/plain `php` inside a
+    /// script hit it instead of whatever's on the inherited PATH. `None`
+    /// from every caller but `tool::run_run` (via [`Runner::with_php_dir`]):
+    /// `install`/`update`/`require`/`new` dispatch the four events on their
+    /// own project, never `viv run`'s named scripts, and never needed this.
+    php_dir: Option<PathBuf>,
 }
 
 impl Runner {
@@ -93,7 +100,25 @@ impl Runner {
             env: HashMap::new(),
             active: Vec::new(),
             pass_args: Vec::new(),
+            php_dir: None,
         }
+    }
+
+    /// Set the project's pinned PHP directory (`php::project_php_dir`);
+    /// see the `php_dir` field doc comment. Builder-style rather than a
+    /// `new` parameter so `install`/`update`/`require`/`new`'s existing
+    /// call sites stay unchanged.
+    #[must_use]
+    pub fn with_php_dir(mut self, php_dir: Option<PathBuf>) -> Self {
+        self.php_dir = php_dir;
+        self
+    }
+
+    /// Whether `script` is a listener `run_named` can run — `viv run`'s own
+    /// first resolution step, before it falls back to `vendor/bin`/`PATH`
+    /// (#338).
+    pub fn has_script(&self, script: &str) -> bool {
+        self.listeners(script).is_some()
     }
 
     /// Whether `dispatch` does anything at all: `false` under `--no-scripts`
@@ -266,20 +291,17 @@ impl Runner {
         bail!("{event}: `{listener}` exited with {code}");
     }
 
-    /// `COMPOSER_DEV_MODE`, `bin_dir` prepended to `PATH` when it exists
-    /// (Composer's `ensureBinDirIsInPath`), then this run's `@putenv`
-    /// overlay layered on top so a script's own `@putenv` wins. Everything
-    /// else is `Command`'s default: inherited as-is, which already covers
-    /// `COMPOSER` (only ever set by the user).
+    /// `COMPOSER_DEV_MODE`, then `php_dir`/`bin_dir` prepended to `PATH`
+    /// (Composer's `ensureBinDirIsInPath`, `php_dir` #338's own addition),
+    /// then this run's `@putenv` overlay layered on top so a script's own
+    /// `@putenv` wins. Everything else is `Command`'s default: inherited
+    /// as-is, which already covers `COMPOSER` (only ever set by the user).
     fn apply_env(&self, command: &mut Command) {
         command.env("COMPOSER_DEV_MODE", if self.dev { "1" } else { "0" });
-        if self.bin_dir.is_dir() {
-            let bin_dir = self.bin_dir.display().to_string();
-            let path = std::env::var("PATH").unwrap_or_default();
-            if path.split(':').next() != Some(bin_dir.as_str()) {
-                command.env("PATH", format!("{bin_dir}:{path}"));
-            }
-        }
+        command.env(
+            "PATH",
+            crate::php::compose_path(self.php_dir.as_deref(), &self.bin_dir),
+        );
         for (key, value) in &self.env {
             match value {
                 Some(value) => {

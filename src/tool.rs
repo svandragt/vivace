@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use crate::install::{self, InstallArgs};
 use crate::link::LinkMode;
 use crate::lock;
+use crate::php;
 use crate::scripts;
 use crate::store::{self, Store, hex};
 use crate::update::{self, UpdateArgs};
@@ -182,7 +183,7 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
     Err(anyhow::Error::from(error).context(format!("executing {}", target.display())))
 }
 
-pub fn run_run(args: &RunArgs) -> Result<()> {
+pub fn run_run(args: &RunArgs, cache_dir: Option<&Path>) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
@@ -201,17 +202,39 @@ pub fn run_run(args: &RunArgs) -> Result<()> {
         .expect("script required without --list");
 
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
+    let bin_dir = project_dir.join(root.config.bin_dir());
+    let php_dir = php::project_php_dir(&project_dir, cache_dir)?;
+
     let mut runner = scripts::Runner::new(
         &composer_json_value,
         &project_dir,
         &root.config.bin_dir(),
         true,
         false,
-    );
-    runner.run_named(script, &args.args)
+    )
+    .with_php_dir(php_dir.clone());
+    if runner.has_script(script) {
+        return runner.run_named(script, &args.args);
+    }
+
+    // Not a declared script (#338): fall back to `vendor/bin/<script>`,
+    // then to `<script>` resolved on the same composed PATH a matched bin
+    // would run with — Composer's `run-script` has no such fallback, but
+    // `viv run` is meant as one entry point for "run this", scripts, bins
+    // and PATH tools alike.
+    let bin_path = bin_dir.join(script);
+    if bin_path.is_file() {
+        return exec_with_path(&bin_path, &args.args, php_dir.as_deref(), &bin_dir);
+    }
+    let composed_path = php::compose_path(php_dir.as_deref(), &bin_dir);
+    if let Some(found) = find_on_path(script, &composed_path) {
+        return exec_with_path(&found, &args.args, php_dir.as_deref(), &bin_dir);
+    }
+
+    bail!("\"{script}\": not a script in composer.json, not in vendor/bin, and not on PATH");
 }
 
-pub fn run_exec(args: &ExecArgs) -> Result<()> {
+pub fn run_exec(args: &ExecArgs, cache_dir: Option<&Path>) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
@@ -226,13 +249,44 @@ pub fn run_exec(args: &ExecArgs) -> Result<()> {
         );
     }
 
-    let path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{path}", bin_dir.display());
-    let error = std::process::Command::new(&target)
-        .args(&args.args)
+    let php_dir = php::project_php_dir(&project_dir, cache_dir)?;
+    exec_with_path(&target, &args.args, php_dir.as_deref(), &bin_dir)
+}
+
+/// `exec()`'s a `target` binary with `args`, its `PATH` composed the same
+/// way for every `viv run`/`viv exec` execution (`php::compose_path`) — the
+/// one place that never returns on success, shared so a resolved
+/// `vendor/bin`/PATH target in `run_run` runs identically to `run_exec`'s.
+fn exec_with_path(
+    target: &Path,
+    args: &[String],
+    php_dir: Option<&Path>,
+    bin_dir: &Path,
+) -> Result<()> {
+    let new_path = php::compose_path(php_dir, bin_dir);
+    let error = std::process::Command::new(target)
+        .args(args)
         .env("PATH", new_path)
         .exec();
     Err(anyhow::Error::from(error).context(format!("executing {}", target.display())))
+}
+
+/// `name` resolved by scanning `composed_path` (`:`-separated, like `PATH`)
+/// for an executable file — std has no `which`. Mirrors a shell's own PATH
+/// search (first match wins), restricted to regular files with an execute
+/// bit set so a directory or a non-executable file of the same name is
+/// skipped rather than handed to `exec()` to fail on.
+fn find_on_path(name: &str, composed_path: &str) -> Option<PathBuf> {
+    std::env::split_paths(composed_path)
+        .map(|dir| dir.join(name))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs_err::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 /// `vendor/package` or `vendor/package:constraint` (duplicated from
