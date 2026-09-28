@@ -27,8 +27,13 @@ use crate::lock::Package;
 
 /// Every embedded data file. Order never matters: each rule only ever
 /// answers for the package `type`(s) it names, so at most one can match a
-/// given package.
-const FILES: &[&str] = &[include_str!("data/composer-installers.toml")];
+/// given package (the two `wordpress-core-installer` files answer the same
+/// question the same way, by construction — see that file's own comment).
+const FILES: &[&str] = &[
+    include_str!("data/composer-installers.toml"),
+    include_str!("data/johnpbloch-wordpress-core-installer.toml"),
+    include_str!("data/roots-wordpress-core-installer.toml"),
+];
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -244,6 +249,19 @@ mod tests {
             checked += 1;
         }
         assert_eq!(checked, 288, "expected-paths.tsv row count changed");
+    }
+
+    #[test]
+    fn wordpress_core_data_files_agree() {
+        let package = package("johnpbloch/wordpress-core", "wordpress-core");
+        assert_eq!(
+            install_path(&package, &json!({})).unwrap(),
+            PathBuf::from("wordpress")
+        );
+        assert_eq!(
+            install_path(&package, &json!({"wordpress-install-dir": "wp"})).unwrap(),
+            PathBuf::from("wp")
+        );
     }
 
     #[test]

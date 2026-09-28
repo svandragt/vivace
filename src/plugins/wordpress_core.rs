@@ -2,8 +2,11 @@
 //! `getInstallPath`: maps a `wordpress-core` package to the root's
 //! `extra.wordpress-install-dir` (a string, or a map keyed by the package's
 //! pretty name), falling back to the package's own
-//! `extra.wordpress-install-dir`, then the literal `"wordpress"`. Version
-//! pinned in `tests/fixtures/wordpress/composer.lock`.
+//! `extra.wordpress-install-dir`, then the literal `"wordpress"`. The rule
+//! is data now (#340): `src/plugins/data/johnpbloch-wordpress-core-installer.toml`
+//! and `roots-wordpress-core-installer.toml`, loaded once by
+//! `super::data::install_path`. Version pinned in
+//! `tests/fixtures/wordpress/composer.lock`.
 //!
 //! roots/wordpress-core-installer is the maintained fork: it `replace`s
 //! johnpbloch/wordpress-core-installer (stalled at 2.0.0 since 2020) and
@@ -13,8 +16,6 @@
 //! check on the conflict-exception path, which viv's `install_dir` doesn't
 //! model (it resolves a path, it never throws). `upstream_version()` follows
 //! to v4.0.0 with no re-port and no fixture change.
-
-use serde_json::Value;
 
 use crate::lock::{Package, Root};
 
@@ -39,38 +40,14 @@ impl Adapter for WordpressCore {
     }
 
     fn install_dir(&self, root: &Root, package: &Package) -> Option<String> {
-        (package.r#type == "wordpress-core").then(|| wordpress_install_dir(root, package))
+        super::data::install_path(package, &root.extra).map(|p| p.to_string_lossy().into_owned())
     }
-}
-
-/// `johnpbloch/wordpress-core-installer`/`roots/wordpress-core-installer`'s
-/// `getInstallPath`: the root's `extra.wordpress-install-dir` (a string, or a
-/// map keyed by the package's pretty name), falling back to the package's
-/// own `extra.wordpress-install-dir`, then the literal `"wordpress"`.
-fn wordpress_install_dir(root: &Root, package: &Package) -> String {
-    let from_root = root.extra.get("wordpress-install-dir").and_then(|v| {
-        v.as_str().map(str::to_owned).or_else(|| {
-            v.as_object()
-                .and_then(|m| m.get(&package.name))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-    });
-    from_root
-        .or_else(|| {
-            package
-                .raw
-                .pointer("/extra/wordpress-install-dir")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "wordpress".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     fn root(json: Value) -> Root {
         serde_json::from_value(json).unwrap()
