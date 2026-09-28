@@ -1619,3 +1619,15 @@ has adapters for 13. In the corpus 16 of 20 projects run a plugin or a
 script during install. Holds. Build shape is the open question:
 adapters as data files rather than a manifest section nobody upstream
 would adopt.
+
+## 2026-09-28: path-mapping adapters as data (#340)
+
+`composer/installers` and the two `wordpress-core-installer` plugins
+now read their install-path rules from TOML files embedded in the
+binary (`src/plugins/data/`), parsed once per process. The loader has
+two rule shapes, a type-to-template table with `installer-paths`
+overrides and a single-type named override, because the two plugins
+override differently upstream. `installers.rs` lost its 288-entry Rust
+table; a fixture generated from that table before deletion checks the
+TOML gives the same path for every entry. `yii2` and `craft` had no
+path rule to move. bench-ab flat. Next: #341 scaffolding and patching.
