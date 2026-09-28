@@ -1571,3 +1571,18 @@ A pin with nothing installed is an error that names `viv php
 install`. Checked by hand: on a machine with no system PHP, `viv run
 php --version` printed the static-php-cli 8.4.23 build. Not checked:
 the WP-CLI story from the issue on a real WordPress project.
+
+## 2026-09-28: viv run on a real project
+
+Tried on an Altis project: it already pinned `config.platform.php:
+8.3` for the platform check, so `viv php install` with no argument
+fetched 8.3.32 and `viv run phpunit` ran on it. Two fixes fell out.
+`viv run php -v` hung: clap took `-v` as viv's own `--verbose`, so php
+read stdin; `run`, `exec` and `x` now take one trailing positional and
+viv's flags go before the name, with one leading `--` dropped for the
+Composer `run-script test -- --filter` idiom. And a missing pinned
+build is installed on first `run`/`exec` (one stderr line) instead of
+an error, `uv run` style; `--offline` keeps the error. The WP-CLI
+story does not fit container-based local dev (Altis, ddev): their
+`wp` runs inside the container, so the README now pitches host-side
+tools and CI instead.

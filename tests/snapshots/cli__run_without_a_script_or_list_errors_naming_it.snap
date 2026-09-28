@@ -8,8 +8,8 @@ exit_code: 1
 
 ----- stderr -----
 error: the following required arguments were not provided:
-  <SCRIPT>
+  <COMMAND>...
 
-Usage: viv run <SCRIPT> [ARGS]...
+Usage: viv run <COMMAND>...
 
 For more information, try '--help'.

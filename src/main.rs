@@ -143,7 +143,8 @@ enum Command {
     /// content-hashed env, npx-style (#85).
     #[command(name = "x")]
     X(XArgs),
-    /// Run a `scripts` entry from the root composer.json.
+    /// Run a script, a vendor/bin binary or a PATH command on the
+    /// project's PHP.
     Run(RunArgs),
     /// Exec a `vendor/bin` binary with `vendor/bin` prepended to `PATH`.
     Exec(ExecArgs),
@@ -286,14 +287,14 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Command::Run(args) => match tool::run_run(&args, cli.cache_dir.as_deref()) {
+        Command::Run(args) => match tool::run_run(&args, cli.cache_dir.as_deref(), offline) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 err_out(&format!("{err:#}"));
                 ExitCode::from(1)
             }
         },
-        Command::Exec(args) => match tool::run_exec(&args, cli.cache_dir.as_deref()) {
+        Command::Exec(args) => match tool::run_exec(&args, cli.cache_dir.as_deref(), offline) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 err_out(&format!("{err:#}"));

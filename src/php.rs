@@ -173,36 +173,14 @@ fn run_install(version_arg: Option<&str>, cache_dir: Option<&Path>) -> Result<()
     let spec = parse_version(&version_input)?;
     let (os, arch) = platform()?;
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    // Plain http only for the test server named by `VIV_PHP_DIST_URL`;
-    // upstream publishes no checksums, so an http redirect in production
-    // would be an unverified binary.
-    let fetcher =
-        Fetcher::new(Auth::default())?.secure_http(std::env::var_os("VIV_PHP_DIST_URL").is_none());
-
-    let resolved_version = match spec {
-        VersionSpec::Exact(v) => v,
-        VersionSpec::Minor(minor) => runtime.block_on(resolve_minor(&fetcher, &minor, os, arch))?,
-    };
-
-    let dest = install_dir(&cache_dir, &resolved_version, os, arch);
-    let php_path = dest.join("php");
-    if dest.join(OK_MARKER).is_file() {
+    let (resolved_version, dest, already_installed) =
+        ensure_installed(&cache_dir, spec, os, arch, |_| {})?;
+    if already_installed {
         out(&format!("php {resolved_version} already installed"));
     } else {
-        runtime.block_on(download_and_install(
-            &fetcher,
-            &cache_dir,
-            &dest,
-            &resolved_version,
-            os,
-            arch,
-        ))?;
         out(&format!(
             "installed php {resolved_version} ({os}-{arch}) to {}",
-            php_path.display()
+            dest.join("php").display()
         ));
     }
 
@@ -245,31 +223,46 @@ fn read_platform_php_pin(composer_json_path: &Path) -> Result<Option<String>> {
 /// The directory holding the project's pinned PHP's `php` binary, or `None`
 /// when `composer.json` is absent or pins nothing — the "just use PATH"
 /// case `viv run`/`viv exec` fall back to. An exact pin (`8.4.17`) or a
-/// minor one already installed (`8.4` -> its newest installed `8.4.x`) that
-/// isn't actually installed is an error, not `None`: a project that *does*
-/// pin a PHP and doesn't have it installed should say so, not silently run
-/// whatever's on the caller's PATH instead.
-pub fn project_php_dir(project_dir: &Path, cache_dir: Option<&Path>) -> Result<Option<PathBuf>> {
+/// minor one (`8.4` -> its newest installed `8.4.x`) not yet installed is
+/// installed on the spot (`uv run`'s own "missing interpreter" behaviour),
+/// the same `ensure_installed` `viv php install` uses, unless `--offline`
+/// is set, in which case it's the same error as before, reworded.
+pub fn project_php_dir(
+    project_dir: &Path,
+    cache_dir: Option<&Path>,
+    offline: bool,
+) -> Result<Option<PathBuf>> {
     let composer_json_path = project_dir.join("composer.json");
     let Some(pin) = read_platform_php_pin(&composer_json_path)? else {
         return Ok(None);
     };
     let cache_dir = resolve_cache_dir(cache_dir)?;
     let (os, arch) = platform()?;
-    let version = match parse_version(&pin)? {
-        VersionSpec::Exact(v) => v,
-        VersionSpec::Minor(minor) => newest_installed_patch(&cache_dir, &minor, os, arch)?
-            .ok_or_else(|| anyhow::anyhow!(not_installed_message(&pin)))?,
-    };
-    let dest = install_dir(&cache_dir, &version, os, arch);
-    if !dest.join(OK_MARKER).is_file() {
-        bail!(not_installed_message(&pin));
-    }
-    Ok(Some(dest))
-}
+    let spec = parse_version(&pin)?;
 
-fn not_installed_message(pin: &str) -> String {
-    format!("php {pin} is pinned in composer.json but not installed; run viv php install")
+    // Warm path: a stat, nothing else — no runtime, no fetcher, no network,
+    // for either shape of pin.
+    let installed_version = match &spec {
+        VersionSpec::Exact(v) => install_dir(&cache_dir, v, os, arch)
+            .join(OK_MARKER)
+            .is_file()
+            .then(|| v.clone()),
+        VersionSpec::Minor(minor) => newest_installed_patch(&cache_dir, minor, os, arch)?,
+    };
+    if let Some(version) = installed_version {
+        return Ok(Some(install_dir(&cache_dir, &version, os, arch)));
+    }
+
+    if offline {
+        bail!(
+            "php {pin} is pinned in composer.json but not installed, and --offline is set; run viv php install"
+        );
+    }
+
+    let (_, dest, _) = ensure_installed(&cache_dir, spec, os, arch, |resolved| {
+        warn_out(&format!("installing php {resolved} ({os}-{arch})…"));
+    })?;
+    Ok(Some(dest))
 }
 
 /// The newest installed `<minor>.x` for `os`/`arch`, from the same cache
@@ -315,6 +308,53 @@ pub fn compose_path(php_dir: Option<&Path>, bin_dir: &Path) -> String {
     }
     prefixes.push(path);
     prefixes.join(":")
+}
+
+/// Resolves `spec` to an exact version (via the listing, for a floating
+/// minor) and makes sure it's downloaded and extracted into the cache,
+/// building its own runtime and fetcher — the one place that does either,
+/// shared so `run_install` and [`project_php_dir`]'s auto-install miss path
+/// run the same resolve/download/extract, not two copies of it. Calls
+/// `before_download` with the resolved version right before the fetch
+/// starts, only when a download is actually needed, so an already-cached
+/// version stays silent; the caller decides what "already installed" vs
+/// "just installed" means to print. Returns the resolved version, its
+/// install dir, and whether it was already installed.
+fn ensure_installed(
+    cache_dir: &Path,
+    spec: VersionSpec,
+    os: &'static str,
+    arch: &'static str,
+    before_download: impl FnOnce(&str),
+) -> Result<(String, PathBuf, bool)> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    // Plain http only for the test server named by `VIV_PHP_DIST_URL`;
+    // upstream publishes no checksums, so an http redirect in production
+    // would be an unverified binary.
+    let fetcher =
+        Fetcher::new(Auth::default())?.secure_http(std::env::var_os("VIV_PHP_DIST_URL").is_none());
+
+    let resolved_version = match spec {
+        VersionSpec::Exact(v) => v,
+        VersionSpec::Minor(minor) => runtime.block_on(resolve_minor(&fetcher, &minor, os, arch))?,
+    };
+
+    let dest = install_dir(cache_dir, &resolved_version, os, arch);
+    let already_installed = dest.join(OK_MARKER).is_file();
+    if !already_installed {
+        before_download(&resolved_version);
+        runtime.block_on(download_and_install(
+            &fetcher,
+            cache_dir,
+            &dest,
+            &resolved_version,
+            os,
+            arch,
+        ))?;
+    }
+    Ok((resolved_version, dest, already_installed))
 }
 
 async fn resolve_minor(fetcher: &Fetcher, minor: &str, os: &str, arch: &str) -> Result<String> {
