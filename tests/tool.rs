@@ -45,8 +45,11 @@ fn run_executes_a_named_script_and_appends_trailing_args() {
     let ctx = TestContext::new();
     setup(ctx.project.path());
 
+    // No `--` before the trailing args (#340): `command` is one positional
+    // now, so nothing after the script name needs shielding from viv's own
+    // flag parsing any more.
     ctx.viv()
-        .args(["run", "echoargs", "--", "extra1", "extra2"])
+        .args(["run", "echoargs", "extra1", "extra2"])
         .assert()
         .success()
         .stdout("hi extra1 extra2\n");
@@ -94,8 +97,9 @@ fn exec_prepends_vendor_bin_to_path_and_passes_args_through() {
     write_vendor_bin_tool(project);
 
     let expected_bin_dir = std::fs::canonicalize(project).unwrap().join("vendor/bin");
+    // No `--` before the trailing args (#340), same as `run` above.
     ctx.viv()
-        .args(["exec", "mytool", "--", "foo", "bar"])
+        .args(["exec", "mytool", "foo", "bar"])
         .assert()
         .success()
         .stdout(format!(
@@ -114,6 +118,58 @@ fn exec_an_unknown_bin_fails_naming_the_path() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("nope"));
+}
+
+/// `vendor/bin/echoargs` prints each of its own argv entries on its own
+/// line, so a run/exec that let one of them leak into viv's own flag
+/// parsing (#340) shows up as a missing or reordered line rather than a
+/// silent hang.
+fn write_vendor_bin_echoargs(project: &Path) {
+    let bin_dir = project.join("vendor/bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let script = "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done\n";
+    let path = bin_dir.join("echoargs");
+    std::fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// #340: `viv run echoargs -v -d x -h --list` used to hand `-v`/`-d x`/`-h`
+/// to viv's own global/`run` flags instead of `echoargs`, since clap
+/// matched a global flag before `command`'s trailing var-arg positional had
+/// captured any value at all. No `scripts` entry named `echoargs` here
+/// (unlike the fixture project), so this exercises the `vendor/bin`
+/// fallback, not `scripts::Runner`.
+#[test]
+fn run_passes_every_flag_looking_argument_through_to_the_script() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    std::fs::write(project.join("composer.json"), "{}").unwrap();
+    write_vendor_bin_echoargs(project);
+
+    ctx.viv()
+        .args(["run", "echoargs", "-v", "-d", "x", "-h", "--list"])
+        .assert()
+        .success()
+        .stdout("-v\n-d\nx\n-h\n--list\n");
+}
+
+/// Same bug, `exec`'s own positional.
+#[test]
+fn exec_passes_a_flag_looking_argument_through_to_the_bin() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    std::fs::write(project.join("composer.json"), "{}").unwrap();
+    write_vendor_bin_echoargs(project);
+
+    ctx.viv()
+        .args(["exec", "echoargs", "-v"])
+        .assert()
+        .success()
+        .stdout("-v\n");
 }
 
 /// `<cache>/php-v0/<version>-<os>-<arch>/php` (#338): a fake install
@@ -284,15 +340,19 @@ fn x_installs_once_then_execs_from_cache_without_any_network() {
     // still need a project dir to run in.
     std::fs::create_dir_all(ctx.project.path()).unwrap();
 
+    // No `--` before `--version` (#340): `command`'s trailing var-arg
+    // positional passes a hyphenated argument through untouched once the
+    // package name has already filled it, `--` would now be captured
+    // literally rather than stripped as a separator.
     ctx.viv()
-        .args(["x", TOOL_PACKAGE, "--", "--version"])
+        .args(["x", TOOL_PACKAGE, "--version"])
         .assert()
         .success()
         .stdout(predicates::str::contains("Installed 1 packages"))
         .stdout(predicates::str::contains("PHP Parallel Lint version"));
 
     ctx.viv()
-        .args(["--offline", "x", TOOL_PACKAGE, "--", "--version"])
+        .args(["--offline", "x", TOOL_PACKAGE, "--version"])
         .assert()
         .success()
         .stdout(predicates::str::contains("PHP Parallel Lint version"))

@@ -143,7 +143,8 @@ enum Command {
     /// content-hashed env, npx-style (#85).
     #[command(name = "x")]
     X(XArgs),
-    /// Run a `scripts` entry from the root composer.json.
+    /// Run a script, a vendor/bin binary or a PATH command on the
+    /// project's PHP.
     Run(RunArgs),
     /// Exec a `vendor/bin` binary with `vendor/bin` prepended to `PATH`.
     Exec(ExecArgs),

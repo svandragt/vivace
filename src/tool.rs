@@ -29,9 +29,6 @@ use crate::update::{self, UpdateArgs};
 /// `viv x` flags.
 #[derive(Args, Debug, Clone)]
 pub struct XArgs {
-    /// `vendor/package` or `vendor/package:constraint`; omit with `--list`
-    /// or `--uninstall`.
-    pub package: Option<String>,
     /// Which bin to exec, when the package ships more than one.
     #[arg(long)]
     pub bin: Option<String>,
@@ -44,40 +41,50 @@ pub struct XArgs {
     /// Remove a cached tool env (every constraint cached for it).
     #[arg(long)]
     pub uninstall: Option<String>,
-    /// Arguments passed through to the executed bin.
+    /// `vendor/package` or `vendor/package:constraint`, followed by
+    /// arguments passed through to the executed bin; omit with `--list` or
+    /// `--uninstall`. viv's own flags (`--bin`, `--refresh`, `-d`,
+    /// `--cache-dir`, `-v`, `--offline`) only apply before the package name
+    /// — `viv x phpunit/phpunit --filter Foo` passes `--filter Foo` to
+    /// `phpunit`, not to `viv`.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
+    pub command: Vec<String>,
 }
 
 /// `viv run` flags.
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
-    /// Script name from the root `composer.json`'s `scripts` section; omit
-    /// with `--list`.
-    #[arg(required_unless_present = "list")]
-    pub script: Option<String>,
     /// List every script declared in `scripts`.
     #[arg(long)]
     pub list: bool,
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
-    /// Arguments appended to the script's own command line.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
+    /// A script name from the root `composer.json`'s `scripts` section, a
+    /// `vendor/bin` binary, or a PATH command, followed by its own
+    /// arguments; omit with `--list`. viv's own flags (`-d`, `--cache-dir`,
+    /// `-v`, `--offline`) only apply before this positional — after it,
+    /// `viv run -d ../app phpunit --filter Foo` passes `--filter Foo` to
+    /// phpunit untouched.
+    #[arg(
+        required_unless_present = "list",
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    pub command: Vec<String>,
 }
 
 /// `viv exec` flags.
 #[derive(Args, Debug, Clone)]
 pub struct ExecArgs {
-    /// `vendor/bin/<name>` to exec.
-    pub bin: String,
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
-    /// Arguments passed through to the executed bin.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
+    /// `vendor/bin/<name>` to exec, followed by its own arguments. viv's
+    /// own flags (`-d`, `--cache-dir`, `-v`, `--offline`) only apply before
+    /// this positional.
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    pub command: Vec<String>,
 }
 
 /// The marker written next to a tool env's `vendor/` once install finishes: a
@@ -100,9 +107,11 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
     }
 
     let spec = args
-        .package
-        .as_deref()
+        .command
+        .first()
+        .map(String::as_str)
         .context("viv x needs a package, e.g. `viv x phpunit/phpunit`")?;
+    let pass_args = &args.command[1..];
     let (name, constraint) = split_spec(spec);
     let name = name.to_ascii_lowercase();
     let constraint = constraint.unwrap_or("*");
@@ -179,7 +188,7 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
     }
 
     let target = resolve_bin(&env_dir, &name, short_name, args.bin.as_deref())?;
-    let error = std::process::Command::new(&target).args(&args.args).exec();
+    let error = std::process::Command::new(&target).args(pass_args).exec();
     Err(anyhow::Error::from(error).context(format!("executing {}", target.display())))
 }
 
@@ -195,11 +204,12 @@ pub fn run_run(args: &RunArgs, cache_dir: Option<&Path>) -> Result<()> {
         list_scripts(&composer_json_value);
         return Ok(());
     }
-    // clap's `required_unless_present = "list"` on `script` guarantees this.
+    // clap's `required_unless_present = "list"` on `command` guarantees this.
     let script = args
-        .script
-        .as_deref()
-        .expect("script required without --list");
+        .command
+        .first()
+        .expect("command required without --list");
+    let script_args = &args.command[1..];
 
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
     let bin_dir = project_dir.join(root.config.bin_dir());
@@ -214,7 +224,7 @@ pub fn run_run(args: &RunArgs, cache_dir: Option<&Path>) -> Result<()> {
     )
     .with_php_dir(php_dir.clone());
     if runner.has_script(script) {
-        return runner.run_named(script, &args.args);
+        return runner.run_named(script, script_args);
     }
 
     // Not a declared script (#338): fall back to `vendor/bin/<script>`,
@@ -224,11 +234,11 @@ pub fn run_run(args: &RunArgs, cache_dir: Option<&Path>) -> Result<()> {
     // and PATH tools alike.
     let bin_path = bin_dir.join(script);
     if bin_path.is_file() {
-        return exec_with_path(&bin_path, &args.args, php_dir.as_deref(), &bin_dir);
+        return exec_with_path(&bin_path, script_args, php_dir.as_deref(), &bin_dir);
     }
     let composed_path = php::compose_path(php_dir.as_deref(), &bin_dir);
     if let Some(found) = find_on_path(script, &composed_path) {
-        return exec_with_path(&found, &args.args, php_dir.as_deref(), &bin_dir);
+        return exec_with_path(&found, script_args, php_dir.as_deref(), &bin_dir);
     }
 
     bail!("\"{script}\": not a script in composer.json, not in vendor/bin, and not on PATH");
@@ -241,7 +251,9 @@ pub fn run_exec(args: &ExecArgs, cache_dir: Option<&Path>) -> Result<()> {
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
     let bin_dir = project_dir.join(root.config.bin_dir());
-    let target = bin_dir.join(&args.bin);
+    // clap's `required = true` on `command` guarantees a first element.
+    let bin = args.command.first().expect("command required");
+    let target = bin_dir.join(bin);
     if !target.is_file() {
         bail!(
             "{}: not found; run `viv install` first, or check the bin name",
@@ -250,7 +262,7 @@ pub fn run_exec(args: &ExecArgs, cache_dir: Option<&Path>) -> Result<()> {
     }
 
     let php_dir = php::project_php_dir(&project_dir, cache_dir)?;
-    exec_with_path(&target, &args.args, php_dir.as_deref(), &bin_dir)
+    exec_with_path(&target, &args.command[1..], php_dir.as_deref(), &bin_dir)
 }
 
 /// `exec()`'s a `target` binary with `args`, its `PATH` composed the same
