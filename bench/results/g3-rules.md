@@ -157,5 +157,43 @@ Selection rule: Closed issues (plus #312 and #316, both open, named by the candi
 
 Of 20 corpus projects with a committed lock, 20 have no root `version` field (Composer guesses it from git on every one of them), 5 set a root `extra.branch-alias` and 20 carry a locked package with one, 5 set root `replace` and 0 set root `provide` (1 of those use `self.version` as a value), 0 use an inline alias (` as `) in a root constraint and 0 carry a non-empty lock `aliases` array, 9 have a root `dev-*` constraint and 9 a non-empty lock `stability-flags`, 3 set a non-stable `minimum-stability` and 9 set `prefer-stable`, 4 set root `conflict`, 14 set `config.platform` and 14 set `config.allow-plugins`, and 17 carry a locked package whose type is neither library nor metapackage. On the bug side, 36 closed and candidate-named issues were classified by feature (repositories 9, replace/provide 5, branch-alias 5, package type 2, root-version guessing 2, dev-*/stability-flags 1, 12 'none of these'), plus 15 plugin-adapter bugs folded into 'none of these' rather than given a row each.
 
-Wall time: 152.8s.
+Wall time: 164.4s.
+
+## Part 3: coverage
+
+Scanned: `tests/fixtures/**/composer.json` (plus the `composer.json.before`/`.after` pairs, skipping manifests nested under a `packages/` or `vendor/` directory) and any sibling `composer.lock`, evaluated with the same `features_for` Part 1 uses; inline composer.json literals in `tests/*.rs` (whole file) and `src/**/*.rs` (text from the first `#[cfg(test)]` marker on, one hit per file), grepped per feature for its JSON key or a quoted-string literal; and `compat/corpus.toml` projects, reusing Part 1's per-project rows. `no-version` and `lock-type≠lib/meta` aren't literal substrings a grep can key on, so those two are fixture-file-only, with no inline-literal hits possible.
+
+| feature | used by N of 20 | fixture files | corpus projects | example fixtures |
+|---|---|---|---|---|
+| min-stab | 3 of 20 | 4 | phpunit/phpunit, wp-cli/wp-cli-bundle, mautic/mautic | tests/install_index_merge.rs:155, tests/update.rs:740, tests/workspace.rs:174 |
+| pref-stable | 9 of 20 | 3 | symfony/demo, phpunit/phpunit, wp-cli/wp-cli-bundle, monicahq/monica, pixelfed/pixelfed, BookStackApp/BookStack, mautic/mautic, pterodactyl/panel, librenms/librenms | tests/install_index_merge.rs:157, tests/workspace.rs:175, src/lock.rs:1744 |
+| no-version | 20 of 20 | 54 | symfony/demo, composer/composer, phpunit/phpunit, wp-cli/wp-cli-bundle, gamebetr/provable, reedware/laravel-api, phpmyadmin/phpmyadmin, matomo-org/matomo, monicahq/monica, koel/koel, pixelfed/pixelfed, BookStackApp/BookStack, snipe/snipe-it, mautic/mautic, kimai/kimai, firefly-iii/firefly-iii, pterodactyl/panel, librenms/librenms, humhub/humhub, akaunting/akaunting | tests/fixtures/audit/abandoned/composer.json, tests/fixtures/audit/clean/composer.json, tests/fixtures/audit/vulnerable/composer.json |
+| branch-alias(root) | 5 of 20 | 5 | composer/composer, phpunit/phpunit, wp-cli/wp-cli-bundle, reedware/laravel-api, phpmyadmin/phpmyadmin | tests/root_version.rs:119, tests/update.rs:949, tests/vcs.rs:78 |
+| replace | 5 of 20 | 2 | symfony/demo, mautic/mautic, kimai/kimai, firefly-iii/firefly-iii, humhub/humhub | tests/fixtures/root-replace/composer.json, src/lock.rs:1817 |
+| provide | 0 of 20 | 3 | -- | tests/fixtures/validate/fixable/composer.json, src/autoload/installed.rs:766, src/lock.rs:1844 |
+| self.version | 1 of 20 | 3 | mautic/mautic | tests/repository.rs:295, tests/self_version_root.rs:1, src/autoload/installed.rs:773 |
+| no-packagist | 0 of 20 | 21 | -- | tests/fixtures/ignore-platform-solve/composer.json, tests/fixtures/package-repository/composer.json, tests/fixtures/satis/psr-project/composer.json |
+| conflict | 4 of 20 | 2 | phpmyadmin/phpmyadmin, snipe/snipe-it, mautic/mautic, kimai/kimai | tests/problem_messages.rs:115, src/lock.rs:1742 |
+| config.platform | 14 of 20 | 4 | symfony/demo, composer/composer, phpunit/phpunit, wp-cli/wp-cli-bundle, phpmyadmin/phpmyadmin, matomo-org/matomo, koel/koel, pixelfed/pixelfed, BookStackApp/BookStack, mautic/mautic, kimai/kimai, firefly-iii/firefly-iii, pterodactyl/panel, humhub/humhub | tests/fixtures/platform-check-php/composer.json, tests/install_index_merge.rs:159, tests/update.rs:1469 |
+| allow-plugins | 14 of 20 | 15 | symfony/demo, wp-cli/wp-cli-bundle, phpmyadmin/phpmyadmin, matomo-org/matomo, monicahq/monica, koel/koel, pixelfed/pixelfed, snipe/snipe-it, mautic/mautic, kimai/kimai, firefly-iii/firefly-iii, librenms/librenms, humhub/humhub, akaunting/akaunting | tests/fixtures/plugins/c3/composer.json, tests/fixtures/plugins/composer-patches/composer.json, tests/fixtures/plugins/craft/composer.json |
+| branch-alias(lock) | 20 of 20 | 29 | symfony/demo, composer/composer, phpunit/phpunit, wp-cli/wp-cli-bundle, gamebetr/provable, reedware/laravel-api, phpmyadmin/phpmyadmin, matomo-org/matomo, monicahq/monica, koel/koel, pixelfed/pixelfed, BookStackApp/BookStack, snipe/snipe-it, mautic/mautic, kimai/kimai, firefly-iii/firefly-iii, pterodactyl/panel, librenms/librenms, humhub/humhub, akaunting/akaunting | tests/fixtures/audit/vulnerable/composer.json, tests/fixtures/legacy/composer.json, tests/fixtures/minimal-changes/composer.json |
+| inline-alias(root) | 0 of 20 | 8 | -- | tests/fixtures/root-alias/composer.json, tests/install_e2e.rs:338, tests/lock_merge.rs:375 |
+| lock-aliases | 0 of 20 | 2 | -- | tests/fixtures/root-alias/composer.json, tests/install_index_merge.rs:154 |
+| dev-*(root) | 9 of 20 | 20 | wp-cli/wp-cli-bundle, matomo-org/matomo, monicahq/monica, koel/koel, snipe/snipe-it, mautic/mautic, firefly-iii/firefly-iii, librenms/librenms, humhub/humhub | tests/fixtures/root-alias/composer.json, tests/install_e2e.rs:580, tests/path_repository.rs:71 |
+| stability-flags(lock) | 9 of 20 | 2 | wp-cli/wp-cli-bundle, matomo-org/matomo, monicahq/monica, koel/koel, snipe/snipe-it, mautic/mautic, firefly-iii/firefly-iii, librenms/librenms, humhub/humhub | tests/fixtures/root-alias/composer.json, tests/install_index_merge.rs:156 |
+| repo:vcs | 3 of 20 | 3 | matomo-org/matomo, koel/koel, snipe/snipe-it | tests/install_e2e.rs:960, tests/vcs.rs:97, src/repository.rs:3662 |
+| repo:path | 1 of 20 | 18 | mautic/mautic | tests/fixtures/lock-operations/composer.json, tests/fixtures/metapackage/composer.json, tests/fixtures/path/composer.json |
+| repo:composer | 2 of 20 | 12 | phpmyadmin/phpmyadmin, humhub/humhub | tests/fixtures/ignore-platform-solve/composer.json, tests/fixtures/satis/psr-project/composer.json, tests/fixtures/show/outdated-monolog/composer.json |
+| repo:package | 1 of 20 | 8 | akaunting/akaunting | tests/fixtures/metapackage/composer.json, tests/fixtures/package-repository/composer.json, tests/fixtures/self-version-root/default-version/composer.json |
+| repo:artifact | 1 of 20 | 1 | kimai/kimai | src/repository.rs:3627 |
+| lock-type≠lib/meta | 17 of 20 | 12 | symfony/demo, composer/composer, wp-cli/wp-cli-bundle, phpmyadmin/phpmyadmin, matomo-org/matomo, monicahq/monica, koel/koel, pixelfed/pixelfed, BookStackApp/BookStack, snipe/snipe-it, mautic/mautic, kimai/kimai, firefly-iii/firefly-iii, pterodactyl/panel, librenms/librenms, humhub/humhub, akaunting/akaunting | tests/fixtures/plugins/c3/composer.json, tests/fixtures/plugins/composer-patches/composer.json, tests/fixtures/plugins/craft/composer.json |
+| lock-dev-version | 10 of 20 | 6 | phpunit/phpunit, wp-cli/wp-cli-bundle, matomo-org/matomo, monicahq/monica, koel/koel, snipe/snipe-it, mautic/mautic, firefly-iii/firefly-iii, librenms/librenms, humhub/humhub | tests/fixtures/root-alias/composer.json, tests/install_e2e.rs:841, tests/update.rs:948 |
+
+**used, no fixture** (0): none.
+
+**fixture, no use** (4, informational): provide, no-packagist, inline-alias(root), lock-aliases.
+
+### Reading
+
+Of the 23 Part 1 features, 0 are used by at least one corpus project but have no fixture-file or inline-literal hit, and 4 have fixture coverage with no corpus project (of 20 analysed) currently using them. The fixture-files column combines 145 tests/fixtures file hits and 92 inline tests/*.rs and src/**/*.rs #[cfg(test)] literal hits (one hit per file per feature).
 
