@@ -1641,3 +1641,14 @@ TOML beside the path-mapping files. A first draft carried `event` and
 `mechanic` fields nothing read; they went, and come back with the
 dispatcher when a second package binds to a mechanic. Compat on
 drupal/recommended-project identical; bench-ab flat. Next: #342.
+
+## 2026-09-28: the solve guesses the root version (#312)
+
+The 3.5 census ranked #312 first by exposure: every corpus project
+leaves `version` out of composer.json and relies on the guess. The
+solve now uses the same precedence as Composer's RootPackageLoader,
+an explicit version, then `COMPOSER_ROOT_VERSION`, then the git guess
+viv already had for installed.php, then `1.0.0`, computed once per
+solve. Two new git fixtures with a `self.version` require lock
+byte-equal to Composer 2.10.2; a project outside git still gets
+`1.0.0`. bench-ab noop flat.
