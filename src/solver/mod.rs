@@ -89,10 +89,11 @@ pub fn parse_constraint_cached(cache: &mut ConstraintCache, text: &str) -> Resul
 pub async fn solve_full_update<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     prefer_lowest: bool,
 ) -> Result<Vec<ResolvedPackage>> {
-    let built = pool_builder::build(repo, root, prefer_stable, prefer_lowest).await?;
+    let built = pool_builder::build(repo, root, project_dir, prefer_stable, prefer_lowest).await?;
     let policy = DefaultPolicy::new(prefer_stable, prefer_lowest);
     let installed =
         solver::solve(&policy, &built.pool, &built.request).map_err(anyhow::Error::from)?;
@@ -135,10 +136,11 @@ pub struct UpdateResult {
 pub async fn solve_update<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     prefer_lowest: bool,
 ) -> Result<UpdateResult> {
-    let built = pool_builder::build(repo, root, prefer_stable, prefer_lowest).await?;
+    let built = pool_builder::build(repo, root, project_dir, prefer_stable, prefer_lowest).await?;
     resolve(built, root, prefer_stable, prefer_lowest, HashMap::new())
 }
 
@@ -153,13 +155,14 @@ pub async fn solve_update<T: Transport>(
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors solve_update plus one seed slice, the minimal-changes pin set, the \
-              advisory pool filter, the platform-probe cache dir, and the ignore-platform-reqs \
-              filter"
+    reason = "mirrors solve_update plus the project directory (#312's root-version guess), one \
+              seed slice, the minimal-changes pin set, the advisory pool filter, the \
+              platform-probe cache dir, and the ignore-platform-reqs filter"
 )]
 pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     prefer_lowest: bool,
     seed: &[String],
@@ -171,6 +174,7 @@ pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     let built = pool_builder::build_seeded(
         repo,
         root,
+        project_dir,
         prefer_stable,
         prefer_lowest,
         seed,
@@ -192,9 +196,15 @@ pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     clippy::implicit_hasher,
     reason = "internal API, only ever called with the default hasher"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors solve_update plus the project directory (#312's root-version guess), \
+              the locked-by-name map, the allow list, and the allow mode"
+)]
 pub async fn solve_partial_update<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     prefer_lowest: bool,
     locked_by_name: &HashMap<String, Value>,
@@ -204,6 +214,7 @@ pub async fn solve_partial_update<T: Transport>(
     solve_partial_update_seeded::<T, crate::audit::NoAdvisories>(
         repo,
         root,
+        project_dir,
         prefer_stable,
         prefer_lowest,
         locked_by_name,
@@ -229,13 +240,14 @@ pub async fn solve_partial_update<T: Transport>(
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors solve_partial_update plus one seed slice, the minimal-changes pin set, \
-              the advisory pool filter, the platform-probe cache dir, and the \
-              ignore-platform-reqs filter"
+    reason = "mirrors solve_partial_update plus the project directory (#312's root-version \
+              guess), one seed slice, the minimal-changes pin set, the advisory pool filter, \
+              the platform-probe cache dir, and the ignore-platform-reqs filter"
 )]
 pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     prefer_lowest: bool,
     locked_by_name: &HashMap<String, Value>,
@@ -250,6 +262,7 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     solve_partial_update_seeded_inner(
         repo,
         root,
+        project_dir,
         prefer_stable,
         prefer_lowest,
         locked_by_name,
@@ -283,6 +296,7 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
 pub async fn solve_partial_update_as_of<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     prefer_lowest: bool,
     locked_by_name: &HashMap<String, Value>,
@@ -293,6 +307,7 @@ pub async fn solve_partial_update_as_of<T: Transport>(
     solve_partial_update_seeded_inner::<T, crate::audit::NoAdvisories>(
         repo,
         root,
+        project_dir,
         prefer_stable,
         prefer_lowest,
         locked_by_name,
@@ -324,6 +339,7 @@ pub async fn solve_partial_update_as_of<T: Transport>(
 async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     prefer_lowest: bool,
     locked_by_name: &HashMap<String, Value>,
@@ -367,6 +383,7 @@ async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>
     let built = pool_builder::build_partial_seeded(
         repo,
         root,
+        project_dir,
         locked_by_name,
         &allow_names,
         prefer_stable,
@@ -501,7 +518,8 @@ fn resolve(
             }
         }
         let second_pool = Pool::new(second_packages);
-        let second_request = pool_builder::require_only_request(root, fixed_count)?;
+        let second_request =
+            pool_builder::require_only_request(root, fixed_count, &built.own_pretty_version)?;
         let installed2 =
             solver::solve(&policy, &second_pool, &second_request).map_err(anyhow::Error::from)?;
         let non_dev = transaction::resolved_packages(&second_pool, &installed2, &second_request);
@@ -537,6 +555,7 @@ fn resolve(
         platform_reqs,
         platform_dev_reqs,
         platform_overrides,
+        own_pretty_version: _,
     } = built;
     std::mem::forget(pool);
     std::mem::forget(request);

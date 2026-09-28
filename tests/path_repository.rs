@@ -131,7 +131,7 @@ async fn path_repository_update_matches_composer_byte_for_byte() {
     let repo = Repository::from_composer_json(project_dir.path(), &root, cache.path(), &transport)
         .await
         .unwrap();
-    let result = vivace::solver::solve_update(&repo, &root, false, false)
+    let result = vivace::solver::solve_update(&repo, &root, project_dir.path(), false, false)
         .await
         .unwrap();
     let options = vivace::lock_writer::LockOptions {

@@ -109,6 +109,7 @@ async fn require_reproduces_composers_lock() {
     let result = solver::solve_partial_update(
         &repo,
         &root,
+        &fixture,
         false,
         false,
         &locked_by_name,
@@ -159,6 +160,7 @@ async fn remove_reproduces_composers_lock() {
     let result = solver::solve_partial_update(
         &repo,
         &root,
+        &fixture,
         false,
         false,
         &locked_by_name,
@@ -393,7 +395,7 @@ async fn warm_monolog_cache_and_store(ctx: &TestContext, fixture: &Path) {
         .unwrap();
     let root: Value =
         serde_json::from_slice(&fs_err::read(fixture.join("composer.json")).unwrap()).unwrap();
-    solver::solve_update(&repo, &root, false, false)
+    solver::solve_update(&repo, &root, fixture, false, false)
         .await
         .unwrap();
 
@@ -589,7 +591,7 @@ async fn viv_add_resolves_from_a_composer_type_repository() {
     // both packages (`offline_partial_update_context`'s own pattern in
     // `tests/update.rs`): the actual lock this test cares about is the one
     // the real `viv add` binary below writes, not this one.
-    solver::solve_update(&repo, &root, false, false)
+    solver::solve_update(&repo, &root, project, false, false)
         .await
         .unwrap();
 
@@ -662,7 +664,7 @@ async fn viv_add_offline_synthesizes_a_constraint_from_a_composer_type_repositor
     // Only for its side effect of warming `ctx.cache`'s on-disk cache for
     // both packages: the actual lock/composer.json this test cares about is
     // what the real `viv add` binary below writes, not this one.
-    solver::solve_update(&repo, &root, false, false)
+    solver::solve_update(&repo, &root, project, false, false)
         .await
         .unwrap();
 

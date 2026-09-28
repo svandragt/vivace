@@ -74,7 +74,7 @@ async fn dedup_requires_matches_composer() {
         }
     });
 
-    let Err(err) = solver::solve_update(&repo, &root, false, false).await else {
+    let Err(err) = solver::solve_update(&repo, &root, cache.path(), false, false).await else {
         panic!("expected an unsatisfiable request to fail")
     };
     let solver_error = err
@@ -132,7 +132,7 @@ async fn conflict_dedup_matches_composer() {
         }
     });
 
-    let Err(err) = solver::solve_update(&repo, &root, false, false).await else {
+    let Err(err) = solver::solve_update(&repo, &root, cache.path(), false, false).await else {
         panic!("expected an unsatisfiable request to fail")
     };
     let solver_error = err
@@ -222,6 +222,7 @@ async fn advisory_blocked_root_require_names_the_advisory_and_no_blocking() {
     let Err(err) = solver::solve_update_seeded(
         &repo,
         &root,
+        cache.path(),
         false,
         false,
         &[],

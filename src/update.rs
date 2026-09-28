@@ -521,6 +521,7 @@ async fn solve(
         let result = solver::solve_update_seeded(
             &repo,
             root,
+            project_dir,
             prefer_stable,
             args.prefer_lowest,
             &seed,
@@ -560,6 +561,7 @@ async fn solve(
     let result = solver::solve_partial_update_seeded(
         &repo,
         root,
+        project_dir,
         prefer_stable,
         args.prefer_lowest,
         &locked_by_name,
