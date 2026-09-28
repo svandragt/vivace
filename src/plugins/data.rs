@@ -19,9 +19,11 @@
 //! #341 extends the same loader to adapters that don't map install paths at
 //! all: `Rule::Scaffold` names `drupal/core-composer-scaffold`'s plugin
 //! package and the `extra` key its config lives under, so
-//! `drupal_scaffold.rs` keeps only the file-copy mechanic. `event`/`mechanic`
-//! are read-only, self-documenting fields — there's only one package bound
-//! to `copy-files` today, so nothing dispatches on them yet.
+//! `drupal_scaffold.rs` keeps only the file-copy mechanic; `Rule::Patches`
+//! does the same for `cweagans/composer-patches` and `patches.rs`.
+//! `event`/`mechanic` are read-only, self-documenting fields — there's only
+//! one package bound to each mechanic today, so nothing dispatches on them
+//! yet.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -41,6 +43,7 @@ const FILES: &[&str] = &[
     include_str!("data/johnpbloch-wordpress-core-installer.toml"),
     include_str!("data/roots-wordpress-core-installer.toml"),
     include_str!("data/drupal-core-composer-scaffold.toml"),
+    include_str!("data/cweagans-composer-patches.toml"),
 ];
 
 #[derive(Deserialize)]
@@ -93,6 +96,21 @@ enum Rule {
         #[allow(dead_code)]
         mechanic: String,
     },
+    /// `cweagans/composer-patches`' patch-apply binding (`patches.rs`):
+    /// never matches [`install_path`] — the plugin package, the root
+    /// `extra` key holding inline patch definitions, and the `extra
+    /// .composer-patches` config key naming an external patches file.
+    Patches {
+        package: String,
+        #[allow(dead_code)]
+        event: Vec<String>,
+        #[serde(rename = "extra-key")]
+        extra_key: String,
+        #[serde(rename = "patches-file-key")]
+        patches_file_key: String,
+        #[allow(dead_code)]
+        mechanic: String,
+    },
 }
 
 impl Rule {
@@ -109,7 +127,7 @@ impl Rule {
                 default,
             } => (package.r#type == *r#type)
                 .then(|| named_override_path(key, default, package, root_extra)),
-            Rule::Scaffold { .. } => None,
+            Rule::Scaffold { .. } | Rule::Patches { .. } => None,
         }
     }
 }
@@ -264,6 +282,34 @@ pub(super) fn scaffold_rule() -> ScaffoldRule {
         .expect("embedded drupal-core-composer-scaffold.toml")
 }
 
+/// `cweagans/composer-patches`' parsed binding — `patches.rs`'s only reads
+/// of its plugin package name or either `extra` key.
+pub(super) struct PatchesRule {
+    pub package: &'static str,
+    pub extra_key: &'static str,
+    pub patches_file_key: &'static str,
+}
+
+/// The one embedded `Rule::Patches` entry. `patches.rs`'s only caller.
+pub(super) fn patches_rule() -> PatchesRule {
+    rules()
+        .iter()
+        .find_map(|rule| match rule {
+            Rule::Patches {
+                package,
+                extra_key,
+                patches_file_key,
+                ..
+            } => Some(PatchesRule {
+                package: package.as_str(),
+                extra_key: extra_key.as_str(),
+                patches_file_key: patches_file_key.as_str(),
+            }),
+            _ => None,
+        })
+        .expect("embedded cweagans-composer-patches.toml")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +387,28 @@ mod tests {
             &["post-install-cmd", "post-update-cmd", "pre-autoload-dump"]
         );
         assert_eq!(mechanic, "copy-files");
+    }
+
+    /// #341: `cweagans-composer-patches.toml` parses to the package name and
+    /// `extra` keys `patches.rs` reads, and its `event`/`mechanic` fields are
+    /// the ones the module doc names.
+    #[test]
+    fn patches_rule_matches_the_embedded_file() {
+        let rule = patches_rule();
+        assert_eq!(rule.package, "cweagans/composer-patches");
+        assert_eq!(rule.extra_key, "patches");
+        assert_eq!(rule.patches_file_key, "patches-file");
+
+        let Rule::Patches {
+            event, mechanic, ..
+        } = rules()
+            .iter()
+            .find(|r| matches!(r, Rule::Patches { .. }))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(event, &["post-package-install", "post-package-update"]);
+        assert_eq!(mechanic, "apply-patches");
     }
 }

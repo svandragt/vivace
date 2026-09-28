@@ -1,0 +1,11 @@
+# `cweagans/composer-patches`' patch-apply binding (`patches.rs`): applies
+# on `post-package-install`/`post-package-update`; root `extra.patches`
+# (the key named here) holds inline patch definitions, and
+# `extra.composer-patches.patches-file` (the sub-key named here) points at
+# an external patches file, `patches.json` by default.
+kind = "patches"
+package = "cweagans/composer-patches"
+event = ["post-package-install", "post-package-update"]
+extra-key = "patches"
+patches-file-key = "patches-file"
+mechanic = "apply-patches"

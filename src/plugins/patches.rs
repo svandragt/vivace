@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -36,7 +37,10 @@ pub(super) struct Patches;
 
 impl Adapter for Patches {
     fn plugin_names(&self) -> &'static [&'static str] {
-        &["cweagans/composer-patches"]
+        static NAMES: OnceLock<[&'static str; 1]> = OnceLock::new();
+        NAMES
+            .get_or_init(|| [super::data::patches_rule().package])
+            .as_slice()
     }
 
     fn upstream_version(&self) -> &'static str {
@@ -96,7 +100,7 @@ struct Config {
 fn config(root: &Root) -> Config {
     let cfg = root.extra.get("composer-patches");
     let patches_file = cfg
-        .and_then(|c| c.get("patches-file"))
+        .and_then(|c| c.get(super::data::patches_rule().patches_file_key))
         .and_then(Value::as_str)
         .unwrap_or("patches.json")
         .to_string();
@@ -227,7 +231,11 @@ fn resolve(root: &Root, project_dir: &Path) -> Result<(Config, Group<Patch>)> {
     let cfg = config(root);
     let mut collection = Vec::new();
 
-    if let Some(defs) = root.extra.get("patches").and_then(Value::as_object) {
+    if let Some(defs) = root
+        .extra
+        .get(super::data::patches_rule().extra_key)
+        .and_then(Value::as_object)
+    {
         merge(&mut collection, parse_group(defs, "root"));
     }
 
