@@ -827,8 +827,9 @@ with no system package manager. The gap: static-php-cli's prebuilt set
 lacks `intl`, which 7 of 20 projects need, so a build needs a custom
 `spc build` or its own `intl` binary.
 
-Whether to build `viv php install` and the `viv run` described above is
-the maintainer's decision.
+**Decision, 2026-09-28: build.** #337 `viv php install`, #338 `viv run`,
+#339 `intl`, in the `g3 research 1: PHP toolchain` milestone. Candidate
+3.2 is measured after they land.
 
 ### Candidate 3.2: isolate dependencies per plugin
 

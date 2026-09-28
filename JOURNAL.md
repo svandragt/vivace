@@ -1534,3 +1534,15 @@ third-party repository that needs root. A static-php-cli build sets up in
 0.07 s with no root; its prebuilt set lacks `intl`, which 7 of 20 need.
 Project tools would run through `viv run`, which tries a script, then
 `vendor/bin`, then `PATH` on the pinned PHP; `viv x` stays isolated.
+
+## 2026-09-28: candidate 3.1 goes to build
+
+The build decision on 3.1 is taken: build. Three issues under the
+`g3 research 1: PHP toolchain` milestone: #337 `viv php install
+<version>` from static-php-cli builds, pinned through the existing
+`config.platform` keys in `composer.json` so no new manifest field;
+#338 `viv run <name>`, with `viv run wp plugin list` on a machine
+without PHP as the acceptance story; #339 an `intl`-capable build for
+the 7 of 20 projects that need it. Candidate 3.2 waits until these
+land. Packaging polish filed outside any milestone: #334 debuginfo in
+test binaries, #335 man pages, #336 shell completions.
