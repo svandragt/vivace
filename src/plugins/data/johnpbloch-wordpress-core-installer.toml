@@ -1,0 +1,10 @@
+# johnpbloch/wordpress-core-installer's getInstallPath (#340): a
+# `wordpress-core` package's install dir is the root's
+# `extra.wordpress-install-dir` (a string, or a map keyed by the package's
+# pretty name), else the package's own `extra.wordpress-install-dir`, else
+# the literal "wordpress". No `{$var}` template — every value here is used
+# verbatim, unlike composer/installers' `type-template` rule.
+kind = "named-override"
+type = "wordpress-core"
+key = "wordpress-install-dir"
+default = "wordpress"

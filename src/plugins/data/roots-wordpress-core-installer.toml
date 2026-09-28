@@ -1,0 +1,10 @@
+# roots/wordpress-core-installer's getInstallPath (#340): byte-identical to
+# johnpbloch/wordpress-core-installer's own rule (roots `replace`s it and
+# carries the same `WordPressCoreInstaller.php` forward — see
+# src/plugins/wordpress_core.rs's module doc comment), so this file repeats
+# johnpbloch-wordpress-core-installer.toml's content under its own package
+# name rather than the loader special-casing one file standing in for two.
+kind = "named-override"
+type = "wordpress-core"
+key = "wordpress-install-dir"
+default = "wordpress"
