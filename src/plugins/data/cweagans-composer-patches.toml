@@ -5,7 +5,5 @@
 # an external patches file, `patches.json` by default.
 kind = "patches"
 package = "cweagans/composer-patches"
-event = ["post-package-install", "post-package-update"]
 extra-key = "patches"
 patches-file-key = "patches-file"
-mechanic = "apply-patches"

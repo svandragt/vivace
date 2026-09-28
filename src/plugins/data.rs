@@ -21,9 +21,6 @@
 //! package and the `extra` key its config lives under, so
 //! `drupal_scaffold.rs` keeps only the file-copy mechanic; `Rule::Patches`
 //! does the same for `cweagans/composer-patches` and `patches.rs`.
-//! `event`/`mechanic` are read-only, self-documenting fields — there's only
-//! one package bound to each mechanic today, so nothing dispatches on them
-//! yet.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -86,15 +83,8 @@ enum Rule {
     /// section lives under, read by [`scaffold_rule`] instead.
     Scaffold {
         package: String,
-        // Self-documenting metadata, not read by any mechanic yet (only one
-        // package is ever bound to `copy-files`) — proved parsed correctly
-        // by `scaffold_rule_matches_the_embedded_file` instead of a caller.
-        #[allow(dead_code)]
-        event: Vec<String>,
         #[serde(rename = "extra-key")]
         extra_key: String,
-        #[allow(dead_code)]
-        mechanic: String,
     },
     /// `cweagans/composer-patches`' patch-apply binding (`patches.rs`):
     /// never matches [`install_path`] — the plugin package, the root
@@ -102,14 +92,10 @@ enum Rule {
     /// .composer-patches` config key naming an external patches file.
     Patches {
         package: String,
-        #[allow(dead_code)]
-        event: Vec<String>,
         #[serde(rename = "extra-key")]
         extra_key: String,
         #[serde(rename = "patches-file-key")]
         patches_file_key: String,
-        #[allow(dead_code)]
-        mechanic: String,
     },
 }
 
@@ -364,51 +350,22 @@ mod tests {
         assert!(install_path(&package("acme/hello", "library"), &json!({})).is_none());
     }
 
-    /// #341: `drupal-core-composer-scaffold.toml` parses to the package name
-    /// and `extra` key `drupal_scaffold.rs` reads, and its `event`/`mechanic`
-    /// fields are the ones the module doc names.
+    /// #341: `drupal-core-composer-scaffold.toml` parses to the package
+    /// name and `extra` key `drupal_scaffold.rs` reads.
     #[test]
     fn scaffold_rule_matches_the_embedded_file() {
         let rule = scaffold_rule();
         assert_eq!(rule.package, "drupal/core-composer-scaffold");
         assert_eq!(rule.extra_key, "drupal-scaffold");
-
-        let Rule::Scaffold {
-            event, mechanic, ..
-        } = rules()
-            .iter()
-            .find(|r| matches!(r, Rule::Scaffold { .. }))
-            .unwrap()
-        else {
-            unreachable!()
-        };
-        assert_eq!(
-            event,
-            &["post-install-cmd", "post-update-cmd", "pre-autoload-dump"]
-        );
-        assert_eq!(mechanic, "copy-files");
     }
 
     /// #341: `cweagans-composer-patches.toml` parses to the package name and
-    /// `extra` keys `patches.rs` reads, and its `event`/`mechanic` fields are
-    /// the ones the module doc names.
+    /// `extra` keys `patches.rs` reads.
     #[test]
     fn patches_rule_matches_the_embedded_file() {
         let rule = patches_rule();
         assert_eq!(rule.package, "cweagans/composer-patches");
         assert_eq!(rule.extra_key, "patches");
         assert_eq!(rule.patches_file_key, "patches-file");
-
-        let Rule::Patches {
-            event, mechanic, ..
-        } = rules()
-            .iter()
-            .find(|r| matches!(r, Rule::Patches { .. }))
-            .unwrap()
-        else {
-            unreachable!()
-        };
-        assert_eq!(event, &["post-package-install", "post-package-update"]);
-        assert_eq!(mechanic, "apply-patches");
     }
 }
