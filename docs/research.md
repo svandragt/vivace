@@ -969,3 +969,32 @@ the lock, and 3.2 is a problem Composer cannot solve. Candidates 3.3 and
 3 feature has users. Candidate 3.5 is cheapest to measure and mostly
 informs the manifest the others need.
 
+**Result, 2026-09-28: measured, not built.** `bench/results/g3-rules.md`,
+from `bench/g3-rules/features.py` (`make bench-g3-rules`, 153 s) over the
+20 corpus and `compat/hunted.md` projects that commit a lock, plus 38
+closed compatibility issues classified by the feature that caused them.
+
+Use, of 20 projects: no root `version` (root-version guessing) 20;
+a locked package with `extra.branch-alias` 20 (1309 packages); locked
+packages of a type other than library 17; `config.platform` 14;
+`config.allow-plugins` 14; `prefer-stable` 9; a `dev-*` constraint 9;
+non-Packagist `repositories` 8 (vcs 3, composer 2, path, package and
+artifact 1 each); `replace` 5; root `extra.branch-alias` 5; `conflict`
+4; non-stable `minimum-stability` 3; `self.version` 1; inline aliases 0;
+`provide` 0.
+
+Bugs, of 38: `repositories` 9, `replace` and `provide` 5, `branch-alias`
+5, package type 2, root-version guessing 2, `dev-*` and stability flags
+1, none of these 12 (autoload, output, plugins; 15 plugin-adapter bugs
+sit outside the count).
+
+The two lists do not overlap the way the candidate assumed. The features
+no project uses (inline aliases, `provide`, `self.version`) caused no
+bugs, so a manifest without them fixes nothing. The features behind the
+bugs are the ones most projects depend on: every lock carries packages
+with a branch alias, 8 of 20 add a repository, 5 use `replace`. A
+generation 3 schema could drop three unused features for no gain, or
+drop the bug-prone ones and break most of the corpus. Not built. What the
+count does say: compatibility work should go on `repositories` (vcs and
+path resolution) and `replace` before anything else, and the 15 adapter
+bugs point at candidate 3.4, not at resolution rules.
