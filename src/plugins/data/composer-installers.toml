@@ -1,0 +1,489 @@
+# composer/installers' BaseInstaller::getInstallPath (#340, src/plugins/installers.rs
+# before this file existed): package-type default install path, keyed by the
+# "framework" prefix of a package's `type` (the part before its first `-`), then
+# by the suffix after it. Ported verbatim from every
+# `Composer\Installers\*Installer::$locations` array (composer/installers `main`,
+# fetched 2026-09-06); see docs/plugin-strategy.md for how this data is loaded.
+kind = "type-template"
+paths-key = "installer-paths"
+name-key = "installer-name"
+
+[types.agl]
+module = "More/{$name}/"
+
+[types.akaunting]
+module = "modules/{$name}"
+
+[types.annotatecms]
+module = "addons/modules/{$name}/"
+component = "addons/components/{$name}/"
+service = "addons/services/{$name}/"
+
+[types.asgard]
+module = "Modules/{$name}/"
+theme = "Themes/{$name}/"
+
+[types.attogram]
+module = "modules/{$name}/"
+
+[types.bitrix]
+module = "{$bitrix_dir}/modules/{$name}/"
+component = "{$bitrix_dir}/components/{$name}/"
+theme = "{$bitrix_dir}/templates/{$name}/"
+d7-module = "{$bitrix_dir}/modules/{$vendor}.{$name}/"
+d7-component = "{$bitrix_dir}/components/{$vendor}/{$name}/"
+d7-template = "{$bitrix_dir}/templates/{$vendor}_{$name}/"
+
+[types.bonefish]
+package = "Packages/{$vendor}/{$name}/"
+
+[types.botble]
+plugin = "platform/plugins/{$name}/"
+theme = "platform/themes/{$name}/"
+
+[types.cakephp]
+plugin = "Plugin/{$name}/"
+
+[types.ccframework]
+ship = "CCF/orbit/{$name}/"
+theme = "CCF/app/themes/{$name}/"
+
+[types.chef]
+cookbook = "Chef/{$vendor}/{$name}/"
+role = "Chef/roles/{$name}/"
+
+[types.civicrm]
+ext = "ext/{$name}/"
+
+[types.cockpit]
+module = "cockpit/modules/addons/{$name}/"
+
+[types.codeigniter]
+library = "application/libraries/{$name}/"
+third-party = "application/third_party/{$name}/"
+module = "application/modules/{$name}/"
+
+[types.concrete5]
+core = "concrete/"
+block = "application/blocks/{$name}/"
+package = "packages/{$name}/"
+theme = "application/themes/{$name}/"
+update = "updates/{$name}/"
+
+[types.concretecms]
+core = "concrete/"
+block = "application/blocks/{$name}/"
+package = "packages/{$name}/"
+theme = "application/themes/{$name}/"
+update = "updates/{$name}/"
+
+[types.croogo]
+plugin = "Plugin/{$name}/"
+theme = "View/Themed/{$name}/"
+
+[types.decibel]
+app = "app/{$name}/"
+
+[types.dframe]
+module = "modules/{$vendor}/{$name}/"
+
+[types.dokuwiki]
+plugin = "lib/plugins/{$name}/"
+template = "lib/tpl/{$name}/"
+
+[types.dolibarr]
+module = "htdocs/custom/{$name}/"
+
+[types.drupal]
+core = "core/"
+module = "modules/{$name}/"
+theme = "themes/{$name}/"
+library = "libraries/{$name}/"
+profile = "profiles/{$name}/"
+database-driver = "drivers/lib/Drupal/Driver/Database/{$name}/"
+drush = "drush/{$name}/"
+custom-theme = "themes/custom/{$name}/"
+custom-module = "modules/custom/{$name}/"
+custom-profile = "profiles/custom/{$name}/"
+drupal-multisite = "sites/{$name}/"
+console = "console/{$name}/"
+console-language = "console/language/{$name}/"
+config = "config/sync/"
+recipe = "recipes/{$name}"
+
+[types.ee2]
+addon = "system/expressionengine/third_party/{$name}/"
+theme = "themes/third_party/{$name}/"
+
+[types.ee3]
+addon = "system/user/addons/{$name}/"
+theme = "themes/user/{$name}/"
+
+[types.elgg]
+plugin = "mod/{$name}/"
+
+[types.eliasis]
+component = "components/{$name}/"
+module = "modules/{$name}/"
+plugin = "plugins/{$name}/"
+template = "templates/{$name}/"
+
+[types.ezplatform]
+meta-assets = "web/assets/ezplatform/"
+assets = "web/assets/ezplatform/{$name}/"
+
+[types.fork]
+module = "src/Modules/{$name}/"
+theme = "src/Themes/{$name}/"
+
+[types.fuel]
+module = "fuel/app/modules/{$name}/"
+package = "fuel/packages/{$name}/"
+theme = "fuel/app/themes/{$name}/"
+
+[types.fuelphp]
+component = "components/{$name}/"
+
+[types.grav]
+plugin = "user/plugins/{$name}/"
+theme = "user/themes/{$name}/"
+
+[types.hurad]
+plugin = "plugins/{$name}/"
+theme = "plugins/{$name}/"
+
+[types.imagecms]
+template = "templates/{$name}/"
+module = "application/modules/{$name}/"
+library = "application/libraries/{$name}/"
+
+[types.itop]
+extension = "extensions/{$name}/"
+
+[types.kanboard]
+plugin = "plugins/{$name}/"
+
+[types.known]
+plugin = "IdnoPlugins/{$name}/"
+theme = "Themes/{$name}/"
+console = "ConsolePlugins/{$name}/"
+
+[types.kodicms]
+plugin = "cms/plugins/{$name}/"
+media = "cms/media/vendor/{$name}/"
+
+[types.kohana]
+module = "modules/{$name}/"
+
+[types.laravel]
+library = "libraries/{$name}/"
+
+[types.lavalite]
+package = "packages/{$vendor}/{$name}/"
+theme = "public/themes/{$name}/"
+
+[types.lithium]
+library = "libraries/{$name}/"
+source = "libraries/_source/{$name}/"
+
+[types.lms]
+plugin = "plugins/{$name}/"
+template = "templates/{$name}/"
+document-template = "documents/templates/{$name}/"
+userpanel-module = "userpanel/modules/{$name}/"
+
+[types.magento]
+theme = "app/design/frontend/{$name}/"
+skin = "skin/frontend/default/{$name}/"
+library = "lib/{$name}/"
+
+[types.majima]
+plugin = "plugins/{$name}/"
+
+[types.mako]
+package = "app/packages/{$name}/"
+
+[types.mantisbt]
+plugin = "plugins/{$name}/"
+
+[types.matomo]
+plugin = "plugins/{$name}/"
+
+[types.mautic]
+plugin = "plugins/{$name}/"
+theme = "themes/{$name}/"
+core = "app/"
+
+[types.maya]
+module = "modules/{$name}/"
+
+[types.mediawiki]
+core = "core/"
+extension = "extensions/{$name}/"
+skin = "skins/{$name}/"
+
+[types.miaoxing]
+plugin = "plugins/{$name}/"
+
+[types.microweber]
+module = "userfiles/modules/{$install_item_dir}/"
+module-skin = "userfiles/modules/{$install_item_dir}/templates/"
+template = "userfiles/templates/{$install_item_dir}/"
+element = "userfiles/elements/{$install_item_dir}/"
+vendor = "vendor/{$install_item_dir}/"
+components = "components/{$install_item_dir}/"
+
+[types.modulework]
+module = "modules/{$name}/"
+
+[types.modx]
+extra = "core/packages/{$name}/"
+
+[types.modxevo]
+snippet = "assets/snippets/{$name}/"
+plugin = "assets/plugins/{$name}/"
+module = "assets/modules/{$name}/"
+template = "assets/templates/{$name}/"
+lib = "assets/lib/{$name}/"
+
+[types.moodle]
+mod = "mod/{$name}/"
+admin_report = "admin/report/{$name}/"
+atto = "lib/editor/atto/plugins/{$name}/"
+tool = "admin/tool/{$name}/"
+assignment = "mod/assignment/type/{$name}/"
+assignsubmission = "mod/assign/submission/{$name}/"
+assignfeedback = "mod/assign/feedback/{$name}/"
+antivirus = "lib/antivirus/{$name}/"
+auth = "auth/{$name}/"
+availability = "availability/condition/{$name}/"
+block = "blocks/{$name}/"
+booktool = "mod/book/tool/{$name}/"
+cachestore = "cache/stores/{$name}/"
+cachelock = "cache/locks/{$name}/"
+calendartype = "calendar/type/{$name}/"
+communication = "communication/provider/{$name}/"
+customfield = "customfield/field/{$name}/"
+fileconverter = "files/converter/{$name}/"
+format = "course/format/{$name}/"
+coursereport = "course/report/{$name}/"
+contenttype = "contentbank/contenttype/{$name}/"
+customcertelement = "mod/customcert/element/{$name}/"
+datafield = "mod/data/field/{$name}/"
+dataformat = "dataformat/{$name}/"
+datapreset = "mod/data/preset/{$name}/"
+editor = "lib/editor/{$name}/"
+enrol = "enrol/{$name}/"
+filter = "filter/{$name}/"
+forumreport = "mod/forum/report/{$name}/"
+gradeexport = "grade/export/{$name}/"
+gradeimport = "grade/import/{$name}/"
+gradereport = "grade/report/{$name}/"
+gradingform = "grade/grading/form/{$name}/"
+h5plib = "h5p/h5plib/{$name}/"
+local = "local/{$name}/"
+logstore = "admin/tool/log/store/{$name}/"
+ltisource = "mod/lti/source/{$name}/"
+ltiservice = "mod/lti/service/{$name}/"
+media = "media/player/{$name}/"
+message = "message/output/{$name}/"
+mlbackend = "lib/mlbackend/{$name}/"
+mnetservice = "mnet/service/{$name}/"
+paygw = "payment/gateway/{$name}/"
+plagiarism = "plagiarism/{$name}/"
+portfolio = "portfolio/{$name}/"
+qbank = "question/bank/{$name}/"
+qbehaviour = "question/behaviour/{$name}/"
+qformat = "question/format/{$name}/"
+qtype = "question/type/{$name}/"
+quizaccess = "mod/quiz/accessrule/{$name}/"
+quiz = "mod/quiz/report/{$name}/"
+report = "report/{$name}/"
+repository = "repository/{$name}/"
+scormreport = "mod/scorm/report/{$name}/"
+search = "search/engine/{$name}/"
+theme = "theme/{$name}/"
+tiny = "lib/editor/tiny/plugins/{$name}/"
+tinymce = "lib/editor/tinymce/plugins/{$name}/"
+profilefield = "user/profile/field/{$name}/"
+webservice = "webservice/{$name}/"
+workshopallocation = "mod/workshop/allocation/{$name}/"
+workshopeval = "mod/workshop/eval/{$name}/"
+workshopform = "mod/workshop/form/{$name}/"
+
+[types.october]
+module = "modules/{$name}/"
+plugin = "plugins/{$vendor}/{$name}/"
+theme = "themes/{$vendor}-{$name}/"
+
+[types.ontowiki]
+extension = "extensions/{$name}/"
+theme = "extensions/themes/{$name}/"
+translation = "extensions/translations/{$name}/"
+
+[types.osclass]
+plugin = "oc-content/plugins/{$name}/"
+theme = "oc-content/themes/{$name}/"
+language = "oc-content/languages/{$name}/"
+
+[types.oxid]
+module = "modules/{$name}/"
+theme = "application/views/{$name}/"
+out = "out/{$name}/"
+
+[types.phifty]
+bundle = "bundles/{$name}/"
+library = "libraries/{$name}/"
+framework = "frameworks/{$name}/"
+
+[types.phpbb]
+extension = "ext/{$vendor}/{$name}/"
+language = "language/{$name}/"
+style = "styles/{$name}/"
+
+[types.piwik]
+plugin = "plugins/{$name}/"
+
+[types.plentymarkets]
+plugin = "{$name}/"
+
+[types.porto]
+container = "app/Containers/{$name}/"
+
+[types.ppi]
+module = "modules/{$name}/"
+
+[types.prestashop]
+module = "modules/{$name}/"
+theme = "themes/{$name}/"
+
+[types.processwire]
+module = "site/modules/{$name}/"
+
+[types.puppet]
+module = "modules/{$name}/"
+
+[types.pxcms]
+module = "app/Modules/{$name}/"
+theme = "themes/{$name}/"
+
+[types.quicksilver]
+script = "web/private/scripts/quicksilver/{$name}"
+module = "web/private/scripts/quicksilver/{$name}"
+
+[types.radphp]
+bundle = "src/{$name}/"
+
+[types.redaxo]
+addon = "redaxo/include/addons/{$name}/"
+bestyle-plugin = "redaxo/include/addons/be_style/plugins/{$name}/"
+
+[types.redaxo5]
+addon = "redaxo/src/addons/{$name}/"
+bestyle-plugin = "redaxo/src/addons/be_style/plugins/{$name}/"
+
+[types.reindex]
+theme = "themes/{$name}/"
+plugin = "plugins/{$name}/"
+
+[types.roundcube]
+plugin = "plugins/{$name}/"
+
+[types.shopware]
+backend-plugin = "engine/Shopware/Plugins/Local/Backend/{$name}/"
+core-plugin = "engine/Shopware/Plugins/Local/Core/{$name}/"
+frontend-plugin = "engine/Shopware/Plugins/Local/Frontend/{$name}/"
+theme = "templates/{$name}/"
+plugin = "custom/plugins/{$name}/"
+frontend-theme = "themes/Frontend/{$name}/"
+
+[types.silverstripe]
+module = "{$name}/"
+theme = "themes/{$name}/"
+
+[types.sitedirect]
+module = "modules/{$vendor}/{$name}/"
+plugin = "plugins/{$vendor}/{$name}/"
+
+[types.smf]
+module = "Sources/{$name}/"
+theme = "Themes/{$name}/"
+
+[types.starbug]
+module = "modules/{$name}/"
+theme = "themes/{$name}/"
+custom-module = "app/modules/{$name}/"
+custom-theme = "app/themes/{$name}/"
+
+[types.sydes]
+module = "app/modules/{$name}/"
+theme = "themes/{$name}/"
+
+[types.sylius]
+theme = "themes/{$name}/"
+
+[types.tao]
+extension = "{$name}"
+
+[types.tastyigniter]
+module = "app/{$name}/"
+extension = "extensions/{$vendor}/{$name}/"
+theme = "themes/{$name}/"
+
+[types.thelia]
+module = "local/modules/{$name}/"
+frontoffice-template = "templates/frontOffice/{$name}/"
+backoffice-template = "templates/backOffice/{$name}/"
+email-template = "templates/email/{$name}/"
+
+[types.tusk]
+task = ".tusk/tasks/{$name}/"
+command = ".tusk/commands/{$name}/"
+asset = "assets/tusk/{$name}/"
+
+[types.userfrosting]
+sprinkle = "app/sprinkles/{$name}/"
+
+[types.vanilla]
+plugin = "plugins/{$name}/"
+theme = "themes/{$name}/"
+
+[types.whmcs]
+addons = "modules/addons/{$vendor}_{$name}/"
+fraud = "modules/fraud/{$vendor}_{$name}/"
+gateways = "modules/gateways/{$vendor}_{$name}/"
+notifications = "modules/notifications/{$vendor}_{$name}/"
+registrars = "modules/registrars/{$vendor}_{$name}/"
+reports = "modules/reports/{$vendor}_{$name}/"
+security = "modules/security/{$vendor}_{$name}/"
+servers = "modules/servers/{$vendor}_{$name}/"
+social = "modules/social/{$vendor}_{$name}/"
+support = "modules/support/{$vendor}_{$name}/"
+templates = "templates/{$vendor}_{$name}/"
+includes = "includes/{$vendor}_{$name}/"
+
+[types.winter]
+module = "modules/{$name}/"
+plugin = "plugins/{$vendor}/{$name}/"
+theme = "themes/{$name}/"
+
+[types.wolfcms]
+plugin = "wolf/plugins/{$name}/"
+
+[types.wordpress]
+plugin = "wp-content/plugins/{$name}/"
+theme = "wp-content/themes/{$name}/"
+muplugin = "wp-content/mu-plugins/{$name}/"
+dropin = "wp-content/{$name}/"
+
+[types.yawik]
+module = "module/{$name}/"
+
+[types.zend]
+library = "library/{$name}/"
+extra = "extras/library/{$name}/"
+module = "module/{$name}/"
+
+[types.zikula]
+module = "modules/{$vendor}-{$name}/"
+theme = "themes/{$vendor}-{$name}/"
