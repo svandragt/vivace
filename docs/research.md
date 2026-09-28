@@ -974,12 +974,15 @@ some code during install today. So an install that runs no code is
 reachable for most plugins, and the corpus needs it: four projects in
 five would otherwise be running a plugin or script.
 
-Build decision open. Two shapes: a manifest section packages would have
-to adopt, which the 25 upstream authors have no reason to do; or viv's
-own adapters as data, one file per plugin naming its path map, scaffold
-list or patch list, so the next plugin is an entry and not a Rust module.
-The 15 adapter bugs in the 3.5 census argue for the second. The allow
-list already exists as `config.allow-plugins`; viv keeps honouring it.
+**Decision, 2026-09-28: build, adapters as data.** Of the two shapes, a
+manifest section packages would have to adopt, which the 25 upstream
+authors have no reason to do, and viv's own adapters as data, one file
+per plugin naming its path map, scaffold list or patch list, the second
+is built: #340 path mapping, #341 scaffolding and patching, #342 the
+boundary doc, in the `g3 research 2: installs that run no code`
+milestone. The 15 adapter bugs in the 3.5 census are the reason. The
+allow list already exists as `config.allow-plugins`; viv keeps honouring
+it.
 
 ### Candidate 3.5: simpler resolution rules
 
