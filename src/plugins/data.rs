@@ -15,6 +15,12 @@
 //! mechanisms, not two forms of the same one — `Rule::TypeTemplate` and
 //! `Rule::NamedOverride` name that difference instead of bending one shape
 //! to cover both, or special-casing a plugin name in the loader.
+//!
+//! #341 extends the same loader to adapters that don't map install paths at
+//! all: `Rule::Scaffold` names `drupal/core-composer-scaffold`'s plugin
+//! package and the `extra` key its config lives under, so
+//! `drupal_scaffold.rs` keeps only the file-copy mechanic; `Rule::Patches`
+//! does the same for `cweagans/composer-patches` and `patches.rs`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -33,6 +39,8 @@ const FILES: &[&str] = &[
     include_str!("data/composer-installers.toml"),
     include_str!("data/johnpbloch-wordpress-core-installer.toml"),
     include_str!("data/roots-wordpress-core-installer.toml"),
+    include_str!("data/drupal-core-composer-scaffold.toml"),
+    include_str!("data/cweagans-composer-patches.toml"),
 ];
 
 #[derive(Deserialize)]
@@ -69,6 +77,26 @@ enum Rule {
         key: String,
         default: String,
     },
+    /// `drupal/core-composer-scaffold`'s scaffold-file copy binding
+    /// (`drupal_scaffold.rs`): never matches [`install_path`] — the plugin
+    /// package and the root/package `extra` key its `ScaffoldOptions`
+    /// section lives under, read by [`scaffold_rule`] instead.
+    Scaffold {
+        package: String,
+        #[serde(rename = "extra-key")]
+        extra_key: String,
+    },
+    /// `cweagans/composer-patches`' patch-apply binding (`patches.rs`):
+    /// never matches [`install_path`] — the plugin package, the root
+    /// `extra` key holding inline patch definitions, and the `extra
+    /// .composer-patches` config key naming an external patches file.
+    Patches {
+        package: String,
+        #[serde(rename = "extra-key")]
+        extra_key: String,
+        #[serde(rename = "patches-file-key")]
+        patches_file_key: String,
+    },
 }
 
 impl Rule {
@@ -85,6 +113,7 @@ impl Rule {
                 default,
             } => (package.r#type == *r#type)
                 .then(|| named_override_path(key, default, package, root_extra)),
+            Rule::Scaffold { .. } | Rule::Patches { .. } => None,
         }
     }
 }
@@ -215,6 +244,58 @@ pub(super) fn install_path(package: &Package, root_extra: &Value) -> Option<Path
         .map(PathBuf::from)
 }
 
+/// `drupal/core-composer-scaffold`'s parsed binding — `drupal_scaffold.rs`'
+/// only reads of its plugin package name or its `extra` key.
+pub(super) struct ScaffoldRule {
+    pub package: &'static str,
+    pub extra_key: &'static str,
+}
+
+/// The one embedded `Rule::Scaffold` entry. `drupal_scaffold.rs`'s only
+/// caller.
+pub(super) fn scaffold_rule() -> ScaffoldRule {
+    rules()
+        .iter()
+        .find_map(|rule| match rule {
+            Rule::Scaffold {
+                package, extra_key, ..
+            } => Some(ScaffoldRule {
+                package: package.as_str(),
+                extra_key: extra_key.as_str(),
+            }),
+            _ => None,
+        })
+        .expect("embedded drupal-core-composer-scaffold.toml")
+}
+
+/// `cweagans/composer-patches`' parsed binding — `patches.rs`'s only reads
+/// of its plugin package name or either `extra` key.
+pub(super) struct PatchesRule {
+    pub package: &'static str,
+    pub extra_key: &'static str,
+    pub patches_file_key: &'static str,
+}
+
+/// The one embedded `Rule::Patches` entry. `patches.rs`'s only caller.
+pub(super) fn patches_rule() -> PatchesRule {
+    rules()
+        .iter()
+        .find_map(|rule| match rule {
+            Rule::Patches {
+                package,
+                extra_key,
+                patches_file_key,
+                ..
+            } => Some(PatchesRule {
+                package: package.as_str(),
+                extra_key: extra_key.as_str(),
+                patches_file_key: patches_file_key.as_str(),
+            }),
+            _ => None,
+        })
+        .expect("embedded cweagans-composer-patches.toml")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +348,24 @@ mod tests {
     #[test]
     fn unhandled_type_returns_none() {
         assert!(install_path(&package("acme/hello", "library"), &json!({})).is_none());
+    }
+
+    /// #341: `drupal-core-composer-scaffold.toml` parses to the package
+    /// name and `extra` key `drupal_scaffold.rs` reads.
+    #[test]
+    fn scaffold_rule_matches_the_embedded_file() {
+        let rule = scaffold_rule();
+        assert_eq!(rule.package, "drupal/core-composer-scaffold");
+        assert_eq!(rule.extra_key, "drupal-scaffold");
+    }
+
+    /// #341: `cweagans-composer-patches.toml` parses to the package name and
+    /// `extra` keys `patches.rs` reads.
+    #[test]
+    fn patches_rule_matches_the_embedded_file() {
+        let rule = patches_rule();
+        assert_eq!(rule.package, "cweagans/composer-patches");
+        assert_eq!(rule.extra_key, "patches");
+        assert_eq!(rule.patches_file_key, "patches-file");
     }
 }

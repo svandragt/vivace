@@ -36,6 +36,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
@@ -51,7 +52,10 @@ pub(super) struct DrupalScaffold;
 
 impl Adapter for DrupalScaffold {
     fn plugin_names(&self) -> &'static [&'static str] {
-        &["drupal/core-composer-scaffold"]
+        static NAMES: OnceLock<[&'static str; 1]> = OnceLock::new();
+        NAMES
+            .get_or_init(|| [super::data::scaffold_rule().package])
+            .as_slice()
     }
 
     fn upstream_version(&self) -> &'static str {
@@ -93,7 +97,7 @@ struct ScaffoldOptions {
 }
 
 fn scaffold_options(extra: &Value) -> ScaffoldOptions {
-    let opts = extra.get("drupal-scaffold");
+    let opts = extra.get(super::data::scaffold_rule().extra_key);
     let allowed_packages = opts
         .and_then(|o| o.get("allowed-packages"))
         .and_then(Value::as_array)
