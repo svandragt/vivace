@@ -882,7 +882,15 @@ opaque package files, so an `isolate` setting could prefix it, at the
 cost of rewriting shipped code on every update. Where viv
 does install a plugin's dependencies, on a site that resolves them through
 Composer, two plugins wanting guzzle 6 and 7 fail in the solver before any
-class loads, and the fix the ecosystem uses is prefixing at plugin build
+class loads. That failure is loud rather than silent, but it is still a
+site that cannot have both plugins, and the answers today are a fork, a
+downgrade or a hand pin. It is also the case per-plugin prefixing at
+install time was named for: both plugins are viv's to install, so viv
+could give each its own copy and record the prefix in the lock. What is
+missing is the count. The WordPress.org sample cannot show how often
+Composer-managed sites hit it; the `composer.json` history of such sites
+can, through pins and `conflict` entries added to dodge a plugin's
+requirement. The ecosystem's own answer is prefixing at plugin build
 time (Strauss, php-scoper), which the 5% already do in production. The
 second half of the measurement, prefixing with php-scoper and running each
 plugin's tests, would re-prove what those plugins prove daily, so it did
