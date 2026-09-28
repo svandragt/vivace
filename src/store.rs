@@ -62,6 +62,9 @@ const ROOT_CLASSMAP_BUCKET: &str = "root-classmap-v0";
 /// parsing, so no first-use regex compile either — the warm/noop cost
 /// `bench-ab` caught). Same unbounded-growth ponytail as that bucket.
 pub(crate) const PLATFORM_CHECK_BUCKET: &str = "platform-check-v0";
+/// #337's `viv php install`: one static-php-cli build per
+/// `<version>-<os>-<arch>`, see `php::install_dir`.
+pub(crate) const PHP_BUCKET: &str = "php-v0";
 const LOCK_FILE: &str = ".lock";
 
 /// Every current bucket name, shared by `prune` (what a stale-bucket sweep
@@ -79,6 +82,7 @@ const KNOWN_BUCKETS: &[&str] = &[
     VCS_BUCKET,
     ROOT_CLASSMAP_BUCKET,
     PLATFORM_CHECK_BUCKET,
+    PHP_BUCKET,
     LOCK_FILE,
 ];
 

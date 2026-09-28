@@ -1546,3 +1546,15 @@ without PHP as the acceptance story; #339 an `intl`-capable build for
 the 7 of 20 projects that need it. Candidate 3.2 waits until these
 land. Packaging polish filed outside any milestone: #334 debuginfo in
 test binaries, #335 man pages, #336 shell completions.
+
+## 2026-09-28: viv php install (#337)
+
+`viv php install [version]` downloads a static-php-cli build into
+`php-v0/<version>-<os>-<arch>/` in the store and pins
+`config.platform.php` in `composer.json`; `viv php list` shows what is
+there. The `bulk` bundle is the only source, because it carries `intl`
+and the `common` one does not, which closes #339 before it started.
+Upstream publishes no checksums; viv records its own sha256 on first
+download and refuses plain http outside the test override. Newest
+prebuilt today is 8.4.x, so firefly-iii's `>=8.5` stays out of reach
+until static-php-cli publishes 8.5. Next: #338 `viv run`.

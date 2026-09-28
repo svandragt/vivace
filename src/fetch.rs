@@ -260,6 +260,29 @@ impl Fetcher {
         Ok(downloaded)
     }
 
+    /// Same redirect-following, retry/backoff and stream-to-file-when-large
+    /// behaviour as [`Fetcher::fetch`], for a caller (`php.rs`'s
+    /// static-php-cli downloads, #337) with no `Package` to attach a shasum
+    /// check to. `label` is what error messages and hop-timing key off.
+    pub(crate) async fn get_raw(
+        &self,
+        label: &str,
+        url: Url,
+        temp_dir: &Path,
+    ) -> Result<Downloaded> {
+        if self.offline {
+            bail!(
+                "{label}: Network disabled, request canceled: {}",
+                redact(&url)
+            );
+        }
+        let (downloaded, _sha1) = self
+            .get(label, url.clone(), url, temp_dir)
+            .await
+            .with_context(|| format!("{label}: downloading"))?;
+        Ok(downloaded)
+    }
+
     /// Download every package with at most `concurrency` requests in
     /// flight, yielding each result as it completes (not in input order).
     pub fn fetch_all<'a>(

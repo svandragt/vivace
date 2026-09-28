@@ -14,6 +14,7 @@ use vivace::install::{self, CacheArgs, DumpAutoloadArgs, InstallArgs};
 use vivace::native_lock::{self, LockArgs};
 use vivace::new::{self, NewArgs};
 use vivace::normalize::{self, NormalizeArgs};
+use vivace::php::{self, PhpArgs};
 use vivace::require::{self, RemoveArgs, RequireArgs};
 use vivace::show::{self, OutdatedArgs, ShowArgs};
 use vivace::solver::problem::SolverError;
@@ -154,6 +155,9 @@ enum Command {
     /// inter-member requirements. `init`/`add` (#315): write the aggregate
     /// root composer.json from member glob patterns and resolve/install.
     Workspace(WorkspaceArgs),
+    /// Download a static-php-cli PHP build and pin `config.platform.php`
+    /// to it (#337), or list what's already installed.
+    Php(PhpArgs),
 }
 
 fn main() -> ExitCode {
@@ -312,6 +316,13 @@ fn main() -> ExitCode {
                 Err(err) => resolver_error(&err),
             }
         }
+        Command::Php(args) => match php::run(&args, cli.cache_dir.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                err_out(&format!("{err:#}"));
+                ExitCode::from(1)
+            }
+        },
     }
 }
 
