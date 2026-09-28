@@ -77,6 +77,12 @@ pub struct BuildResult {
     /// `config.platform` verbatim, for the lock's `platform-overrides` key
     /// (only emitted there when non-empty).
     pub platform_overrides: Map<String, Value>,
+    /// #312: the root's own resolved version (`root_pretty_version`),
+    /// computed once here rather than a second time by
+    /// `require_only_request`'s dev-split second solve — that would mean
+    /// a second `git branch` shell-out (or a second, possibly different,
+    /// `COMPOSER_ROOT_VERSION` read) per update.
+    pub own_pretty_version: String,
 }
 
 /// `SecurityAdvisoryPoolFilter::filter`'s BC-audit-config inputs (#175):
@@ -289,12 +295,14 @@ fn warn_out(message: &str) {
 pub async fn build<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     prefer_lowest: bool,
 ) -> Result<BuildResult> {
     build_seeded::<T, NoAdvisories>(
         repo,
         root,
+        project_dir,
         prefer_stable,
         prefer_lowest,
         &[],
@@ -333,6 +341,7 @@ pub async fn build<T: Transport>(
 pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     prefer_lowest: bool,
     seed: &[String],
@@ -344,6 +353,7 @@ pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     build_partial_seeded(
         repo,
         root,
+        project_dir,
         &HashMap::new(),
         &HashSet::new(),
         prefer_stable,
@@ -481,6 +491,7 @@ pub(crate) fn expand_allow_list(
 pub async fn build_partial<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     locked_by_name: &HashMap<String, Value>,
     allow_names: &HashSet<String>,
     prefer_stable: bool,
@@ -489,6 +500,7 @@ pub async fn build_partial<T: Transport>(
     build_partial_seeded::<T, NoAdvisories>(
         repo,
         root,
+        project_dir,
         locked_by_name,
         allow_names,
         prefer_stable,
@@ -523,13 +535,15 @@ pub async fn build_partial<T: Transport>(
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors build_partial plus one seed slice, the minimal-changes pin set, the \
-              advisory pool filter, the platform-probe cache dir, the ignore-platform-reqs \
-              filter, and lock_merge's --as-of cutoff"
+    reason = "mirrors build_partial plus the project directory (#312's root-version guess), \
+              one seed slice, the minimal-changes pin set, the advisory pool filter, the \
+              platform-probe cache dir, the ignore-platform-reqs filter, and lock_merge's \
+              --as-of cutoff"
 )]
 pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     locked_by_name: &HashMap<String, Value>,
     allow_names: &HashSet<String>,
     prefer_stable: bool,
@@ -543,8 +557,12 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
 ) -> Result<BuildResult> {
     // #304: resolved once, up front, so the closure walk below and
     // `root_requires` at the end both just see an ordinary version string
-    // in place of a literal `self.version`.
-    let own_pretty_version = root_pretty_version(root);
+    // in place of a literal `self.version`. #312: also the one and only
+    // `root_pretty_version` call this solve makes — `root_package` below
+    // and `require_only_request`'s dev-split second solve both reuse this
+    // same string (via `BuildResult::own_pretty_version`) rather than
+    // guessing the git version a second or third time.
+    let own_pretty_version = root_pretty_version(root, project_dir);
     let require = resolve_self_version(string_map(root, "require"), &own_pretty_version);
     let require_dev = resolve_self_version(string_map(root, "require-dev"), &own_pretty_version);
 
@@ -675,7 +693,11 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         elapsed_ms = platform_started.elapsed().as_millis(),
         "detected platform packages (shells out to `php`)"
     );
-    packages.push(root_package(root, &mut constraint_cache)?);
+    packages.push(root_package(
+        root,
+        &mut constraint_cache,
+        &own_pretty_version,
+    )?);
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
     for name in &skip {
@@ -773,6 +795,7 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         platform_reqs: extract_platform_requirements(&require),
         platform_dev_reqs: extract_platform_requirements(&require_dev),
         platform_overrides,
+        own_pretty_version,
     })
 }
 
@@ -862,11 +885,17 @@ fn extract_platform_requirements(links: &Map<String, Value>) -> Map<String, Valu
 /// with `$requireDevSection = false`): root `require` only, against the
 /// same `fixed_count` platform packages the first solve's pool starts with
 /// (`clone_package` copies them verbatim, so their pool indices line up).
-pub(crate) fn require_only_request(root: &Value, fixed_count: usize) -> Result<Request> {
+/// `own_pretty_version` is the first solve's own `BuildResult::own_pretty_version`,
+/// not recomputed (`root_pretty_version`'s own doc comment).
+pub(crate) fn require_only_request(
+    root: &Value,
+    fixed_count: usize,
+    own_pretty_version: &str,
+) -> Result<Request> {
     // #304's second site: this request is rebuilt from the raw root JSON
     // for the dev-split solve, after `build_partial_seeded` already
     // resolved `self.version` for the first one.
-    let require = resolve_self_version(string_map(root, "require"), &root_pretty_version(root));
+    let require = resolve_self_version(string_map(root, "require"), own_pretty_version);
     let mut requires = Vec::with_capacity(require.len());
     for (name, value) in &require {
         let raw = value
@@ -1301,15 +1330,32 @@ pub(crate) fn root_replaced_names(root: &Value) -> HashSet<String> {
         .collect()
 }
 
-/// `RootPackageLoader::load`: `$config['version'] = '1.0.0'` when nothing
-/// (no `version` key, no VCS guess) supplies one. Shared by [`root_package`]
-/// and [`resolve_self_version`], which both need the root's own version
-/// before either the pool or `self.version` substitution can be built.
-fn root_pretty_version(root: &Value) -> String {
-    root.get("version")
-        .and_then(Value::as_str)
-        .unwrap_or("1.0.0")
-        .to_string()
+/// `RootPackageLoader::load`'s version precedence, `#312`: an explicit
+/// `composer.json` `version` always wins outright, with neither
+/// `COMPOSER_ROOT_VERSION` nor the VCS guess ever consulted; otherwise
+/// `COMPOSER_ROOT_VERSION` wins over [`crate::vcs::guess_root_version`]'s
+/// guess
+/// (`getenv('COMPOSER_ROOT_VERSION') ?: $this->versionGuesser->guessVersion(...)`),
+/// which wins over the final `1.0.0` fallback. `guess_root_version`'s own
+/// `.git`-exists precheck is what makes this the same cheap
+/// precheck-then-guess shape `install.rs`'s `git_version` already uses, so
+/// a project outside git pays one stat and nothing else. Called exactly
+/// once per solve, by [`build_partial_seeded`] — see its own doc comment
+/// for why [`root_package`] and [`require_only_request`] both reuse that
+/// one result (`BuildResult::own_pretty_version`) rather than calling this
+/// again.
+fn root_pretty_version(root: &Value, project_dir: &Path) -> String {
+    if let Some(version) = root.get("version").and_then(Value::as_str) {
+        return version.to_string();
+    }
+    if let Some(env) = std::env::var("COMPOSER_ROOT_VERSION")
+        .ok()
+        .filter(|v| !v.is_empty() && v != "0")
+    {
+        return env;
+    }
+    crate::vcs::guess_root_version(project_dir)
+        .map_or_else(|| "1.0.0".to_string(), |version| version.pretty_version)
 }
 
 /// #304: a root require's own `self.version` (`ArrayLoader::parseLinks`)
@@ -1341,14 +1387,20 @@ fn resolve_self_version(map: Map<String, Value>, own_pretty_version: &str) -> Ma
 /// (`RuleSetGenerator::addRulesForPackage`'s `$this->pool->whatProvides`
 /// call is name-based, blind to whether the provider is the root). No
 /// `requires`/`conflicts`: see this module's doc comment for why the root's
-/// own requires stay modelled as `request.requires` only.
-pub(crate) fn root_package(root: &Value, cache: &mut ConstraintCache) -> Result<Package> {
+/// own requires stay modelled as `request.requires` only. `pretty_version`
+/// is [`build_partial_seeded`]'s own `own_pretty_version`
+/// ([`root_pretty_version`]'s one call per solve), not recomputed here.
+pub(crate) fn root_package(
+    root: &Value,
+    cache: &mut ConstraintCache,
+    pretty_version: &str,
+) -> Result<Package> {
     let name = root
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("__root__")
         .to_ascii_lowercase();
-    let pretty_version = root_pretty_version(root);
+    let pretty_version = pretty_version.to_string();
     let version = semver::normalize(&pretty_version)?;
     let stability = semver::stability(version.as_str());
 

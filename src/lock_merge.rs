@@ -512,6 +512,7 @@ fn locked_by_name_from_merge(merged: &BTreeMap<String, Entry<Value>>) -> HashMap
 pub async fn resolve_divergent_closure<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     locked_by_name: &HashMap<String, Value>,
     allow_list: &[String],
@@ -520,6 +521,7 @@ pub async fn resolve_divergent_closure<T: Transport>(
     solver::solve_partial_update_as_of(
         repo,
         root,
+        project_dir,
         prefer_stable,
         false,
         locked_by_name,
@@ -657,12 +659,13 @@ pub struct EscalatedResolve {
 /// this directly against a fixture-backed one.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the merge's own pinned/ours/theirs maps, the resolve inputs (root/prefer_stable/\
-              as_of/cache_dir), and the --max-scope cap"
+    reason = "the merge's own pinned/ours/theirs maps, the resolve inputs (root/project_dir/\
+              prefer_stable/as_of/cache_dir), and the --max-scope cap"
 )]
 pub async fn escalate_resolve<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     merged: &BTreeMap<String, Entry<Value>>,
     divergent: &BTreeSet<String>,
@@ -678,6 +681,7 @@ pub async fn escalate_resolve<T: Transport>(
     let (result, scope) = match resolve_divergent_closure(
         repo,
         root,
+        project_dir,
         prefer_stable,
         &locked_by_name,
         &divergent_list,
@@ -698,6 +702,7 @@ pub async fn escalate_resolve<T: Transport>(
             match resolve_divergent_closure(
                 repo,
                 root,
+                project_dir,
                 prefer_stable,
                 &locked_by_name,
                 &allow_list,
@@ -718,6 +723,7 @@ pub async fn escalate_resolve<T: Transport>(
                     match solver::solve_update_seeded::<T, crate::audit::NoAdvisories>(
                         repo,
                         root,
+                        project_dir,
                         prefer_stable,
                         false,
                         &seed,
@@ -822,6 +828,7 @@ fn try_resolve_composer_lock(
         let resolved = escalate_then_offline_pin(
             &repo,
             &root,
+            project_dir,
             prefer_stable,
             merged,
             divergent,
@@ -893,9 +900,14 @@ fn print_resolution(divergent: &BTreeSet<String>, rung: u8, name: &str, moved: &
 /// not the transport underneath it, so a test can drive this against a
 /// real fixture-backed repo that just finished failing rungs 1-3 and
 /// prove, by counting calls, that this step adds none.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the merge's own pinned/ours/theirs maps plus root/project_dir/prefer_stable"
+)]
 pub async fn try_offline_rung<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     merged: &BTreeMap<String, Entry<Value>>,
     divergent: &BTreeSet<String>,
@@ -918,6 +930,7 @@ pub async fn try_offline_rung<T: Transport>(
         if let Ok(result) = solver::solve_partial_update(
             repo,
             root,
+            project_dir,
             prefer_stable,
             false,
             &locked_by_name,
@@ -969,6 +982,7 @@ const OFFLINE_PIN_NAME: &str = "offline_pin";
 pub async fn escalate_then_offline_pin<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
+    project_dir: &Path,
     prefer_stable: bool,
     merged: &BTreeMap<String, Entry<Value>>,
     divergent: &BTreeSet<String>,
@@ -982,6 +996,7 @@ pub async fn escalate_then_offline_pin<T: Transport>(
     match escalate_resolve(
         repo,
         root,
+        project_dir,
         prefer_stable,
         merged,
         divergent,
@@ -1003,7 +1018,17 @@ pub async fn escalate_then_offline_pin<T: Transport>(
             if !offline_rung {
                 return Err(escalate_err);
             }
-            match try_offline_rung(repo, root, prefer_stable, merged, divergent, ours, theirs).await
+            match try_offline_rung(
+                repo,
+                root,
+                project_dir,
+                prefer_stable,
+                merged,
+                divergent,
+                ours,
+                theirs,
+            )
+            .await
             {
                 Some(result) => {
                     let moved = moved_packages(&result, divergent, ours, theirs);
@@ -1310,6 +1335,7 @@ fn try_resolve_viv_lock(
         let resolved = escalate_resolve(
             &repo,
             &root,
+            project_dir,
             prefer_stable,
             &merged_value,
             divergent,

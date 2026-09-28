@@ -58,7 +58,7 @@ async fn update_lock(fixture: &Path) -> String {
     let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
     let root: Value = serde_json::from_slice(&composer_json).unwrap();
 
-    let result = solver::solve_update(&repo, &root, false, false)
+    let result = solver::solve_update(&repo, &root, fixture, false, false)
         .await
         .unwrap();
 
@@ -96,7 +96,7 @@ async fn update_lock_ttl(fixture: &Path, cache: &Path, metadata_ttl: Duration) -
     .await
     .unwrap();
 
-    let result = solver::solve_update(&repo, &root, false, false)
+    let result = solver::solve_update(&repo, &root, fixture, false, false)
         .await
         .unwrap();
 
@@ -170,7 +170,7 @@ async fn solve_monolog_fixture() -> (Vec<u8>, Value, solver::UpdateResult) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
     let composer_json = fs_err::read(fixture.join("composer.json")).unwrap();
     let root: Value = serde_json::from_slice(&composer_json).unwrap();
-    let result = solver::solve_update(&repo, &root, false, false)
+    let result = solver::solve_update(&repo, &root, &fixture, false, false)
         .await
         .unwrap();
     (composer_json, root, result)
@@ -329,6 +329,7 @@ async fn resolved_monolog_version(no_blocking: bool, ignore: vivace::lock::Audit
     let result = solver::solve_update_seeded(
         &repo,
         &root,
+        &fixture,
         false,
         false,
         &[],
@@ -410,6 +411,7 @@ async fn solve_security_advisory_fixture(
     solver::solve_update_seeded(
         &repo,
         &root,
+        &fixture,
         false,
         false,
         &[],
@@ -593,6 +595,7 @@ async fn update_makes_no_advisory_request_when_no_repository_advertises() {
     let result = solver::solve_update_seeded(
         &repo,
         &root,
+        &fixture,
         false,
         false,
         &[],
@@ -686,6 +689,7 @@ async fn update_does_not_panic_when_the_advisory_filter_drops_an_aliased_version
     let result = solver::solve_update_seeded(
         &repo,
         &root,
+        cache.path(),
         false,
         false,
         &[],
@@ -746,7 +750,7 @@ async fn update_dev_split_keeps_a_branch_alias_that_satisfies_the_root_require()
         ],
     });
 
-    let result = solver::solve_update(&repo, &root, false, false)
+    let result = solver::solve_update(&repo, &root, cache.path(), false, false)
         .await
         .expect("dev-master's branch alias must still satisfy ^1.0 after the dev split");
 
@@ -800,6 +804,7 @@ async fn seeding_with_an_unreachable_lock_name_does_not_change_the_lock() {
     let result = solver::solve_update_seeded(
         &repo,
         &root,
+        &fixture,
         false,
         false,
         &seed,
@@ -871,6 +876,7 @@ async fn partial_update_keeps_the_unlisted_package_locked() {
     let result = vivace::solver::solve_partial_update(
         &repo,
         &root,
+        &fixture,
         false,
         false,
         &locked_by_name,
@@ -961,6 +967,7 @@ async fn partial_update_holds_a_dev_branch_through_its_branch_alias() {
     let result = solver::solve_partial_update(
         &repo,
         &root,
+        cache.path(),
         false,
         false,
         &locked_by_name,
@@ -1019,6 +1026,7 @@ async fn partial_update_finds_a_transitive_allow_listed_package() {
         let result = vivace::solver::solve_partial_update(
             &repo,
             &root,
+            &fixture,
             false,
             false,
             &locked_by_name,
@@ -1096,6 +1104,7 @@ async fn minimal_changes_keeps_the_locked_version() {
     let result = solver::solve_update_seeded(
         &repo,
         &root,
+        &fixture,
         false,
         false,
         &seed,
@@ -1191,7 +1200,7 @@ async fn lock_operations_reports_an_upgrade() {
     let root: Value = serde_json::from_slice(&composer_json).unwrap();
     let previous_by_name = common::locked_by_name(&fixture.join("lock-before.json"));
 
-    let result = solver::solve_update(&repo, &root, false, false)
+    let result = solver::solve_update(&repo, &root, &fixture, false, false)
         .await
         .unwrap();
 
@@ -1416,7 +1425,7 @@ async fn unsatisfiable_root_require_matches_composers_message() {
         "require": { "monolog/this-package-does-not-exist-xyz": "^1.0" }
     });
 
-    let Err(err) = solver::solve_update(&repo, &root, false, false).await else {
+    let Err(err) = solver::solve_update(&repo, &root, cache.path(), false, false).await else {
         panic!("expected an unsatisfiable request to fail")
     };
     let solver_error = err
@@ -1469,7 +1478,7 @@ async fn unsatisfiable_php_constraint_reports_found_not_satisfiable() {
         "config": { "platform": { "php": "8.3.0" } }
     });
 
-    let Err(err) = solver::solve_update(&repo, &root, false, false).await else {
+    let Err(err) = solver::solve_update(&repo, &root, cache.path(), false, false).await else {
         panic!("expected an unsatisfiable request to fail")
     };
     let solver_error = err
@@ -1511,7 +1520,7 @@ async fn offline_update_context(composer_json: &Value) -> TestContext {
     // (and discard the result of) one in-process solve to warm them —
     // `offline_partial_update_context`'s own comment explains the same
     // warm-then-spawn shape.
-    let _ = solver::solve_update(&repo, composer_json, false, false).await;
+    let _ = solver::solve_update(&repo, composer_json, project, false, false).await;
 
     ctx
 }
@@ -1639,6 +1648,7 @@ async fn offline_partial_update_context() -> TestContext {
     vivace::solver::solve_partial_update(
         &repo,
         &root,
+        project,
         false,
         false,
         &locked_by_name,
@@ -1842,7 +1852,7 @@ async fn update_bump_after_update_rewrites_composer_json_before_hashing() {
         .await
         .unwrap();
     let root: Value = serde_json::from_slice(&fs_err::read(&composer_json_path).unwrap()).unwrap();
-    solver::solve_update(&repo, &root, false, false)
+    solver::solve_update(&repo, &root, project, false, false)
         .await
         .unwrap();
 
@@ -1999,7 +2009,7 @@ async fn viv_update_reproduces_composers_lock_against_real_wpackagist() {
     let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), transport)
         .await
         .unwrap();
-    let result = solver::solve_update(&repo, &root, false, false)
+    let result = solver::solve_update(&repo, &root, project_dir.path(), false, false)
         .await
         .unwrap();
     let options = vivace::lock_writer::LockOptions {

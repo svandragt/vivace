@@ -36,7 +36,7 @@ async fn full_update_reproduces_the_monolog_lock() {
     )
     .unwrap();
 
-    let resolved = vivace::solver::solve_full_update(&repo, &root, false, false)
+    let resolved = vivace::solver::solve_full_update(&repo, &root, cache.path(), false, false)
         .await
         .unwrap();
 
@@ -71,7 +71,7 @@ async fn unsatisfiable_root_require_names_the_package() {
         "require": { "monolog/this-package-does-not-exist": "^99.0" }
     });
 
-    let err = vivace::solver::solve_full_update(&repo, &root, false, false)
+    let err = vivace::solver::solve_full_update(&repo, &root, cache.path(), false, false)
         .await
         .unwrap_err();
 

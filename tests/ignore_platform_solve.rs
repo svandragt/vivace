@@ -59,6 +59,7 @@ async fn update_fails_without_ignoring_the_missing_extension() {
     let Err(err) = solver::solve_update_seeded(
         &repo,
         &root,
+        &fixture_dir(),
         false,
         false,
         &[],
@@ -93,6 +94,7 @@ async fn ignore_platform_reqs_resolves_and_matches_composers_lock() {
     let result = solver::solve_update_seeded(
         &repo,
         &root,
+        &fixture_dir(),
         false,
         false,
         &[],
@@ -141,6 +143,7 @@ async fn ignore_platform_req_wildcard_resolves_and_matches_composers_lock() {
     let result = solver::solve_update_seeded(
         &repo,
         &root,
+        &fixture_dir(),
         false,
         false,
         &[],

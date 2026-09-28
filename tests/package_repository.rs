@@ -54,7 +54,7 @@ async fn update_lock() -> String {
         .await
         .unwrap();
 
-    let result = vivace::solver::solve_update(&repo, &root, false, false)
+    let result = vivace::solver::solve_update(&repo, &root, &fixture, false, false)
         .await
         .unwrap();
     let options = vivace::lock_writer::LockOptions {

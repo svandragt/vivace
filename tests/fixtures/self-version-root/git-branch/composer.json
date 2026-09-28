@@ -1,0 +1,30 @@
+{
+    "name": "acme/root",
+    "repositories": [
+        {"packagist.org": false},
+        {
+            "type": "package",
+            "package": [
+                {
+                    "name": "acme/sibling",
+                    "version": "dev-main",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.com/dist/acme/sibling-dev-main.zip"
+                    }
+                },
+                {
+                    "name": "acme/sibling",
+                    "version": "9.9.9",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.com/dist/acme/sibling-9.9.9.zip"
+                    }
+                }
+            ]
+        }
+    ],
+    "require": {
+        "acme/sibling": "self.version"
+    }
+}

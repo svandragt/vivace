@@ -406,6 +406,7 @@ pub(crate) fn partial_update(
         runtime.block_on(solver::solve_partial_update_seeded(
             &repo,
             &root,
+            project_dir,
             prefer_stable,
             prefer_lowest,
             &locked_by_name,
@@ -421,6 +422,7 @@ pub(crate) fn partial_update(
         runtime.block_on(solver::solve_update_seeded(
             &repo,
             &root,
+            project_dir,
             prefer_stable,
             prefer_lowest,
             &[],

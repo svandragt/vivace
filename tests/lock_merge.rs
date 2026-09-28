@@ -98,6 +98,7 @@ async fn lock_merge_resolves_the_divergent_closure_against_a_fixture_transport()
     let result = vivace::lock_merge::resolve_divergent_closure(
         &repo,
         &root,
+        &fixtures(),
         false,
         &locked_by_name,
         &allow_list,
@@ -173,6 +174,7 @@ async fn resolve_divergent_closure_declines_a_version_released_after_as_of() {
     let latest = vivace::lock_merge::resolve_divergent_closure(
         &repo,
         &root,
+        &fixtures(),
         false,
         &locked_by_name,
         &allow_list,
@@ -198,6 +200,7 @@ async fn resolve_divergent_closure_declines_a_version_released_after_as_of() {
     let older = vivace::lock_merge::resolve_divergent_closure(
         &repo,
         &root,
+        &fixtures(),
         false,
         &locked_by_name,
         &allow_list,
@@ -348,6 +351,7 @@ async fn rung_2_resolves_when_a_pinned_direct_dependent_blocks_the_closure() {
     let resolved = escalate_resolve(
         &repo,
         &root,
+        &fixtures(),
         false,
         &merged,
         &divergent,
@@ -425,6 +429,7 @@ async fn max_scope_closure_caps_before_rung_2_and_names_the_cap() {
     let result = escalate_resolve(
         &repo,
         &root,
+        &fixtures(),
         false,
         &merged,
         &divergent,
@@ -513,6 +518,7 @@ async fn rung_3_moves_a_two_hop_dependent_and_leaves_an_unrelated_package_pinned
     let resolved = escalate_resolve(
         &repo,
         &root,
+        &fixtures(),
         false,
         &merged,
         &divergent,
@@ -602,6 +608,7 @@ async fn offline_pin_accepts_ours_after_escalation_fails_with_no_further_fetch()
     escalate_resolve(
         &repo,
         &root,
+        &fixtures(),
         false,
         &merged,
         &divergent,
@@ -620,9 +627,18 @@ async fn offline_pin_accepts_ours_after_escalation_fails_with_no_further_fetch()
         "the escalation attempt itself must have actually tried the registry"
     );
 
-    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs)
-        .await
-        .expect("ours' pin satisfies the merged set; the offline pin must accept it");
+    let result = try_offline_rung(
+        &repo,
+        &root,
+        &fixtures(),
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+    )
+    .await
+    .expect("ours' pin satisfies the merged set; the offline pin must accept it");
     assert_eq!(
         transport.count(),
         fetches_during_escalation,
@@ -640,6 +656,7 @@ async fn offline_pin_accepts_ours_after_escalation_fails_with_no_further_fetch()
     let (result, rung, name, _moved) = escalate_then_offline_pin(
         &repo,
         &root,
+        &fixtures(),
         false,
         &merged,
         &divergent,
@@ -711,6 +728,7 @@ async fn offline_pin_falls_back_to_theirs_when_ours_violates_a_siblings_require(
     escalate_resolve(
         &repo,
         &root,
+        &fixtures(),
         false,
         &merged,
         &divergent,
@@ -724,9 +742,18 @@ async fn offline_pin_falls_back_to_theirs_when_ours_violates_a_siblings_require(
     .err()
     .expect("z/nonexistent has no fixture; escalation must fail");
 
-    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs)
-        .await
-        .expect("theirs' pin satisfies e/dependent's own require; the offline pin must accept it");
+    let result = try_offline_rung(
+        &repo,
+        &root,
+        &fixtures(),
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+    )
+    .await
+    .expect("theirs' pin satisfies e/dependent's own require; the offline pin must accept it");
     let pkg = result
         .non_dev
         .iter()
@@ -780,6 +807,7 @@ async fn offline_pin_falls_through_when_neither_pin_satisfies_a_siblings_require
     escalate_resolve(
         &repo,
         &root,
+        &fixtures(),
         false,
         &merged,
         &divergent,
@@ -793,7 +821,17 @@ async fn offline_pin_falls_through_when_neither_pin_satisfies_a_siblings_require
     .err()
     .expect("z/nonexistent has no fixture; escalation must fail");
 
-    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs).await;
+    let result = try_offline_rung(
+        &repo,
+        &root,
+        &fixtures(),
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+    )
+    .await;
     assert!(
         result.is_none(),
         "neither pin satisfies e/dependent's own require; the offline pin must fall through"
@@ -838,6 +876,7 @@ async fn offline_pin_falls_through_when_the_root_requirement_excludes_both_pins(
     escalate_resolve(
         &repo,
         &root,
+        &fixtures(),
         false,
         &merged,
         &divergent,
@@ -851,7 +890,17 @@ async fn offline_pin_falls_through_when_the_root_requirement_excludes_both_pins(
     .err()
     .expect("root wants ^4.0; the registry has no z/nonexistent at all, let alone ^4.0");
 
-    let result = try_offline_rung(&repo, &root, false, &merged, &divergent, &ours, &theirs).await;
+    let result = try_offline_rung(
+        &repo,
+        &root,
+        &fixtures(),
+        false,
+        &merged,
+        &divergent,
+        &ours,
+        &theirs,
+    )
+    .await;
     assert!(
         result.is_none(),
         "the root's own requirement excludes both pins; the offline pin must fall through"
@@ -898,6 +947,7 @@ async fn offline_pin_never_runs_when_the_registry_escalation_succeeds() {
     let (_result, rung, name, _moved) = escalate_then_offline_pin(
         &repo,
         &root,
+        &fixtures(),
         false,
         &merged,
         &divergent,
@@ -978,6 +1028,7 @@ async fn viv_lock_rung_1_resolve_writes_a_reconcilable_viv_lock_and_composer_loc
     let resolved = escalate_resolve(
         &repo,
         &root,
+        &fixtures(),
         false,
         &merged,
         &divergent,

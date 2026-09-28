@@ -962,7 +962,7 @@ async fn viv_update_reproduces_composers_lock_against_a_real_satis_build() {
     let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
         .await
         .unwrap();
-    let result = solver::solve_update(&repo, &root, false, false)
+    let result = solver::solve_update(&repo, &root, &satis_project_root(), false, false)
         .await
         .unwrap();
 
