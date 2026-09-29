@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-29
+### Added
+- `viv lock export` writes `composer.lock` from `viv.lock` through the one existing writer, byte-equal on all ten pinned compat projects; `--check` reports whether the committed `composer.lock` matches. `viv install` in a project with `viv.lock` and no `composer.lock` generates it first and says so; with both present it writes nothing and refuses a divergence with a hint naming `viv lock export` and `viv lock convert`. `viv init --lock native` and `viv lock convert` mark `composer.lock` `linguist-generated`. A `viv.lock` record now keeps Composer's own package block (`raw`) and the commit `time`, which is what makes the export exact and the merge rule below decidable; re-run `viv lock convert` on a lock written before this release ([#344](https://github.com/svandragt/vivace/issues/344), [#347](https://github.com/svandragt/vivace/issues/347))
+- `viv lock merge` identifies a `dev-*` record by its commit and, when both branches moved it to different commits, keeps the one with the later commit time and never re-solves that name; equal or missing times are a conflict naming both commits. When the re-solve needs a pinned commit the registry's branch entry no longer describes, viv fetches that commit's `composer.json` from the package's git source, once per machine (`fetching <package> at <sha>` on stderr), and uses it in place of the registry head; `--offline` errors naming package and commit ([#343](https://github.com/svandragt/vivace/issues/343), [#345](https://github.com/svandragt/vivace/issues/345))
+
+### Research
+- Candidate 3.3, a lock that pins commits and merges by record: holds and built. Replayed with the shipped driver over the 52 client merges chapter 1's driver left to a person, 46 finish, 6 do not (three wpackagist plugins that no longer exist, one commit gone upstream, one malformed manifest, one unclassified), none time out; 22 commit fetches on a cold cache, one on a warm one. Chapter 1's floor of 51 unfinished merges in 355 is 6, 1.7% ([#331](https://github.com/svandragt/vivace/issues/331))
+
 ## [0.19.0] - 2026-09-29
 ### Added
 - `viv php install [VERSION]` downloads a self-contained PHP build from static-php-cli's `bulk` bundle (Linux and macOS, x86_64 and aarch64, `intl` included) into the store and pins it as `config.platform.php`; `viv php list` shows the builds in the cache. Upstream publishes no checksums, so viv records its own sha256 on first download and refuses plain-http downloads ([#337](https://github.com/svandragt/vivace/issues/337), [#339](https://github.com/svandragt/vivace/issues/339))

@@ -1734,3 +1734,16 @@ are packages or commits that no longer exist, and one malformed
 manifest. Chapter 1's floor is 1.7% of 355. A first QA run without
 the per-merge platform declaration reported 21, which is what a
 missing `php` on PATH looks like; the harness step, not the driver.
+
+## 2026-09-29: v0.20.0
+
+Release, the same day as 0.19.0, because candidate 3.3 went from
+measured to built in one day and the merge-driver number is the
+strongest line viv has. Sweep `compat/results/v0.20.0.md`: pinned 20
+of 20 install rows identical, 10 of 10 locks identical, 10 of 10
+`viv lock export` byte-equal, random sample 6 of 6 installable rows
+identical with 8 skipped by Composer itself, 1 of 16 refuses without
+`--no-plugins`. Bench gate: local warm ratio fails the runner
+baseline as always, CI's gate green on every push; viv laravel warm
+40 ms, no-op 7 ms. README: the merge paragraph, the commands list and
+the version strings updated; the full read was this morning's.

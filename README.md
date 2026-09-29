@@ -119,11 +119,12 @@ written outside the project and the cache.
 viv's contract is that its output matches Composer's byte for byte. Before
 every release, a compatibility sweep installs a mix of pinned popular
 projects and a random sample of Packagist packages with both Composer and
-viv, then compares the results.[^2] The v0.19.0 sweep: all 20 install rows of the
-pinned corpus are identical, and all 10 pinned projects resolve the same
-lock.[^20] In the random sample, all 16 rows that Composer could install are
-identical; the other 4 were skipped because Composer itself could not
-resolve the project.[^3]
+viv, then compares the results.[^2] The v0.20.0 sweep: all 20 install rows of the
+pinned corpus are identical, all 10 pinned projects resolve the same
+lock,[^20] and `viv lock export` reproduces all 10 committed locks byte for
+byte. In the random sample, all 6 rows that Composer could install are
+identical; the other 8 were skipped because Composer itself could not
+resolve the project or its platform check failed.[^3]
 
 One pinned project still needs `--no-plugins`, for a plugin viv refuses by
 design rather than one it has yet to port.[^4] See [Plugins](#plugins)
@@ -172,6 +173,8 @@ as they landed: the plugin adapters as data (#340) measured laravel warm
 37.5 ms to 36.8 ms, symfony/demo 48.1 ms to 44.7 ms, drupal 298.7 ms to
 294.7 ms, no-op within 0.4 ms; the scaffold and patch bindings (#341)
 and the root-version guess in the solve (#312) flat within noise.
+v0.20.0's `viv.lock`-only install path (#344): no-op within 0.4 ms on the
+same three projects.
 
 A warm update still revalidates every package's metadata with the registry,
 one conditional request each, even when nothing changed. `--metadata-ttl
@@ -207,6 +210,7 @@ viv cache prune
 viv diagnose              # environment/config report to paste into a bug report
 viv lock convert          # translate an existing composer.lock into viv.lock
 viv lock merge base ours theirs   # git merge driver for composer.lock/viv.lock
+viv lock export --check   # composer.lock from viv.lock; --check only compares
 viv workspace init packages/*   # write a top-level composer.json requiring every match, then resolve/install
 viv workspace add plugins/new-one   # add one more member to that file and resolve again
 viv workspace list        # list a workspace's members and their inter-requirements
@@ -239,8 +243,11 @@ the project has adopted that file) to `.gitattributes`; an existing project
 adds the line once by hand instead. `viv install` then sets `git config
 merge.viv.driver 'viv lock merge %O %A %B'` in each clone that has the
 attribute, so every future `git merge` hands both branches' locks to viv,
-which merges them record by record and re-solves what diverged; you only
-see conflict markers when the merged `composer.json` cannot be satisfied. A
+which merges them record by record and re-solves what diverged; a
+`dev-*` branch both sides moved keeps the later commit, and a pinned
+commit the registry no longer describes is fetched from the package's
+git source. You only see conflict markers when the merged `composer.json`
+cannot be satisfied. A
 clone that merges before anyone has run `install` there yet has no driver
 configured, so git leaves plain conflict markers instead — `install`
 notices, resolves the lock straight from git's own index stages the same
@@ -272,7 +279,7 @@ In GitHub Actions, one step installs viv and puts the shim first on `PATH`, so a
 - run: composer install --no-dev
 ```
 
-The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.19.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim. Cache viv's store with `actions/cache` on `~/.cache/vivace`, keyed on `composer.lock`.
+The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.20.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim. Cache viv's store with `actions/cache` on `~/.cache/vivace`, keyed on `composer.lock`.
 
 A command or flag the shim doesn't understand falls back to the real
 Composer with a note on stderr naming what wasn't understood, so a migration
@@ -310,7 +317,7 @@ Two things differ from the `composer:2` stage it replaces:
   the shim doesn't understand hard-errors there instead of silently running
   Composer, the way it would on a machine that still has Composer installed.
 
-Tags are `:0.19`, `:0.19.0` and `:0`. There is no `:latest`: a moving tag
+Tags are `:0.20`, `:0.20.0` and `:0`. There is no `:latest`: a moving tag
 that silently resolves to nothing breaks scripted installs, which is the
 mistake that kept `releases/latest` returning 404 for ten releases.
 
@@ -450,7 +457,7 @@ Commands viv runs itself, with the same output as Composer:
   `update-lock`, `add` (`require`), `rm` (`remove`), `dump-autoload`,
   `normalize`.
 - Inspect: `show`, `tree`, `why`, `outdated`, `audit`, `validate`.
-- Maintain: `lock` (convert, merge), `workspace` (list, init, add).
+- Maintain: `lock` (convert, merge, export), `workspace` (list, init, add).
 - Run: `run`, `exec`, `php` (install, list), the lifecycle scripts, and the
   cache commands.
 - `diagnose` prints viv's own report, not Composer's.
@@ -507,7 +514,7 @@ keep their original copyright notices; MIT permits their use here.[^16]
 
 [^1]: viv relinks every package from its own content-addressed store into `vendor/`, using hardlinks so files aren't copied or re-extracted.
 [^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
-[^3]: The skips are packages Composer itself refuses to resolve — security advisories blocking every matching version, a `dev-master`-only package under the default `minimum-stability`, a dependency whose only versions require a framework the root cannot take — or an unmet platform requirement, not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.19.0.md`](compat/results/v0.19.0.md).
+[^3]: The skips are packages Composer itself refuses to resolve — security advisories blocking every matching version, a `dev-master`-only package under the default `minimum-stability`, a dependency whose only versions require a framework the root cannot take — or an unmet platform requirement, not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.20.0.md`](compat/results/v0.20.0.md).
 [^4]: Of viv's 10 pinned compatibility projects, the one that needs `--no-plugins` is `symfony/demo`, for `symfony/flex`. Flex does its work in `composer require`, so installing from a committed lock loses nothing; see [`docs/plugin-strategy.md`](docs/plugin-strategy.md).
 [^6]: riff's phpunit/phpunit cold and warm times (7.4 s and 7.3 s) are an outlier against its other rows in this corpus; kept in the range, not dropped; see [`bench/results/corpus.md`](bench/results/corpus.md).
 [^7]: roots/bedrock, drupal/recommended-project, yiisoft/yii2-app-basic and craftcms/craft, recorded in [`bench/skips.txt`](bench/skips.txt) against vivacity 0.6.0 so a newer release is retried. A refusal is an `n/a` cell, never a slow one.
