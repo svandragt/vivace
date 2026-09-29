@@ -1802,3 +1802,40 @@ Reproduce: `LOCKMERGE_CORPUS=<client corpus.toml> BENCH_CACHE=<scratch copy of t
 
 
 **Reading.** Of the 29 merges Rule B left `needs fetch` offline, going online resolves 16 (1 finished outright, 15 by the time tie-break), leaves 0 real conflict and 13 other conflict, and 0 still `needs fetch` even with network on. Combined with Rule B's other 23, all 52 under Rule B with network now stand at 1 finished, 36 resolved by time, 1 real conflict, 14 other conflict, 0 needs fetch, 0 timed out.
+
+### Shipped driver, 2026-09-29
+
+The four build steps of candidate 3.3 (#343 dev-* records identified by
+commit, #347 `viv.lock` records carry `time`, #344 `composer.lock` from
+`viv.lock`, #345 fetching a pinned commit the registry no longer
+describes) landed on `main` at `879fddc`. The same 52 merges, run with
+the shipped `viv lock merge` and no research model in the loop: a
+release build, each merge at `--as-of` its own commit date, the platform
+declared per merge as `run.py`'s `driver_conflict()` does, a cold copy of
+the metadata cache, network and git reachable, `timeout 300`, four in
+parallel, 231 s.
+
+| Pass | Finished | Conflict | Timed out | `fetching` lines |
+|---|---|---|---|---|
+| 1, cold cache | 46 | 6 | 0 | 22 |
+| 2, same cache | 46 | 6 | 0 | 1 |
+
+The research model (rule B, online) had 37 finished, 1 real conflict and
+14 registry residue. The driver does better because #343 settles a
+`dev-*` name from the two records' own commits and never asks the
+registry for it, where the model stripped those names and sent the rest
+to a solve that still wanted provider files wpackagist no longer serves.
+
+The six that remain, by project letter and merge: three where a
+wpackagist plugin no longer exists in any version (C 51bfcf249caa, D
+5ebff5e0fa5a, D fab5af602563), one where the pinned commit is gone from
+its upstream repository (C 41dadb89a70f; fetched again on pass 2, #348),
+one malformed `composer.json` with a trailing comma (A f415c1b9489b), and
+one that ends in conflict markers with nothing on stderr (C bd845ad7cb05),
+not classified. Chapter 1's floor of 51 unfinished merges in 355 is now
+6, 1.7%. Two harness findings became issues: #348 and #349 (a git-cache
+race under four parallel merges).
+
+Reproduce: the scratch scripts are not in the repository; `run.py` gains
+a `--driver-only` mode in the next tooling change, and this section is
+the reference until then.

@@ -792,7 +792,7 @@ could be if it no longer had to produce Composer's output.
 
 Status, 2026-09-29: all five candidates measured. 3.1 (managed PHP) and
 3.4 (installs that run no code) hold and are built, released in 0.19.0.
-3.3 (a lock that pins commits) holds and is being built (#343 to #345). 3.2 (isolation
+3.3 (a lock that pins commits) holds and is built (#343 to #345, #347): 46 of the 52 merges chapter 1 left to a person finish with the shipped driver. 3.2 (isolation
 per plugin) and 3.5 (simpler rules) measured, not built.
 
 ### Rules for generation 3
@@ -1002,10 +1002,22 @@ fetches across the 16 merges that finish only online, one per pinned
 branch whose commit Packagist no longer describes.
 
 **Decision, 2026-09-29: build.** #343 `dev-*` records identified by
-commit with the later commit winning in `viv lock merge`, #344
-`composer.lock` generated from `viv.lock` on demand, #345 fetching a
-pinned commit Packagist no longer describes, in the `g3 research 3: a
-lock that pins commits` milestone.
+commit with the later commit winning in `viv lock merge`, #347 `viv.lock`
+records carry the commit time, #344 `composer.lock` generated from
+`viv.lock` on demand, #345 fetching a pinned commit Packagist no longer
+describes, in the `g3 research 3: a lock that pins commits` milestone.
+
+**Built, 2026-09-29.** The shipped driver over the same 52 merges, no
+model in the loop (`bench/results/lockmerge.md`, "Shipped driver"): 46
+finish, 6 do not, none time out; 22 commit fetches on a cold cache and
+one on a warm one. Better than the model's 37 because the driver decides
+a `dev-*` name from the two records' commits and never asks the registry
+for it. What remains is not a lock shape: three wpackagist plugins that
+no longer exist in any version, one pinned commit gone from its upstream
+repository, one malformed manifest, one unclassified. Chapter 1's floor
+of 51 unfinished merges in 355 is 6, 1.7%. A project can now commit
+`viv.lock` alone: `viv install` generates `composer.lock` from it when
+absent, and `viv lock export --check` proves the two agree.
 
 ### Candidate 3.4: installs that run no code
 

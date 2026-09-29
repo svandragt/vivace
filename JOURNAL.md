@@ -1722,3 +1722,15 @@ run, the shipped driver finished 14 with a single fetch, because #343
 settles most `dev-*` names before the re-solve runs at all; the
 research model had guessed 24 fetches. The one miss requires
 `php ^5.2|^7` and fails this machine's platform check.
+
+## 2026-09-29: candidate 3.3 built
+
+All four steps on main. The shipped `viv lock merge` over the 52
+merges chapter 1 left to a person, no model in the loop: 46 finish, 6
+do not, 22 commit fetches cold and one warm. The research model said
+37; the driver does better because it decides a rolling branch from
+the two records' commits and never asks the registry. The six left
+are packages or commits that no longer exist, and one malformed
+manifest. Chapter 1's floor is 1.7% of 355. A first QA run without
+the per-merge platform declaration reported 21, which is what a
+missing `php` on PATH looks like; the harness step, not the driver.

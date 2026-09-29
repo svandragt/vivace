@@ -349,9 +349,11 @@ re-solves only the packages the two branches changed differently. `viv
 init` writes the `.gitattributes` line and `viv install` wires the driver
 into each clone, so after the first install nobody runs anything extra.
 Replayed over 355 real merges from four client projects, `composer.lock`
-conflicted 228 times under git and 51 times with the driver; the rest
-were branch heads the registry had since overwritten or packages it no
-longer lists, which viv marks and names.[^19] The setup is described under
+conflicted 228 times under git, 51 times with the driver, and 6 times
+once a `dev-*` branch is pinned by commit and the later commit wins; the
+6 are packages or commits that no longer exist anywhere, which viv marks
+and names.[^19] A project can commit `viv.lock` alone and let `viv
+install` generate `composer.lock` from it. The setup is described under
 "Everyday commands".
 
 ### Running tools without installing them
