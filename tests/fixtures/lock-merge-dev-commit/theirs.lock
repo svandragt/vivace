@@ -1,0 +1,56 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "deadbeefdeadbeefdeadbeefdeadbeef",
+    "packages": [],
+    "packages-dev": [
+        {
+            "name": "acme/stable",
+            "version": "1.0.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/acme/stable.git",
+                "reference": "1111111111111111111111111111111111111111"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/acme/stable/zipball/1111111111111111111111111111111111111111",
+                "reference": "1111111111111111111111111111111111111111",
+                "shasum": ""
+            },
+            "type": "library",
+            "time": "2023-01-01T00:00:00+00:00"
+        },
+        {
+            "name": "roave/security-advisories",
+            "version": "dev-latest",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/Roave/SecurityAdvisories.git",
+                "reference": "cccccccccccccccccccccccccccccccccccccccc"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/Roave/SecurityAdvisories/zipball/cccccccccccccccccccccccccccccccccccccccc",
+                "reference": "cccccccccccccccccccccccccccccccccccccccc",
+                "shasum": ""
+            },
+            "type": "metapackage",
+            "conflict": {
+                "wp-coding-standards/wpcs": "<3"
+            },
+            "time": "2024-07-01T00:00:00+00:00"
+        }
+    ],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}

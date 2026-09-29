@@ -67,6 +67,108 @@ fn a_divergent_package_gets_one_marker_block_and_exit_1_with_no_resolve() {
     );
 }
 
+/// #343 (`docs/research.md` candidate 3.3): `roave/security-advisories
+/// dev-latest` moved to a different commit on both sides in
+/// `tests/fixtures/lock-merge-dev-commit/`, `theirs`' `time` later than
+/// `ours`' — `--offline` proves the pick never reaches a registry, unlike
+/// an ordinary divergent name, which this fixture's own `acme/stable`
+/// (unchanged on every side) exists only to keep non-empty, so
+/// `packages-dev` prints multi-line for the marker/record splice either
+/// fixture needs (an empty array prints on one line, which
+/// `splice_array` deliberately doesn't handle — its own doc comment).
+#[test]
+fn a_dev_commit_moved_on_both_sides_resolves_to_the_later_time_offline() {
+    let dir = fixtures_dev_commit();
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    for name in ["composer.json", "base.lock", "ours.lock", "theirs.lock"] {
+        fs::copy(dir.join(name), project.join(name)).unwrap();
+    }
+
+    let output = ctx
+        .viv()
+        .arg("--offline")
+        .args(["lock", "merge"])
+        .arg(project.join("base.lock"))
+        .arg(project.join("ours.lock"))
+        .arg(project.join("theirs.lock"))
+        .arg("-d")
+        .arg(project)
+        .output()
+        .expect("failed to run viv");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the later commit must resolve with no person and no network: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let got = fs::read_to_string(project.join("ours.lock")).unwrap();
+    let expected = fs::read_to_string(dir.join("expected.lock")).unwrap();
+    assert_eq!(got, expected, "theirs' later commit must win outright");
+    assert!(
+        !got.contains("<<<<<<<"),
+        "a resolved-by-time dev-* record leaves no marker"
+    );
+}
+
+/// #343's other half: `ours` and `theirs` moved
+/// `roave/security-advisories dev-latest` to different commits with the
+/// *same* `time` (`tests/fixtures/lock-merge-dev-commit-tie/`) — a
+/// conflict for a person, same shape as any other divergent name, naming
+/// both commits in the marker block, and still never sent to a re-solve.
+#[test]
+fn a_dev_commit_tied_on_time_is_a_conflict_naming_both_commits() {
+    let dir = fixtures_dev_commit_tie();
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    for name in ["composer.json", "base.lock", "ours.lock", "theirs.lock"] {
+        fs::copy(dir.join(name), project.join(name)).unwrap();
+    }
+
+    let output = ctx
+        .viv()
+        .arg("--offline")
+        .args(["lock", "merge"])
+        .arg(project.join("base.lock"))
+        .arg(project.join("ours.lock"))
+        .arg(project.join("theirs.lock"))
+        .arg("-d")
+        .arg(project)
+        .output()
+        .expect("failed to run viv");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an equal-time dev-* conflict must exit 1: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let got = fs::read_to_string(project.join("ours.lock")).unwrap();
+    let expected = fs::read_to_string(dir.join("expected.lock")).unwrap();
+    assert_eq!(got, expected);
+    assert_eq!(
+        got.matches("<<<<<<< ours").count(),
+        1,
+        "exactly one marker block"
+    );
+    assert!(
+        got.contains("\"reference\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"")
+            && got.contains("\"reference\": \"cccccccccccccccccccccccccccccccccccccccc\""),
+        "the marker must name both commits: {got}"
+    );
+}
+
+fn fixtures_dev_commit() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lock-merge-dev-commit")
+}
+
+fn fixtures_dev_commit_tie() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lock-merge-dev-commit-tie")
+}
+
 /// Chunk 2's seam, `lock_merge::resolve_divergent_closure`, driven directly
 /// with a `FixtureTransport` (`tests/update.rs`'s own pattern) instead of
 /// the CLI path's real `HttpTransport`: `psr/log` is the one divergent
