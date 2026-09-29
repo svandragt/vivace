@@ -1663,3 +1663,15 @@ winning, 21 finish offline; online 16 more do, and 13 fail on
 wpackagist provider files the registry no longer serves. 37 of 52
 finish with no person; chapter 1's 14% floor becomes 4.2%. Holds; the
 build is the maintainer's call.
+
+## 2026-09-29: v0.19.0
+
+Release. Sweep `compat/results/v0.19.0.md`: pinned corpus 20 of 20
+install rows identical, 10 of 10 locks identical, random sample 16 of
+16 installable rows identical with 4 skipped by Composer itself, 1 of 18
+projects refuses without `--no-plugins` (symfony/flex). Bench gate:
+local warm ratio fails against the runner baseline as it did for 0.16.0
+and 0.18.0 while CI's own gate passed on every push; viv laravel warm
+37.9 ms, the same as the day's A/B runs. README read end to end; the
+sweep paragraph, the action and image tags, the "five things" count and
+the Scope line were stale and are fixed.

@@ -71,7 +71,7 @@ chain into the lower half and install (`--no-install` opts out).
 | `native_lock` | Chapter 1's `viv.lock` writer and reader, and `viv lock convert`, which translates an existing `composer.lock` into it without re-solving. |
 | `lock_merge` | Record-level three-way merge and re-solve for `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver. `--offline-rung` (opt-in) tries one parent's own pinned record, checked against the two locks' own `require`/`conflict`/`replace`/`provide`/platform data with no registry fetch, once the registry escalation has already failed at every rung. |
 | `workspace` | Chapter 3's `extra.viv.workspace` member discovery and `viv workspace list`; `viv workspace init`/`viv workspace add` write and grow a plain aggregate root, one `path` repository and `require` line per matched pattern, then resolve and install through `require::partial_update`. |
-| `main.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, `diagnose`, `lock`, `workspace`, plus `--offline` and `--cache-dir`. |
+| `main.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, `php`, `diagnose`, `lock`, `workspace`, plus `--offline` and `--cache-dir`. |
 
 ## Why a store and hardlinks
 

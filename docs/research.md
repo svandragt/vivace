@@ -756,6 +756,11 @@ GitHub ignores `merge=union`, `dev-*` branch heads move, and old package
 downloads do not disappear. Generation 3 asks what a PHP package manager
 could be if it no longer had to produce Composer's output.
 
+Status, 2026-09-29: all five candidates measured. 3.1 (managed PHP) and
+3.4 (installs that run no code) hold and are built, released in 0.19.0.
+3.3 (a lock that pins commits) holds, build decision open. 3.2 (isolation
+per plugin) and 3.5 (simpler rules) measured, not built.
+
 ### Rules for generation 3
 
 - Compat mode stays the default and the control. Generation 3 behaviour is
