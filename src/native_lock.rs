@@ -507,6 +507,11 @@ pub fn reconcile(lock: &mut lock::Lock, viv_lock_path: &Path) -> Result<()> {
     }
     if !mismatches.is_empty() {
         mismatches.push("run `viv update --lock native` to bring them back in step".to_string());
+        mismatches.push(
+            "run `viv lock export` to rewrite composer.lock from viv.lock, or `viv lock convert` \
+             to rewrite viv.lock from composer.lock"
+                .to_string(),
+        );
         bail!(mismatches.join("\n"));
     }
     Ok(())

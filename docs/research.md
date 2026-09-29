@@ -94,17 +94,22 @@ sorted by name. Each record holds exactly:
   exported until `viv lock convert`/`viv update --lock native` runs again.
 
 Once every record carries `raw`, `viv.lock` alone is enough for `install` to
-work from (#344): a `composer.lock` that's missing, or older than `viv.lock`,
-is (re)generated from it through `export` before installing proceeds, one
-line said once, and never rewritten when it's already newer than `viv.lock`.
-A pre-#344 record, with no `raw` at all, still can't be exported, and
-`install` refuses, naming the package and pointing at `viv lock convert`.
-When both files are already present and in step, `install` still reads
-`composer.lock` for a record's full entry — `installed.json`/`installed.php`
-need `require`/autoload/metadata a record's typed fields don't carry — and
-refuses, naming every package, when a record's `(version, source-ref, dev)`
-disagrees with `composer.lock`'s own entry for that name (#297), rather than
-picking a side.
+work from (#344): a missing `composer.lock` is generated from it through
+`export` before installing proceeds, one line said once. A present
+`composer.lock` is never rewritten, on any evidence — reviewed 2026-09-29:
+an earlier version compared the two files' mtimes and regenerated whichever
+was older, but `git checkout` does not preserve mtimes, so that comparison
+could silently discard a `composer.lock` a developer, or Composer itself,
+had legitimately changed. A pre-#344 record, with no `raw` at all, still
+can't be exported, and `install` refuses, naming the package and pointing
+at `viv lock convert`. When both files are already present, `install` still
+reads `composer.lock` for a record's full entry — `installed.json`/
+`installed.php` need `require`/autoload/metadata a record's typed fields
+don't carry — and refuses, naming every package, when a record's `(version,
+source-ref, dev)` disagrees with `composer.lock`'s own entry for that name
+(#297), rather than picking a side; the refusal names both fixes, `viv
+update --lock native` to re-solve and write both files together, or `viv
+lock export`/`viv lock convert` to rewrite one from the other by hand.
 
 Deliberately absent: `content-hash`, `plugin-api-version` and `platform`,
 the file-level fields that change on every requirements edit and are why
@@ -242,12 +247,15 @@ reads the conflicted lock's own git index stages, runs the same merge and
 re-solve the driver would, and wires the clone so it doesn't happen again.
 #344 gave `viv.lock` its own `raw` per record and a `viv lock export` that
 turns it back into `composer.lock` through the same writer a solve feeds;
-`install` now calls that first whenever `composer.lock` is missing or older
-than `viv.lock`, so a project can stop committing `composer.lock` at all —
-#297's refusal, and its "companion, never a replacement" framing, now apply
-only once both files are already on disk. Nothing queued; the chapter's open
-question is
-adoption, not mechanism.
+`install` now calls that first whenever `composer.lock` is missing, so a
+project can stop committing `composer.lock` at all — but never rewrites one
+that's already present, on any evidence, since `git checkout` doesn't
+preserve mtimes and a present-but-differing file might be one a developer,
+or Composer itself, legitimately changed. #297's refusal, and its
+"companion, never a replacement" framing, now apply only once both files
+are already on disk, and now names `viv lock export`/`viv lock convert` as
+a fix alongside `viv update --lock native`. Nothing queued; the chapter's
+open question is adoption, not mechanism.
 
 ## Chapter 2: autoload from the store, no vendor tree (measured, not pursued)
 

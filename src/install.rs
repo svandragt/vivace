@@ -1121,56 +1121,32 @@ fn run_impl(
     Ok(())
 }
 
-/// #344: keeps `composer.lock` derived from `viv.lock` for a project that
-/// has adopted it, through `native_lock::export` (in-process, the same
-/// `lock_writer::write` a solve feeds — never a subprocess). An absent
-/// `composer.lock` is generated outright, one line said once. A
-/// `composer.lock` older than `viv.lock` is regenerated too, but only
-/// written (and said) when the bytes actually differ — a `viv.lock` that
-/// simply got touched, or the pair already written together by `update`,
-/// costs a rewrite of nothing. A `composer.lock` at least as new as
-/// `viv.lock` is never touched — it may be newer for a reason `viv.lock`
-/// doesn't know about, and it isn't this function's place to guess.
-/// `export`'s own error, when a record predates #344 and carries no `raw`,
-/// already names the package and points at `viv lock convert`, so it is
-/// simply propagated rather than re-worded here. A conflicted `viv.lock`
-/// (git merge markers) fails to parse here too, but #274's detection and
-/// #299's auto-resolve already run later, against `reconcile`'s own read of
-/// the same file — this leaves `composer.lock` untouched and defers to that
-/// existing path rather than surfacing a bare TOML parse error first.
+/// #344: generates `composer.lock` from `viv.lock` (`native_lock::export`,
+/// in-process — the same `lock_writer::write` a solve feeds, never a
+/// subprocess) when it's missing, one line said once, and never touches it
+/// otherwise. Reviewed 2026-09-29: an earlier version of this function
+/// compared the two files' mtimes and regenerated whichever side was
+/// older, but `git checkout` does not preserve mtimes — either file can
+/// come out "newer" after a plain checkout, so that comparison could
+/// silently discard a `composer.lock` a developer, or Composer itself, had
+/// legitimately changed. A `composer.lock` that has since drifted from
+/// what `viv.lock` would produce is instead caught by `reconcile`'s own
+/// per-package identity check, once `install` reads it back — refusing,
+/// never picking a side. `export`'s own error, when a record predates
+/// #344 and carries no `raw`, already names the package and points at
+/// `viv lock convert`; a conflicted `viv.lock` (git merge markers) fails
+/// to parse the same way, so both get `with_marker_hint`'s treatment
+/// (a no-op when there are no markers to find).
 fn sync_composer_lock_from_viv_lock(
     project_dir: &Path,
     lock_path: &Path,
     viv_lock_path: &Path,
 ) -> Result<()> {
-    let viv_lock_modified = fs_err::metadata(viv_lock_path)
-        .context("reading viv.lock metadata")?
-        .modified()
-        .context("viv.lock has no modification time")?;
-    let existing = fs_err::metadata(lock_path).ok();
-    if let Some(meta) = &existing {
-        let composer_lock_modified = meta
-            .modified()
-            .context("composer.lock has no modification time")?;
-        if composer_lock_modified >= viv_lock_modified {
-            return Ok(());
-        }
+    if lock_path.is_file() {
+        return Ok(());
     }
-    let generated = match crate::native_lock::export(project_dir) {
-        Ok(generated) => generated,
-        Err(err) => {
-            if marker_conflict_message("viv.lock", viv_lock_path, "name = \"", false).is_some() {
-                return Ok(());
-            }
-            return Err(err);
-        }
-    };
-    if existing.is_some() {
-        let current = fs_err::read_to_string(lock_path).context("reading composer.lock")?;
-        if current == generated {
-            return Ok(());
-        }
-    }
+    let generated = crate::native_lock::export(project_dir)
+        .map_err(|err| with_marker_hint("viv.lock", viv_lock_path, "name = \"", err))?;
     fs_err::write(lock_path, generated)?;
     out("composer.lock generated from viv.lock");
     Ok(())
