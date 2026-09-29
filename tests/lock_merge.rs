@@ -1343,7 +1343,10 @@ fn viv_lock_body(records: &[(&str, &str)]) -> String {
             |&(name, version)| vivace::solver::transaction::ResolvedPackage {
                 name: name.to_string(),
                 pretty_version: version.to_string(),
-                raw: json!({}),
+                // `dump_package` (#344's canonicalisation in `record`)
+                // requires `name`/`version` in `raw` itself, same as every
+                // real provider/lock entry already carries them.
+                raw: json!({"name": name, "version": version}),
             },
         )
         .collect();

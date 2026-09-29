@@ -85,13 +85,23 @@ sorted by name. Each record holds exactly:
   same way: no format-version marker exists or is needed, since a record
   written before this change simply has no `time`, and `viv lock convert`
   re-run adds it like any other field gap.
+- `raw`, the package's own `composer.lock` block (`lock_writer::dump_package`'s
+  canonical shape) as compact JSON text, added the same way for `viv lock
+  export` (#344): every other field above is a lossy projection of it (no
+  `require`/`autoload`/`license`/the rest of "no require/autoload/metadata"
+  below), so reconstructing a package block byte for byte needed the entry
+  itself, not one more typed field. A pre-#344 record has none and cannot be
+  exported until `viv lock convert`/`viv update --lock native` runs again.
 
-`viv.lock` is a companion to `composer.lock`, never a replacement — a record
-carries no `require`/autoload/metadata, which `installed.json`/
-`installed.php` need — so `install`/`update` (#297) read both and refuse,
-naming every package, when a record's `(version, source-ref, dev)` disagrees
-with `composer.lock`'s own entry for that name, rather than installing from
-one side alone.
+`viv.lock` is a companion to `composer.lock`, never a replacement for
+`install`/`update` (#297): a record's typed fields carry no
+`require`/autoload/metadata, which `installed.json`/`installed.php` need, so
+both still read `composer.lock` and refuse, naming every package, when a
+record's `(version, source-ref, dev)` disagrees with `composer.lock`'s own
+entry for that name, rather than installing from one side alone. `export`
+(#344) is the one reader of `raw`, orthogonal to that refusal: it turns
+`viv.lock` back into a `composer.lock` for a project that stops committing
+one, it does not change what `install` trusts.
 
 Deliberately absent: `content-hash`, `plugin-api-version` and `platform`,
 the file-level fields that change on every requirements edit and are why

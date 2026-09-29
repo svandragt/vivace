@@ -155,6 +155,82 @@ fn lock_convert_stdout_writes_nothing_to_disk() {
     );
 }
 
+/// #344: `viv lock convert` then `viv lock export` must reproduce the
+/// fixture's own `composer.lock` byte for byte — the round trip the
+/// generated-lock mode depends on, proved without touching the committed
+/// `viv.lock` fixture at all.
+#[test]
+fn lock_export_round_trips_through_convert() {
+    let ctx = TestContext::new();
+    copy_monolog_sources(ctx.project.path());
+    let original = fs::read_to_string(ctx.project.path().join("composer.lock")).unwrap();
+
+    let mut convert = ctx.viv();
+    convert.args(["lock", "convert"]);
+    assert!(convert.output().unwrap().status.success());
+
+    fs::remove_file(ctx.project.path().join("composer.lock")).unwrap();
+    let mut export = ctx.viv();
+    export.args(["lock", "export"]);
+    assert!(export.output().unwrap().status.success());
+
+    let exported = fs::read_to_string(ctx.project.path().join("composer.lock")).unwrap();
+    assert_eq!(exported, original);
+}
+
+/// `--check`: exit 0 and no write when `composer.lock` already equals
+/// `viv lock export`'s own output.
+#[test]
+fn lock_export_check_exits_zero_when_it_already_matches() {
+    let ctx = TestContext::new();
+    copy_monolog_sources(ctx.project.path());
+    fs::copy(
+        fixture().join("viv.lock"),
+        ctx.project.path().join("viv.lock"),
+    )
+    .unwrap();
+    let before = fs::read_to_string(ctx.project.path().join("composer.lock")).unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["lock", "export", "--check"]);
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(ctx.project.path().join("composer.lock")).unwrap(),
+        before,
+        "--check must not write composer.lock"
+    );
+}
+
+/// `--check`: exit 1 and a one-line diff summary when `composer.lock` has
+/// drifted from what `viv.lock` would export.
+#[test]
+fn lock_export_check_exits_one_when_it_differs() {
+    let ctx = TestContext::new();
+    copy_monolog_sources(ctx.project.path());
+    fs::copy(
+        fixture().join("viv.lock"),
+        ctx.project.path().join("viv.lock"),
+    )
+    .unwrap();
+    let composer_lock = ctx.project.path().join("composer.lock");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&composer_lock).unwrap()).unwrap();
+    json["content-hash"] = "0000000000000000000000000000000".into();
+    fs::write(&composer_lock, serde_json::to_vec(&json).unwrap()).unwrap();
+
+    let mut cmd = ctx.viv();
+    cmd.args(["lock", "export", "--check"]);
+    let output = cmd.output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("differs"),
+        "expected a one-line diff summary on stdout"
+    );
+}
+
 /// #33: a requirement entirely absent from the lock is fatal
 /// (`ERROR_LOCK_FILE_INVALID` in Composer), unlike a stale hash.
 #[test]

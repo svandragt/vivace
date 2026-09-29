@@ -228,6 +228,17 @@ fn lock_convert_reproduces_the_monolog_viv_lock() {
     assert_matches_expected(&got, &fixture.join("viv.lock"));
 }
 
+/// #344: the other direction — `viv lock export` reads the committed
+/// `viv.lock` (and `composer.json`) and must reproduce the fixture's own
+/// `composer.lock` byte for byte, through the same `lock_writer::write`
+/// `update_reproduces_the_monolog_lock` exercises from a fresh solve.
+#[test]
+fn lock_export_reproduces_the_monolog_composer_lock() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let got = vivace::native_lock::export(&fixture).unwrap();
+    assert_matches_expected(&got, &fixture.join("composer.lock"));
+}
+
 /// The hard constraint `--lock native` must satisfy (`AGENTS.md`, #272):
 /// writing `viv.lock` never changes `composer.lock`'s own bytes.
 /// `native_lock::write` only takes shared references into the same solve
