@@ -1739,3 +1739,66 @@ Reasons, per merge:
 Reproduce Rule B: `LOCKMERGE_CORPUS=<client corpus.toml> BENCH_CACHE=<client clone cache> bench/lockmerge/run.py --dev-as-commits --rule-b --only-conflicting <path to the filter file>` (same filter file as Rule A).
 
 **Reading.** Of the 52 merges Rule A left entirely unresolved (0 finished), Rule B's time tie-break resolves the `dev-*` side of 21 (all `resolved by time`, none finish outright) and leaves 1 real conflict (no `time` field or a tie) and 1 unrelated malformed-manifest conflict; the other 29 need a registry fetch this replay's offline cache doesn't have (`needs fetch`), well past Rule A's 6, because letting more merges reach the residual driver call also grows how much it needs to solve. Of the 21 that now finish, 47 `dev-*` records across them still have a commit not in the cached provider data -- the install-time fetch cost Rule A's zero finishes made moot.
+
+### Rule B, online
+
+2026-09-29T08:42:51Z
+
+
+Exactly the 29 of Rule B's 52-merge filter that came back `needs fetch` offline (`--only-conflicting only-conflicting-29.txt`, filtered from Rule B's own footnotes above), replayed with `--online` (drops `--offline` on the residual driver call; `--cache-dir` is a scratch copy of the metadata cache, so the committed offline Rule A/B results stay reproducible from the untouched default store). Same `timeout 300` per merge, 4 in parallel, same corpus and cap as Rule A/B. viv binary: `/home/sander/dev/rust/vivace-lanes/main/target/release/viv` (viv 0.18.0, commit `d6e572d04906c6850d15cafed34d23a4f8dfd223`). Wall time: 146.3s.
+
+
+| Group | Merges | Finished | Resolved by time | Real conflict | Other conflict | Needs fetch | Timed out |
+|---|---|---|---|---|---|---|---|
+| All | 29 | 1 | 15 | 0 | 13 | 0 | 0 |
+| dev-* leaf (chapter 1) | 26 | 1 | 15 | 0 | 10 | 0 | 0 |
+| Other leaf (chapter 1) | 3 | 0 | 0 | 0 | 3 | 0 | 0 |
+
+Of the 16 merges that now finish (plain or by the time tie-break), 24 `dev-*` record(s) across them have a commit not in the cached provider data -- the cost an install would pay to fetch it. The install itself was not run (the brief: Packagist's own metadata for an old branch head is gone, so confirming an install would need a real fetch).
+
+Reasons, per merge:
+
+- project A 3eb4b805f5ef (resolved by time): roave/security-advisories
+- project A 69de2588d656 (resolved by time): roave/security-advisories
+- project A 7b15e46a9c1b (resolved by time): roave/security-advisories
+- project A 7bccadf74a76 (other conflict): viv lock merge: re-solving nikic/php-parser, symfony/string, symfony/translation against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/wordpress-seo$d9169785af2851d8b57fe4c7eb440b0011b5e0ba314ab834f6ab891d8b93b12c.json: not found); falling back to conflict markers
+- project A 7f45843cc838 (resolved by time): roave/security-advisories
+- project A 805012f95c22 (resolved by time): roave/security-advisories
+- project A 81257073c74e (resolved by time): roave/security-advisories
+- project A 81dea67fa970 (resolved by time): roave/security-advisories
+- project A 989c23547fd6 (resolved by time): roave/security-advisories
+- project A bd7dcaf2b1e3 (resolved by time): humanmade/sc-shared-publish-workflow, roave/security-advisories
+- project A bfca269167fd (resolved by time): roave/security-advisories
+- project A dc9092cb427e (other conflict): viv lock merge: re-solving altis/cms, altis/core, altis/dev-tools, altis/local-server, altis/media, altis/security, darylldoyle/safe-svg, guzzlehttp/guzzle, humanmade/sc-user-reports, psr/log, symfony/string, symfony/translation against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/wordpress-seo$d9169785af2851d8b57fe4c7eb440b0011b5e0ba314ab834f6ab891d8b93b12c.json: not found); falling back to conflict markers
+- project A e1c8544243d8 (resolved by time): humanmade/sc-shared-publish-workflow, roave/security-advisories
+- project A fe3911aa9431 (resolved by time): roave/security-advisories
+- project B 00fcb9d416b8 (other conflict): viv lock merge: re-solving alleyinteractive/wordpress-fieldmanager, composer/installers, dealerdirect/phpcodesniffer-composer-installer, squizlabs/php_codesniffer, wpackagist-plugin/co-authors-plus, wpackagist-plugin/safe-redirect-manager, wpackagist-plugin/safe-svg against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/safe-svg$16d95c88df413a8014bb0727cf5325477fa593f3c658b41c32e2850f985dc3f4.json: not found); falling back to conflict markers
+- project B 3697ab0794f6 (resolved by time): roave/security-advisories
+- project B 9e8946673175 (other conflict): viv lock merge: re-solving wpackagist-plugin/safe-svg against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/safe-svg$16d95c88df413a8014bb0727cf5325477fa593f3c658b41c32e2850f985dc3f4.json: not found); falling back to conflict markers
+- project B bf0ba0d1795f (resolved by time): roave/security-advisories, wikimedia/shiro-wordpress-theme
+- project B e3298da342a3 (other conflict): viv lock merge: re-solving wpackagist-plugin/wordpress-seo against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/wordpress-seo$d9169785af2851d8b57fe4c7eb440b0011b5e0ba314ab834f6ab891d8b93b12c.json: not found); falling back to conflict markers
+- project B f9efbcc1646f (other conflict): viv lock merge: re-solving wpackagist-plugin/broken-link-checker, wpackagist-plugin/co-authors-plus, wpackagist-plugin/wordpress-seo against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/wordpress-seo$d9169785af2851d8b57fe4c7eb440b0011b5e0ba314ab834f6ab891d8b93b12c.json: not found); falling back to conflict markers
+- project C 04e48f571d3d (resolved by time): roave/security-advisories
+- project C 41dadb89a70f (other conflict): viv lock merge: re-solving illuminate/collections, illuminate/conditionable, illuminate/contracts, illuminate/macroable, illuminate/support, nesbot/carbon, symfony/filesystem, symfony/polyfill-php83, symfony/process, symfony/string, symfony/translation against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/wp-accessibility$6c625248efd0131b6f37cebda9e1a1cd372790b7a097416a2bdda9c677dd0528.json: not found); falling back to conflict markers
+- project C 51bfcf249caa (other conflict): viv lock merge: re-solving nesbot/carbon against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/two-factor$e6594eb1e8d37893c96e190aa778d4b721c555b0420cb14a5bafef6c751749ed.json: not found); falling back to conflict markers
+- project C 60a67275d6e3 (other conflict): viv lock merge: re-solving humanmade-pro/gravityforms, justinrainbow/json-schema, squizlabs/php_codesniffer, wpackagist-plugin/jetpack, wpackagist-plugin/redis-cache, wpackagist-plugin/wp-accessibility against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/wp-accessibility$6c625248efd0131b6f37cebda9e1a1cd372790b7a097416a2bdda9c677dd0528.json: not found); falling back to conflict markers
+- project C ba2dcc2ec368 (other conflict): viv lock merge: re-solving wpackagist-plugin/stream against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/restricted-site-access$3a9620944609fb5f4389f5367dbaff3a39fb6b96593f787d2ecb9bc7848d517d.json: not found); falling back to conflict markers
+- project C cc918961871c (other conflict): viv lock merge: re-solving roots/wordpress, roots/wordpress-no-content against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/wordpress-seo$d9169785af2851d8b57fe4c7eb440b0011b5e0ba314ab834f6ab891d8b93b12c.json: not found); falling back to conflict markers
+- project D 5ebff5e0fa5a (other conflict): viv lock merge: re-solving altis/cms, altis/core, altis/dev-tools, altis/local-server, altis/security, aws/aws-sdk-php against the merged composer.json did not finish (re-solving at rung 3 (seeded) did not finish; the registry may be unreachable (cached metadata was tried first via --cache-dir): https://wpackagist.org/p/wpackagist-plugin/wordpress-seo$d9169785af2851d8b57fe4c7eb440b0011b5e0ba314ab834f6ab891d8b93b12c.json: not found); falling back to conflict markers
+- project D fab5af602563 (other conflict): - Root composer.json requires wpackagist-plugin/content-control, it could not be found in any version, there may be a typo in the package name.
+
+#### Rule B, all 52, with network
+
+
+| Merges | Finished | Resolved by time | Real conflict | Other conflict | Needs fetch | Timed out |
+|---|---|---|---|---|---|---|
+| 52 | 1 | 36 | 1 | 14 | 0 | 0 |
+
+The 23 non-`needs fetch` merges are Rule B's own committed counts above, unchanged (this run never replays them); the other 29 are this run's own outcomes, just above.
+
+Install check (the issue's third number, cheap form: does the merged lock accept `viv install --dry-run` cleanly from the now-warm cache, no further network): skipped. Dev-as-commits mode never rejoins a `dev-*` pick with the residual driver's own merged lock into one composer.lock -- `resolve_offline_stripped` only ever writes the dev-stripped residue back over `ours.lock`, so there is no single merged-lock artifact for a finished merge to install-check without new merge-writing logic this replay doesn't have.
+
+Reproduce: `LOCKMERGE_CORPUS=<client corpus.toml> BENCH_CACHE=<scratch copy of the client clone cache> bench/lockmerge/run.py --dev-as-commits --rule-b --online --only-conflicting <path to only-conflicting-29.txt>` (built from Rule B's own 29 "needs fetch" reasons).
+
+
+**Reading.** Of the 29 merges Rule B left `needs fetch` offline, going online resolves 16 (1 finished outright, 15 by the time tie-break), leaves 0 real conflict and 13 other conflict, and 0 still `needs fetch` even with network on. Combined with Rule B's other 23, all 52 under Rule B with network now stand at 1 finished, 36 resolved by time, 1 real conflict, 14 other conflict, 0 needs fetch, 0 timed out.
