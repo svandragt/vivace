@@ -1686,3 +1686,16 @@ shipped driver lands every merge in the same bucket as the research
 rule: 21 finish, 2 conflict, 29 wait on registry metadata. Found on
 the way: `viv.lock` records carry no `time`, so under `viv.lock` alone
 the rule cannot fire yet; that is the next issue in the milestone.
+
+## 2026-09-29: composer.lock from viv.lock (#344, part 1)
+
+`viv lock export` writes `composer.lock` from `viv.lock` through the
+one existing writer, byte-equal on all ten pinned compat projects
+(`COMPAT_LOCKS=1 make compat` gained an `Export` column). The price:
+Composer's per-package block carries fields install never needs
+(authors, description, keywords, funding), so a record now keeps that
+block as `raw` JSON text, the way `time` was added. A lean `viv.lock`
+and a byte-equal export cannot both hold; export wins, because a team
+that stops committing `composer.lock` needs it back exactly.
+`prefer-lowest` is the one field with no manifest source. Next:
+`viv install` from `viv.lock` alone.
