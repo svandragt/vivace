@@ -6,10 +6,13 @@
 //! a second source of truth for it.
 //!
 //! `read`/`Record` are the shape `lock_merge` (#275) parses a lock into;
-//! `reconcile` (#297) is `install`'s own use of the same reader: `viv.lock`
-//! stays a companion to `composer.lock`, never a replacement, so `install`
-//! reads both and refuses on any mismatch rather than installing from a
-//! record's own (incomplete) fields.
+//! `reconcile` (#297) is `install`'s own use of the same reader, for a
+//! project where both files are already present: `composer.lock` still
+//! supplies each package's full entry then, and `install` refuses on any
+//! mismatch rather than picking a side. `export` (#344) is the other use of
+//! the same reader: once every record carries `raw`, `viv.lock` alone is
+//! enough, and `install` generates or refreshes `composer.lock` from it
+//! rather than requiring it up front.
 //!
 //! `viv lock convert` (#273) is the other direction: an existing
 //! `composer.lock`, translated into this format without re-solving, for
@@ -504,6 +507,11 @@ pub fn reconcile(lock: &mut lock::Lock, viv_lock_path: &Path) -> Result<()> {
     }
     if !mismatches.is_empty() {
         mismatches.push("run `viv update --lock native` to bring them back in step".to_string());
+        mismatches.push(
+            "run `viv lock export` to rewrite composer.lock from viv.lock, or `viv lock convert` \
+             to rewrite viv.lock from composer.lock"
+                .to_string(),
+        );
         bail!(mismatches.join("\n"));
     }
     Ok(())

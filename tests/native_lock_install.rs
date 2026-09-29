@@ -1,12 +1,18 @@
-//! `install`/`update` reading `viv.lock` (#297): the format stays a
-//! companion to `composer.lock`, never a replacement
-//! (`docs/research.md` chapter 1's Format section) — `composer.lock` still
-//! supplies every package's full entry, `viv.lock` only decides the locked
-//! set and each record's own identity. Offline cases reuse the `path`
-//! fixture (`tests/install_e2e.rs`'s own `copy_path_sources`, duplicated
-//! here rather than shared, same as that file does with `tests/update.rs`);
-//! the round trip needs real dists, so it's gated on `VIVACE_TEST_NETWORK=1`
-//! like the rest of the network-touching suite.
+//! `install`/`update` reading `viv.lock` (#297, #344): once every record
+//! carries its own `raw` entry, `viv.lock` alone is enough to install from —
+//! `install` generates `composer.lock` from it first (`native_lock::export`)
+//! when it's missing, and never writes it otherwise (`git checkout` doesn't
+//! preserve mtimes, so comparing them to decide whether to rewrite an
+//! existing `composer.lock` could silently discard one a developer, or
+//! Composer itself, had legitimately changed). Both present, `reconcile`
+//! refuses on a name/identity mismatch between the two rather than picking
+//! a side, naming both `viv update --lock native` and `viv lock
+//! export`/`viv lock convert` as the fix (`docs/research.md` chapter 1's
+//! Format section). Offline cases reuse the `path` fixture
+//! (`tests/install_e2e.rs`'s own `copy_path_sources`, duplicated here rather
+//! than shared, same as that file does with `tests/update.rs`); the round
+//! trip needs real dists, so it's gated on `VIVACE_TEST_NETWORK=1` like the
+//! rest of the network-touching suite.
 #![allow(
     clippy::print_stderr,
     reason = "skip messages are the point of this test, not a lint violation"
@@ -18,6 +24,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use common::TestContext;
+use predicates::prelude::*;
 
 fn path_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/path")
@@ -124,11 +131,18 @@ fn install_refuses_a_composer_lock_package_missing_from_viv_lock() {
     );
 }
 
+/// #344: once every `viv.lock` record carries `raw`, the format alone is
+/// enough to install from — no `composer.lock` at all generates one first,
+/// through `native_lock::export` (the chunk 1 code path, in-process), matching
+/// the fixture's own committed file byte for byte, `install` says so once,
+/// and the install itself proceeds from it exactly as if it had been there
+/// all along.
 #[test]
-fn install_refuses_a_viv_lock_with_no_composer_lock() {
+fn install_generates_composer_lock_from_viv_lock_alone() {
     let ctx = TestContext::new();
     let project = ctx.project.path();
     copy_path_sources(project);
+    let canonical_lock = fs::read_to_string(project.join("composer.lock")).unwrap();
 
     ctx.viv().arg("lock").arg("convert").assert().success();
     fs::remove_file(project.join("composer.lock")).unwrap();
@@ -136,11 +150,162 @@ fn install_refuses_a_viv_lock_with_no_composer_lock() {
     ctx.viv()
         .arg("install")
         .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "composer.lock generated from viv.lock",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(project.join("composer.lock")).unwrap(),
+        canonical_lock,
+        "the generated composer.lock must match the fixture byte for byte"
+    );
+    assert!(
+        project.join("vendor/acme/hello").exists(),
+        "install must actually have run from the generated lock"
+    );
+}
+
+/// Reviewed 2026-09-29: a `composer.lock`/`viv.lock` pair that has genuinely
+/// diverged (the same package resolved differently by each) must never be
+/// silently rewritten from either side — `install` refuses, the same way
+/// [`install_refuses_a_viv_lock_version_mismatch_and_writes_nothing`] does,
+/// and now also names the `viv lock export`/`viv lock convert` hint
+/// alongside the existing `viv update --lock native` one. `composer.lock`
+/// itself is left byte-for-byte untouched, proving `install` never guesses
+/// which side is right.
+#[test]
+fn install_refuses_a_diverged_pair_and_names_the_export_and_convert_hint() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+    let canonical_lock = fs::read_to_string(project.join("composer.lock")).unwrap();
+
+    ctx.viv().arg("lock").arg("convert").assert().success();
+    let viv_lock = fs::read_to_string(project.join("viv.lock")).unwrap();
+    let edited = viv_lock.replacen(
+        "name = \"acme/hello\"\nversion = \"1.0.0\"",
+        "name = \"acme/hello\"\nversion = \"2.0.0\"",
+        1,
+    );
+    assert_ne!(edited, viv_lock, "the version line must have been replaced");
+    fs::write(project.join("viv.lock"), edited).unwrap();
+
+    ctx.viv()
+        .arg("install")
+        .assert()
         .failure()
-        .stderr(predicates::str::contains("companion to composer.lock"))
-        .stderr(predicates::str::contains("viv update --lock native"));
+        .stderr(predicates::str::contains("acme/hello"))
+        .stderr(predicates::str::contains(
+            "run `viv update --lock native` to bring them back in step",
+        ))
+        .stderr(predicates::str::contains(
+            "run `viv lock export` to rewrite composer.lock from viv.lock, or `viv lock convert` \
+             to rewrite viv.lock from composer.lock",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(project.join("composer.lock")).unwrap(),
+        canonical_lock,
+        "a refused install must never rewrite composer.lock"
+    );
+    assert!(
+        !project.join("vendor").exists(),
+        "a refused install must not create vendor/"
+    );
+}
+
+/// Both files present and already in step: `install` writes nothing and
+/// says nothing, the ordinary case once a project has adopted `viv.lock`.
+#[test]
+fn install_leaves_an_already_consistent_pair_untouched() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+    let canonical_lock = fs::read_to_string(project.join("composer.lock")).unwrap();
+
+    ctx.viv().arg("lock").arg("convert").assert().success();
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("generated from viv.lock").not());
+
+    assert_eq!(
+        fs::read_to_string(project.join("composer.lock")).unwrap(),
+        canonical_lock,
+        "an already-consistent composer.lock must be left untouched"
+    );
+}
+
+/// A pre-#344 `viv.lock`, with no `raw` on any record, still can't be
+/// exported: `install` refuses and names a package, pointing at `viv lock
+/// convert` to bring the format up to date — `native_lock::export`'s own
+/// error, propagated rather than reworded.
+#[test]
+fn install_refuses_a_pre_344_viv_lock_with_no_raw() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+
+    ctx.viv().arg("lock").arg("convert").assert().success();
+    fs::remove_file(project.join("composer.lock")).unwrap();
+
+    let viv_lock = fs::read_to_string(project.join("viv.lock")).unwrap();
+    let stripped = viv_lock
+        .lines()
+        .filter(|line| !line.starts_with("raw = "))
+        .fold(String::new(), |mut acc, line| {
+            acc.push_str(line);
+            acc.push('\n');
+            acc
+        });
+    assert!(
+        stripped.len() < viv_lock.len(),
+        "at least one `raw` line must have been removed"
+    );
+    fs::write(project.join("viv.lock"), stripped).unwrap();
+
+    ctx.viv()
+        .arg("install")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("acme/hello"))
+        .stderr(predicates::str::contains(
+            "viv.lock has no stored provider entry to export from",
+        ))
+        .stderr(predicates::str::contains("viv lock convert"));
 
     assert!(!project.join("vendor").exists());
+}
+
+/// `.gitattributes` gains `composer.lock linguist-generated=true` only once
+/// a project has adopted `viv.lock` — never for a plain `composer.lock`-only
+/// project, and not `export-ignore`, which would strip the file from
+/// `git archive` and break a downstream tool that needs it there.
+#[test]
+fn install_marks_composer_lock_generated_only_with_viv_lock() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+
+    ctx.viv().arg("install").assert().success();
+    assert!(
+        !fs::read_to_string(project.join(".gitattributes"))
+            .unwrap_or_default()
+            .contains("linguist-generated"),
+        "a project without viv.lock must not gain the generated attribute"
+    );
+
+    ctx.viv().arg("lock").arg("convert").assert().success();
+    ctx.viv().arg("install").assert().success();
+    assert!(
+        fs::read_to_string(project.join(".gitattributes"))
+            .unwrap()
+            .contains("composer.lock linguist-generated=true"),
+        "a project with viv.lock must gain the generated attribute"
+    );
 }
 
 /// Done-when (#297): `viv update --lock native`, delete `vendor/`, `viv

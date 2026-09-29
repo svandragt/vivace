@@ -239,6 +239,69 @@ fn lock_export_reproduces_the_monolog_composer_lock() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// #344: pre-warms `ctx.cache`'s on-disk repository cache from the recorded
+/// Packagist fixtures (`solver::solve_update`'s call here is only for that
+/// side effect, `tests/require.rs`'s `warm_monolog_cache_and_store` twin,
+/// duplicated rather than shared) and pre-populates the store with a
+/// synthetic archive for every package the monolog fixture's own
+/// `composer.lock` already proves this solve converges to, so the real
+/// `viv` binary can run `update --lock native --offline` for real, no
+/// network at all.
+async fn warm_monolog_cache_and_store(ctx: &TestContext, fixture: &Path) {
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", ctx.cache.path(), &transport)
+        .await
+        .unwrap();
+    let root: Value =
+        serde_json::from_slice(&fs_err::read(fixture.join("composer.json")).unwrap()).unwrap();
+    solver::solve_update(&repo, &root, fixture, false, false)
+        .await
+        .unwrap();
+
+    let store = Store::open(ctx.cache.path()).unwrap();
+    let lock = vivace::lock::read_lock(&fixture.join("composer.lock")).unwrap();
+    for package in lock.packages(true) {
+        store
+            .add_zip(
+                package,
+                &zip_of_one_file("marker.txt", package.name.as_bytes()),
+            )
+            .unwrap();
+    }
+}
+
+/// #344: `viv update --lock native` must leave the pair it just wrote
+/// consistent — `viv lock export --check` reading the `viv.lock` it wrote
+/// must reproduce the `composer.lock` it wrote alongside it, right away, no
+/// re-solve in between. Offline the same way `offline_partial_update_context`
+/// (below) is: the on-disk repository cache and the store are pre-warmed
+/// from the recorded Packagist fixtures, so the real `viv` binary never
+/// touches the network.
+#[tokio::test]
+async fn update_lock_native_then_export_check_exits_zero() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &project.join(dir));
+    }
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+
+    ctx.viv()
+        .args(["update", "--lock", "native", "--offline"])
+        .assert()
+        .success();
+
+    ctx.viv()
+        .args(["lock", "export", "--check"])
+        .assert()
+        .success();
+}
+
 /// The hard constraint `--lock native` must satisfy (`AGENTS.md`, #272):
 /// writing `viv.lock` never changes `composer.lock`'s own bytes.
 /// `native_lock::write` only takes shared references into the same solve

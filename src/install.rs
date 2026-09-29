@@ -619,22 +619,22 @@ fn run_impl(
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
 
     let lock_path = project_dir.join("composer.lock");
-    // #297: `viv.lock` is a companion to `composer.lock`, never a
-    // replacement (`docs/research.md` chapter 1) — a record carries no
-    // `require`/`autoload`, which `installed.json`/`installed.php` need.
+    // #344: once every `viv.lock` record carries its own `raw` entry,
+    // `viv.lock` alone is enough to install from — `composer.lock` is a
+    // derived file, kept in step here rather than required up front
+    // (`docs/research.md` chapter 1). A pre-#344 record with no `raw`
+    // still can't be exported; `native_lock::export`'s own error names the
+    // package and points at `viv lock convert`.
     // The absent case (almost every install, until the format sees
     // adoption) must cost nothing beyond this one metadata call: no
     // parsing, no allocation past the path join itself
     // (`AGENTS.md`'s Performance rule).
     let viv_lock_path = project_dir.join("viv.lock");
     let viv_lock_present = viv_lock_path.is_file();
+    if viv_lock_present {
+        sync_composer_lock_from_viv_lock(&project_dir, &lock_path, &viv_lock_path)?;
+    }
     if !lock_path.is_file() {
-        if viv_lock_present {
-            bail!(
-                "viv.lock is a companion to composer.lock, not a standalone format, and \
-                 composer.lock is missing; run `viv update --lock native` to write both"
-            );
-        }
         bail!(
             "composer.lock not found; viv installs from an existing composer.lock, run \
              `viv update` to create one"
@@ -722,6 +722,19 @@ fn run_impl(
     // wires the clone so a fresh clone's very first merge already runs
     // through `viv lock merge`.
     crate::merge_driver::wire(&project_dir);
+    // #344: once a project has `viv.lock`, mark the derived `composer.lock`
+    // as generated (`docs/research.md` chapter 1) the same idempotent way;
+    // a project without `viv.lock` never pays for the extra read.
+    if viv_lock_present
+        && let Ok(added) = crate::merge_driver::ensure_gitattributes(
+            &project_dir,
+            &[crate::merge_driver::GENERATED_ATTRIBUTE],
+        )
+    {
+        for line in added {
+            warn_out(&format!("viv: added `{line}` to .gitattributes"));
+        }
+    }
     let dev = !args.no_dev;
 
     let plugins_started = Instant::now();
@@ -1105,6 +1118,37 @@ fn run_impl(
         elapsed_ms = scripts_started.elapsed().as_millis(),
         "dispatched post-install-cmd"
     );
+    Ok(())
+}
+
+/// #344: generates `composer.lock` from `viv.lock` (`native_lock::export`,
+/// in-process — the same `lock_writer::write` a solve feeds, never a
+/// subprocess) when it's missing, one line said once, and never touches it
+/// otherwise. Reviewed 2026-09-29: an earlier version of this function
+/// compared the two files' mtimes and regenerated whichever side was
+/// older, but `git checkout` does not preserve mtimes — either file can
+/// come out "newer" after a plain checkout, so that comparison could
+/// silently discard a `composer.lock` a developer, or Composer itself, had
+/// legitimately changed. A `composer.lock` that has since drifted from
+/// what `viv.lock` would produce is instead caught by `reconcile`'s own
+/// per-package identity check, once `install` reads it back — refusing,
+/// never picking a side. `export`'s own error, when a record predates
+/// #344 and carries no `raw`, already names the package and points at
+/// `viv lock convert`; a conflicted `viv.lock` (git merge markers) fails
+/// to parse the same way, so both get `with_marker_hint`'s treatment
+/// (a no-op when there are no markers to find).
+fn sync_composer_lock_from_viv_lock(
+    project_dir: &Path,
+    lock_path: &Path,
+    viv_lock_path: &Path,
+) -> Result<()> {
+    if lock_path.is_file() {
+        return Ok(());
+    }
+    let generated = crate::native_lock::export(project_dir)
+        .map_err(|err| with_marker_hint("viv.lock", viv_lock_path, "name = \"", err))?;
+    fs_err::write(lock_path, generated)?;
+    out("composer.lock generated from viv.lock");
     Ok(())
 }
 
