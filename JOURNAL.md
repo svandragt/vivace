@@ -1675,3 +1675,14 @@ and 0.18.0 while CI's own gate passed on every push; viv laravel warm
 37.9 ms, the same as the day's A/B runs. README read end to end; the
 sweep paragraph, the action and image tags, the "five things" count and
 the Scope line were stale and are fixed.
+
+## 2026-09-29: dev-* records merge by commit (#343)
+
+`viv lock merge` now decides a `dev-*` record that both sides moved
+to different commits by the later record `time`, with no re-solve for
+that name; an equal or missing time is a conflict naming both commits.
+Replayed offline over the 52 merges chapter 1 left to a person, the
+shipped driver lands every merge in the same bucket as the research
+rule: 21 finish, 2 conflict, 29 wait on registry metadata. Found on
+the way: `viv.lock` records carry no `time`, so under `viv.lock` alone
+the rule cannot fire yet; that is the next issue in the milestone.
