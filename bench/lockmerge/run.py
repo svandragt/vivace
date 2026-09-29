@@ -1319,16 +1319,25 @@ def dev_ref_cached(cache_root: Path, name: str, ref: str | None) -> bool:
 def resolve_offline_stripped(
     viv_bin: str, work: Path, repo_dir: Path, sha: str,
     composer_json: bytes, base: bytes, ours: bytes, theirs: bytes, hang_dir: Path | None,
+    online: bool = False, cache_dir: Path | None = None,
 ) -> tuple[str, str | None]:
-    """`viv lock merge --offline` on the dev-stripped trio: the existing
+    """`viv lock merge [--offline]` on the dev-stripped trio: the existing
     driver, unmodified, deciding only the non-`dev-*` residue. `--offline`
     means a cache miss fails fast with "Network disabled" (`src/fetch.rs`)
     instead of fetching, which this classifies as `DEV_NEEDS_FETCH` rather
     than a real conflict; a `run_with_watchdog` kill (past `HANG_TIMEOUT`,
     300s by default -- the brief's own cap) is `DEV_TIMED_OUT`. No
-    `--cache-dir`: this reads viv's own default store, whatever earlier,
-    non-bench viv activity on this machine already populated -- the brief's
-    "metadata cache from earlier replays", never fetched fresh here."""
+    `--cache-dir` and `online=False` (the default): this reads viv's own
+    default store, whatever earlier, non-bench viv activity on this machine
+    already populated -- the brief's "metadata cache from earlier replays",
+    never fetched fresh here.
+
+    `online=True` (#331 follow-up, fixing Rule B's own upper bound) drops
+    `--offline` so a cache miss actually fetches instead of failing fast;
+    `cache_dir`, always required alongside it, points the fetch at a
+    scratch copy of the metadata cache rather than that same default
+    store, so this run's own network writes never change what the
+    existing, committed offline replay would read back tomorrow."""
     composer_json = declare_contemporaneous_platform(composer_json, ours, theirs)
     tmpdir = work / sha[:12]
     tmpdir.mkdir(parents=True, exist_ok=True)
@@ -1338,8 +1347,14 @@ def resolve_offline_stripped(
         p = tmpdir / f"{label}.lock"
         p.write_bytes(content)
         paths[label] = p
-    command = [
-        viv_bin, "--offline", "lock", "merge",
+    command = [viv_bin]
+    if online:
+        if cache_dir is not None:
+            command += ["--cache-dir", str(cache_dir)]
+    else:
+        command.append("--offline")
+    command += [
+        "lock", "merge",
         str(paths["base"]), str(paths["ours"]), str(paths["theirs"]), "-d", str(tmpdir),
     ]
     committer_date = git_or_none(repo_dir, "show", "-s", "--format=%cI", sha)
@@ -1368,7 +1383,7 @@ class DevMergeOutcome:
 
 def dev_as_commits_merge(
     repo_dir: Path, work: Path, viv_bin: str, project_name: str, m: Merge, leaf_cause: str,
-    hang_dir: Path | None, cache_root: Path,
+    hang_dir: Path | None, cache_root: Path, online: bool = False,
 ) -> DevMergeOutcome:
     base_lock = blob(repo_dir, m.base, "composer.lock")
     ours_lock = blob(repo_dir, m.ours, "composer.lock")
@@ -1410,7 +1425,8 @@ def dev_as_commits_merge(
     merge_json = strip_dev_requires(merge_json, dev_names)
 
     category, reason = resolve_offline_stripped(
-        viv_bin, work, repo_dir, m.sha, merge_json, base2, ours2, theirs2, hang_dir
+        viv_bin, work, repo_dir, m.sha, merge_json, base2, ours2, theirs2, hang_dir,
+        online=online, cache_dir=cache_root if online else None,
     )
     if category == DEV_FINISHED and time_resolved:
         category = DEV_RESOLVED_BY_TIME
@@ -1446,7 +1462,7 @@ def parse_only_conflicting(path: Path) -> dict[str, dict[str, str]]:
 
 def run_dev_as_commits(
     projects: list[Project], cache_root: Path, viv_bin: str, only: dict[str, dict[str, str]],
-    cap: int, hang_dir: Path | None,
+    cap: int, hang_dir: Path | None, online: bool = False,
 ) -> list[DevMergeOutcome]:
     tasks: list[tuple[Path, str, Merge, str]] = []
     for project in projects:
@@ -1468,12 +1484,22 @@ def run_dev_as_commits(
         work = Path(tmp)
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [
-                pool.submit(dev_as_commits_merge, repo_dir, work, viv_bin, name, m, cause, hang_dir, cache_root)
+                pool.submit(dev_as_commits_merge, repo_dir, work, viv_bin, name, m, cause, hang_dir, cache_root, online)
                 for repo_dir, name, m, cause in tasks
             ]
             for future in futures:
                 outcomes.append(future.result())
     return outcomes
+
+
+def dev_category_counts(rows: list[DevMergeOutcome]) -> dict[str, int]:
+    c = {
+        DEV_FINISHED: 0, DEV_RESOLVED_BY_TIME: 0, DEV_REAL_CONFLICT: 0,
+        DEV_OTHER_CONFLICT: 0, DEV_NEEDS_FETCH: 0, DEV_TIMED_OUT: 0,
+    }
+    for o in rows:
+        c[o.category] = c.get(o.category, 0) + 1
+    return c
 
 
 def render_dev_outcome_table(outcomes: list[DevMergeOutcome]) -> list[str]:
@@ -1483,22 +1509,13 @@ def render_dev_outcome_table(outcomes: list[DevMergeOutcome]) -> list[str]:
     "Rule B" split, #331 follow-up: the both-moved tie-break)."""
     lines: list[str] = []
 
-    def counts(rows: list[DevMergeOutcome]) -> dict[str, int]:
-        c = {
-            DEV_FINISHED: 0, DEV_RESOLVED_BY_TIME: 0, DEV_REAL_CONFLICT: 0,
-            DEV_OTHER_CONFLICT: 0, DEV_NEEDS_FETCH: 0, DEV_TIMED_OUT: 0,
-        }
-        for o in rows:
-            c[o.category] = c.get(o.category, 0) + 1
-        return c
-
     dev_rows = [o for o in outcomes if o.leaf_cause == LEAF_CAUSE_DEV_HEAD]
     other_rows = [o for o in outcomes if o.leaf_cause != LEAF_CAUSE_DEV_HEAD]
 
     lines.append("\n| Group | Merges | Finished | Resolved by time | Real conflict | Other conflict | Needs fetch | Timed out |")
     lines.append("|---|---|---|---|---|---|---|---|")
     for label, rows in (("All", outcomes), ("dev-* leaf (chapter 1)", dev_rows), ("Other leaf (chapter 1)", other_rows)):
-        c = counts(rows)
+        c = dev_category_counts(rows)
         lines.append(
             f"| {label} | {len(rows)} | {c[DEV_FINISHED]} | {c[DEV_RESOLVED_BY_TIME]} | "
             f"{c[DEV_REAL_CONFLICT]} | {c[DEV_OTHER_CONFLICT]} | {c[DEV_NEEDS_FETCH]} | {c[DEV_TIMED_OUT]} |"
@@ -1585,6 +1602,105 @@ def render_dev_rule_b(
         + f"). Wall time: {wall_time:.1f}s.\n",
     ]
     lines.extend(render_dev_outcome_table(outcomes))
+    return "\n".join(lines) + "\n"
+
+
+# The 23 of Rule B's original 52-merge run that did NOT land in "needs
+# fetch" (`bench/results/lockmerge.md`'s own "Rule B: a later `time` wins"
+# table) -- unaffected by the online rerun below, which only ever replays
+# the other 29.
+RULE_B_52_PRIOR_23 = {
+    DEV_FINISHED: 0, DEV_RESOLVED_BY_TIME: 21, DEV_REAL_CONFLICT: 1,
+    DEV_OTHER_CONFLICT: 1, DEV_NEEDS_FETCH: 0, DEV_TIMED_OUT: 0,
+}
+
+
+def render_dev_rule_b_online(
+    outcomes: list[DevMergeOutcome], viv_bin: str, viv_version: str, viv_commit: str | None,
+    wall_time: float, only_path: Path,
+) -> str:
+    """#331 follow-up: Rule B's own upper bound left 29 of its 52-merge
+    filter `needs fetch` purely because the residual driver's cache never
+    held their registry metadata offline. Replays exactly those 29 with
+    network on (`online=True` drops `--offline`; `--cache-dir` points at a
+    scratch copy of the metadata cache, never the shared default store the
+    committed offline Rule A/B runs themselves read, so today's numbers
+    stay reproducible), same timeout and parallelism, same
+    `dev_commit_pick` time tie-break as Rule B."""
+    n = len(outcomes)
+    total = sum(RULE_B_52_PRIOR_23.values()) + n
+    lines = [
+        "\n### Rule B, online\n",
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n",
+        f"\nExactly the {n} of Rule B's {total}-merge filter that came back `needs "
+        f"fetch` offline (`--only-conflicting {only_path.name}`, filtered "
+        f"from Rule B's own footnotes above), replayed with `--online` "
+        f"(drops `--offline` on the residual driver call; `--cache-dir` is "
+        f"a scratch copy of the metadata cache, so the committed offline "
+        f"Rule A/B results stay reproducible from the untouched default "
+        f"store). Same `timeout 300` per merge, 4 in parallel, same corpus "
+        f"and cap as Rule A/B. viv binary: `{viv_bin}` ({viv_version}"
+        + (f", commit `{viv_commit}`" if viv_commit else "")
+        + f"). Wall time: {wall_time:.1f}s.\n",
+    ]
+    lines.extend(render_dev_outcome_table(outcomes))
+
+    online_counts = dev_category_counts(outcomes)
+    combined = dict(RULE_B_52_PRIOR_23)
+    for key, count in online_counts.items():
+        combined[key] += count
+
+    lines.append(f"\n#### Rule B, all {total}, with network\n")
+    lines.append("\n| Merges | Finished | Resolved by time | Real conflict | Other conflict | Needs fetch | Timed out |")
+    lines.append("|---|---|---|---|---|---|---|")
+    lines.append(
+        f"| {total} | {combined[DEV_FINISHED]} | {combined[DEV_RESOLVED_BY_TIME]} | "
+        f"{combined[DEV_REAL_CONFLICT]} | {combined[DEV_OTHER_CONFLICT]} | "
+        f"{combined[DEV_NEEDS_FETCH]} | {combined[DEV_TIMED_OUT]} |"
+    )
+    lines.append(
+        f"\nThe {sum(RULE_B_52_PRIOR_23.values())} non-`needs fetch` merges are Rule B's own committed counts "
+        f"above, unchanged (this run never replays them); the other {n} are "
+        "this run's own outcomes, just above."
+    )
+
+    lines.append(
+        "\nInstall check (the issue's third number, cheap form: does the "
+        "merged lock accept `viv install --dry-run` cleanly from the "
+        "now-warm cache, no further network): skipped. Dev-as-commits mode "
+        "never rejoins a `dev-*` pick with the residual driver's own "
+        "merged lock into one composer.lock -- `resolve_offline_stripped` "
+        "only ever writes the dev-stripped residue back over `ours.lock`, "
+        "so there is no single merged-lock artifact for a finished merge "
+        "to install-check without new merge-writing logic this replay "
+        "doesn't have."
+    )
+
+    lines.append(
+        "\nReproduce: `LOCKMERGE_CORPUS=<client corpus.toml> "
+        "BENCH_CACHE=<scratch copy of the client clone cache> "
+        "bench/lockmerge/run.py --dev-as-commits --rule-b --online "
+        f"--only-conflicting <path to {only_path.name}>` (built from Rule "
+        f"B's own {n} \"needs fetch\" reasons).\n"
+    )
+
+    lines.append(
+        f"\n**Reading.** Of the {n} merges Rule B left `needs fetch` "
+        f"offline, going online resolves "
+        f"{online_counts[DEV_FINISHED] + online_counts[DEV_RESOLVED_BY_TIME]} "
+        f"({online_counts[DEV_FINISHED]} finished outright, "
+        f"{online_counts[DEV_RESOLVED_BY_TIME]} by the time tie-break), "
+        f"leaves {online_counts[DEV_REAL_CONFLICT]} real conflict and "
+        f"{online_counts[DEV_OTHER_CONFLICT]} other conflict, and "
+        f"{online_counts[DEV_NEEDS_FETCH]} still `needs fetch` even with "
+        f"network on. Combined with Rule B's other 23, all 52 under Rule B "
+        f"with network now stand at {combined[DEV_FINISHED]} finished, "
+        f"{combined[DEV_RESOLVED_BY_TIME]} resolved by time, "
+        f"{combined[DEV_REAL_CONFLICT]} real conflict, "
+        f"{combined[DEV_OTHER_CONFLICT]} other conflict, "
+        f"{combined[DEV_NEEDS_FETCH]} needs fetch, {combined[DEV_TIMED_OUT]} "
+        f"timed out."
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -2551,6 +2667,7 @@ def main() -> int:
     install_check_flag = "--install-check" in argv  # #314 follow-up: install-checks every merge the pin finished
     dev_as_commits = "--dev-as-commits" in argv  # #331 candidate 3.3: dev-* records merge by commit, never re-solved
     rule_b = "--rule-b" in argv  # #331 follow-up: appends the Rule B subsection instead of a fresh top-level section
+    online = "--online" in argv  # #331 follow-up: drops --offline on the residual driver call, fetches for real
     only_conflicting_path: Path | None = None
     if "--only-conflicting" in argv:  # #331: restricts the replay to a prior run's own conflicting merges
         idx = argv.index("--only-conflicting")
@@ -2558,7 +2675,10 @@ def main() -> int:
         argv = argv[:idx] + argv[idx + 2 :]
     argv = [
         a for a in argv
-        if a not in ("--ledger", "--hybrid", "--offline-rung", "--install-check", "--dev-as-commits", "--rule-b")
+        if a not in (
+            "--ledger", "--hybrid", "--offline-rung", "--install-check",
+            "--dev-as-commits", "--rule-b", "--online",
+        )
     ]
     if argv and argv[0] == "--self-test":
         return self_test()
@@ -2594,9 +2714,13 @@ def main() -> int:
             return 1
         only_map = parse_only_conflicting(only_conflicting_path)
         start = time.perf_counter()
-        outcomes = run_dev_as_commits(projects, cache_root, viv_bin, only_map, cap, hang_dir)
+        outcomes = run_dev_as_commits(projects, cache_root, viv_bin, only_map, cap, hang_dir, online)
         wall_time = time.perf_counter() - start
-        if rule_b:
+        if online:
+            section = render_dev_rule_b_online(
+                outcomes, viv_bin, viv_version, viv_commit, wall_time, only_conflicting_path
+            )
+        elif rule_b:
             section = render_dev_rule_b(outcomes, viv_bin, viv_version, viv_commit, wall_time)
         else:
             section = render_dev_as_commits(
