@@ -1,0 +1,9 @@
+{
+    "name": "vivace/fixture-dev-commit",
+    "license": "proprietary",
+    "type": "project",
+    "require-dev": {
+        "acme/stable": "^1.0",
+        "roave/security-advisories": "dev-latest"
+    }
+}

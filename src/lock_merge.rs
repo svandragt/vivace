@@ -179,6 +179,79 @@ pub fn merge<T: Clone>(
     (merged, divergent)
 }
 
+/// One divergent `dev-*` record's pick between two commits
+/// (`docs/research.md` candidate 3.3, #343): [`merge`] already identifies a
+/// `dev-*` record by commit, not version — a rolling branch's `version`
+/// string never changes, so [`Identity`]'s `source_ref` is the only field
+/// that ever differs, and structural equality on the whole identity is
+/// already "same commit". What it cannot decide alone is which commit wins
+/// when both sides moved the branch to a different one: the registry only
+/// ever answers with today's head, which is neither commit, so a re-solve
+/// has nothing to add. Mirrors `bench/lockmerge/run.py`'s own
+/// `dev_commit_pick`, rule B: the later `time` wins outright; equal or
+/// missing `time` on either side (including one side having removed the
+/// record) is a conflict for a person, same as any other divergent name.
+enum DevPick<'a, T> {
+    ResolvedByTime(&'a Entry<T>),
+    Conflict,
+}
+
+fn pick_dev_commit<'a, T>(
+    ours: Option<&'a Entry<T>>,
+    theirs: Option<&'a Entry<T>>,
+    time: impl Fn(&T) -> Option<&str>,
+) -> DevPick<'a, T> {
+    let (Some(o), Some(t)) = (ours, theirs) else {
+        return DevPick::Conflict;
+    };
+    // ponytail: RFC 3339 strings compared lexicographically, not parsed to
+    // an instant, matching the replay's own `dev_commit_pick` exactly (the
+    // "must match the replay" brief) — wrong only for two timestamps in
+    // different UTC offsets; upgrade to a parsed comparison if that turns
+    // up on the corpus.
+    match (time(&o.payload), time(&t.payload)) {
+        (Some(ot), Some(tt)) if ot != tt => DevPick::ResolvedByTime(if ot > tt { o } else { t }),
+        _ => DevPick::Conflict,
+    }
+}
+
+/// Splits `divergent` (as [`merge`] returns it) into the names still bound
+/// for the ordinary re-solve and the `dev-*` ones [`pick_dev_commit`]
+/// already decided: a resolved-by-time winner is folded straight into
+/// `merged` and dropped from the divergent set entirely; a `dev-*`
+/// conflict moves to its own set, so the caller can keep it out of the
+/// re-solve while still rendering it as a marker like any other divergent
+/// name.
+fn split_dev_commits<T: Clone>(
+    merged: &mut BTreeMap<String, Entry<T>>,
+    divergent: BTreeSet<String>,
+    ours: &BTreeMap<String, Entry<T>>,
+    theirs: &BTreeMap<String, Entry<T>>,
+    time: impl Fn(&T) -> Option<&str>,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut still_divergent = BTreeSet::new();
+    let mut dev_conflicts = BTreeSet::new();
+    for name in divergent {
+        let is_dev = ours
+            .get(&name)
+            .or_else(|| theirs.get(&name))
+            .is_some_and(|e| e.identity.version.starts_with("dev-"));
+        if !is_dev {
+            still_divergent.insert(name);
+            continue;
+        }
+        match pick_dev_commit(ours.get(&name), theirs.get(&name), &time) {
+            DevPick::ResolvedByTime(winner) => {
+                merged.insert(name, winner.clone());
+            }
+            DevPick::Conflict => {
+                dev_conflicts.insert(name);
+            }
+        }
+    }
+    (still_divergent, dev_conflicts)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
     ComposerLock,
@@ -363,9 +436,25 @@ pub(crate) fn merge_composer_lock_bytes(
     let ours_entries = composer_entries(&ours_lock);
     let theirs_entries = composer_entries(&theirs_lock);
 
-    let (merged, divergent) = merge(&base_entries, &ours_entries, &theirs_entries);
+    let (mut merged, divergent) = merge(&base_entries, &ours_entries, &theirs_entries);
+    // #343: a `dev-*` name moved to different commits on both sides is
+    // decided by `time` right here, never sent to the re-solve below — see
+    // `split_dev_commits`'s own doc comment. `dev_conflicts` non-empty
+    // means at least one name in this merge has nothing a registry lookup
+    // could add, so the resolve attempt is skipped for the whole merge
+    // (ponytail: simpler than re-rendering an already-resolved `text` with
+    // markers spliced back in for a mixed merge; upgrade if that mix turns
+    // up on the corpus) and every name in `divergent` falls to markers
+    // together with `dev_conflicts` below.
+    let (divergent, dev_conflicts) = split_dev_commits(
+        &mut merged,
+        divergent,
+        &ours_entries,
+        &theirs_entries,
+        |raw: &Value| raw.get("time").and_then(Value::as_str),
+    );
 
-    if !divergent.is_empty() && !no_resolve {
+    if !divergent.is_empty() && dev_conflicts.is_empty() && !no_resolve {
         match try_resolve_composer_lock(
             &merged,
             &divergent,
@@ -393,6 +482,8 @@ pub(crate) fn merge_composer_lock_bytes(
             }
         }
     }
+
+    let divergent: BTreeSet<String> = divergent.into_iter().chain(dev_conflicts).collect();
 
     let mut non_dev = Vec::new();
     let mut dev = Vec::new();
@@ -1380,15 +1471,32 @@ pub(crate) fn merge_viv_lock_bytes(
     let ours_entries = viv_entries(native_lock::parse(&String::from_utf8_lossy(ours))?);
     let theirs_entries = viv_entries(native_lock::parse(&String::from_utf8_lossy(theirs))?);
 
-    let (merged, divergent) = merge(&base_entries, &ours_entries, &theirs_entries);
+    let (mut merged, divergent) = merge(&base_entries, &ours_entries, &theirs_entries);
+    // #343, same rule as the composer.lock path: a `viv.lock` record
+    // carries no `time` field at all (`docs/research.md` chapter 1's own
+    // field list), so `split_dev_commits`'s time extractor always reads
+    // `None` here and a genuinely divergent `dev-*` record always lands in
+    // `dev_conflicts` — never resolved by time in this format, but never
+    // sent to a re-solve either, which is the part #343 asks for.
+    let (divergent, dev_conflicts) = split_dev_commits(
+        &mut merged,
+        divergent,
+        &ours_entries,
+        &theirs_entries,
+        |_: &native_lock::Record| None,
+    );
 
-    if divergent.is_empty() {
+    if divergent.is_empty() && dev_conflicts.is_empty() {
         let records: Vec<native_lock::Record> =
             merged.into_values().map(|entry| entry.payload).collect();
         return Ok((native_lock::write_records(&records)?, None, 0));
     }
 
-    if !no_resolve {
+    // Same conservative call as the composer.lock path: any `dev_conflicts`
+    // name means the resolve attempt below is skipped for the whole merge
+    // rather than run for `divergent` alone, since a `dev-*` conflict must
+    // never reach a re-solve.
+    if !no_resolve && dev_conflicts.is_empty() {
         let composer_lock_path = project_dir.join("composer.lock");
         if composer_lock_path.exists() {
             match try_resolve_viv_lock(
@@ -1429,6 +1537,7 @@ pub(crate) fn merge_viv_lock_bytes(
         }
     }
 
+    let divergent: BTreeSet<String> = divergent.into_iter().chain(dev_conflicts).collect();
     let mut names: Vec<&String> = merged.keys().chain(divergent.iter()).collect();
     names.sort();
 
@@ -1640,6 +1749,153 @@ mod tests {
         assert!(
             merged["a"].identity.dev,
             "dev flip on ours alone should win"
+        );
+    }
+
+    /// A `dev-*` record for [`pick_dev_commit`]/[`split_dev_commits`]'s own
+    /// tests: `version` is always `dev-master` (a rolling branch's version
+    /// string never changes), `source_ref` is the commit, and the payload
+    /// is just the record's own `time` — the one field these two functions
+    /// read off it. `Option<String>` rather than `Option<&str>`: `time_of`
+    /// has to borrow its `Option<&str>` return straight off the `&T`
+    /// [`pick_dev_commit`] hands it (the same shape `raw.get("time")` gives
+    /// the real `composer.lock` payload), not off a lifetime of its own —
+    /// a payload holding an already-borrowed `&'static str` doesn't type
+    /// check against `pick_dev_commit`'s per-call lifetime.
+    fn dev_entry(commit: &str, time: Option<&str>) -> Entry<Option<String>> {
+        Entry {
+            identity: Identity {
+                version: "dev-master".to_string(),
+                source_ref: Some(commit.to_string()),
+                dev: false,
+            },
+            payload: time.map(str::to_string),
+        }
+    }
+
+    // `&Option<String>`, not clippy's usual `Option<&String>`: this has to
+    // match `split_dev_commits`/`pick_dev_commit`'s own `Fn(&T) -> Option<&str>`
+    // bound, `T` here being `Option<String>` itself.
+    #[allow(clippy::ref_option)]
+    fn time_of(payload: &Option<String>) -> Option<&str> {
+        payload.as_deref()
+    }
+
+    #[test]
+    fn pick_dev_commit_takes_the_later_time_either_order() {
+        let ours = dev_entry("aaa", Some("2024-06-01T00:00:00+00:00"));
+        let theirs = dev_entry("bbb", Some("2024-07-01T00:00:00+00:00"));
+
+        match pick_dev_commit(Some(&ours), Some(&theirs), time_of) {
+            DevPick::ResolvedByTime(winner) => {
+                assert_eq!(winner.identity.source_ref.as_deref(), Some("bbb"));
+            }
+            DevPick::Conflict => panic!("later theirs must win, not conflict"),
+        }
+
+        // Same two records, ours/theirs swapped: the later commit still
+        // wins, whichever side it's on.
+        match pick_dev_commit(Some(&theirs), Some(&ours), time_of) {
+            DevPick::ResolvedByTime(winner) => {
+                assert_eq!(winner.identity.source_ref.as_deref(), Some("bbb"));
+            }
+            DevPick::Conflict => panic!("later theirs must win, not conflict"),
+        }
+    }
+
+    #[test]
+    fn pick_dev_commit_conflicts_on_equal_or_missing_time() {
+        let with_time = dev_entry("aaa", Some("2024-06-01T00:00:00+00:00"));
+        let same_time = dev_entry("bbb", Some("2024-06-01T00:00:00+00:00"));
+        let no_time = dev_entry("ccc", None);
+
+        assert!(matches!(
+            pick_dev_commit(Some(&with_time), Some(&same_time), time_of),
+            DevPick::Conflict
+        ));
+        assert!(matches!(
+            pick_dev_commit(Some(&with_time), Some(&no_time), time_of),
+            DevPick::Conflict
+        ));
+        assert!(matches!(
+            pick_dev_commit(Some(&no_time), Some(&no_time), time_of),
+            DevPick::Conflict
+        ));
+        // One side removed the record entirely: no time to compare either.
+        assert!(matches!(
+            pick_dev_commit(Some(&with_time), None, time_of),
+            DevPick::Conflict
+        ));
+    }
+
+    #[test]
+    fn split_dev_commits_folds_the_time_winner_in_and_leaves_the_tie_as_a_dev_conflict() {
+        fn versioned(version: &str, commit: &str, time: Option<&str>) -> Entry<Option<String>> {
+            Entry {
+                identity: Identity {
+                    version: version.to_string(),
+                    source_ref: Some(commit.to_string()),
+                    dev: false,
+                },
+                payload: time.map(str::to_string),
+            }
+        }
+
+        let ours: BTreeMap<String, Entry<Option<String>>> = [
+            ("a", versioned("1.0", "a-ours", None)), // non-dev divergent, untouched by this split
+            (
+                "resolved",
+                versioned("dev-master", "aaa", Some("2024-06-01T00:00:00+00:00")),
+            ),
+            (
+                "tied",
+                versioned("dev-master", "ccc", Some("2024-06-01T00:00:00+00:00")),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, e)| (name.to_string(), e))
+        .collect();
+        let theirs: BTreeMap<String, Entry<Option<String>>> = [
+            ("a", versioned("2.0", "a-theirs", None)),
+            (
+                "resolved",
+                versioned("dev-master", "bbb", Some("2024-07-01T00:00:00+00:00")),
+            ),
+            (
+                "tied",
+                versioned("dev-master", "ddd", Some("2024-06-01T00:00:00+00:00")),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, e)| (name.to_string(), e))
+        .collect();
+        let mut merged = BTreeMap::new();
+        let divergent: BTreeSet<String> = ["a", "resolved", "tied"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        let (still_divergent, dev_conflicts) =
+            split_dev_commits(&mut merged, divergent, &ours, &theirs, time_of);
+
+        assert_eq!(
+            still_divergent.into_iter().collect::<Vec<_>>(),
+            vec!["a".to_string()],
+            "the non-dev name stays divergent, headed for the ordinary re-solve"
+        );
+        assert_eq!(
+            dev_conflicts.into_iter().collect::<Vec<_>>(),
+            vec!["tied".to_string()],
+            "equal time on both sides is a conflict, not a resolve"
+        );
+        assert_eq!(
+            merged["resolved"].identity.source_ref.as_deref(),
+            Some("bbb"),
+            "the later commit is folded straight into merged, no marker"
+        );
+        assert!(
+            !merged.contains_key("a") && !merged.contains_key("tied"),
+            "only the time-resolved dev-* name is folded in"
         );
     }
 
