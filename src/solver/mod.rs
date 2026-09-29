@@ -148,7 +148,14 @@ pub async fn solve_update<T: Transport>(
 /// typically the prior `composer.lock`'s own) is passed straight through to
 /// [`pool_builder::build_seeded`] (#90): a prefetch hint, never a pool
 /// change. `preferred` is `--minimal-changes`'s pin set (see `policy.rs`'s
-/// module doc); empty means an ordinary update.
+/// module doc); empty means an ordinary update. `locked_by_name` is the
+/// current lock's own packages, keyed the same way a partial update's own
+/// map is (#345): a name kept at its locked version by `preferred` whose
+/// entry here is a `dev-*` version pins that name's metadata to the commit
+/// it's locked to, rather than the registry's current branch head, if the
+/// two differ (`pool_builder::pin_dev_commits`). Every caller but
+/// `update.rs`'s own full update and `lock_merge`'s rung 3 passes an empty
+/// map, leaving this a no-op exactly as before #345.
 #[expect(
     clippy::implicit_hasher,
     reason = "internal API, only ever called with the default hasher"
@@ -156,8 +163,9 @@ pub async fn solve_update<T: Transport>(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors solve_update plus the project directory (#312's root-version guess), one \
-              seed slice, the minimal-changes pin set, the advisory pool filter, the \
-              platform-probe cache dir, and the ignore-platform-reqs filter"
+              seed slice, the minimal-changes pin set, the current lock's packages (#345), the \
+              advisory pool filter, the platform-probe cache dir, and the ignore-platform-reqs \
+              filter"
 )]
 pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -167,6 +175,7 @@ pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     prefer_lowest: bool,
     seed: &[String],
     preferred: HashMap<String, NormalizedVersion>,
+    locked_by_name: &HashMap<String, Value>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
     ignore: &IgnorePlatform,
@@ -179,6 +188,7 @@ pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
         prefer_lowest,
         seed,
         &preferred,
+        locked_by_name,
         advisories,
         cache_dir,
         ignore,

@@ -143,6 +143,15 @@ impl Fetcher {
         self
     }
 
+    /// This fetcher's own `offline` flag, read back rather than set:
+    /// `repository::HttpTransport::offline` (#345) reads this so a solve
+    /// deep inside `solver::pool_builder` can give the same "network
+    /// disabled" error every other offline path here does, without a
+    /// second `--offline` parameter threaded down through the whole solve.
+    pub fn is_offline(&self) -> bool {
+        self.offline
+    }
+
     /// #98: activates `ffraenz/private-composer-installer`'s dist-URL
     /// placeholder substitution. The caller builds `env` from
     /// `plugins::Plugins::has_private_installer` and

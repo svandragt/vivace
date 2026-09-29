@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use serde_json::Value;
 use sha1::Digest as _;
 
 use crate::autoload::generator::find_shortest_path;
@@ -309,6 +310,78 @@ fn run_git<'a>(dir: Option<&Path>, args: impl IntoIterator<Item = &'a str>) -> R
         );
     }
     Ok(())
+}
+
+/// #345: one `dev-*` commit's own `composer.json`, read straight from
+/// `source.url` the way Composer resolves a `type: vcs` repository — the
+/// metadata closure's own registry fetch only ever describes a branch's
+/// *current* head (`solver::pool_builder::pin_dev_commits`'s own doc says
+/// when this is called). Unlike [`checkout_git`]'s persistent per-package
+/// mirror (`install`'s job needs a real working tree kept around), this
+/// only ever needs one file out of one commit, so it fetches just that
+/// commit (`--depth 1`) into a throwaway bare repo and discards it; the
+/// result is cached under the commit (`store::commit_meta_path`) so a
+/// second solve costs no git call at all.
+///
+/// `--offline` with nothing cached is the same "network disabled, name the
+/// package" shape every other offline path in this codebase gives
+/// (`fetch.rs`'s own `bail!`s).
+pub fn fetch_commit_composer_json(
+    cache_dir: &Path,
+    package: &str,
+    url: &str,
+    reference: &str,
+    offline: bool,
+) -> Result<Value> {
+    let cache_path = crate::store::commit_meta_path(cache_dir, reference)?;
+    if let Ok(bytes) = fs_err::read(&cache_path)
+        && let Ok(value) = serde_json::from_slice(&bytes)
+    {
+        return Ok(value);
+    }
+    if offline {
+        bail!(
+            "{package}: Network disabled, request canceled: commit {reference} at {url} is not \
+             in the metadata cache"
+        );
+    }
+
+    let short = reference.get(..7).unwrap_or(reference);
+    {
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr().lock(), "fetching {package} at {short}");
+    }
+
+    let temp = tempfile::tempdir().context("creating a scratch dir for the commit fetch")?;
+    run_git(Some(temp.path()), ["init", "--quiet", "--bare"])
+        .with_context(|| format!("{package}: preparing a scratch repo for commit {reference}"))?;
+    run_git(
+        Some(temp.path()),
+        ["fetch", "--quiet", "--depth", "1", url, reference],
+    )
+    .with_context(|| format!("{package}: fetching commit {reference} from {url}"))?;
+
+    let output = crate::vcs::git_command()
+        .args(["show", &format!("{reference}:composer.json")])
+        .current_dir(temp.path())
+        .output()
+        .with_context(|| format!("{package}: reading composer.json from commit {reference}"))?;
+    if !output.status.success() {
+        bail!(
+            "{package}: commit {reference} has no composer.json: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let value: Value = serde_json::from_slice(&output.stdout).with_context(|| {
+        format!("{package}: commit {reference}'s composer.json is not valid JSON")
+    })?;
+
+    if let Some(parent) = cache_path.parent() {
+        let _ = fs_err::create_dir_all(parent);
+    }
+    let _ = fs_err::write(&cache_path, &output.stdout);
+
+    Ok(value)
 }
 
 #[cfg(test)]

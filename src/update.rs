@@ -526,6 +526,7 @@ async fn solve(
             args.prefer_lowest,
             &seed,
             preferred,
+            &locked_by_name,
             advisories,
             Some(&cache_dir),
             &ignore_platform_reqs,
