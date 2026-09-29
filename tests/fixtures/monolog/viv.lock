@@ -5,6 +5,7 @@ dist-url = "https://api.github.com/repos/Seldaek/monolog/zipball/147f303310f0633
 source-ref = "147f303310f06334f03f409e49d7ad1e275ff05a"
 dev = false
 root-requirement = "^3.0"
+time = "2026-09-02T12:39:56+00:00"
 
 [[package]]
 name = "psr/container"
@@ -13,6 +14,7 @@ dist-url = "https://api.github.com/repos/php-fig/container/zipball/c71ecc56dfe54
 source-ref = "c71ecc56dfe541dbd90c5360474fbc405f8d5963"
 dev = true
 root-requirement = "^2.0"
+time = "2021-11-05T16:47:00+00:00"
 
 [[package]]
 name = "psr/log"
@@ -21,3 +23,4 @@ dist-url = "https://api.github.com/repos/php-fig/log/zipball/f16e1d5863e37f8d8c2
 source-ref = "f16e1d5863e37f8d8c2a01719f5b34baa2b714d3"
 dev = false
 root-requirement = "^3.0"
+time = "2024-09-11T13:17:53+00:00"

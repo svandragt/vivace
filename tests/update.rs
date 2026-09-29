@@ -186,6 +186,37 @@ async fn native_lock_reproduces_the_monolog_viv_lock() {
     assert_matches_expected(&got, &fixture.join("viv.lock"));
 }
 
+/// #347: `viv update --lock native`'s writer carries the resolved
+/// package's `time` into `viv.lock`, the same value `composer.lock`'s own
+/// `time` field holds for that package — every monolog fixture package has
+/// one (`tests/fixtures/monolog/composer.lock`), so every `viv.lock` record
+/// must too.
+#[tokio::test]
+async fn native_lock_carries_the_same_time_composer_lock_has_for_every_package() {
+    let (_composer_json, root, result) = solve_monolog_fixture().await;
+    let got = vivace::native_lock::write(&result.non_dev, &result.dev, &root).unwrap();
+    let doc: toml::Table = toml::from_str(&got).unwrap();
+    let records = doc["package"].as_array().unwrap();
+
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let lock = vivace::lock::read_lock(&fixture.join("composer.lock")).unwrap();
+    for package in &lock.packages {
+        let Some(want_time) = package.raw.get("time").and_then(Value::as_str) else {
+            continue;
+        };
+        let record = records
+            .iter()
+            .find(|r| r["name"].as_str() == Some(package.name.as_str()))
+            .unwrap_or_else(|| panic!("{} missing from viv.lock", package.name));
+        assert_eq!(
+            record["time"].as_str(),
+            Some(want_time),
+            "{}: viv.lock's time must match composer.lock's",
+            package.name
+        );
+    }
+}
+
 /// `viv lock convert` (#273): translating the monolog fixture's own
 /// `composer.lock` — never re-solved — must produce the exact same
 /// `viv.lock` the real solve above writes, byte for byte. That equality is

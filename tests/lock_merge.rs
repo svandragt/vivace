@@ -161,6 +161,142 @@ fn a_dev_commit_tied_on_time_is_a_conflict_naming_both_commits() {
     );
 }
 
+/// Converts one dev-commit fixture side (`base`/`ours`/`theirs`) into
+/// `viv.lock` text over the real `viv lock convert` CLI path (`--stdout`, so
+/// nothing lands on disk beyond the scratch dir this builds): `convert`
+/// reads `DIR/composer.json` + `DIR/composer.lock`, so each side gets its
+/// own directory with the fixture's shared `composer.json` and that side's
+/// own `<name>.lock` renamed to `composer.lock`.
+fn convert_fixture_side(ctx: &TestContext, fixtures_dir: &Path, name: &str) -> String {
+    let side = tempfile::tempdir().unwrap();
+    fs::copy(
+        fixtures_dir.join("composer.json"),
+        side.path().join("composer.json"),
+    )
+    .unwrap();
+    fs::copy(
+        fixtures_dir.join(format!("{name}.lock")),
+        side.path().join("composer.lock"),
+    )
+    .unwrap();
+    let output = ctx
+        .viv()
+        .args(["lock", "convert", "--stdout", "-d"])
+        .arg(side.path())
+        .output()
+        .expect("failed to run viv lock convert");
+    assert!(
+        output.status.success(),
+        "converting {name}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// #347: the #343 rule carried into `viv.lock` — `viv lock convert` gives
+/// each side's `roave/security-advisories dev-latest` record its own
+/// `time`, so `viv lock merge --offline` on the three converted `viv.lock`
+/// files finishes with `theirs`' later commit outright, no marker, the same
+/// as [`a_dev_commit_moved_on_both_sides_resolves_to_the_later_time_offline`]
+/// proves under `composer.lock`.
+#[test]
+fn a_dev_commit_moved_on_both_sides_resolves_to_the_later_time_offline_under_viv_lock() {
+    let fixtures_dir = fixtures_dev_commit();
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    for name in ["base", "ours", "theirs"] {
+        fs::write(
+            project.join(format!("{name}.lock")),
+            convert_fixture_side(&ctx, &fixtures_dir, name),
+        )
+        .unwrap();
+    }
+
+    let output = ctx
+        .viv()
+        .arg("--offline")
+        .args(["lock", "merge"])
+        .arg(project.join("base.lock"))
+        .arg(project.join("ours.lock"))
+        .arg(project.join("theirs.lock"))
+        .arg("-d")
+        .arg(project)
+        .output()
+        .expect("failed to run viv");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the later commit must resolve with no person and no network: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let got = fs::read_to_string(project.join("ours.lock")).unwrap();
+    assert!(
+        got.contains("source-ref = \"cccccccccccccccccccccccccccccccccccccccc\""),
+        "theirs' later commit must win outright: {got}"
+    );
+    assert!(
+        !got.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        "ours' losing commit must not survive the merge: {got}"
+    );
+    assert!(
+        !got.contains("<<<<<<<"),
+        "a resolved-by-time dev-* record leaves no marker: {got}"
+    );
+}
+
+/// #347's other half, under `viv.lock`: both sides move
+/// `roave/security-advisories dev-latest` to a different commit with the
+/// *same* `time` (`tests/fixtures/lock-merge-dev-commit-tie/`) — still a
+/// conflict for a person, naming both commits, same as
+/// [`a_dev_commit_tied_on_time_is_a_conflict_naming_both_commits`] proves
+/// under `composer.lock`.
+#[test]
+fn a_dev_commit_tied_on_time_is_a_conflict_naming_both_commits_under_viv_lock() {
+    let fixtures_dir = fixtures_dev_commit_tie();
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    for name in ["base", "ours", "theirs"] {
+        fs::write(
+            project.join(format!("{name}.lock")),
+            convert_fixture_side(&ctx, &fixtures_dir, name),
+        )
+        .unwrap();
+    }
+
+    let output = ctx
+        .viv()
+        .arg("--offline")
+        .args(["lock", "merge"])
+        .arg(project.join("base.lock"))
+        .arg(project.join("ours.lock"))
+        .arg(project.join("theirs.lock"))
+        .arg("-d")
+        .arg(project)
+        .output()
+        .expect("failed to run viv");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an equal-time dev-* conflict must exit 1: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let got = fs::read_to_string(project.join("ours.lock")).unwrap();
+    assert_eq!(
+        got.matches("<<<<<<< ours").count(),
+        1,
+        "exactly one marker block: {got}"
+    );
+    assert!(
+        got.contains("source-ref = \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"")
+            && got.contains("source-ref = \"cccccccccccccccccccccccccccccccccccccccc\""),
+        "the marker must name both commits: {got}"
+    );
+}
+
 fn fixtures_dev_commit() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lock-merge-dev-commit")
 }

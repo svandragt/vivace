@@ -297,19 +297,19 @@ fn lock_packages(packages: &[ResolvedPackage]) -> Result<Value> {
 /// array around a divergent record) reuses the exact same key order/dropping
 /// rules rather than re-deriving them.
 pub(crate) fn dump_package(raw: &Value) -> Result<Value> {
-    let raw = raw.as_object().cloned().unwrap_or_default();
+    let entry = raw.as_object().cloned().unwrap_or_default();
     let mut out = Map::new();
     for &key in KEY_ORDER {
         let value = match key {
-            "name" | "version" => raw
+            "name" | "version" => entry
                 .get(key)
                 .cloned()
                 .with_context(|| format!("provider entry missing {key:?}"))?,
-            "source" => match raw.get("source") {
+            "source" => match entry.get("source") {
                 Some(Value::Object(s)) => reorder(s, SOURCE_KEY_ORDER),
                 _ => continue,
             },
-            "dist" => match raw.get("dist") {
+            "dist" => match entry.get("dist") {
                 Some(Value::Object(d)) => reorder(d, DIST_KEY_ORDER),
                 _ => continue,
             },
@@ -322,11 +322,11 @@ pub(crate) fn dump_package(raw: &Value) -> Result<Value> {
             // its unset default.
             "time" | "notification-url" | "description" | "homepage" | "keywords" | "license"
             | "authors" | "funding"
-                if raw.get(key).is_some_and(is_empty_for_composer) =>
+                if entry.get(key).is_some_and(is_empty_for_composer) =>
             {
                 continue;
             }
-            _ => match raw.get(key) {
+            _ => match entry.get(key) {
                 None | Some(Value::Null | Value::Bool(false)) => continue,
                 Some(Value::Array(a)) if a.is_empty() => continue,
                 Some(Value::Object(o)) if o.is_empty() => continue,
@@ -354,15 +354,25 @@ pub(crate) fn dump_package(raw: &Value) -> Result<Value> {
         out.insert(key.into(), value);
     }
     // `lockPackages`: `time` is unset then re-added, moving it to the end.
-    if let Some(time) = raw
-        .get("time")
-        .filter(|v| !is_empty_for_composer(v))
-        .and_then(Value::as_str)
-        .and_then(normalize_time)
-    {
+    if let Some(time) = record_time(raw) {
         out.insert("time".into(), Value::String(time));
     }
     Ok(Value::Object(out))
+}
+
+/// The `time` value [`dump_package`] writes for one raw package entry, or
+/// `None` when the entry has none (or an empty one, PHP's `empty()` sense):
+/// shared with `native_lock::record` (#347) so `viv.lock`'s own `time`
+/// field is always the exact value `composer.lock` carries for the same
+/// package, whether `raw` is a provider's freshly-resolved metadata (`viv
+/// update --lock native`) or an already-written `composer.lock` entry
+/// (`viv lock convert`) — [`normalize_time`] applied to its own output
+/// reproduces it, so the second case is a no-op reformat.
+pub(crate) fn record_time(raw: &Value) -> Option<String> {
+    raw.get("time")
+        .filter(|v| !is_empty_for_composer(v))
+        .and_then(Value::as_str)
+        .and_then(normalize_time)
 }
 
 /// `ArrayLoader::load`'s `time` handling (`ctype_digit($config['time']) ?

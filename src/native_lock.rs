@@ -208,6 +208,14 @@ pub(crate) struct Record {
     pub(crate) dev: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) root_requirement: Option<String>,
+    /// The resolved package's commit/release time, RFC 3339 as
+    /// `composer.lock`'s own `time` carries it (#347): absent when the
+    /// resolution has none, same as every other optional field here. Last
+    /// in the struct, matching `dump_package`'s own "`time` moves to the
+    /// end" rule for `composer.lock` (`lock_writer::record_time`, the
+    /// shared source of the value both writers put here).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) time: Option<String>,
 }
 
 /// `viv.lock`'s body: one record per resolved package (`non_dev` and `dev`
@@ -352,6 +360,7 @@ fn record(
         root_requirement: root_requirements
             .get(&package.name.to_ascii_lowercase())
             .cloned(),
+        time: crate::lock_writer::record_time(&package.raw),
     }
 }
 

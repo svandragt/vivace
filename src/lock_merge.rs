@@ -1472,18 +1472,18 @@ pub(crate) fn merge_viv_lock_bytes(
     let theirs_entries = viv_entries(native_lock::parse(&String::from_utf8_lossy(theirs))?);
 
     let (mut merged, divergent) = merge(&base_entries, &ours_entries, &theirs_entries);
-    // #343, same rule as the composer.lock path: a `viv.lock` record
-    // carries no `time` field at all (`docs/research.md` chapter 1's own
-    // field list), so `split_dev_commits`'s time extractor always reads
-    // `None` here and a genuinely divergent `dev-*` record always lands in
-    // `dev_conflicts` — never resolved by time in this format, but never
-    // sent to a re-solve either, which is the part #343 asks for.
+    // #343, same rule as the composer.lock path: since #347 a `viv.lock`
+    // record carries its own `time` (absent on a record written before
+    // that change, or one with no time at all), so a genuinely divergent
+    // `dev-*` record resolves the same way `composer.lock`'s does — later
+    // `time` wins, equal or missing `time` on either side is a conflict —
+    // and, same as there, is never sent to the re-solve below.
     let (divergent, dev_conflicts) = split_dev_commits(
         &mut merged,
         divergent,
         &ours_entries,
         &theirs_entries,
-        |_: &native_lock::Record| None,
+        |record: &native_lock::Record| record.time.as_deref(),
     );
 
     if divergent.is_empty() && dev_conflicts.is_empty() {
