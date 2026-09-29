@@ -940,6 +940,32 @@ left, and how many of the finished ones install from an empty cache.
 only lock, `composer.lock` is generated on demand, and `dev-*`
 requirements resolve to commits.
 
+**Result, 2026-09-28 and 29: holds.** `bench/results/lockmerge.md`,
+"Generation 3: dev-* as commits", from `bench/lockmerge/run.py
+--dev-as-commits --rule-b` over the 52 client merges chapter 1's driver
+last left in conflict (51 in chapter 1; one more since, the branch head
+having moved again, which is this candidate's own premise). `timeout 300`
+per merge, four in parallel; offline 116 s, then the undecided 29 online
+in 146 s, counted and not timed.
+
+A `dev-*` record is identified by its commit and never re-solved. Rule A,
+both sides moved it to different commits is a conflict, finishes 0 of 52:
+rolling branches such as `roave/security-advisories dev-latest` advance
+on both sides of nearly every merge. Rule B, the later record `time`
+wins, finishes 21 of 52 offline with no person and no network and leaves
+29 undecided, their remaining solve wanting registry metadata the offline
+cache never held. Online those settle: 16 more finish, 13 fail on
+wpackagist provider files the registry no longer serves at all, which no
+lock shape reaches. Over the 52: 37 finish with no person, 1 real
+conflict, 14 residue. Chapter 1's floor of 51 unfinished merges, 14% of
+355, becomes 15, 4.2%. The build's running cost is visible too: 24 commit
+fetches across the 16 merges that finish only online, one per pinned
+branch whose commit Packagist no longer describes.
+
+Holds. The build, `viv.lock` as the only lock with `composer.lock`
+generated on demand and `dev-*` resolved to commits, is the maintainer's
+decision.
+
 ### Candidate 3.4: installs that run no code
 
 **Question.** What share of the Composer plugins projects use could be

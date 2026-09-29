@@ -1652,3 +1652,14 @@ viv already had for installed.php, then `1.0.0`, computed once per
 solve. Two new git fixtures with a `self.version` require lock
 byte-equal to Composer 2.10.2; a project outside git still gets
 `1.0.0`. bench-ab noop flat.
+
+## 2026-09-29: candidate 3.3 replayed, holds
+
+Only the 52 merges chapter 1 left in conflict. With a `dev-*` record
+pinned by commit and never re-solved, the naive rule (both sides moved
+it, so a person decides) finishes nothing, because rolling branches
+move on both sides of every merge. With the later record `time`
+winning, 21 finish offline; online 16 more do, and 13 fail on
+wpackagist provider files the registry no longer serves. 37 of 52
+finish with no person; chapter 1's 14% floor becomes 4.2%. Holds; the
+build is the maintainer's call.
