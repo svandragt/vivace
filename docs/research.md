@@ -79,6 +79,12 @@ sorted by name. Each record holds exactly:
   (`docs/resolver-design.md`), so a transitively pulled package — never
   named by root — carries no `root-requirement` field, rather than one
   guessed at.
+- `time`, the resolved package's commit/release time, RFC 3339 as
+  `composer.lock`'s own `time` carries it, omitted when the resolution has
+  none (#347). Added after this chapter's initial three optional fields, the
+  same way: no format-version marker exists or is needed, since a record
+  written before this change simply has no `time`, and `viv lock convert`
+  re-run adds it like any other field gap.
 
 `viv.lock` is a companion to `composer.lock`, never a replacement — a record
 carries no `require`/autoload/metadata, which `installed.json`/
