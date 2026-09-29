@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::lock::{self, Package};
-use crate::solver::transaction::ResolvedPackage;
+use crate::solver::transaction::{AliasEntry, ResolvedPackage};
 
 /// `viv lock` flags: which lock operation to run.
 #[derive(Args, Debug, Clone)]
@@ -46,6 +46,19 @@ pub enum LockCommand {
         /// `viv.lock` to disk.
         #[arg(long)]
         stdout: bool,
+    },
+    /// Write `DIR/composer.lock` from `DIR/viv.lock` and `DIR/composer.json`
+    /// (#344), through the same `lock_writer::write` a solve feeds: a team
+    /// that stops committing `composer.lock` regenerates it this way in CI
+    /// or on checkout.
+    Export {
+        /// Project directory holding viv.lock and composer.json.
+        #[arg(short = 'd', long = "project-dir", default_value = ".")]
+        project_dir: PathBuf,
+        /// Write nothing; exit 0 when the existing composer.lock already
+        /// equals the export, 1 with a one-line diff summary otherwise.
+        #[arg(long)]
+        check: bool,
     },
     /// A git merge driver for `composer.lock`/`viv.lock` (#275): merges the
     /// three inputs by name-keyed package record instead of by text line,
@@ -114,6 +127,7 @@ pub fn run(args: &LockArgs, cache_dir: Option<&Path>, offline: bool) -> Result<u
             run_convert(project_dir, *stdout)?;
             Ok(0)
         }
+        LockCommand::Export { project_dir, check } => run_export(project_dir, *check),
         LockCommand::Merge {
             base,
             ours,
@@ -183,6 +197,163 @@ fn resolved(package: &Package) -> ResolvedPackage {
     }
 }
 
+/// `viv lock export --check`: write nothing, report whether `DIR/composer.lock`
+/// already equals what `export` would write.
+fn run_export(project_dir: &Path, check: bool) -> Result<u8> {
+    use std::io::Write as _;
+    let generated = export(project_dir)?;
+    if !check {
+        fs_err::write(project_dir.join("composer.lock"), generated)?;
+        return Ok(0);
+    }
+    match fs_err::read_to_string(project_dir.join("composer.lock")) {
+        Ok(existing) if existing == generated => Ok(0),
+        Ok(existing) => {
+            writeln!(
+                std::io::stdout().lock(),
+                "{}",
+                diff_summary(&existing, &generated)
+            )?;
+            Ok(1)
+        }
+        Err(_) => {
+            writeln!(std::io::stdout().lock(), "composer.lock does not exist")?;
+            Ok(1)
+        }
+    }
+}
+
+/// One line naming where two lock bodies first disagree, for `--check`'s
+/// exit-1 report: the line number is enough to point a reader at the spot,
+/// a full multi-line diff being a job for `diff composer.lock` against the
+/// export, not this summary.
+fn diff_summary(existing: &str, generated: &str) -> String {
+    let existing_lines = existing.lines();
+    let generated_lines = generated.lines();
+    for (n, (a, b)) in existing_lines.zip(generated_lines).enumerate() {
+        if a != b {
+            return format!(
+                "composer.lock differs from `viv lock export` at line {}: {:?} vs {:?}",
+                n + 1,
+                a,
+                b
+            );
+        }
+    }
+    format!(
+        "composer.lock differs from `viv lock export` in length: {} lines vs {}",
+        existing.lines().count(),
+        generated.lines().count()
+    )
+}
+
+/// `DIR/viv.lock` + `DIR/composer.json` -> `composer.lock`'s bytes (#344),
+/// through the same [`crate::lock_writer::write`] a solve feeds
+/// (`update.rs`'s `lock_json`): "fed from viv.lock records instead of the
+/// solve result", not a second formatter. Every record needs its own `raw`
+/// (added by #344 for exactly this, alongside `time` in #347); a record
+/// written before that change names its own package in the error, since
+/// re-running `viv lock convert`/`viv update --lock native` is the fix, not
+/// a partial `composer.lock`.
+///
+/// The aggregate fields no record carries (`minimum-stability`,
+/// `stability-flags`, `prefer-stable`, `platform`/`platform-dev`,
+/// `aliases`) are re-derived from root `composer.json` alone
+/// (`pool_builder::root_lock_aggregates`, the same derivation a fresh solve
+/// does, minus the closure walk), matched against which alias target a
+/// record actually resolved to. `prefer-lowest` is the one exception: it
+/// has no manifest source at all, only ever set from the test-only `update
+/// --prefer-lowest` CLI flag, never persisted anywhere `export` can read —
+/// so it defaults `false`, Composer's own default; a project whose lock was
+/// written with that flag set needs composer.lock committed until #344
+/// grows a place to record it.
+pub fn export(project_dir: &Path) -> Result<String> {
+    let root: Value = serde_json::from_str(
+        &fs_err::read_to_string(project_dir.join("composer.json"))
+            .context("reading composer.json")?,
+    )
+    .context("parsing composer.json")?;
+    let composer_json =
+        fs_err::read(project_dir.join("composer.json")).context("reading composer.json")?;
+    let records = read(&project_dir.join("viv.lock"))?;
+
+    let mut non_dev = Vec::new();
+    let mut dev = Vec::new();
+    for record in &records {
+        let raw = record
+            .raw
+            .as_deref()
+            .with_context(|| {
+                format!(
+                    "{}: viv.lock has no stored provider entry to export from (re-run `viv lock \
+                     convert` or `viv update --lock native`)",
+                    record.name
+                )
+            })
+            .and_then(|raw| {
+                serde_json::from_str::<Value>(raw).with_context(|| {
+                    format!("{}: parsing viv.lock's stored raw entry", record.name)
+                })
+            })?;
+        let resolved = ResolvedPackage {
+            name: record.name.clone(),
+            pretty_version: record.version.clone(),
+            raw,
+        };
+        if record.dev {
+            dev.push(resolved);
+        } else {
+            non_dev.push(resolved);
+        }
+    }
+
+    let aggregates = crate::solver::pool_builder::root_lock_aggregates(&root)?;
+    let by_name: HashMap<&str, &Record> = records.iter().map(|r| (r.name.as_str(), r)).collect();
+    let aliases = used_aliases(&aggregates.root_aliases, &by_name)?;
+    let options = crate::lock_writer::LockOptions {
+        minimum_stability: aggregates.minimum_stability,
+        stability_flags: &aggregates.stability_flags,
+        prefer_stable: aggregates.prefer_stable,
+        prefer_lowest: false,
+        platform_reqs: &aggregates.platform_reqs,
+        platform_dev_reqs: &aggregates.platform_dev_reqs,
+        platform_overrides: &aggregates.platform_overrides,
+        aliases: &aliases,
+    };
+    crate::lock_writer::write(&non_dev, Some(&dev), &options, &composer_json)
+}
+
+/// Which of `root_aliases`' declared alias targets (`extract_alias`'s own
+/// output, keyed by name) an exported record actually resolved to
+/// (`transaction::used_aliases`'s pool-based match, done here against
+/// `viv.lock`'s own resolved version instead of a solved pool id): a
+/// declared alias for a name with no matching resolved version is simply
+/// unused, same as a real solve never creating that alias package.
+fn used_aliases(
+    root_aliases: &HashMap<String, Vec<(String, String, String)>>,
+    by_name: &HashMap<&str, &Record>,
+) -> Result<Vec<AliasEntry>> {
+    let mut aliases = Vec::new();
+    for (name, targets) in root_aliases {
+        let Some(record) = by_name.get(name.as_str()) else {
+            continue;
+        };
+        let normalized_version = crate::semver::normalize(&record.version)?;
+        for (version, alias, alias_normalized) in targets {
+            if normalized_version.as_str() == version {
+                aliases.push(AliasEntry {
+                    package: record.name.clone(),
+                    version: record.version.clone(),
+                    alias: alias.clone(),
+                    alias_normalized: alias_normalized.clone(),
+                });
+            }
+        }
+    }
+    aliases.sort_by(|a, b| a.package.cmp(&b.package));
+    Ok(aliases)
+}
+
 #[derive(Serialize, Deserialize)]
 struct Document {
     package: Vec<Record>,
@@ -216,6 +387,30 @@ pub(crate) struct Record {
     /// shared source of the value both writers put here).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) time: Option<String>,
+    /// The package's `composer.lock` block, already through
+    /// [`crate::lock_writer::dump_package`], as compact JSON text: not
+    /// `ResolvedPackage::raw` untouched, because a fresh solve's raw (a
+    /// provider file's own entry, extra keys such as `version_normalized`/
+    /// `published-time`, its own key order) and `convert`'s raw (already a
+    /// dumped `composer.lock` entry) must produce the same record for the
+    /// same resolution, and `dump_package`'s own canonical shape is the one
+    /// place both agree. Every other field on this record is a lossy
+    /// projection of it (only `dist.url`/`dist.shasum`/`source.reference`,
+    /// never `require`/`autoload`/`license`/the rest of `docs/research.md`
+    /// chapter 1's "no require/autoload/metadata"), so `viv lock export`
+    /// (#344) needed the entry itself, not one more typed field, to
+    /// reconstruct a package block byte-for-byte — feeding it straight back
+    /// through `dump_package` is then a no-op re-canonicalisation, not a
+    /// second, different formatting pass. A JSON string rather
+    /// than a nested TOML table: `toml`'s own table type does not promise
+    /// to keep a map's key order through a parse, and `dump_package`'s
+    /// output depends on it (an object's key order inside an array field
+    /// such as `authors`, which `KEY_ORDER` does not itself re-sort).
+    /// Added after `time` the same way (#347): optional, so a record
+    /// written before this change simply has none and cannot be exported
+    /// until `viv lock convert`/`viv update --lock native` runs again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) raw: Option<String>,
 }
 
 /// `viv.lock`'s body: one record per resolved package (`non_dev` and `dev`
@@ -229,7 +424,7 @@ pub fn write(non_dev: &[ResolvedPackage], dev: &[ResolvedPackage], root: &Value)
             dev.iter()
                 .map(|package| record(package, true, &root_requirements)),
         )
-        .collect();
+        .collect::<Result<_>>()?;
     records.sort_by(|a, b| a.name.cmp(&b.name));
     write_records(&records)
 }
@@ -347,10 +542,20 @@ fn record(
     package: &ResolvedPackage,
     dev: bool,
     root_requirements: &HashMap<String, String>,
-) -> Record {
+) -> Result<Record> {
     let dist = package.raw.get("dist");
     let source = package.raw.get("source");
-    Record {
+    // #344's `raw` stores `dump_package`'s own canonical shape, not
+    // `package.raw` untouched: a fresh solve's raw is a provider file's own
+    // entry (extra keys such as `version_normalized`/`published-time`, its
+    // own key order) while `convert`'s raw is already a dumped
+    // `composer.lock` entry, and the two must produce the same record for
+    // the same resolution (`native_lock_reproduces_the_monolog_viv_lock`).
+    // `dump_package` is idempotent on its own output, so this also means
+    // `export` feeding a record's `raw` straight back into it is a no-op
+    // re-canonicalisation, not a second, different formatting pass.
+    let dumped = crate::lock_writer::dump_package(&package.raw)?;
+    Ok(Record {
         name: package.name.clone(),
         version: package.pretty_version.clone(),
         dist_url: str_field(dist, "url"),
@@ -361,7 +566,8 @@ fn record(
             .get(&package.name.to_ascii_lowercase())
             .cloned(),
         time: crate::lock_writer::record_time(&package.raw),
-    }
+        raw: Some(serde_json::to_string(&dumped).expect("dump_package's own output is valid JSON")),
+    })
 }
 
 fn str_field(object: Option<&Value>, key: &str) -> Option<String> {
@@ -397,7 +603,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn package(name: &str, version: &str, raw: Value) -> ResolvedPackage {
+    /// `raw` gains `name`/`version` if the caller's fixture omitted them:
+    /// `dump_package` (#344's canonicalisation in `record`) requires both,
+    /// same as every real provider/lock entry already carries them.
+    fn package(name: &str, version: &str, mut raw: Value) -> ResolvedPackage {
+        let object = raw.as_object_mut().expect("raw fixture is a JSON object");
+        object
+            .entry("name")
+            .or_insert_with(|| Value::String(name.to_string()));
+        object
+            .entry("version")
+            .or_insert_with(|| Value::String(version.to_string()));
         ResolvedPackage {
             name: name.to_string(),
             pretty_version: version.to_string(),

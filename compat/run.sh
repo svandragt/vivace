@@ -473,14 +473,19 @@ run_pinned() {
 
 # --- lock compare (#180, COMPAT_LOCKS=1) ------------------------------------
 
-# Writes $2/$3 (result/details) for $1 (a project name) to the lock-compare
-# table: three columns, not five, since there's no dev/no-dev split and no
-# viv time worth reporting for a resolve-only run.
+# Writes $2/$3/$4 (result/export/details) for $1 (a project name) to the
+# lock-compare table: four columns, not five, since there's no dev/no-dev
+# split and no viv time worth reporting for a resolve-only run. $3 is
+# `lock_compare_export`'s own independent check (#344), threaded through
+# every call site including the early skips above, since it needs only the
+# checkout's own composer.json/composer.lock, never the mirror those skip.
 emit_lock_row() {
-  local details=$3
+  local export_cell=$3 details=$4
+  export_cell=${export_cell//\|/\\|}
+  export_cell=${export_cell//$'\n'/<br>}
   details=${details//\|/\\|}
   details=${details//$'\n'/<br>}
-  echo "| $1 | $2 | $details |" >> "$report"
+  echo "| $1 | $2 | $export_cell | $details |" >> "$report"
 }
 
 # Serves $1 (a directory) over 127.0.0.1 with miniserve, the same way
@@ -598,6 +603,35 @@ stop_lock_servers() {
   [ -z "$2" ] || kill "$2" > /dev/null 2>&1 || true
 }
 
+# `viv lock convert` then `viv lock export --check` against $1 (a pinned
+# checkout)'s own already-committed composer.json/composer.lock (#344): no
+# mirror, no network, no re-solve, so this is not the mirror-based compare
+# above, just whether the two together reproduce the committed lock byte for
+# byte. Echoes "identical", "differs" (`export --check`'s own one-line
+# summary) or "skipped: <reason>" (composer.lock missing, or convert itself
+# failing on a lock shape it doesn't handle yet). Scratch copy under
+# $2/export so neither command ever touches the checkout itself.
+lock_compare_export() {
+  local srcdir=$1 workdir=$2 dir="$workdir/export"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  cp "$srcdir/composer.json" "$srcdir/composer.lock" "$dir/"
+
+  local convert_out
+  if ! convert_out=$("$viv" lock convert -d "$dir" 2>&1); then
+    echo "skipped: viv lock convert failed: $(last_lines "$convert_out")"
+    return
+  fi
+
+  local export_out export_rc=0
+  export_out=$("$viv" lock export --check -d "$dir" 2>&1) || export_rc=$?
+  if [ "$export_rc" -eq 0 ]; then
+    echo "identical"
+  else
+    echo "differs: $(last_lines "$export_out")"
+  fi
+}
+
 # One project: mirrors $2 (its checkout, already installed by run_pinned,
 # lock included) via bench/mirror.sh, serves the recording plus its
 # advisories response (if any), resolves the same composer.json with both
@@ -614,20 +648,27 @@ lock_compare_one() {
   mkdir -p "$workdir"
 
   if [ ! -f "$srcdir/composer.json" ]; then
-    emit_lock_row "$name" "skipped" "no checkout (see pinned corpus table)"
+    emit_lock_row "$name" "skipped" "skipped" "no checkout (see pinned corpus table)"
     return
   fi
   if [ ! -f "$srcdir/composer.lock" ]; then
-    emit_lock_row "$name" "skipped" "no composer.lock to seed the mirror recording"
+    emit_lock_row "$name" "skipped" "skipped" "no composer.lock to seed the mirror recording"
     return
   fi
+
+  # #344, independent of the mirror-based resolve compare below: needs only
+  # the checkout's own already-committed composer.json/composer.lock, so
+  # computed once up front and carried into every row this function emits
+  # from here on, including the mirror path's own early skips.
+  local export_result
+  export_result=$(lock_compare_export "$srcdir" "$workdir")
 
   log "recording metadata mirror for $name (lock compare, #180)"
   mirror_dir="$workdir/mirror"
   local mirror_out
   if ! mirror_out=$("$root/bench/mirror.sh" "$srcdir" "$mirror_dir" 2>&1); then
     save_log "$mirror_out" "$name-lock-mirror"
-    emit_lock_row "$name" "skipped" "mirror recording failed: $(last_lines "$mirror_out")"
+    emit_lock_row "$name" "skipped" "$export_result" "mirror recording failed: $(last_lines "$mirror_out")"
     return
   fi
 
@@ -639,7 +680,7 @@ lock_compare_one() {
 
   local mirror_started mirror_port
   if ! mirror_started=$(serve_dir "$served" "$logs_dir/$safe-lock-mirror-server.log"); then
-    emit_lock_row "$name" "skipped" "$mirror_started"
+    emit_lock_row "$name" "skipped" "$export_result" "$mirror_started"
     return
   fi
   mirror_pid=${mirror_started% *}
@@ -676,7 +717,7 @@ lock_compare_one() {
   if [ ! -f "$composer_dir/composer.lock" ]; then
     save_log "$composer_out" "$name-lock-composer"
     stop_lock_servers "$mirror_pid" "$adv_pid"
-    emit_lock_row "$name" "skipped" "composer update failed: $(last_lines "$composer_out")"
+    emit_lock_row "$name" "skipped" "$export_result" "composer update failed: $(last_lines "$composer_out")"
     return
   fi
   local note=""
@@ -692,7 +733,7 @@ lock_compare_one() {
       --cache-dir "$lock_cache_dir" -d "$viv_dir" 2>&1); then
     save_log "$viv_out" "$name-lock-viv"
     stop_lock_servers "$mirror_pid" "$adv_pid"
-    emit_lock_row "$name" "viv error" "${note}$(tail -5 <<< "$viv_out")"
+    emit_lock_row "$name" "viv error" "$export_result" "${note}$(tail -5 <<< "$viv_out")"
     return
   fi
   stop_lock_servers "$mirror_pid" "$adv_pid"
@@ -702,10 +743,10 @@ lock_compare_one() {
     <(jq 'del(._readme, .["plugin-api-version"])' "$composer_dir/composer.lock") \
     <(jq 'del(._readme, .["plugin-api-version"])' "$viv_dir/composer.lock") 2>&1) || true
   if [ -z "$diff_out" ]; then
-    emit_lock_row "$name" "identical" "${note}same resolution; compared through jq, so lock formatting is not what this proves (tests/ covers that byte for byte)"
+    emit_lock_row "$name" "identical" "$export_result" "${note}same resolution; compared through jq, so lock formatting is not what this proves (tests/ covers that byte for byte)"
   else
     failures=1
-    emit_lock_row "$name" "differs" "${note}$(head -10 <<< "$diff_out")"
+    emit_lock_row "$name" "differs" "$export_result" "${note}$(head -10 <<< "$diff_out")"
   fi
 }
 
@@ -716,10 +757,10 @@ run_lock_compare() {
   [ "$compat_locks" = "1" ] || return 0
   echo "" >> "$report"
   echo "## Lock compare (\`COMPAT_LOCKS=1\`, #180)" >> "$report"
-  echo "\`composer update ${lock_compare_composer_flags[*]}\` versus \`viv update ${lock_compare_viv_flags[*]}\`, both against a \`bench/mirror.sh\` recording of the pinned checkout's own resolved packages (dists aren't needed for \`--no-install\`, but the same recording carries the \`security-advisories\` response too). Run inside devbox so both tools see the same PHP/extensions, rather than passing \`--ignore-platform-reqs\` to either." >> "$report"
+  echo "\`composer update ${lock_compare_composer_flags[*]}\` versus \`viv update ${lock_compare_viv_flags[*]}\`, both against a \`bench/mirror.sh\` recording of the pinned checkout's own resolved packages (dists aren't needed for \`--no-install\`, but the same recording carries the \`security-advisories\` response too). Run inside devbox so both tools see the same PHP/extensions, rather than passing \`--ignore-platform-reqs\` to either. \`Export\` is a separate, mirror-free check (#344): \`viv lock convert\` then \`viv lock export --check\` against the checkout's own committed \`composer.lock\`." >> "$report"
   {
-    echo "| Project | Result | Details |"
-    echo "|---|---|---|"
+    echo "| Project | Result | Export | Details |"
+    echo "|---|---|---|---|"
   } >> "$report"
   local name repo commit version path safe srcdir
   while IFS="|" read -r name repo commit version path; do

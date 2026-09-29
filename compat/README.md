@@ -135,6 +135,13 @@ A project's lock is one of:
   failed to write a lock.
 - **viv error** — `viv update` itself exited non-zero.
 
+The table's `Export` column is a separate, mirror-free check (#344): `viv
+lock convert` then `viv lock export --check` against the checkout's own
+already-committed `composer.json`/`composer.lock`, no re-solve or network
+involved. **identical** or **differs** (`export --check`'s own one-line
+summary), or **skipped** when `composer.lock` is missing or `convert` itself
+fails.
+
 ## Replaying a seed
 
 A random-sample failure prints its seed in the report header. Reproduce it

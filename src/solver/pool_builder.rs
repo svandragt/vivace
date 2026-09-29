@@ -1030,6 +1030,71 @@ fn set_flag_if_less_stable(
     flags.insert(name.to_string(), stability);
 }
 
+/// The half of [`build`]'s own derivation (its `minimum_stability` through
+/// `platform_overrides` lines) that root `composer.json` alone determines,
+/// with no closure walk, pool or solve: `viv lock export` (#344) has no
+/// pool to read `lock_writer::LockOptions`'s aggregate fields off, only the
+/// manifest a normal solve derives them from too, so this factors that
+/// derivation out for a caller with no `Repository` to build a [`BuildResult`]
+/// from. `root_aliases` is `extract_alias`'s own output, keyed by target
+/// name: whether one was actually used still needs matching against a
+/// resolved version, which only the caller's own locked set can answer.
+pub(crate) struct RootLockAggregates {
+    pub minimum_stability: &'static str,
+    pub stability_flags: HashMap<String, u8>,
+    /// Root `composer.json`'s own `prefer-stable` (`Schema/schema.json`
+    /// documents it as a real root key, not only the `update
+    /// --prefer-stable` CLI flag `DefaultPolicy::new`'s other caller sets):
+    /// confirmed against `compat/corpus.toml`'s pinned projects, 7 of 10
+    /// set it. `prefer-lowest` has no such key — `--prefer-lowest` is a
+    /// test-only CLI flag, never persisted — so `export` (its only reader)
+    /// still has no source for that one and defaults it `false`.
+    pub prefer_stable: bool,
+    pub platform_reqs: Map<String, Value>,
+    pub platform_dev_reqs: Map<String, Value>,
+    pub platform_overrides: Map<String, Value>,
+    pub root_aliases: HashMap<String, Vec<(String, String, String)>>,
+}
+
+pub(crate) fn root_lock_aggregates(root: &Value) -> Result<RootLockAggregates> {
+    let require = string_map(root, "require");
+    let require_dev = string_map(root, "require-dev");
+    let minimum_stability = root
+        .get("minimum-stability")
+        .and_then(Value::as_str)
+        .map_or("stable", normalize_stability);
+
+    let mut stability_flags: HashMap<String, &'static str> = HashMap::new();
+    let mut root_aliases: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    for (name, value) in require.iter().chain(require_dev.iter()) {
+        let raw = value
+            .as_str()
+            .with_context(|| format!("require {name}: constraint is not a string"))?;
+        extract_alias(name, raw, &mut root_aliases)?;
+        extract_stability_flag(name, raw, minimum_stability, &mut stability_flags);
+    }
+
+    Ok(RootLockAggregates {
+        minimum_stability,
+        stability_flags: stability_flags
+            .into_iter()
+            .map(|(name, stability)| (name, stability_rank(stability)))
+            .collect(),
+        prefer_stable: root
+            .get("prefer-stable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        platform_reqs: extract_platform_requirements(&require),
+        platform_dev_reqs: extract_platform_requirements(&require_dev),
+        platform_overrides: root
+            .pointer("/config/platform")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default(),
+        root_aliases,
+    })
+}
+
 fn is_acceptable(
     name: &str,
     stability: &str,
