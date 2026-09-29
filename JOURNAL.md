@@ -1710,3 +1710,15 @@ git checkout does not keep mtimes, so that could have overwritten a
 `composer.lock` Composer had just changed. Dropped for the absent-only
 rule. `viv init --lock native` and `viv lock convert` mark
 `composer.lock` `linguist-generated`. No-op install unchanged.
+
+## 2026-09-29: fetching a pinned commit (#345)
+
+When a lock pins a `dev-*` record at a commit the registry's branch
+entry no longer describes, the re-solve fetches that commit's
+`composer.json` from the package's git source, once per machine
+(`commit-meta-v0/<sha>/`), and uses it in place of the registry head.
+On the 15 client merges that only finished online in the research
+run, the shipped driver finished 14 with a single fetch, because #343
+settles most `dev-*` names before the re-solve runs at all; the
+research model had guessed 24 fetches. The one miss requires
+`php ^5.2|^7` and fails this machine's platform check.
