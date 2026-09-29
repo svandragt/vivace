@@ -36,7 +36,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Map, Value};
 
@@ -307,6 +307,7 @@ pub async fn build<T: Transport>(
         prefer_lowest,
         &[],
         &HashMap::new(),
+        &HashMap::new(),
         None,
         None,
         &IgnorePlatform::None,
@@ -321,22 +322,31 @@ pub async fn build<T: Transport>(
 /// ever lands in `closure` if the walk reaches it. `preferred` is
 /// `--minimal-changes`'s pin set, passed straight through to
 /// [`build_partial_seeded`] (see its own doc for why it must reach
-/// `pool_optimizer::optimize`, not just the solver).
+/// `pool_optimizer::optimize`, not just the solver). `locked_by_name` is
+/// the current lock's own packages, keyed the same way a partial update's
+/// own map is (#345): used here only for `pin_dev_commits`'s own lookup,
+/// via `allow_names` below, never to lock anything out.
 ///
 /// #111: a full update is exactly [`build_partial_seeded`] with nothing
 /// locked out — `Repository::load_closure`'s own `load_closure_skipping(...,
 /// &HashSet::new())` (`src/repository.rs:1015-1022`) already proves an empty
-/// skip set changes nothing, and an empty `locked_by_name` makes
-/// `build_partial_seeded`'s second `ClosureRoot`/locked-entry push both
-/// no-ops.
+/// skip set changes nothing. #345 needs `locked_by_name` itself to reach
+/// `build_partial_seeded` (for its `pin_dev_commits` lookup) without also
+/// locking every one of its names out, so `allow_names` here is every one
+/// of `locked_by_name`'s own keys — `skip = locked_by_name.keys().filter(|n|
+/// !allow_names.contains(n))` in `build_partial_seeded` is then empty
+/// either way, matching #111's original invariant exactly (an empty
+/// `locked_by_name`, the only case before #345, made `allow_names`' own
+/// emptiness moot the same way).
 #[expect(
     clippy::implicit_hasher,
     reason = "internal API, only ever called with the default hasher"
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors build plus one seed slice, the minimal-changes pin set, the advisory pool \
-              filter, the platform-probe cache dir, and the ignore-platform-reqs filter"
+    reason = "mirrors build plus one seed slice, the minimal-changes pin set, the current lock's \
+              packages (#345), the advisory pool filter, the platform-probe cache dir, and the \
+              ignore-platform-reqs filter"
 )]
 pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -346,16 +356,18 @@ pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     prefer_lowest: bool,
     seed: &[String],
     preferred: &HashMap<String, semver::NormalizedVersion>,
+    locked_by_name: &HashMap<String, Value>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
     ignore: &IgnorePlatform,
 ) -> Result<BuildResult> {
+    let allow_names: HashSet<String> = locked_by_name.keys().cloned().collect();
     build_partial_seeded(
         repo,
         root,
         project_dir,
-        &HashMap::new(),
-        &HashSet::new(),
+        locked_by_name,
+        &allow_names,
         prefer_stable,
         prefer_lowest,
         seed,
@@ -675,6 +687,13 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         prefetch,
     );
     let closure = closure?;
+    let closure = pin_dev_commits(
+        closure,
+        locked_by_name,
+        preferred,
+        cache_dir,
+        repo.offline(),
+    )?;
     if let (Some(names), Some(Ok(response))) = (prefetch_names, prefetch_result) {
         advisories
             .as_mut()
@@ -797,6 +816,116 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         platform_overrides,
         own_pretty_version,
     })
+}
+
+/// #345: Packagist's `/p2/` provider file for a `dev-*` branch only ever
+/// describes that branch's *current* head — there's no way to ask it for an
+/// older commit — so a name this solve is keeping at its locked version
+/// (`preferred`, `--minimal-changes` or `viv lock merge` rung 3's own
+/// everything-preferred pin, `lock_merge::escalate_resolve`) can find the
+/// registry's answer no longer matches the commit the lock pins: a rolling
+/// branch like `roave/security-advisories dev-latest` moves on almost every
+/// fetch (`docs/research.md` candidate 3.3). Composer has no such gap — a
+/// `dev-*` requirement is always re-resolved to the head — so this only
+/// ever substitutes for a name genuinely being kept unchanged, never a
+/// plain `viv update` moving a branch forward on purpose (`preferred` is
+/// empty then, so the loop below never even starts).
+///
+/// For each preferred name whose lock entry is a `dev-*` version with a
+/// `source.reference`, and whose closure-fetched entry for that same
+/// version doesn't already carry that reference (including not being in
+/// the closure at all — the branch renamed, or the package missing from
+/// the registry entirely), fetches that commit's own `composer.json`
+/// (`source::fetch_commit_composer_json`, cached under the commit so a
+/// second solve costs no git call at all) and substitutes it for the
+/// registry's version — `dist` dropped, so a package that resolves to it
+/// installs via the same dist-less `source.type: git` path
+/// (`source::checkout_git`'s own doc) any other commit-only lock entry
+/// does. `cache_dir: None` (no on-disk cache configured at all) is a no-op:
+/// there is nowhere to check or write a fetched commit, so this never
+/// forces a fetch that couldn't be reused next time.
+fn pin_dev_commits(
+    mut closure: HashMap<String, Vec<PackageVersion>>,
+    locked_by_name: &HashMap<String, Value>,
+    preferred: &HashMap<String, semver::NormalizedVersion>,
+    cache_dir: Option<&Path>,
+    offline: bool,
+) -> Result<HashMap<String, Vec<PackageVersion>>> {
+    let Some(cache_dir) = cache_dir else {
+        return Ok(closure);
+    };
+    for name in preferred.keys() {
+        let Some(locked) = locked_by_name.get(name) else {
+            continue;
+        };
+        let Some(pretty_version) = locked.get("version").and_then(Value::as_str) else {
+            continue;
+        };
+        if !pretty_version.starts_with("dev-") {
+            continue;
+        }
+        let Some(reference) = locked.pointer("/source/reference").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(url) = locked.pointer("/source/url").and_then(Value::as_str) else {
+            continue;
+        };
+
+        let versions = closure.entry(name.clone()).or_default();
+        let describes_pin = versions.iter().any(|version| {
+            version.version == pretty_version
+                && version
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.get("reference"))
+                    .and_then(Value::as_str)
+                    == Some(reference)
+        });
+        if describes_pin {
+            continue;
+        }
+
+        let commit_json =
+            crate::source::fetch_commit_composer_json(cache_dir, name, url, reference, offline)?;
+        let pinned = pinned_package_version(commit_json, name, pretty_version, url, reference)?;
+        versions.retain(|version| version.version != pretty_version);
+        versions.push(pinned);
+    }
+    Ok(closure)
+}
+
+/// One `dev-*` version's provider-file shape, built from the pinned
+/// commit's own `composer.json` rather than the registry's: `name`/
+/// `version`/`version_normalized` copied over (still the same named
+/// branch, just an older commit of it — `version_normalized` for any
+/// `dev-*` pretty version is that same string, `version::normalize`'s own
+/// early return) and `source` pointed at the pinned reference; `dist`
+/// dropped, matching [`pin_dev_commits`]'s own doc on why.
+fn pinned_package_version(
+    commit_json: Value,
+    name: &str,
+    pretty_version: &str,
+    url: &str,
+    reference: &str,
+) -> Result<PackageVersion> {
+    let Value::Object(mut obj) = commit_json else {
+        bail!("{name}: {reference}'s composer.json is not a JSON object");
+    };
+    obj.insert("name".to_string(), Value::String(name.to_string()));
+    obj.insert(
+        "version".to_string(),
+        Value::String(pretty_version.to_string()),
+    );
+    obj.insert(
+        "version_normalized".to_string(),
+        Value::String(pretty_version.to_string()),
+    );
+    obj.insert(
+        "source".to_string(),
+        serde_json::json!({"type": "git", "url": url, "reference": reference}),
+    );
+    obj.remove("dist");
+    PackageVersion::from_owned_value(Value::Object(obj))
 }
 
 /// Turns one `composer.lock` package entry (`ArrayDumper`-shaped: the same

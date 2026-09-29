@@ -65,6 +65,14 @@ pub(crate) const PLATFORM_CHECK_BUCKET: &str = "platform-check-v0";
 /// #337's `viv php install`: one static-php-cli build per
 /// `<version>-<os>-<arch>`, see `php::install_dir`.
 pub(crate) const PHP_BUCKET: &str = "php-v0";
+/// #345: a `dev-*` package's `composer.json` at one commit the metadata
+/// closure pinned (`solver::pool_builder::pin_dev_commits`) because
+/// Packagist's own provider file, which only ever describes a branch's
+/// *current* head, no longer describes it — `commit-meta-v0/<sha>/composer.json`,
+/// keyed by the commit alone (not the package), so this machine fetches a
+/// given commit once no matter how many packages happen to share it (a
+/// fork, a monorepo). See [`commit_meta_path`].
+pub(crate) const COMMIT_META_BUCKET: &str = "commit-meta-v0";
 const LOCK_FILE: &str = ".lock";
 
 /// Every current bucket name, shared by `prune` (what a stale-bucket sweep
@@ -83,6 +91,7 @@ const KNOWN_BUCKETS: &[&str] = &[
     ROOT_CLASSMAP_BUCKET,
     PLATFORM_CHECK_BUCKET,
     PHP_BUCKET,
+    COMMIT_META_BUCKET,
     LOCK_FILE,
 ];
 
@@ -733,6 +742,18 @@ pub fn platform_check_sidecar(cache_root: &Path, base: &str) -> PathBuf {
     cache_root
         .join(PLATFORM_CHECK_BUCKET)
         .join(format!("{}.json", hex(Sha256::digest(base.as_bytes()))))
+}
+
+/// #345's `commit-meta-v0` bucket path for one commit's `composer.json`:
+/// `commit-meta-v0/<reference>/composer.json`. An `Err` means `reference`
+/// isn't safe to join into a store path (the same guard `Store::pointer`
+/// applies to a dist reference).
+pub fn commit_meta_path(cache_root: &Path, reference: &str) -> Result<PathBuf> {
+    sanitise_path_component("commit reference", reference)?;
+    Ok(cache_root
+        .join(COMMIT_META_BUCKET)
+        .join(reference)
+        .join("composer.json"))
 }
 
 /// Write `manifest` into `marker` via a temp file in the same directory, then

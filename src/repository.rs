@@ -106,6 +106,15 @@ pub trait Transport {
         url: &Url,
         if_modified_since: Option<&str>,
     ) -> impl std::future::Future<Output = Result<Conditional>> + Send;
+
+    /// `--offline`/`COMPOSER_DISABLE_NETWORK`, as [`Repository::offline`]
+    /// exposes it to `solver::pool_builder`'s #345 commit-pin fetch: the
+    /// default (`false`) is right for every fixture/test transport, which
+    /// never attempts a real network call regardless; only [`HttpTransport`]
+    /// overrides it.
+    fn offline(&self) -> bool {
+        false
+    }
 }
 
 /// [`Transport`] backed by a real [`Fetcher`], for production use.
@@ -118,6 +127,10 @@ impl Transport for HttpTransport<'_> {
         self.fetcher
             .get_conditional(url.as_str(), url, if_modified_since)
             .await
+    }
+
+    fn offline(&self) -> bool {
+        self.fetcher.is_offline()
     }
 }
 
@@ -2200,6 +2213,14 @@ impl<T: Transport> Repository<T> {
     /// map without a request.
     pub fn request_count(&self) -> usize {
         self.requests.load(Ordering::Relaxed)
+    }
+
+    /// This repository's own transport's `--offline` flag ([`Transport::offline`]):
+    /// #345's commit-pin fetch reads this straight off `repo`, already
+    /// threaded everywhere a solve needs one, rather than a second
+    /// `--offline` parameter down the whole call chain.
+    pub fn offline(&self) -> bool {
+        self.transport.offline()
     }
 
     /// Provider files served from `metadata_ttl`'s freshness window so far

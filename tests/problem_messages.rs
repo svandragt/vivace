@@ -227,6 +227,7 @@ async fn advisory_blocked_root_require_names_the_advisory_and_no_blocking() {
         false,
         &[],
         std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
         Some(filter),
         None,
         &vivace::autoload::platform::IgnorePlatform::None,

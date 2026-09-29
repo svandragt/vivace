@@ -427,6 +427,7 @@ pub(crate) fn partial_update(
             prefer_lowest,
             &[],
             HashMap::new(),
+            &HashMap::new(),
             advisories,
             Some(&cache_dir),
             &ignore,
