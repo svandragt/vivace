@@ -619,22 +619,22 @@ fn run_impl(
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
 
     let lock_path = project_dir.join("composer.lock");
-    // #297: `viv.lock` is a companion to `composer.lock`, never a
-    // replacement (`docs/research.md` chapter 1) — a record carries no
-    // `require`/`autoload`, which `installed.json`/`installed.php` need.
+    // #344: once every `viv.lock` record carries its own `raw` entry,
+    // `viv.lock` alone is enough to install from — `composer.lock` is a
+    // derived file, kept in step here rather than required up front
+    // (`docs/research.md` chapter 1). A pre-#344 record with no `raw`
+    // still can't be exported; `native_lock::export`'s own error names the
+    // package and points at `viv lock convert`.
     // The absent case (almost every install, until the format sees
     // adoption) must cost nothing beyond this one metadata call: no
     // parsing, no allocation past the path join itself
     // (`AGENTS.md`'s Performance rule).
     let viv_lock_path = project_dir.join("viv.lock");
     let viv_lock_present = viv_lock_path.is_file();
+    if viv_lock_present {
+        sync_composer_lock_from_viv_lock(&project_dir, &lock_path, &viv_lock_path)?;
+    }
     if !lock_path.is_file() {
-        if viv_lock_present {
-            bail!(
-                "viv.lock is a companion to composer.lock, not a standalone format, and \
-                 composer.lock is missing; run `viv update --lock native` to write both"
-            );
-        }
         bail!(
             "composer.lock not found; viv installs from an existing composer.lock, run \
              `viv update` to create one"
@@ -722,6 +722,19 @@ fn run_impl(
     // wires the clone so a fresh clone's very first merge already runs
     // through `viv lock merge`.
     crate::merge_driver::wire(&project_dir);
+    // #344: once a project has `viv.lock`, mark the derived `composer.lock`
+    // as generated (`docs/research.md` chapter 1) the same idempotent way;
+    // a project without `viv.lock` never pays for the extra read.
+    if viv_lock_present
+        && let Ok(added) = crate::merge_driver::ensure_gitattributes(
+            &project_dir,
+            &[crate::merge_driver::GENERATED_ATTRIBUTE],
+        )
+    {
+        for line in added {
+            warn_out(&format!("viv: added `{line}` to .gitattributes"));
+        }
+    }
     let dev = !args.no_dev;
 
     let plugins_started = Instant::now();
@@ -1105,6 +1118,61 @@ fn run_impl(
         elapsed_ms = scripts_started.elapsed().as_millis(),
         "dispatched post-install-cmd"
     );
+    Ok(())
+}
+
+/// #344: keeps `composer.lock` derived from `viv.lock` for a project that
+/// has adopted it, through `native_lock::export` (in-process, the same
+/// `lock_writer::write` a solve feeds — never a subprocess). An absent
+/// `composer.lock` is generated outright, one line said once. A
+/// `composer.lock` older than `viv.lock` is regenerated too, but only
+/// written (and said) when the bytes actually differ — a `viv.lock` that
+/// simply got touched, or the pair already written together by `update`,
+/// costs a rewrite of nothing. A `composer.lock` at least as new as
+/// `viv.lock` is never touched — it may be newer for a reason `viv.lock`
+/// doesn't know about, and it isn't this function's place to guess.
+/// `export`'s own error, when a record predates #344 and carries no `raw`,
+/// already names the package and points at `viv lock convert`, so it is
+/// simply propagated rather than re-worded here. A conflicted `viv.lock`
+/// (git merge markers) fails to parse here too, but #274's detection and
+/// #299's auto-resolve already run later, against `reconcile`'s own read of
+/// the same file — this leaves `composer.lock` untouched and defers to that
+/// existing path rather than surfacing a bare TOML parse error first.
+fn sync_composer_lock_from_viv_lock(
+    project_dir: &Path,
+    lock_path: &Path,
+    viv_lock_path: &Path,
+) -> Result<()> {
+    let viv_lock_modified = fs_err::metadata(viv_lock_path)
+        .context("reading viv.lock metadata")?
+        .modified()
+        .context("viv.lock has no modification time")?;
+    let existing = fs_err::metadata(lock_path).ok();
+    if let Some(meta) = &existing {
+        let composer_lock_modified = meta
+            .modified()
+            .context("composer.lock has no modification time")?;
+        if composer_lock_modified >= viv_lock_modified {
+            return Ok(());
+        }
+    }
+    let generated = match crate::native_lock::export(project_dir) {
+        Ok(generated) => generated,
+        Err(err) => {
+            if marker_conflict_message("viv.lock", viv_lock_path, "name = \"", false).is_some() {
+                return Ok(());
+            }
+            return Err(err);
+        }
+    };
+    if existing.is_some() {
+        let current = fs_err::read_to_string(lock_path).context("reading composer.lock")?;
+        if current == generated {
+            return Ok(());
+        }
+    }
+    fs_err::write(lock_path, generated)?;
+    out("composer.lock generated from viv.lock");
     Ok(())
 }
 

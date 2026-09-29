@@ -25,6 +25,16 @@ use crate::lock_merge::{self, Scope};
 /// never a bespoke line of their own.
 pub const ATTRIBUTE_LINES: [&str; 2] = ["composer.lock merge=viv", "viv.lock merge=viv"];
 
+/// Marks `composer.lock` as derived once a project has adopted `viv.lock`
+/// (#344): a diff tool can collapse it, the way `linguist-generated` already
+/// does for other generated files. Not `export-ignore` — that strips the
+/// file from `git archive`, and downstream tools (a deploy step, another
+/// developer's `composer install`) still need `composer.lock` to exist in an
+/// archive, only not to be reviewed as hand-written. `install` adds this
+/// line once `viv.lock` is present, the same idempotent way `wire` sets the
+/// merge driver on every run.
+pub const GENERATED_ATTRIBUTE: &str = "composer.lock linguist-generated=true";
+
 /// #298: on every `install`, if this clone's `.gitattributes` names
 /// `merge=viv` but its own `.git/config` has no `merge.viv.driver` yet, set
 /// one. Convenience only — a fresh clone's first merge already goes

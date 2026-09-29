@@ -93,15 +93,18 @@ sorted by name. Each record holds exactly:
   itself, not one more typed field. A pre-#344 record has none and cannot be
   exported until `viv lock convert`/`viv update --lock native` runs again.
 
-`viv.lock` is a companion to `composer.lock`, never a replacement for
-`install`/`update` (#297): a record's typed fields carry no
-`require`/autoload/metadata, which `installed.json`/`installed.php` need, so
-both still read `composer.lock` and refuse, naming every package, when a
-record's `(version, source-ref, dev)` disagrees with `composer.lock`'s own
-entry for that name, rather than installing from one side alone. `export`
-(#344) is the one reader of `raw`, orthogonal to that refusal: it turns
-`viv.lock` back into a `composer.lock` for a project that stops committing
-one, it does not change what `install` trusts.
+Once every record carries `raw`, `viv.lock` alone is enough for `install` to
+work from (#344): a `composer.lock` that's missing, or older than `viv.lock`,
+is (re)generated from it through `export` before installing proceeds, one
+line said once, and never rewritten when it's already newer than `viv.lock`.
+A pre-#344 record, with no `raw` at all, still can't be exported, and
+`install` refuses, naming the package and pointing at `viv lock convert`.
+When both files are already present and in step, `install` still reads
+`composer.lock` for a record's full entry — `installed.json`/`installed.php`
+need `require`/autoload/metadata a record's typed fields don't carry — and
+refuses, naming every package, when a record's `(version, source-ref, dev)`
+disagrees with `composer.lock`'s own entry for that name (#297), rather than
+picking a side.
 
 Deliberately absent: `content-hash`, `plugin-api-version` and `platform`,
 the file-level fields that change on every requirements edit and are why
@@ -120,9 +123,10 @@ Closing that needs either a provenance trail through the solver or a
 derived rule for transitive records, and which one is worth it should be
 decided from #273's conflict counts rather than up front (#290).
 
-This chunk is the writer and, since #297, the reader: `install`/`update`
-accept `viv.lock` as a companion to `composer.lock`. The merge behaviour
-this format is meant to earn is `Measurement` below.
+This chunk is the writer and, since #297 and #344, the reader: `install`/
+`update` read `viv.lock` on its own once every record carries `raw`, and
+`composer.lock` when it doesn't. The merge behaviour this format is meant to
+earn is `Measurement` below.
 
 **Control.** `composer.lock` as Composer 2.10 writes it, produced by the
 same resolution.
@@ -214,7 +218,7 @@ few percent, with what remains being the conflicts no tool can decide.
 
 **Work.** Format and writer (#272), merge replay harness (#273), marker
 tolerance in `install` (#274), merge driver (#275). Done: #272, #273,
-#274, #275, #294, #295, #297, #298, #299; #290 closed as superseded, the
+#274, #275, #294, #295, #297, #298, #299, #344; #290 closed as superseded, the
 driver decides divergence by three-way identity and never reads staleness.
 #274 refuses `install` when `composer.lock` or `viv.lock` still carries
 git conflict markers, naming the file, the first marker's line and the
@@ -228,15 +232,21 @@ divergent closure, then pinned packages that directly require it, then a
 full solve seeded with every non-divergent locked version as `preferred`
 (`--max-scope` caps it), and reports the rung reached and every package
 that moved outside the divergent set. Not a full update: `preferred`
-keeps every package the merge does not force. #297 makes `viv.lock` a
-companion `install` and `update` read: `install` refuses when the two
-files disagree in either direction, `update` implies `--lock native` once
-`viv.lock` exists. #298 has `viv init` write the `.gitattributes` line and
-`install` set `merge.viv.driver` in each clone that has it, so nobody
-configures git by hand. #299 covers the clone that merges before either
-has run: `install` reads the conflicted lock's own git index stages, runs
-the same merge and re-solve the driver would, and wires the clone so it
-doesn't happen again. Nothing queued; the chapter's open question is
+keeps every package the merge does not force. #297 has `install` read
+`viv.lock` alongside `composer.lock` and refuse when the two disagree in
+either direction; `update` implies `--lock native` once `viv.lock` exists.
+#298 has `viv init` write the `.gitattributes` line and `install` set
+`merge.viv.driver` in each clone that has it, so nobody configures git by
+hand. #299 covers the clone that merges before either has run: `install`
+reads the conflicted lock's own git index stages, runs the same merge and
+re-solve the driver would, and wires the clone so it doesn't happen again.
+#344 gave `viv.lock` its own `raw` per record and a `viv lock export` that
+turns it back into `composer.lock` through the same writer a solve feeds;
+`install` now calls that first whenever `composer.lock` is missing or older
+than `viv.lock`, so a project can stop committing `composer.lock` at all —
+#297's refusal, and its "companion, never a replacement" framing, now apply
+only once both files are already on disk. Nothing queued; the chapter's open
+question is
 adoption, not mechanism.
 
 ## Chapter 2: autoload from the store, no vendor tree (measured, not pursued)
