@@ -333,6 +333,15 @@ fn run_git<'a>(dir: Option<&Path>, args: impl IntoIterator<Item = &'a str>) -> R
     Ok(())
 }
 
+/// #348: the message a commit gone upstream gets, both the first time (the
+/// `fetch` that found it gone) and every later one (the `missing` marker
+/// read back instead) — same text either way, so a cache hit is
+/// indistinguishable from a fresh failure to whatever reports it.
+fn missing_commit_message(package: &str, reference: &str, url: &str) -> String {
+    let short = reference.get(..7).unwrap_or(reference);
+    format!("commit {short} of {package} is not in {url}")
+}
+
 /// #345: one `dev-*` commit's own `composer.json`, read straight from
 /// `source.url` the way Composer resolves a `type: vcs` repository — the
 /// metadata closure's own registry fetch only ever describes a branch's
@@ -360,6 +369,13 @@ pub fn fetch_commit_composer_json(
     {
         return Ok(value);
     }
+    // #348: a commit already recorded as gone upstream is a store hit too —
+    // reported the same way every time, with no fetch — rather than
+    // re-running (and re-failing) the same git fetch on every later run.
+    let missing_path = crate::store::commit_meta_missing_path(cache_dir, reference)?;
+    if missing_path.is_file() {
+        bail!(missing_commit_message(package, reference, url));
+    }
     if offline {
         bail!(
             "{package}: Network disabled, request canceled: commit {reference} at {url} is not \
@@ -376,11 +392,16 @@ pub fn fetch_commit_composer_json(
     let temp = tempfile::tempdir().context("creating a scratch dir for the commit fetch")?;
     run_git(Some(temp.path()), ["init", "--quiet", "--bare"])
         .with_context(|| format!("{package}: preparing a scratch repo for commit {reference}"))?;
-    run_git(
+    if let Err(err) = run_git(
         Some(temp.path()),
         ["fetch", "--quiet", "--depth", "1", url, reference],
-    )
-    .with_context(|| format!("{package}: fetching commit {reference} from {url}"))?;
+    ) {
+        if let Some(parent) = missing_path.parent() {
+            let _ = fs_err::create_dir_all(parent);
+        }
+        let _ = fs_err::write(&missing_path, format!("{err:#}"));
+        bail!(missing_commit_message(package, reference, url));
+    }
 
     let output = crate::vcs::git_command()
         .args(["show", &format!("{reference}:composer.json")])

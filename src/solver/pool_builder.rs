@@ -843,7 +843,10 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
 /// (`source::checkout_git`'s own doc) any other commit-only lock entry
 /// does. `cache_dir: None` (no on-disk cache configured at all) is a no-op:
 /// there is nowhere to check or write a fetched commit, so this never
-/// forces a fetch that couldn't be reused next time.
+/// forces a fetch that couldn't be reused next time. One name's commit being
+/// gone upstream (#348) doesn't stop the rest: every other preferred name
+/// still gets fetched and stored this same pass, and only the first error
+/// is returned, once the loop has tried them all.
 fn pin_dev_commits(
     mut closure: HashMap<String, Vec<PackageVersion>>,
     locked_by_name: &HashMap<String, Value>,
@@ -854,6 +857,10 @@ fn pin_dev_commits(
     let Some(cache_dir) = cache_dir else {
         return Ok(closure);
     };
+    // #348: one name's commit gone upstream must not stop every other
+    // preferred name in this same pass from being fetched and stored —
+    // keep going and report the first failure only once the loop is done.
+    let mut first_error = None;
     for name in preferred.keys() {
         let Some(locked) = locked_by_name.get(name) else {
             continue;
@@ -885,11 +892,23 @@ fn pin_dev_commits(
             continue;
         }
 
-        let commit_json =
-            crate::source::fetch_commit_composer_json(cache_dir, name, url, reference, offline)?;
-        let pinned = pinned_package_version(commit_json, name, pretty_version, url, reference)?;
+        let result =
+            crate::source::fetch_commit_composer_json(cache_dir, name, url, reference, offline)
+                .and_then(|commit_json| {
+                    pinned_package_version(commit_json, name, pretty_version, url, reference)
+                });
+        let pinned = match result {
+            Ok(pinned) => pinned,
+            Err(err) => {
+                first_error.get_or_insert(err);
+                continue;
+            }
+        };
         versions.retain(|version| version.version != pretty_version);
         versions.push(pinned);
+    }
+    if let Some(err) = first_error {
+        return Err(err);
     }
     Ok(closure)
 }
