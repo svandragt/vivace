@@ -18,3 +18,21 @@ this page on GitHub" link for free. `site/pages/<section>/index.md` is that
 section's own landing page. Use `{{help:<cmd>}}` for `viv <cmd> --help`
 output, `{{include:<path>}}` for another file's body (its own H1 dropped),
 and `{{include:<path>#<Heading>}}` for just one of its sections.
+
+## Layout
+
+One vertical nav: the sidebar (`render_sidebar` in `site/build.py`) opens
+with a top group -- Compare, News, GitHub -- above the five sections from
+`site/nav.toml`, all sharing the same current-page highlighting. The header
+keeps only the `viv` wordmark (linking home) and the search box.
+
+`/` (`site/pages/index.md`) is the docs entry point: it reuses
+`getting-started/index.md`'s body (`site_page_body`, front matter and H1
+dropped) followed by a "Documentation" block generated from each section's
+own front matter (`documentation_links`), so that list can't drift from the
+sidebar it mirrors. `getting-started/index.md` stays the section's own
+landing page at `/getting-started/` too -- same source, so the two can't
+diverge -- which is why its own links to sibling pages are root-relative
+(`/getting-started/install.html`, not `install.html`): the same body renders
+at two different URL depths. The sidebar's own entry for it always points at
+`/`, not `/getting-started/`.
