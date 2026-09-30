@@ -12,19 +12,28 @@ Add `site/pages/<section>/<page>.md` (section is one of `getting-started`,
 `guides`, `reference`, `architecture`, `releases` -- `site/nav.toml`), with
 front matter (`title` required, `order` an int, default 999, and an optional
 one-line `summary` shown in the sidebar tooltip). It builds to
-`/<section>/<page>.html`, appears in the sidebar under that section in
-`order`, and gets a breadcrumb, "On this page" list, prev/next and an "Edit
-this page on GitHub" link for free. `site/pages/<section>/index.md` is that
-section's own landing page. Use `{{help:<cmd>}}` for `viv <cmd> --help`
-output, `{{include:<path>}}` for another file's body (its own H1 dropped),
-and `{{include:<path>#<Heading>}}` for just one of its sections.
+`/<section>/<page>.html`, appears in the sidebar under that section, and
+gets a breadcrumb, "On this page" list, prev/next and an "Edit this page on
+GitHub" link for free. `site/pages/<section>/index.md` is that section's own
+landing page and always sorts first in the sidebar. Use `{{help:<cmd>}}` for
+`viv <cmd> --help` output, `{{include:<path>}}` for another file's body (its
+own H1 dropped), and `{{include:<path>#<Heading>}}` for just one of its
+sections.
+
+Each section in `site/nav.toml` sets `sort`: `"order"` sorts that section's
+other pages by front-matter `order` then slug (getting-started, releases);
+`"alpha"` sorts them by title, case-insensitive and natural, with a leading
+`"viv <cmd>"` stripped first so reference pages titled "viv <cmd>" sort by
+`<cmd>` (guides, reference, architecture). See `section_sequence` in
+`site/build.py`.
 
 ## Layout
 
-One vertical nav: the sidebar (`render_sidebar` in `site/build.py`) opens
-with a top group -- Compare, News, GitHub -- above the five sections from
-`site/nav.toml`, all sharing the same current-page highlighting. The header
-keeps only the `viv` wordmark (linking home) and the search box.
+One vertical nav: the sidebar (`render_sidebar` in `site/build.py`) holds
+only the five sections from `site/nav.toml`, all sharing the same
+current-page highlighting. The header holds the `viv` wordmark (linking
+home), a small nav for News and GitHub (`render_header_nav`, same
+current-page highlighting), and the search box.
 
 `/` (`site/pages/index.md`) is the docs entry point: it reuses
 `getting-started/index.md`'s body (`site_page_body`, front matter and H1

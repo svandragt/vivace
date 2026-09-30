@@ -1,27 +1,34 @@
 # Left sidebar sections, in this order. Each needs a matching
-# site/pages/<slug>/index.md as its landing page.
+# site/pages/<slug>/index.md as its landing page. `sort` picks how that
+# section's own pages order in the sidebar (see section_sequence in
+# build.py): "order" for front-matter `order`, "alpha" for title.
 
 [[section]]
 title = "Getting started"
 slug = "getting-started"
 order = 1
+sort = "order"
 
 [[section]]
 title = "Guides"
 slug = "guides"
 order = 2
+sort = "alpha"
 
 [[section]]
 title = "Reference"
 slug = "reference"
 order = 3
+sort = "alpha"
 
 [[section]]
 title = "Architecture"
 slug = "architecture"
 order = 4
+sort = "alpha"
 
 [[section]]
 title = "Releases"
 slug = "releases"
 order = 5
+sort = "order"

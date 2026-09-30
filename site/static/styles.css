@@ -118,6 +118,9 @@ pre code { padding: 0; background: none; }
 
 .site-title { font-family: var(--font-mono); font-weight: 500; }
 
+.site-nav { display: flex; gap: 1rem; }
+.site-nav a.current { color: var(--ink); font-weight: 600; }
+
 #site-search {
     margin-left: auto;
     padding: 0.3em 0.6em;
@@ -161,10 +164,9 @@ main {
    everything stacks and the sidebar collapses behind #sidebar-toggle. */
 .layout {
     display: grid;
-    grid-template-columns: 260px minmax(0, 760px) 220px;
+    grid-template-columns: 260px minmax(0, 1fr) 220px;
     grid-template-areas: "sidebar content toc";
     gap: 2.5rem;
-    max-width: calc(260px + 760px + 220px + 5rem);
     margin: 0 auto;
     padding: 2rem 1.5rem 4rem;
 }
@@ -174,7 +176,6 @@ main {
 .content { grid-area: content; min-width: 0; }
 .page-toc { grid-area: toc; font-size: 0.875rem; }
 
-.sidebar-top { margin-bottom: 1rem; }
 .sidebar details { margin-bottom: 1rem; }
 .sidebar summary {
     font-weight: 600;

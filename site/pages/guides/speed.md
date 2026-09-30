@@ -1,7 +1,7 @@
 ---
 title: Speed
 order: 100
-summary: The benchmark numbers, and how every release since is gated against the last.
+summary: The benchmark numbers against Composer, riff and vivacity, and how every release since is gated against the last.
 ---
 
 # Speed
@@ -59,6 +59,28 @@ requests at all. It's off by default (`0`, always revalidate, matching
 Composer), so turn it on only where a slightly stale registry view for a few
 minutes is an acceptable trade for the extra speed. `--offline` always wins
 over a configured window.
+
+## Speed
+
+Composer, riff, vivacity and viv on the same corpus and the same
+compatibility sweep. Every number below comes from a results file in the
+repository, not a guess — see the sources under each table.
+
+{{speed_table}}
+
+{{speed_source}}
+
+Skips recorded for this run:
+
+{{speed_skips}}
+
+## Capability
+
+{{capability_table}}
+
+`n/a` and "not measured here" cells are viv's own gaps too, not just a
+missing measurement for someone else: see [`docs/stability.md`](https://github.com/svandragt/vivace/blob/main/docs/stability.md)
+for what viv's output contract does and doesn't cover.
 
 [^6]: riff's phpunit/phpunit cold and warm times (7.4 s and 7.3 s) are an outlier against its other rows in this corpus; kept in the range, not dropped; see [`bench/results/corpus.md`](bench/results/corpus.md).
 [^7]: roots/bedrock, drupal/recommended-project, yiisoft/yii2-app-basic and craftcms/craft, recorded in [`bench/skips.txt`](bench/skips.txt) against vivacity 0.6.0 so a newer release is retried. A refusal is an `n/a` cell, never a slow one.
