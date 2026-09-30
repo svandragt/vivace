@@ -1759,3 +1759,14 @@ command around its live `--help`. README.md went from 517 lines to 83:
 what viv is, install, the four sections, "Is it safe", licence; every
 paragraph it lost now lives on one site page. Old URLs redirect.
 `site/check.py` runs in the site workflow: links, titles, redirects.
+
+## 2026-09-30: candidate 3.2 on real sites
+
+Five Composer-managed WordPress sites, 226 plugin directories, 49
+with a bundled dependency tree. Three sites carry a library at one
+version in the lock and another, unprefixed, inside a plugin the site
+installs through Composer: phpdotenv 4 against 5, mcp-adapter 0.3
+against 0.5, and the AWS SDK with the Guzzle stack, the pairing behind
+the earlier incidents. Every one is a plugin viv writes. Holds on the
+plugin side; the build would run php-scoper on the pinned PHP over the
+named plugins' bundled trees. Decision open.

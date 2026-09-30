@@ -792,8 +792,8 @@ could be if it no longer had to produce Composer's output.
 
 Status, 2026-09-29: all five candidates measured. 3.1 (managed PHP) and
 3.4 (installs that run no code) hold and are built, released in 0.19.0.
-3.3 (a lock that pins commits) holds and is built (#343 to #345, #347): 46 of the 52 merges chapter 1 left to a person finish with the shipped driver. 3.2 (isolation
-per plugin) and 3.5 (simpler rules) measured, not built.
+3.3 (a lock that pins commits) holds and is built (#343 to #345, #347): 46 of the 52 merges chapter 1 left to a person finish with the shipped driver. 3.2 (isolation per plugin) holds on the plugin side after a five-site
+follow-up, build decision open; 3.5 (simpler rules) measured, not built.
 
 ### Rules for generation 3
 
@@ -954,6 +954,30 @@ prefixed the site's transitive dependencies, leaving direct ones such as
 measure it on the Composer-managed sites to hand (projects A, B, C): how
 many install a library that an active plugin also bundles at another
 version. Nothing in the WordPress.org sample can show that.
+
+**Follow-up, 2026-09-30: holds on the plugin side.**
+`bench/results/g3-isolation-sites.md`, from `bench/g3-isolation/sites.py`
+over five Composer-managed WordPress sites to hand (A to E; Altis and
+Bedrock layouts; 226 plugin directories, 49 with a bundled dependency
+tree). Three of the five carry a library at one version in the site's
+lock and at another, unprefixed, inside a plugin the site installs
+through Composer: on A `wp-migrate-db` from wpackagist bundles
+`vlucas/phpdotenv` 4 against the site's 5; on B a wpackagist plugin
+bundles `wordpress/mcp-adapter` 0.3 against 0.5; on D a plugin
+installed through Composer bundles `aws/aws-sdk-php` and the Guzzle
+stack at versions different from the site's, the pairing behind the
+three earlier incidents. In every case the plugin is one viv writes, so
+viv can prefix its bundled tree at install. The solver-level count (34
+constraint changes in `composer.json` history) is inconclusive: nearly
+all are framework version pins, not a library clash dodged.
+
+Build, if taken: an `extra.viv.isolate` list of plugin names; after
+linking, viv rewrites that plugin's bundled `vendor/` under a prefix
+derived from the plugin slug and records the prefix in the lock. The
+rewriting is php-scoper's job, run on the project's pinned PHP through
+`viv x humbug/php-scoper`, so candidate 3.1 pays for this one; a
+prefixer in Rust would be a PHP parser and is not proposed. The build
+decision is the maintainer's.
 
 ### Candidate 3.3: a lock that pins commits and merges by record
 
