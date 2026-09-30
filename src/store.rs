@@ -756,6 +756,22 @@ pub fn commit_meta_path(cache_root: &Path, reference: &str) -> Result<PathBuf> {
         .join("composer.json"))
 }
 
+/// #348's sibling to [`commit_meta_path`]: `commit-meta-v0/<reference>/missing`,
+/// the upstream error text from the one fetch that found `reference` gone
+/// (`fatal: couldn't find remote ref ...`) — its mere presence is a store
+/// hit for `source::fetch_commit_composer_json`, so a commit that is gone
+/// upstream is reported from the cache on every later run instead of
+/// fetched again. Pruned the same way as the bucket's `composer.json`
+/// entries: `prune` never walks inside `COMMIT_META_BUCKET`, only removes
+/// the bucket whole if it goes stale.
+pub fn commit_meta_missing_path(cache_root: &Path, reference: &str) -> Result<PathBuf> {
+    sanitise_path_component("commit reference", reference)?;
+    Ok(cache_root
+        .join(COMMIT_META_BUCKET)
+        .join(reference)
+        .join("missing"))
+}
+
 /// Write `manifest` into `marker` via a temp file in the same directory, then
 /// rename it into place, so a reader never observes a partially written
 /// marker.

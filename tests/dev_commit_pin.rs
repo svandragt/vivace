@@ -18,7 +18,7 @@ use reqwest::Url;
 use vivace::fetch::Conditional;
 use vivace::repository::{Repository, Transport};
 use vivace::solver;
-use vivace::store::commit_meta_path;
+use vivace::store::{commit_meta_missing_path, commit_meta_path};
 
 /// Same fixed identity/no-signing `git` helper as `tests/root_version.rs`'s
 /// own `git`, so a commit here works the same on a CI runner with no GPG
@@ -321,5 +321,170 @@ async fn offline_with_no_store_hit_names_the_package_and_commit() {
     assert!(
         message.contains(&branch.old_sha),
         "must name the pinned commit: {message}"
+    );
+}
+
+/// #348: a pinned commit gone upstream must not abort the whole
+/// `pin_dev_commits` pass — `acme/other`, pinned at a real commit in the
+/// same lock, must still be fetched and stored even though `acme/branchy`'s
+/// own pin (a commit that never existed) fails; a second run must fail the
+/// same way without a second fetch attempt, proven by deleting
+/// `acme/branchy`'s git source outright before it runs.
+#[tokio::test]
+async fn a_pinned_commit_missing_upstream_is_cached_and_does_not_block_other_pins() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let registry = tempfile::tempdir().unwrap();
+    let branchy_git_dir = tempfile::tempdir().unwrap();
+    let other_git_dir = tempfile::tempdir().unwrap();
+
+    let branchy = build_branch_repo(branchy_git_dir.path());
+    let other = build_branch_repo(other_git_dir.path());
+    // `acme/branchy`'s own registry fixture, unmodified.
+    write_registry(registry.path(), &branchy);
+    // A second package, same shape, its own provider file: the registry
+    // only ever describes `new_sha`, same gap `write_registry` relies on.
+    let provider_b = serde_json::json!({
+        "packages": {
+            "acme/other": [{
+                "name": "acme/other",
+                "version": "dev-main",
+                "version_normalized": "dev-main",
+                "require": {"acme/ghost-package": "^1.0"},
+                "source": {
+                    "type": "git",
+                    "url": other.dir.to_string_lossy(),
+                    "reference": other.new_sha,
+                },
+                "dist": {
+                    "type": "zip",
+                    "url": "https://example.test/acme/other.zip",
+                    "reference": other.new_sha,
+                    "shasum": "",
+                },
+            }],
+        },
+    });
+    fs_err::write(
+        registry.path().join("p2/acme/other.json"),
+        serde_json::to_vec(&provider_b).unwrap(),
+    )
+    .unwrap();
+
+    // 40 hex chars, guaranteed to name no commit in `branchy.dir`.
+    let missing_sha = "f".repeat(40);
+
+    let mut locked = locked_by_name(&branchy);
+    locked
+        .get_mut("acme/branchy")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "source".to_string(),
+            serde_json::json!({
+                "type": "git",
+                "url": branchy.dir.to_string_lossy(),
+                "reference": missing_sha,
+            }),
+        );
+    locked.insert(
+        "acme/other".to_string(),
+        serde_json::json!({
+            "name": "acme/other",
+            "version": "dev-main",
+            "source": {
+                "type": "git",
+                "url": other.dir.to_string_lossy(),
+                "reference": other.old_sha,
+            },
+        }),
+    );
+
+    let mut preferred_names = preferred(&branchy);
+    preferred_names.insert(
+        "acme/other".to_string(),
+        vivace::semver::normalize("dev-main").unwrap(),
+    );
+
+    let root = serde_json::json!({
+        "name": "vivace/fixture-dev-commit-pin-multi",
+        "require": {"acme/branchy": "dev-main", "acme/other": "dev-main"},
+    });
+
+    let run = || {
+        let transport = RegistryTransport {
+            root: registry.path().to_path_buf(),
+            offline: false,
+        };
+        let root = root.clone();
+        let locked = locked.clone();
+        let preferred_names = preferred_names.clone();
+        let cache_path = cache.path().to_path_buf();
+        let project_path = project.path().to_path_buf();
+        async move {
+            let repo = Repository::load("https://registry.example.test", &cache_path, &transport)
+                .await
+                .unwrap();
+            let seed: Vec<String> = locked.keys().cloned().collect();
+            solver::solve_update_seeded(
+                &repo,
+                &root,
+                &project_path,
+                false,
+                false,
+                &seed,
+                preferred_names,
+                &locked,
+                None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
+                Some(&cache_path),
+                &vivace::autoload::platform::IgnorePlatform::None,
+            )
+            .await
+        }
+    };
+
+    let Err(err) = run().await else {
+        panic!("a solve with a pinned commit missing upstream must fail")
+    };
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("acme/branchy"),
+        "must name the package: {message}"
+    );
+    assert!(
+        message.contains(&missing_sha[..7]),
+        "must name the pinned commit: {message}"
+    );
+    assert!(
+        message.contains(&branchy.dir.to_string_lossy().to_string()),
+        "must name the source url: {message}"
+    );
+
+    let missing_path = commit_meta_missing_path(cache.path(), &missing_sha).unwrap();
+    assert!(
+        missing_path.is_file(),
+        "the missing commit must be recorded: {}",
+        missing_path.display()
+    );
+    let other_cache_path = commit_meta_path(cache.path(), &other.old_sha).unwrap();
+    assert!(
+        other_cache_path.is_file(),
+        "acme/other's own pinned commit must still be stored on this same pass: {}",
+        other_cache_path.display()
+    );
+
+    // acme/branchy's git source is gone outright, so a second live fetch
+    // attempt could only fail differently (or not find anything to blame on
+    // this url at all) — getting back the exact same message proves this
+    // came from the missing-commit cache, not another git fetch.
+    std::fs::remove_dir_all(&branchy_git_dir).unwrap();
+    let Err(err_again) = run().await else {
+        panic!("a second run must still fail the same way")
+    };
+    assert_eq!(
+        format!("{err_again:#}"),
+        message,
+        "second run must reuse the cached error, not attempt another fetch"
     );
 }
