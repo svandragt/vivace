@@ -55,7 +55,7 @@ you're not sure it does.
 
 If `vendor/` was written by Composer, viv adopts it automatically on the next
 `viv install` — no flag needed. To force viv to re-relink a `vendor/` it
-already wrote itself, run `viv install --adopt`. The [Compare](../compare.html)
+already wrote itself, run `viv install --adopt`. The [Speed](speed.html)
 page shows viv's compatibility sweep results against real Composer output.
 
 To file an issue, include a `viv diagnose` report:

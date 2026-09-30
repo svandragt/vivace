@@ -23,4 +23,4 @@ viv stays in the 0.x series; no 1.0 is planned. A minor release may add commands
 
 ## If the maintainer stops
 
-viv is GPL-3.0-or-later: the source, the test corpus and the compatibility sweep are all in the repository, so anyone can build, fix and release it. [vivacity](../compare.html) is an independent implementation checked against the same Composer, so the approach does not rest on one codebase or one maintainer.
+viv is GPL-3.0-or-later: the source, the test corpus and the compatibility sweep are all in the repository, so anyone can build, fix and release it. [vivacity](../guides/speed.html) is an independent implementation checked against the same Composer, so the approach does not rest on one codebase or one maintainer.

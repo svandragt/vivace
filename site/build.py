@@ -32,11 +32,10 @@ GITHUB_BLOB = "https://github.com/svandragt/vivace/blob/main/"
 
 GITHUB_URL = "https://github.com/svandragt/vivace"
 
-# The sidebar's first group, above the section list (#site-vertical-nav):
+# The header's small nav next to the wordmark, left of the search box:
 # label, href, whether it's external (adds rel="external", no site page to
 # check a link against).
-TOP_NAV = [
-    ("Compare", "/compare.html", False),
+HEADER_NAV = [
     ("News", "/news.html", False),
     ("GitHub", GITHUB_URL, True),
 ]
@@ -59,6 +58,7 @@ REDIRECTS = {
     "reference.html": "/reference/",
     "troubleshooting.html": "/guides/troubleshooting.html",
     "support.html": "/getting-started/support.html",
+    "compare.html": "/guides/speed.html",
 }
 
 SHELL = """<!doctype html>
@@ -73,6 +73,7 @@ SHELL = """<!doctype html>
 <a class="skip-link" href="#main-content">Skip to content</a>
 <header class="site-header">
 <a class="site-title" href="/">viv</a>
+{header_nav}
 <input type="search" id="site-search" placeholder="Search" aria-label="Search the manual" autocomplete="off">
 </header>
 <div id="search-results" hidden></div>
@@ -101,16 +102,16 @@ REDIRECT_SHELL = """<!doctype html>
 """
 
 
-def render_top_nav(current_url):
-    """The sidebar's first group: Compare, News, GitHub, above the section
-    list. Current-page highlighting works the same as a section link."""
+def render_header_nav(current_url):
+    """The header's small nav next to the wordmark: News, GitHub. Current-page
+    highlighting works the same as a sidebar link."""
     links = []
-    for label, href, external in TOP_NAV:
+    for label, href, external in HEADER_NAV:
         attrs = ' rel="external"' if external else ""
         if href == current_url:
             attrs += ' class="current" aria-current="page"'
         links.append(f'<a href="{href}"{attrs}>{label}</a>')
-    return '<div class="sidebar-top">\n' + "\n".join(links) + "\n</div>"
+    return '<nav class="site-nav" aria-label="Site">\n' + "\n".join(links) + "\n</nav>"
 
 
 def load_nav():
@@ -183,23 +184,40 @@ def page_dist_path(page):
     return d / "index.html" if page["slug"] == "index" else d / f"{page['slug']}.html"
 
 
-def section_sequence(pages_by_section, slug):
+def natural_sort_key(text):
+    """Case-insensitive natural sort key: splits into text/number chunks so
+    e.g. "step2" sorts before "step10"."""
+    return [int(chunk) if chunk.isdigit() else chunk.lower() for chunk in re.split(r"(\d+)", text)]
+
+
+def alpha_sort_key(title):
+    """Sort key for a section's own pages in `sort = "alpha"` order
+    (site/nav.toml): natural and case-insensitive, with a leading "viv <cmd>"
+    stripped first so reference pages titled "viv <cmd>" sort by <cmd>."""
+    return natural_sort_key(re.sub(r"^viv\s+", "", title, flags=re.IGNORECASE))
+
+
+def section_sequence(pages_by_section, slug, sort_mode):
     """A section's pages in prev/next and sidebar order: its index first,
-    then the rest by `order`, then slug."""
+    then the rest either by front-matter `order` (then slug), or by title
+    when sort_mode is "alpha" (site/nav.toml's per-section `sort`)."""
     pages = pages_by_section[slug]
-    rest = sorted((p for p in pages if p["slug"] != "index"), key=lambda p: (p["order"], p["slug"]))
+    rest = [p for p in pages if p["slug"] != "index"]
+    if sort_mode == "alpha":
+        rest.sort(key=lambda p: alpha_sort_key(p["title"]))
+    else:
+        rest.sort(key=lambda p: (p["order"], p["slug"]))
     index_pages = [p for p in pages if p["slug"] == "index"]
     return index_pages + rest
 
 
-def render_sidebar(sections, pages_by_section, current_section, current_slug, current_url):
-    """The left nav tree: the top group (render_top_nav) above one
-    collapsible group per section (a <details>, open when it's the current
-    section) so expand/collapse needs no JS at all and the whole thing is
-    already a plain nested list without it."""
-    groups = [render_top_nav(current_url)]
+def render_sidebar(sections, pages_by_section, current_section, current_slug):
+    """The left nav tree: one collapsible group per section (a <details>,
+    open when it's the current section) so expand/collapse needs no JS at
+    all and the whole thing is already a plain nested list without it."""
+    groups = []
     for sec in sections:
-        seq = section_sequence(pages_by_section, sec["slug"])
+        seq = section_sequence(pages_by_section, sec["slug"], sec["sort"])
         is_current_section = sec["slug"] == current_section
         links = []
         for p in seq:
@@ -898,7 +916,7 @@ def changelog_releases():
 
 PAGE_PLACEHOLDERS = {
     "index": index_placeholders,
-    "compare": compare_placeholders,
+    "guides/speed": compare_placeholders,
     "news": news_placeholders,
     "guides/migrate": migrate_placeholders,
 }
@@ -954,8 +972,8 @@ def index_sections(url, title, content_html):
 def render_doc_page(page, sections, pages_by_section, sections_by_slug, search_index,
                      sidebar_current=None):
     """A page inside the sidebar/breadcrumb/TOC layout: every section page,
-    the generated framework and release pages, and the top-level compare.md,
-    news.md and index.md. sidebar_current overrides which section/slug the
+    the generated framework and release pages, and the top-level news.md and
+    index.md. sidebar_current overrides which section/slug the
     sidebar marks current, for the homepage (index.md) which reuses the
     getting-started section's content but isn't part of any section's own
     page sequence. Returns the rendered HTML; the caller decides where it
@@ -968,7 +986,7 @@ def render_doc_page(page, sections, pages_by_section, sections_by_slug, search_i
 
     prev_page = next_page = None
     if page["section"] and page["in_sequence"]:
-        seq = section_sequence(pages_by_section, page["section"])
+        seq = section_sequence(pages_by_section, page["section"], sections_by_slug[page["section"]]["sort"])
         idx = next(i for i, p in enumerate(seq) if p["slug"] == page["slug"])
         prev_page = seq[idx - 1] if idx > 0 else None
         next_page = seq[idx + 1] if idx + 1 < len(seq) else None
@@ -979,7 +997,7 @@ def render_doc_page(page, sections, pages_by_section, sections_by_slug, search_i
         '<button type="button" id="sidebar-toggle" class="sidebar-toggle" '
         'aria-expanded="false" aria-controls="sidebar">Menu</button>\n'
         f'<nav class="sidebar" id="sidebar" aria-label="Sections">\n'
-        f'{render_sidebar(sections, pages_by_section, current_section, current_slug, page["url"])}\n'
+        f'{render_sidebar(sections, pages_by_section, current_section, current_slug)}\n'
         "</nav>\n"
         '<div class="content">\n'
         f'{render_breadcrumbs(sections_by_slug, page)}\n'
@@ -991,7 +1009,7 @@ def render_doc_page(page, sections, pages_by_section, sections_by_slug, search_i
         f'<aside class="page-toc" aria-label="On this page">\n{render_toc(content_html)}\n</aside>\n'
         "</div>"
     )
-    return SHELL.format(title=title_tag, layout=layout)
+    return SHELL.format(title=title_tag, layout=layout, header_nav=render_header_nav(page["url"]))
 
 
 def main():
@@ -1041,7 +1059,7 @@ def main():
     }
 
     for slug in pages_by_section:
-        for page in section_sequence(pages_by_section, slug):
+        for page in section_sequence(pages_by_section, slug, sections_by_slug[slug]["sort"]):
             html = render_doc_page(page, sections, pages_by_section, sections_by_slug, search_index)
             page_dist_path(page).write_text(html)
     for page in framework_pages:
@@ -1052,8 +1070,8 @@ def main():
     # reuses the getting-started section's content as the docs entry point
     # (#site-vertical-nav) -- sidebar_current marks that section's own entry
     # current there too, since index_page.url overrides its own /index.html
-    # to / and isn't reachable through section_sequence. compare.md and
-    # news.md get the same doc layout, minus a section.
+    # to / and isn't reachable through section_sequence. news.md gets the
+    # same doc layout, minus a section.
     _, index_body = parse_front_matter((SITE / "pages/index.md").read_text())
     index_page = make_page(None, "index", "viv", 0, "", index_body,
                             src_rel="site/pages/getting-started/index.md")
@@ -1066,12 +1084,6 @@ def main():
     news_page = make_page(None, "news", "News", 999, "", news_body, src_rel="site/pages/news.md")
     news_html = render_doc_page(news_page, sections, pages_by_section, sections_by_slug, search_index)
     page_dist_path(news_page).write_text(news_html)
-
-    compare_meta, compare_body = parse_front_matter((SITE / "pages/compare.md").read_text())
-    compare_page = make_page(None, "compare", "Compare", 999, "", compare_body,
-                              src_rel="site/pages/compare.md")
-    compare_html = render_doc_page(compare_page, sections, pages_by_section, sections_by_slug, search_index)
-    page_dist_path(compare_page).write_text(compare_html)
 
     for old_name, url in REDIRECTS.items():
         (DIST / old_name).write_text(REDIRECT_SHELL.format(url=url))

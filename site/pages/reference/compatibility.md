@@ -94,7 +94,7 @@ own. Per-release results live in
 [`compat/results/`](https://github.com/svandragt/vivace/blob/main/compat/results);
 ongoing sweeps of public projects outside that pinned set are tracked in
 [`compat/hunted.md`](https://github.com/svandragt/vivace/blob/main/compat/hunted.md).
-The [Compare](/compare.html) page turns the newest numbers into a table.
+The [Speed](/guides/speed.html) page turns the newest numbers into a table.
 
 For the curious, here's exactly what a plain install writes, and how a path
 renders inside it — the detail the sweep checks byte for byte.
