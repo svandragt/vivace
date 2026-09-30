@@ -1,3 +1,8 @@
+---
+title: Migrating from Composer
+order: 2
+summary: The shim, Dockerfiles and CI flags for moving a whole project over.
+---
 # Migrating from Composer
 
 The migration story already lives in the README; this page pulls the three

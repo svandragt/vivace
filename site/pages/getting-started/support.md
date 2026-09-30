@@ -1,3 +1,8 @@
+---
+title: Support
+order: 3
+summary: Where to report a bug, a compatibility gap, or a security problem.
+---
 # Support
 
 ## Where to report what
@@ -9,7 +14,7 @@
 
 ## How long to expect
 
-One person maintains viv. Expect an acknowledgement within a week. Bugs that make viv write something Composer would not write come first; see [Compatibility and scope](compatibility.html) for what viv promises to match.
+One person maintains viv. Expect an acknowledgement within a week. Bugs that make viv write something Composer would not write come first; see [Compatibility and scope](/reference/compatibility.html) for what viv promises to match.
 
 ## What holds across releases
 
@@ -17,4 +22,4 @@ viv stays in the 0.x series; no 1.0 is planned. A minor release may add commands
 
 ## If the maintainer stops
 
-viv is GPL-3.0-or-later: the source, the test corpus and the compatibility sweep are all in the repository, so anyone can build, fix and release it. [vivacity](compare.html) is an independent implementation checked against the same Composer, so the approach does not rest on one codebase or one maintainer.
+viv is GPL-3.0-or-later: the source, the test corpus and the compatibility sweep are all in the repository, so anyone can build, fix and release it. [vivacity](/compare.html) is an independent implementation checked against the same Composer, so the approach does not rest on one codebase or one maintainer.

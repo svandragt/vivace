@@ -1,0 +1,27 @@
+# Left sidebar sections, in this order. Each needs a matching
+# site/pages/<slug>/index.md as its landing page.
+
+[[section]]
+title = "Getting started"
+slug = "getting-started"
+order = 1
+
+[[section]]
+title = "Guides"
+slug = "guides"
+order = 2
+
+[[section]]
+title = "Reference"
+slug = "reference"
+order = 3
+
+[[section]]
+title = "Architecture"
+slug = "architecture"
+order = 4
+
+[[section]]
+title = "Releases"
+slug = "releases"
+order = 5
