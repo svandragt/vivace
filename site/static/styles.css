@@ -118,8 +118,6 @@ pre code { padding: 0; background: none; }
 
 .site-title { font-family: var(--font-mono); font-weight: 500; }
 
-.site-header nav { display: flex; flex-wrap: wrap; gap: 1rem; font-size: 0.9375rem; }
-
 #site-search {
     margin-left: auto;
     padding: 0.3em 0.6em;
@@ -176,6 +174,7 @@ main {
 .content { grid-area: content; min-width: 0; }
 .page-toc { grid-area: toc; font-size: 0.875rem; }
 
+.sidebar-top { margin-bottom: 1rem; }
 .sidebar details { margin-bottom: 1rem; }
 .sidebar summary {
     font-weight: 600;

@@ -18,7 +18,7 @@ described in this section is finished and frozen as a control.
 
 ## In five minutes
 
-1. **Install viv.** See [Install and upgrade](install.html) for the exact
+1. **Install viv.** See [Install and upgrade](/getting-started/install.html) for the exact
    command for your platform.
 2. **Run `viv install` in a project** that already has a `composer.json`
    and `composer.lock`.
@@ -45,7 +45,7 @@ needed: it relinks every installed package from its own store in place, so
 the result matches what a fresh viv install would have written.
 
 Only one path asks first: running `composer install` through the [`composer`
-shim](shim.html) on a terminal prompts before it touches a Composer-written
+shim](/getting-started/shim.html) on a terminal prompts before it touches a Composer-written
 `vendor/`, since typing `composer install` didn't opt into viv rewriting
 your tree —
 
@@ -142,16 +142,16 @@ below.
 
 ## In this section
 
-- [Install and upgrade](install.html) — binstall, Homebrew, `cargo install`, the `.deb` and the tarball.
-- [Using viv as composer](shim.html) — the `composer` shim, for scripts that call Composer by name.
-- [In a Dockerfile](docker.html) — the published image, in place of `composer:2`.
-- [In CI](ci.html) — the GitHub Action, caching the store, and a bare runner with no PHP.
-- [Support](support.html) — where to report a bug, and what holds across releases.
+- [Install and upgrade](/getting-started/install.html) — binstall, Homebrew, `cargo install`, the `.deb` and the tarball.
+- [Using viv as composer](/getting-started/shim.html) — the `composer` shim, for scripts that call Composer by name.
+- [In a Dockerfile](/getting-started/docker.html) — the published image, in place of `composer:2`.
+- [In CI](/getting-started/ci.html) — the GitHub Action, caching the store, and a bare runner with no PHP.
+- [Support](/getting-started/support.html) — where to report a bug, and what holds across releases.
 
 ## What to read next
 
-- [Guides](../guides/index.html) — everyday commands, migrating a project, and the rest of what viv does beyond installing.
-- [Architecture](../architecture/index.html) — what viv's byte-identical promise covers, and how it's built.
+- [Guides](/guides/) — everyday commands, migrating a project, and the rest of what viv does beyond installing.
+- [Architecture](/architecture/) — what viv's byte-identical promise covers, and how it's built.
 
 [^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
 [^20]: The v0.18.0 sweep had one lock differ, [#316](https://github.com/svandragt/vivace/issues/316): craftcms/craft's requirements are satisfied by `yii2-shell` `2.0.6` and by `dev-master`, and the two solvers search in a different order, so the security-advisories feed, by changing which versions of other packages are available, decides whether Composer's search ends on `dev-master`. The v0.19.0 sweep resolved the same lock on all 10; the issue stays open because the feed can flip it again.
