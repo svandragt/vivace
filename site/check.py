@@ -74,6 +74,22 @@ def check_redirects():
     return problems
 
 
+def check_css():
+    """Fluid type/space tokens are defined, and main's max-width cap
+    (which used to fight the grid column for width) is gone."""
+    problems = []
+    css = (DIST / "styles.css").read_text()
+    for token in ("--step-0", "--space-m", "--measure"):
+        if token not in css:
+            problems.append(f"styles.css: missing {token}")
+    match = re.search(r"(?m)^main\s*\{([^}]*)\}", css)
+    if not match:
+        problems.append("styles.css: no `main {}` rule found")
+    elif "max-width" in match.group(1):
+        problems.append("styles.css: `main {}` still sets max-width")
+    return problems
+
+
 def check_footnotes():
     """A literal [^n] in the HTML means the markdown "footnotes" extension
     was not applied to that page."""
@@ -89,7 +105,7 @@ def main():
         raise SystemExit("site/check.py: run site/build.py first")
     problems = (
         check_links() + check_titles() + check_section_indexes() + check_redirects()
-        + check_footnotes()
+        + check_footnotes() + check_css()
     )
     if problems:
         for p in problems:

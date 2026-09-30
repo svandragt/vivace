@@ -45,8 +45,27 @@
 
     --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
     --font-body: "Public Sans", "Source Sans 3", system-ui, sans-serif;
-    --leading: 1.3;
-    --measure: 75ch;
+    --leading: 1.5;
+    --measure: clamp(60ch, 55ch + 12vw, 85ch);
+
+    /* Fluid type/space scale, https://utopia.fyi, viewport 360px-1600px. */
+    --step--1: clamp(0.8333rem, 0.8139rem + 0.0860vw, 0.9rem);
+    --step-0:  clamp(1rem, 0.9637rem + 0.1613vw, 1.125rem);
+    --step-1:  clamp(1.2rem, 1.1401rem + 0.2661vw, 1.4063rem);
+    --step-2:  clamp(1.44rem, 1.3477rem + 0.4100vw, 1.7578rem);
+    --step-3:  clamp(1.728rem, 1.5917rem + 0.6056vw, 2.1973rem);
+
+    --space-3xs: clamp(0.25rem, 0.2409rem + 0.0403vw, 0.2813rem);
+    --space-2xs: clamp(0.5rem, 0.4819rem + 0.0806vw, 0.5625rem);
+    --space-xs:  clamp(0.75rem, 0.7228rem + 0.1210vw, 0.8438rem);
+    --space-s:   clamp(1rem, 0.9637rem + 0.1613vw, 1.125rem);
+    --space-m:   clamp(1.5rem, 1.4456rem + 0.2419vw, 1.6875rem);
+    --space-l:   clamp(2rem, 1.9274rem + 0.3226vw, 2.25rem);
+    --space-xl:  clamp(3rem, 2.8911rem + 0.4839vw, 3.375rem);
+    --space-2xl: clamp(4rem, 3.8548rem + 0.6452vw, 4.5rem);
+    --space-s-m:  clamp(1rem, 0.8004rem + 0.8871vw, 1.6875rem);
+    --space-m-l:  clamp(1.5rem, 1.2823rem + 0.9677vw, 2.25rem);
+    --space-l-xl: clamp(2rem, 1.6008rem + 1.7742vw, 3.375rem);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -66,7 +85,7 @@
 html, body { margin: 0; padding: 0; }
 
 body {
-    font: 400 1.0625rem/var(--leading) var(--font-body);
+    font: 400 var(--step-0)/var(--leading) var(--font-body);
     color: var(--ink);
     background: var(--paper);
     -webkit-font-smoothing: antialiased;
@@ -91,26 +110,30 @@ a:hover, a:focus-visible { color: var(--accent-hover); }
 h1, h2, h3 {
     font-family: var(--font-mono);
     font-weight: 500;
-    line-height: 1.2;
+    line-height: 1.15;
     letter-spacing: -0.01em;
 }
+h1 { font-size: var(--step-3); }
+h2 { font-size: var(--step-2); }
+h3 { font-size: var(--step-1); }
 
 code, pre {
     font-family: var(--font-mono);
+    font-size: 0.9em;
     background: var(--paper-raised);
     border-radius: 3px;
 }
 
 code { padding: 0.15em 0.35em; }
-pre { padding: 1rem; overflow-x: auto; }
-pre code { padding: 0; background: none; }
+pre { padding: var(--space-s); overflow-x: auto; }
+pre code { padding: 0; background: none; font-size: 1em; }
 
 .site-header {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: 1rem 1.5rem;
-    padding: 1.5rem;
+    gap: var(--space-s) var(--space-m);
+    padding: var(--space-m);
     border-bottom: 1px solid var(--rule);
 }
 
@@ -118,13 +141,13 @@ pre code { padding: 0; background: none; }
 
 .site-title { font-family: var(--font-mono); font-weight: 500; }
 
-.site-nav { display: flex; gap: 1rem; }
+.site-nav { display: flex; gap: var(--space-s); }
 .site-nav a.current { color: var(--ink); font-weight: 600; }
 
 #site-search {
     margin-left: auto;
     padding: 0.3em 0.6em;
-    font: 0.9375rem var(--font-body);
+    font: var(--step--1) var(--font-body);
     color: var(--ink);
     background: var(--paper-raised);
     border: 1px solid var(--rule);
@@ -134,7 +157,7 @@ pre code { padding: 0; background: none; }
 #search-results {
     max-width: var(--measure);
     margin: 0 auto;
-    padding: 0 1.5rem;
+    padding: 0 var(--space-m);
     background: var(--paper);
 }
 
@@ -147,16 +170,29 @@ pre code { padding: 0; background: none; }
 
 #search-results a span {
     font-family: var(--font-mono);
-    font-size: 0.8125rem;
+    font-size: var(--step--1);
     color: var(--ink-soft);
 }
 
-#search-results a p { margin: 0.2em 0 0; color: var(--ink-soft); font-size: 0.9375rem; }
+#search-results a p { margin: 0.2em 0 0; color: var(--ink-soft); font-size: var(--step--1); }
 
 main {
-    max-width: var(--measure);
     margin: 0 auto;
-    padding: 2rem 1.5rem 4rem;
+    padding: var(--space-l) var(--space-m) var(--space-2xl);
+}
+
+/* Prose elements are capped to a readable measure; wide content (code,
+   tables, images) fills the column instead and scrolls horizontally. */
+.content p,
+.content ul,
+.content ol,
+.content blockquote,
+.content h1,
+.content h2,
+.content h3,
+.content h4,
+.content .footnote {
+    max-width: var(--measure);
 }
 
 /* Three columns at >=1100px: sidebar, content, "On this page". Below that
@@ -164,19 +200,20 @@ main {
    everything stacks and the sidebar collapses behind #sidebar-toggle. */
 .layout {
     display: grid;
-    grid-template-columns: 260px minmax(0, 1fr) 220px;
+    grid-template-columns: 16rem minmax(0, 1fr) 14rem;
     grid-template-areas: "sidebar content toc";
-    gap: 2.5rem;
+    gap: var(--space-l-xl);
     margin: 0 auto;
-    padding: 2rem 1.5rem 4rem;
+    padding-inline: var(--space-m);
+    padding-block: var(--space-l);
 }
 
 .sidebar-toggle { display: none; }
-.sidebar { grid-area: sidebar; font-size: 0.9375rem; }
+.sidebar { grid-area: sidebar; font-size: var(--step--1); }
 .content { grid-area: content; min-width: 0; }
-.page-toc { grid-area: toc; font-size: 0.875rem; }
+.page-toc { grid-area: toc; font-size: var(--step--1); }
 
-.sidebar details { margin-bottom: 1rem; }
+.sidebar details { margin-bottom: var(--space-s-m); }
 .sidebar summary {
     font-weight: 600;
     cursor: pointer;
@@ -184,7 +221,7 @@ main {
 }
 .sidebar a {
     display: block;
-    padding: 0.2em 0 0.2em 0.75rem;
+    padding: 0.2em 0 0.2em var(--space-xs);
     text-decoration: none;
     color: var(--ink-soft);
 }
@@ -192,42 +229,42 @@ main {
 .sidebar a.current { color: var(--ink); font-weight: 600; }
 
 .page-toc ul { list-style: none; margin: 0; padding: 0; }
-.page-toc ul ul { padding-left: 1rem; }
+.page-toc ul ul { padding-left: var(--space-s); }
 .page-toc a { text-decoration: none; color: var(--ink-soft); }
 .toc-title { font-weight: 600; margin: 0 0 0.5em; }
 
-.breadcrumbs ol { list-style: none; display: flex; flex-wrap: wrap; gap: 0.4em; margin: 0 0 1.5rem; padding: 0; }
+.breadcrumbs ol { list-style: none; display: flex; flex-wrap: wrap; gap: 0.4em; margin: 0 0 var(--space-s-m); padding: 0; }
 .breadcrumbs li + li::before { content: "/"; margin-right: 0.4em; color: var(--ink-soft); }
 .breadcrumbs a { text-decoration: none; }
 
 .prev-next {
     display: flex;
     justify-content: space-between;
-    gap: 1rem;
-    margin-top: 3rem;
-    padding-top: 1rem;
+    gap: var(--space-s);
+    margin-top: var(--space-l-xl);
+    padding-top: var(--space-s);
     border-top: 1px solid var(--rule);
 }
 .prev-next a { text-decoration: none; }
 .prev-next .next { margin-left: auto; text-align: right; }
 
-.edit-link { font-size: 0.875rem; }
+.edit-link { font-size: var(--step--1); }
 .edit-link a { color: var(--ink-soft); }
 
-@media (max-width: 1100px) {
+@media (max-width: 68.75em) {
     .layout {
-        grid-template-columns: 260px minmax(0, 760px);
+        grid-template-columns: 16rem minmax(0, 760px);
         grid-template-areas:
             "sidebar toc"
             "sidebar content";
     }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 47.5em) {
     .layout {
         grid-template-columns: 1fr;
         grid-template-areas: "toc" "toggle" "sidebar" "content";
-        gap: 1rem;
+        gap: var(--space-s);
     }
     /* No JS: the sidebar is a plain, always-visible list, same as any other
        width. sidebar-collapsible only exists once nav.js has run. */
@@ -243,15 +280,15 @@ th, td { text-align: left; padding: 0.4em 0.8em 0.4em 0; border-bottom: 1px soli
 
 .source {
     font-family: var(--font-mono);
-    font-size: 0.8125rem;
+    font-size: var(--step--1);
     color: var(--ink-soft);
 }
 
 .site-footer {
     text-align: center;
-    padding: 2rem 1.5rem;
+    padding: var(--space-l) var(--space-m);
     color: var(--ink-soft);
-    font-size: 0.875rem;
+    font-size: var(--step--1);
 }
 
 code, pre {
@@ -260,6 +297,6 @@ code, pre {
 
 /* Footnotes (markdown "footnotes" extension): the README's numbered notes,
    carried into the pages that inlined its sections. */
-.footnote { font-size: 0.875rem; margin-top: 3rem; border-top: 1px solid var(--rule, #ddd); padding-top: 1rem; }
+.footnote { font-size: var(--step--1); margin-top: var(--space-l-xl); border-top: 1px solid var(--rule, #ddd); padding-top: var(--space-s); }
 .footnote hr { display: none; }
 .footnote-ref { text-decoration: none; }
