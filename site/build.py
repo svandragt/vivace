@@ -299,7 +299,7 @@ def viv_help(cmd):
     """`$VIV <cmd> --help` output, ready to drop into a fenced code block. An
     empty cmd means bare `viv --help`, the global options and command list."""
     binary = find_viv_binary()
-    args = [binary, "--help"] if not cmd else [binary, cmd, "--help"]
+    args = [binary, "--help"] if not cmd else [binary, *cmd.split(), "--help"]
     try:
         result = subprocess.run(args, capture_output=True, text=True, check=True)
     except FileNotFoundError:
@@ -616,34 +616,42 @@ def readme_source_line(heading):
     )
 
 
+def site_page_body(rel_path):
+    """A site page's markdown body: front matter and the H1 removed, so the
+    generated framework pages reuse the getting-started text as one source
+    (the README no longer carries it)."""
+    text = (ROOT / "site" / "pages" / rel_path).read_text()
+    _, body = parse_front_matter(text)
+    lines = [l for l in body.split("\n")]
+    if lines and lines[0].startswith("# "):
+        lines = lines[1:]
+    return "\n".join(lines).strip("\n")
+
+
+def site_source_line(rel_path, title):
+    slug = rel_path[: -len(".md")]
+    return f'<span class="source">source: <a href="/{slug}.html">{title}</a></span>'
+
+
 def shim_section():
-    """README's "Using viv as composer" section without its GitHub Actions
-    paragraph, which the CI sections render on their own via ci_snippet()."""
-    return readme_section("Using viv as composer").replace(ci_snippet(), "").rstrip()
+    return site_page_body("getting-started/shim.md")
 
 
 def ci_snippet():
-    """The GitHub Actions paragraph inside README's "Using viv as composer"
-    section -- intro sentence, yaml step and the explanation after it.
-    Shared by the migrate page and every framework page's CI section so the
-    two copies of this text can't drift apart (#265)."""
-    _, body = section_from_file("README.md", "Using viv as composer")
-    match = re.search(r"In GitHub Actions.*?keyed on `composer\.lock`\.", body, re.DOTALL)
-    if not match:
-        raise SystemExit(
-            "site/build.py: CI snippet not found in README's "
-            "'Using viv as composer' section"
-        )
-    return match.group(0)
+    return site_page_body("getting-started/ci.md")
+
+
+def dockerfile_section():
+    return site_page_body("getting-started/docker.md")
 
 
 def migrate_placeholders():
     return {
-        "shim_from_readme": readme_source_line("Using viv as composer"),
+        "shim_from_readme": site_source_line("getting-started/shim.md", "Using viv as composer"),
         "shim_section": shim_section(),
-        "dockerfile_from_readme": readme_source_line("In a Dockerfile"),
-        "dockerfile_section": readme_section("In a Dockerfile"),
-        "ci_from_readme": readme_source_line("Using viv as composer"),
+        "dockerfile_from_readme": site_source_line("getting-started/docker.md", "In a Dockerfile"),
+        "dockerfile_section": dockerfile_section(),
+        "ci_from_readme": site_source_line("getting-started/ci.md", "In CI"),
         "ci_snippet": ci_snippet(),
         "stability_summary": (
             f"{stability_summary()}\n\n"
@@ -799,19 +807,19 @@ Install times for {entry['project']}, the {entry['name']} starter in viv's bench
 
 ## Local
 
-{readme_source_line("Using viv as composer")}
+{site_source_line("getting-started/shim.md", "Using viv as composer")}
 
 {shim_section()}
 
 ## Dockerfile
 
-{readme_source_line("In a Dockerfile")}
+{site_source_line("getting-started/docker.md", "In a Dockerfile")}
 
-{readme_section("In a Dockerfile")}
+{dockerfile_section()}
 
 ## CI
 
-{readme_source_line("Using viv as composer")}
+{site_source_line("getting-started/ci.md", "In CI")}
 
 {ci_snippet()}
 

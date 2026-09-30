@@ -6,7 +6,19 @@ summary: The merge driver, .gitattributes wiring, and dev-* branches pinned by c
 
 # Merging composer.lock without conflicts
 
-{{include:README.md#Merging composer.lock without conflicts}}
+Two branches that each ran `update` conflict in `composer.lock` almost
+every time, because git merges it line by line and the file is one large
+JSON array. viv merges it as a git merge driver, record by record, and
+re-solves only the packages the two branches changed differently. `viv
+init` writes the `.gitattributes` line and `viv install` wires the driver
+into each clone, so after the first install nobody runs anything extra.
+Replayed over 355 real merges from four client projects, `composer.lock`
+conflicted 228 times under git, 51 times with the driver, and 6 times
+once a `dev-*` branch is pinned by commit and the later commit wins; the
+6 are packages or commits that no longer exist anywhere, which viv marks
+and names.[^19] A project can commit `viv.lock` alone and let `viv
+install` generate `composer.lock` from it. The setup is described under
+"Everyday commands".
 
 ## How the driver is wired in
 
@@ -36,3 +48,5 @@ runs once that re-solve has given up.
 For the design behind the record format and the merge floor these numbers
 come from, see [chapter 1](../architecture/research/chapter-1.html) of the
 research programme.
+
+[^19]: The replay and its counts are in [`bench/results/lockmerge.md`](bench/results/lockmerge.md); the design and the remaining cases are chapter 1 of [`docs/research.md`](docs/research.md). Client projects are anonymised.

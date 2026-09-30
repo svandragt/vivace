@@ -1747,3 +1747,15 @@ identical with 8 skipped by Composer itself, 1 of 16 refuses without
 baseline as always, CI's gate green on every push; viv laravel warm
 40 ms, no-op 7 ms. README: the merge paragraph, the commands list and
 the version strings updated; the full read was this morning's.
+
+## 2026-09-30: the docs site becomes the manual
+
+`site/build.py` gained a sidebar tree from `site/nav.toml`, breadcrumbs,
+an "On this page" list, previous/next and an edit link; pages live
+under `site/pages/<section>/` with front matter, and `{{include:}}`
+publishes repo docs (ARCHITECTURE.md, docs/*.md, the research
+programme by chapter) without copying them. Reference has one page per
+command around its live `--help`. README.md went from 517 lines to 83:
+what viv is, install, the four sections, "Is it safe", licence; every
+paragraph it lost now lives on one site page. Old URLs redirect.
+`site/check.py` runs in the site workflow: links, titles, redirects.

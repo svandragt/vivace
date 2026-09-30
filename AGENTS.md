@@ -189,9 +189,12 @@ has a baseline of its own.
    `docs/research.md`, `compat/README.md`, `bench/results/README.md`
    (command list, flags, numbers table, install snippet tag, scope in/out).
    Read `README.md` end to end after the corpus run and the sweep, not
-   before: every claim in "Speed", "Is it safe to try" and "Reasons not to
-   use viv" must match a number in the new table or sweep. A stale speed
-   caveat has shipped in two releases.
+   before, and with it the site pages that now hold the detail:
+   `site/pages/guides/speed.md`, `guides/reasons.md`,
+   `getting-started/index.md` and `reference/compatibility.md`. Every claim
+   there must match a number in the new table or sweep. A stale speed
+   caveat has shipped in two releases. Then `python3 site/build.py &&
+   python3 site/check.py`.
 2. Run the bench gate (`make bench-check`) and update the README numbers
    table.
 3. Run the compat sweep with the lock compare on

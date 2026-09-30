@@ -61,15 +61,84 @@ that package, prints a warning, and adopts the rest.
 
 ### Starting from nothing
 
-{{include:README.md#Starting from nothing}}
+No `composer.json` yet? `viv init` writes one and stops, with no prompts:
+the package name is guessed from `git config user.name` and the directory,
+`type` is `project`, `license` is `MIT`, and `autoload.psr-4` points at
+`src/` when that directory exists. Pass `--name`, `--license` or `--type` to
+override a default, or `--require`/`--require-dev` to add dependencies in
+the same command:
+
+```sh
+mkdir demo && cd demo && viv init --require psr/log
+```
+
+That resolves `psr/log`, writes `composer.lock`, and installs `vendor/`,
+the same as `viv add` would on an existing project (`--no-install` opts
+out). Run it again with `--force` to start over.
+
+`viv init` is for the directory you're already in; `viv new` is for one
+that doesn't exist yet. A bare name creates it and runs `init`'s own
+defaults inside:
+
+```sh
+viv new demo
+```
+
+`vendor/package[:constraint]` downloads that package's dist as a project
+skeleton (constraint defaults to the newest stable version), drops its own
+VCS metadata, and installs it, running the `post-root-package-install`/
+`post-create-project-cmd` scripts a skeleton like Laravel's relies on
+(`--no-scripts` opts out):
+
+```sh
+viv new laravel/laravel:^11 my-app
+```
+
+`create-project` is Composer's own name for this, kept as an alias.
 
 ## Stopping
 
-{{include:README.md#Stopping}}
+You can stop using viv at any point and go back to Composer with no
+clean-up. A `vendor/` that viv wrote is a valid Composer install:
+`installed.json` and the autoload files are the same bytes Composer would
+have written, so `composer install` on it is a no-op and `composer update`
+replaces packages as usual. The only extra file is a small state file in
+`vendor/composer/`, which Composer ignores.
+
+The links from `vendor/` into viv's store are hardlinks, not symlinks: each
+file in `vendor/` is a real file that shares its data with the store copy,
+so deleting the store (`viv cache clean`) leaves `vendor/` complete and
+working. If you would rather reinstall it with Composer anyway:
+
+```sh
+rm -rf vendor && composer install
+```
+
+To remove viv itself:
+
+```sh
+viv cache clean            # deletes viv's store under ~/.cache/vivace
+rm ~/.cargo/bin/viv ~/.cargo/bin/composer   # the binary and the shim
+```
+
+Use `apt remove vivace` if you installed the .deb instead. Nothing else is
+written outside the project and the cache.
 
 ## Is it safe to try
 
-{{include:README.md#Is it safe to try}}
+viv's contract is that its output matches Composer's byte for byte. Before
+every release, a compatibility sweep installs a mix of pinned popular
+projects and a random sample of Packagist packages with both Composer and
+viv, then compares the results.[^2] The v0.20.0 sweep: all 20 install rows of the
+pinned corpus are identical, all 10 pinned projects resolve the same
+lock,[^20] and `viv lock export` reproduces all 10 committed locks byte for
+byte. In the random sample, all 6 rows that Composer could install are
+identical; the other 8 were skipped because Composer itself could not
+resolve the project or its platform check failed.[^3]
+
+One pinned project still needs `--no-plugins`, for a plugin viv refuses by
+design rather than one it has yet to port.[^4] See [Plugins](#plugins)
+below.
 
 ## In this section
 
@@ -83,3 +152,8 @@ that package, prints a warning, and adopts the rest.
 
 - [Guides](../guides/index.html) — everyday commands, migrating a project, and the rest of what viv does beyond installing.
 - [Architecture](../architecture/index.html) — what viv's byte-identical promise covers, and how it's built.
+
+[^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
+[^20]: The v0.18.0 sweep had one lock differ, [#316](https://github.com/svandragt/vivace/issues/316): craftcms/craft's requirements are satisfied by `yii2-shell` `2.0.6` and by `dev-master`, and the two solvers search in a different order, so the security-advisories feed, by changing which versions of other packages are available, decides whether Composer's search ends on `dev-master`. The v0.19.0 sweep resolved the same lock on all 10; the issue stays open because the feed can flip it again.
+[^3]: The skips are packages Composer itself refuses to resolve — security advisories blocking every matching version, a `dev-master`-only package under the default `minimum-stability`, a dependency whose only versions require a framework the root cannot take — or an unmet platform requirement, not something viv got wrong. Full results, including which projects and what was skipped, are in [`compat/results/v0.20.0.md`](compat/results/v0.20.0.md).
+[^4]: Of viv's 10 pinned compatibility projects, the one that needs `--no-plugins` is `symfony/demo`, for `symfony/flex`. Flex does its work in `composer require`, so installing from a committed lock loses nothing; see [`docs/plugin-strategy.md`](docs/plugin-strategy.md).
