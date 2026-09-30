@@ -1,77 +1,13 @@
 ---
 title: Reference
-order: 999
-summary: Exit codes, environment variables, config keys, and every command's flags.
+order: 0
+summary: every viv command, its global options, environment variables and exit codes
 ---
+
 # Reference
 
-Exit codes, environment variables, the `composer.json` config keys viv
-reads, the files it writes, and every global option.
-
-## Exit codes and the stderr/stdout contract
-
-{{include:docs/stability.md#Interface for the shim and scripts}}
-
-## Environment variables
-
-viv's own:
-
-| Variable | What it does |
-|---|---|
-| `VIV_METADATA_TTL` | Same as `--metadata-ttl` on `update`, `add` and `rm`: skip revalidating a package's cached metadata while it's younger than this many seconds. The flag wins when both are set. ([`src/update.rs`](https://github.com/svandragt/vivace/blob/main/src/update.rs)) |
-| `VIV_COMPOSER_PATH` | Points the `composer` shim at the real Composer binary, for when it isn't first on `PATH`. ([`src/bin/composer.rs`](https://github.com/svandragt/vivace/blob/main/src/bin/composer.rs)) |
-| `VIV_SHIM_STRICT` | Set to make the `composer` shim hard-error on a command or flag it doesn't understand, instead of falling back to the real Composer. ([`src/bin/composer.rs`](https://github.com/svandragt/vivace/blob/main/src/bin/composer.rs)) |
-| `VIV_MAX_INFLATED_BYTES` | Overrides the computed cap on how many bytes a single archive may inflate to, viv's guard against a zip bomb. ([`src/store.rs`](https://github.com/svandragt/vivace/blob/main/src/store.rs)) |
-
-A few more (`VIV_TEST_NOW`, `VIV_TEST_EXTRACT_WORKERS`, `VIV_TEST_SCAN_WORKERS`)
-exist only to make viv's own test suite deterministic; they're not a
-documented interface.
-
-Composer's own, that viv also reads:
-
-| Variable | What it does |
-|---|---|
-| `COMPOSER_HOME` | Where viv looks for `auth.json` and `config.json`, same as Composer: `$COMPOSER_HOME` if set, else `~/.composer` if that directory already exists, else `$XDG_CONFIG_HOME/composer`. ([`src/auth.rs`](https://github.com/svandragt/vivace/blob/main/src/auth.rs)) |
-| `COMPOSER_AUTH` | JSON credentials, merged over the composer home's and the project's `auth.json` — highest precedence of the three. ([`src/auth.rs`](https://github.com/svandragt/vivace/blob/main/src/auth.rs)) |
-| `COMPOSER_DISABLE_NETWORK` | Any value but unset, empty or `0` acts like `--offline`. ([`src/main.rs`](https://github.com/svandragt/vivace/blob/main/src/main.rs)) |
-| `COMPOSER_NO_SECURITY_BLOCKING` | Any value but unset, empty or `0` acts like `--no-blocking`: allow a version with a known security advisory during `update`, `add` or `rm`. ([`src/update.rs`](https://github.com/svandragt/vivace/blob/main/src/update.rs)) |
-| `XDG_CACHE_HOME` | Where viv's store lives, as `$XDG_CACHE_HOME/vivace`; falls back to `~/.cache/vivace`. ([`src/update.rs`](https://github.com/svandragt/vivace/blob/main/src/update.rs)) |
-| `XDG_CONFIG_HOME` | Falls back into `COMPOSER_HOME`'s own default, above, when neither `COMPOSER_HOME` nor a legacy `~/.composer` is present. ([`src/auth.rs`](https://github.com/svandragt/vivace/blob/main/src/auth.rs)) |
-| `COLUMNS` | Terminal width `viv show` wraps its output to; defaults to 80 when unset or not a number. ([`src/show.rs`](https://github.com/svandragt/vivace/blob/main/src/show.rs)) |
-
-`COMPOSER_CACHE_DIR` is Composer's own cache location variable; viv doesn't
-read it; use `XDG_CACHE_HOME` or `--cache-dir` instead.
-
-## `composer.json` config keys
-
-viv reads this subset of the root `composer.json`'s `config` block
-(`src/lock.rs`, the `Config` struct):
-
-| Key | What it does |
-|---|---|
-| `autoloader-suffix` | The suffix on the generated `ComposerAutoloaderInit`/`ComposerStaticInit` class names. |
-| `platform-check` | Whether and how strictly `platform_check.php` verifies the PHP version and extensions at runtime. |
-| `vendor-dir` | Where packages install (default `vendor`). |
-| `prepend-autoloader` | Whether the generated autoloader registers itself with `prepend: true`. |
-| `bin-dir` | Where `vendor/bin` proxies are written; defaults to `<vendor-dir>/bin` when unset. |
-| `bin-compat` | How `vendor/bin` proxy scripts are generated for compatibility across platforms. |
-| `optimize-autoloader` | `install -o`'s default: also classmap-scan PSR-0/PSR-4 directories. |
-| `classmap-authoritative` | `install -a`'s default: classmap-only autoloading, skipping the PSR fallback. |
-| `apcu-autoloader` | `install --apcu-autoloader`'s default. |
-| `apcu-autoloader-prefix` | The default value for `install --apcu-autoloader-prefix`. |
-| `use-include-path` | Whether the generated loader also searches PHP's include path. |
-| `secure-http` | `false` lets dist/repository URLs downgrade to plain `http` (Composer defaults this `true`). |
-| `allow-plugins` | Which `composer-plugin` packages viv treats as enabled — see [Plugins](/guides/plugins.html). |
-| `preferred-install` | `dist`/`source` per package; the project's setting is merged with the Composer home's own `config.json`. |
-| `audit.ignore`, `audit.abandoned` | `viv audit`'s ignore list and its abandoned-package policy. |
-| `audit.block-insecure`, `audit.block-abandoned` | Whether a version with a known advisory, or an abandoned package, is filtered from the resolver pool during `update`, `add` or `rm`. |
-
-A `config` key not in this table is ignored: viv doesn't read it, and
-doesn't warn that it's unread either.
-
-## Files viv writes in `vendor/`
-
-{{include:docs/composer-contract.md#Files}}
+One page per command, generated from its own `--help` output so the flags
+here never drift from the binary.
 
 ## Global options
 
@@ -81,185 +17,63 @@ doesn't warn that it's unread either.
 
 ## Commands
 
-Every `viv` subcommand, in the order `viv --help` lists them, each with its
-full `--help` output so the flags on this page never drift from the binary.
+| Command | What it does |
+|---|---|
+| [viv init](init.html) | Writes a new project's composer.json and stops, no interactive prompts. |
+| [viv new](new.html) | Starts a project from a bare name or a `vendor/package` skeleton. |
+| [viv install](install.html) | Installs the exact versions composer.lock records. |
+| [viv update](update.html) | Resolves composer.json, writes the lock and installs. |
+| [viv add](add.html) | Adds a dependency to composer.json, resolves it and installs. |
+| [viv rm](rm.html) | Removes a dependency from composer.json, resolves the rest and installs. |
+| [viv dump-autoload](dump-autoload.html) | Regenerates the autoload files from an already-installed vendor/. |
+| [viv normalize](normalize.html) | Tidies composer.json's key order and formatting. |
+| [viv cache](cache.html) | Prunes, cleans or reports the size of the shared store. |
+| [viv audit](audit.html) | Checks installed or locked packages for security advisories and abandoned packages. |
+| [viv show](show.html) | Lists installed packages, or inspects one. |
+| [viv tree](tree.html) | Shorthand for `show --tree`. |
+| [viv why](why.html) | Lists installed packages that require the named package. |
+| [viv outdated](outdated.html) | Flags installed packages with a newer version available. |
+| [viv validate](validate.html) | Checks composer.json (and composer.lock) against Composer's rules. |
+| [viv x](x.html) | Installs and runs a package's binary in an isolated, cached environment. |
+| [viv run](run.html) | Runs a scripts entry from the root composer.json. |
+| [viv exec](exec.html) | Runs a vendor/bin binary with vendor/bin prepended to PATH. |
+| [viv php](php.html) | Downloads a static-php-cli build and pins config.platform.php to it. |
+| [viv diagnose](diagnose.html) | Prints an environment and configuration report for a bug report. |
+| [viv lock](lock.html) | Converts, merges or exports a viv.lock/composer.lock pair. |
+| [viv workspace](workspace.html) | Discovers and manages a monorepo's member packages. |
 
-[TOC]
+## Environment variables
 
-### viv install
+viv's own:
 
-Run this after cloning a project or pulling a `composer.lock` change: it
-installs the exact versions the lock file records.
+| Variable | What it does | Commands |
+|---|---|---|
+| `VIV_METADATA_TTL` | Same as `--metadata-ttl`: skip revalidating cached metadata younger than this many seconds; the flag wins when both are set. | update, add, rm |
+| `VIV_MAX_INFLATED_BYTES` | Overrides the computed cap on how many bytes a single archive may inflate to, viv's zip-bomb guard. | install, update, add, rm |
+| `VIV_COMPOSER_PATH` | Points the `composer` shim at the real Composer binary, when it isn't first on PATH. | the composer shim |
+| `VIV_SHIM_STRICT` | Set to make the `composer` shim hard-error on an unrecognised command or flag, instead of falling back to the real Composer. | the composer shim |
+| `VIV_VIA_SHIM` | Set by the shim itself so `install --adopt`'s own detection can tell it's running under it. | install |
+| `VIV_PHP_DIST_URL` | Overrides the static-php-cli build base URL `php install` fetches from. | php install |
 
-```
-{{help:install}}
-```
+Composer's own, that viv also reads:
 
-### viv update
+| Variable | What it does | Commands |
+|---|---|---|
+| `COMPOSER_HOME` | Where viv looks for auth.json and config.json. | all |
+| `COMPOSER_AUTH` | JSON credentials, merged over the Composer home's and the project's auth.json. | all |
+| `COMPOSER_DISABLE_NETWORK` | Any value but unset, empty or `0` acts like `--offline`. | all |
+| `COMPOSER_NO_SECURITY_BLOCKING` | Any value but unset, empty or `0` acts like `--no-blocking`. | update, add, rm |
+| `XDG_CACHE_HOME` | Where viv's store lives, as `$XDG_CACHE_HOME/vivace`; falls back to `~/.cache/vivace`. | all |
+| `XDG_CONFIG_HOME` | Falls back into COMPOSER_HOME's own default when neither it nor a legacy `~/.composer` is present. | all |
+| `COLUMNS` | Terminal width `viv show` wraps its output to; defaults to 80 when unset or not a number. | show, tree, why |
 
-Run this when `composer.json` has changed and you want viv to resolve fresh
-versions, write the lock and install them.
+`COMPOSER_CACHE_DIR` is Composer's own cache location variable; viv doesn't
+read it: use `XDG_CACHE_HOME` or `--cache-dir` instead.
 
-```
-{{help:update}}
-```
+## Exit codes
 
-### viv update-lock
-
-Use this to re-derive `composer.lock` from itself, without solving or
-installing, for example after a manual edit.
-
-```
-{{help:update-lock}}
-```
-
-### viv add
-
-Edits `composer.json`, resolves the new dependency and installs it in one
-step.
-
-```
-{{help:add}}
-```
-
-### viv rm
-
-Edits `composer.json`, resolves the rest of the dependency graph and
-installs it, minus the package you removed.
-
-```
-{{help:rm}}
-```
-
-### viv dump-autoload
-
-Run this after you've added classes or changed autoload rules, without
-needing to reinstall any package.
-
-```
-{{help:dump-autoload}}
-```
-
-### viv init
-
-Writes a new project's `composer.json` and stops, with no interactive
-prompts.
-
-```
-{{help:init}}
-```
-
-### viv new
-
-Starts a project from scratch: a bare name creates an empty directory and
-runs `init`'s defaults inside it, or a `vendor/package` spec downloads that
-package's dist as a skeleton, Laravel's `new` command style.
-
-```
-{{help:new}}
-```
-
-### viv show
-
-Lists what's installed, or inspects a single package's detail with
-`--tree`.
-
-```
-{{help:show}}
-```
-
-### viv tree
-
-The shorthand for `show --tree`, printing the require graph.
-
-```
-{{help:tree}}
-```
-
-### viv why
-
-Finds which installed packages require the package you name.
-
-```
-{{help:why}}
-```
-
-### viv outdated
-
-Flags installed packages that have a newer version available.
-
-```
-{{help:outdated}}
-```
-
-### viv audit
-
-Run this before a release to check for known security advisories and
-abandoned packages among your installed or locked dependencies.
-
-```
-{{help:audit}}
-```
-
-### viv validate
-
-Catches a malformed `composer.json`, or a lock file that's out of sync
-with it, before you commit it.
-
-```
-{{help:validate}}
-```
-
-### viv normalize
-
-Tidies `composer.json`'s key order and formatting, the same result `add`,
-`rm` and `init` already apply automatically when they write.
-
-```
-{{help:normalize}}
-```
-
-### viv run
-
-Runs a `scripts` entry from the root `composer.json`, the same as
-`composer run-script`.
-
-```
-{{help:run}}
-```
-
-### viv exec
-
-Runs a `vendor/bin` binary with `vendor/bin` prepended to `PATH`, so you
-don't need the full path.
-
-```
-{{help:exec}}
-```
-
-### viv x
-
-Installs a package into an isolated, cached environment and runs its
-binary, `npx`-style, without touching your `composer.json` or `vendor/`.
-Handy for a one-off tool like PHPUnit or PHP CS Fixer.
-
-```
-{{help:x}}
-```
-
-### viv cache
-
-Manages viv's shared store: prune stale entries, check its size, or remove
-it outright.
-
-```
-{{help:cache}}
-```
-
-### viv diagnose
-
-Prints an environment and configuration report to paste into a bug report.
-
-```
-{{help:diagnose}}
-```
+`0` on success. A dependency-resolution failure (`update`, `add`, `rm`,
+`install`, `workspace init`/`add`) exits `2`, matching Composer's own
+`ERROR_DEPENDENCY_RESOLUTION_FAILED`; every other error, including a bad flag,
+exits `1`. `audit` and `validate` use their own exit codes to report a
+finding rather than a failure to run; see each page.
