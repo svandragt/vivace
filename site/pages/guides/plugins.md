@@ -1,8 +1,9 @@
 ---
 title: Plugins
-order: 4
+order: 90
 summary: Which Composer plugins viv reimplements, ignores or refuses.
 ---
+
 # Plugins
 
 {{include:README.md#Plugins}}
@@ -14,3 +15,6 @@ summary: Which Composer plugins viv reimplements, ignores or refuses.
 ## Rule
 
 {{include:docs/plugin-strategy.md#Rule}}
+
+The full rule for when a plugin is a data file rather than an adapter is in
+[Architecture: Plugin strategy](../architecture/plugin-strategy.html).

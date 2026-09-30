@@ -1,8 +1,9 @@
 ---
 title: Cheat sheet
-order: 1
+order: 10
 summary: The common commands, one line each.
 ---
+
 # Cheat sheet
 
 The commands most people reach for. Every one takes `-d <dir>` to run against another project.
@@ -39,4 +40,4 @@ The commands most people reach for. Every one takes `-d <dir>` to run against an
 
         viv diagnose
 
-Everything else, with every flag, is on the [Commands](/reference/#commands) page.
+Everything else, with every flag, is on the [Commands](../commands.html) page.

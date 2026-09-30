@@ -1,8 +1,9 @@
 ---
 title: Support
-order: 3
-summary: Where to report a bug, a compatibility gap, or a security problem.
+order: 60
+summary: Where to report a bug, and what holds across releases.
 ---
+
 # Support
 
 ## Where to report what
@@ -14,12 +15,12 @@ summary: Where to report a bug, a compatibility gap, or a security problem.
 
 ## How long to expect
 
-One person maintains viv. Expect an acknowledgement within a week. Bugs that make viv write something Composer would not write come first; see [Compatibility and scope](/reference/compatibility.html) for what viv promises to match.
+One person maintains viv. Expect an acknowledgement within a week. Bugs that make viv write something Composer would not write come first; see [Compatibility and scope](../reference/compatibility.html) for what viv promises to match.
 
 ## What holds across releases
 
-viv stays in the 0.x series; no 1.0 is planned. A minor release may add commands, change progress wording or get faster. It may not change the bytes of `vendor/`, `composer.lock` or the plain-text output of `show`, `why` and `validate` that Composer's pinned version would write for the same input, unless it fixes a bug in an earlier release's output. Each release states which Composer version it targets. The full contract is [docs/stability.md](https://github.com/svandragt/vivace/blob/main/docs/stability.md).
+viv stays in the 0.x series; no 1.0 is planned. A minor release may add commands, change progress wording or get faster. It may not change the bytes of `vendor/`, `composer.lock` or the plain-text output of `show`, `why` and `validate` that Composer's pinned version would write for the same input, unless it fixes a bug in an earlier release's output. Each release states which Composer version it targets. The full contract is [`docs/stability.md`](https://github.com/svandragt/vivace/blob/main/docs/stability.md).
 
 ## If the maintainer stops
 
-viv is GPL-3.0-or-later: the source, the test corpus and the compatibility sweep are all in the repository, so anyone can build, fix and release it. [vivacity](/compare.html) is an independent implementation checked against the same Composer, so the approach does not rest on one codebase or one maintainer.
+viv is GPL-3.0-or-later: the source, the test corpus and the compatibility sweep are all in the repository, so anyone can build, fix and release it. [vivacity](../compare.html) is an independent implementation checked against the same Composer, so the approach does not rest on one codebase or one maintainer.

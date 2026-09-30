@@ -1,30 +1,35 @@
 ---
 title: Getting started
-order: 999
-summary: What viv is, your first install, and your first viv install.
+order: 10
+summary: What viv is, and the five-minute path from install to your first `viv install`.
 ---
+
 # Getting started
-
-For a PHP developer who has not used viv before: what it is, your first
-install, and where to go next.
-
-## What viv is
 
 `viv` is a Rust reimplementation of Composer that installs from
 `composer.lock` and writes the `vendor/` directory Composer would write,
-byte for byte, faster than Composer itself. It covers the Composer commands
-you run every day; anything else — plugins outside its native adapters, and
-Composer's longer tail of commands — stays with Composer, and the `composer`
-shim passes those straight through.
+byte for byte. On the compatibility corpus a cold `laravel/laravel` install
+takes 0.30 s against Composer's 1.58 s, and replayed over 355 real client
+merges, `composer.lock` conflicts under plain git 228 times against 6 once
+viv's merge driver and commit-pinning are both in place. It began as a
+question, whether a person directing coding agents can build a faster
+drop-in Composer, and that question is answered: the compatible mode
+described in this section is finished and frozen as a control.
 
-## Install
+## In five minutes
 
-```sh
-cargo binstall vivace
-```
+1. **Install viv.** See [Install and upgrade](install.html) for the exact
+   command for your platform.
+2. **Run `viv install` in a project** that already has a `composer.json`
+   and `composer.lock`.
+3. **Adopt an existing `vendor/`.** If Composer already wrote it, viv
+   adopts it automatically, no flag needed: it relinks every installed
+   package from its own store in place, so the result matches what a
+   fresh viv install would have written.
+4. **Stop at any time** and go back to Composer with no clean-up.
 
-See [Install and upgrade](/getting-started/install.html) for prebuilt binaries, the `.deb`
-package, and how to upgrade.
+The rest of this page fills in each step; [What to read
+next](#what-to-read-next) points at the pages beyond it.
 
 ## Your first `viv install`
 
@@ -40,7 +45,7 @@ needed: it relinks every installed package from its own store in place, so
 the result matches what a fresh viv install would have written.
 
 Only one path asks first: running `composer install` through the [`composer`
-shim](/getting-started/shim.html) on a terminal prompts before it touches a Composer-written
+shim](shim.html) on a terminal prompts before it touches a Composer-written
 `vendor/`, since typing `composer install` didn't opt into viv rewriting
 your tree —
 
@@ -58,11 +63,23 @@ that package, prints a warning, and adopts the rest.
 
 {{include:README.md#Starting from nothing}}
 
+## Stopping
+
+{{include:README.md#Stopping}}
+
+## Is it safe to try
+
+{{include:README.md#Is it safe to try}}
+
+## In this section
+
+- [Install and upgrade](install.html) — binstall, Homebrew, `cargo install`, the `.deb` and the tarball.
+- [Using viv as composer](shim.html) — the `composer` shim, for scripts that call Composer by name.
+- [In a Dockerfile](docker.html) — the published image, in place of `composer:2`.
+- [In CI](ci.html) — the GitHub Action, caching the store, and a bare runner with no PHP.
+- [Support](support.html) — where to report a bug, and what holds across releases.
+
 ## What to read next
 
-- [Using viv as composer](/getting-started/shim.html) — drop viv into scripts and CI that
-  still type `composer`.
-- [Migrating from Composer](/guides/migrate.html) — the shim, Dockerfiles and CI
-  flags for moving a whole project over.
-- [Compatibility and scope](/reference/compatibility.html) — what viv's byte-identical
-  promise covers, and what still needs Composer.
+- [Guides](../guides/index.html) — everyday commands, migrating a project, and the rest of what viv does beyond installing.
+- [Architecture](../architecture/index.html) — what viv's byte-identical promise covers, and how it's built.

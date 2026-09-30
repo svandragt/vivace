@@ -1,8 +1,9 @@
 ---
 title: Cache and offline use
-order: 5
+order: 150
 summary: The shared store, --cache-dir and --offline.
 ---
+
 # Cache and offline use
 
 ## One cache for every project

@@ -1,8 +1,9 @@
 ---
 title: Troubleshooting
-order: 6
+order: 160
 summary: Common errors and what to do about them.
 ---
+
 # Troubleshooting
 
 ## A plugin was refused
@@ -11,7 +12,7 @@ summary: Common errors and what to do about them.
 `vendor/package`. ``
 
 viv has no PHP runtime, so it can only run a plugin it has a native adapter
-for — see [Plugins](/guides/plugins.html) for the full list and how a plugin is
+for — see [Plugins](plugins.html) for the full list and how a plugin is
 categorised. The error itself says whether skipping the plugin is safe.
 
 Pass `--no-plugins` to install without it, the way Composer's own
@@ -19,20 +20,22 @@ Pass `--no-plugins` to install without it, the way Composer's own
 what it writes before relying on the result.
 
 A CI job that wants to know the moment a plugin gap reopens the door back to
-Composer can set `VIV_SHIM_STRICT=1` on the [`composer` shim](/getting-started/shim.html): it
-turns an unrecognised command or flag into a hard error instead of a silent
-fallback (this is separate from a refused plugin, which always stops the
-install unless you pass `--no-plugins`).
+Composer can set `VIV_SHIM_STRICT=1` on the [`composer`
+shim](../getting-started/shim.html): it turns an unrecognised command or
+flag into a hard error instead of a silent fallback (this is separate from
+a refused plugin, which always stops the install unless you pass
+`--no-plugins`).
 
 ## The shim ran the real Composer
 
 **Symptom:** stderr says `composer (viv shim): running the real Composer`.
 
-A command or flag the [`composer` shim](/getting-started/shim.html) doesn't map to viv falls
-back to your real Composer install, with that note so a migration that
-quietly stopped using viv is visible instead of just slower. Set
-`VIV_SHIM_STRICT=1` to turn that fallback into a hard error instead, for a CI
-job that wants a red build rather than a silent return to Composer.
+A command or flag the [`composer` shim](../getting-started/shim.html)
+doesn't map to viv falls back to your real Composer install, with that note
+so a migration that quietly stopped using viv is visible instead of just
+slower. Set `VIV_SHIM_STRICT=1` to turn that fallback into a hard error
+instead, for a CI job that wants a red build rather than a silent return to
+Composer.
 
 ## A private package can't be downloaded
 
@@ -43,7 +46,7 @@ credentials for, for example — viv keeps Composer's existing copy of that
 package in `vendor/`, warns, and adopts the rest rather than failing the
 whole install. To fix the download itself, give viv the same credentials
 Composer used: an `auth.json` (project or Composer home) or `COMPOSER_AUTH`
-— see [Environment variables](/reference/) for how viv reads each.
+— see [Environment variables](../reference.html) for how viv reads each.
 
 ## `vendor/` differs from what Composer wrote
 
@@ -52,7 +55,7 @@ you're not sure it does.
 
 If `vendor/` was written by Composer, viv adopts it automatically on the next
 `viv install` — no flag needed. To force viv to re-relink a `vendor/` it
-already wrote itself, run `viv install --adopt`. The [Compare](/compare.html)
+already wrote itself, run `viv install --adopt`. The [Compare](../compare.html)
 page shows viv's compatibility sweep results against real Composer output.
 
 To file an issue, include a `viv diagnose` report:
