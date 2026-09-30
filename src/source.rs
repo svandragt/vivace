@@ -263,7 +263,31 @@ fn try_git<'a>(dir: &Path, args: impl IntoIterator<Item = &'a str>) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// #349: two `viv` processes (or threads) mirroring the same URL into one
+/// `--cache-dir` at once both `git init`/`clone --mirror`/`fetch` the same
+/// bare repo's `.git/config`, and one loses with git's own "could not lock
+/// config file config: File exists". A sibling `.lock` file next to the
+/// mirror dir — keyed by the same sha1-of-url the mirror dir name already
+/// is, taken with the same per-file [`std::fs::File::lock`] the store's own
+/// `.lock` uses (`store.rs`'s `Store::open`/`prune`) — serialises two
+/// processes on the same url while leaving a different url's mirror free
+/// to run in parallel; released as soon as this function returns, not held
+/// for the rest of the solve.
 fn sync_mirror(url: &str, mirror: &Path, reference: &str) -> Result<()> {
+    let lock_path = mirror.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        fs_err::create_dir_all(parent)?;
+    }
+    let lock_file = fs_err::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("opening the git mirror lock {}", lock_path.display()))?;
+    lock_file
+        .file()
+        .lock()
+        .with_context(|| format!("locking the git mirror for {url}"))?;
+
     if mirror.join("HEAD").is_file() {
         if !has_commit(mirror, reference)? {
             run_git(Some(mirror), ["fetch", "--tags", "origin"]).with_context(|| {
@@ -271,9 +295,6 @@ fn sync_mirror(url: &str, mirror: &Path, reference: &str) -> Result<()> {
             })?;
         }
         return Ok(());
-    }
-    if let Some(parent) = mirror.parent() {
-        fs_err::create_dir_all(parent)?;
     }
     run_git(None, ["clone", "--mirror", "--", url, path_str(mirror)?])
         .with_context(|| format!("mirroring {url} into {}", mirror.display()))
@@ -628,6 +649,49 @@ mod tests {
         // checkout is replaced cleanly.
         checkout_git(cache.path(), &package, &dest).unwrap();
         assert_eq!(head(&dest), reference);
+    }
+
+    /// #349: two threads racing to mirror the same url into one cache dir
+    /// for the first time — both calling `git init`/`clone --mirror` at
+    /// once, before either has anything on disk to tell them the other got
+    /// there first — must both succeed, not lose to git's own "could not
+    /// lock config file config: File exists".
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn sync_mirror_serialises_concurrent_first_clones_of_the_same_url() {
+        if !git_available() {
+            eprintln!(
+                "skipping sync_mirror_serialises_concurrent_first_clones_of_the_same_url: git \
+                 not on PATH"
+            );
+            return;
+        }
+        let upstream = tempfile::tempdir().unwrap();
+        init_repo(upstream.path());
+        let reference = head(upstream.path());
+        let url = upstream.path().to_str().unwrap().to_string();
+
+        let cache = tempfile::tempdir().unwrap();
+        let mirror = cache
+            .path()
+            .join("git-v0")
+            .join(hex(sha1::Sha1::digest(url.as_bytes())));
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let url = &url;
+                    let mirror = &mirror;
+                    let reference = &reference;
+                    scope.spawn(move || sync_mirror(url, mirror, reference))
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+        });
+
+        assert!(mirror.join("HEAD").is_file());
     }
 
     fn remote_url(dir: &Path, name: &str) -> String {
