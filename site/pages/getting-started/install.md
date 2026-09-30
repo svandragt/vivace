@@ -1,12 +1,17 @@
+---
+title: Install and upgrade
+order: 1
+summary: Prebuilt binaries, the .deb package, and upgrading in place.
+---
 # Install and upgrade
 
 ## Try it
 
-{{readme:Try it}}
+{{include:README.md#Try it}}
 
 ## Stopping
 
-{{readme:Stopping}}
+{{include:README.md#Stopping}}
 
 ## Prebuilt binaries and the .deb
 

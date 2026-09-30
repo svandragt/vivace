@@ -1,3 +1,8 @@
+---
+title: Reference
+order: 999
+summary: Exit codes, environment variables, config keys, and every command's flags.
+---
 # Reference
 
 Exit codes, environment variables, the `composer.json` config keys viv
@@ -5,7 +10,7 @@ reads, the files it writes, and every global option.
 
 ## Exit codes and the stderr/stdout contract
 
-{{doc:docs/stability.md#Interface for the shim and scripts}}
+{{include:docs/stability.md#Interface for the shim and scripts}}
 
 ## Environment variables
 
@@ -56,7 +61,7 @@ viv reads this subset of the root `composer.json`'s `config` block
 | `apcu-autoloader-prefix` | The default value for `install --apcu-autoloader-prefix`. |
 | `use-include-path` | Whether the generated loader also searches PHP's include path. |
 | `secure-http` | `false` lets dist/repository URLs downgrade to plain `http` (Composer defaults this `true`). |
-| `allow-plugins` | Which `composer-plugin` packages viv treats as enabled — see [Plugins](plugins.html). |
+| `allow-plugins` | Which `composer-plugin` packages viv treats as enabled — see [Plugins](/guides/plugins.html). |
 | `preferred-install` | `dist`/`source` per package; the project's setting is merged with the Composer home's own `config.json`. |
 | `audit.ignore`, `audit.abandoned` | `viv audit`'s ignore list and its abandoned-package policy. |
 | `audit.block-insecure`, `audit.block-abandoned` | Whether a version with a known advisory, or an abandoned package, is filtered from the resolver pool during `update`, `add` or `rm`. |
@@ -66,10 +71,195 @@ doesn't warn that it's unread either.
 
 ## Files viv writes in `vendor/`
 
-{{doc:docs/composer-contract.md#Files}}
+{{include:docs/composer-contract.md#Files}}
 
 ## Global options
 
 ```
 {{help:}}
+```
+
+## Commands
+
+Every `viv` subcommand, in the order `viv --help` lists them, each with its
+full `--help` output so the flags on this page never drift from the binary.
+
+[TOC]
+
+### viv install
+
+Run this after cloning a project or pulling a `composer.lock` change: it
+installs the exact versions the lock file records.
+
+```
+{{help:install}}
+```
+
+### viv update
+
+Run this when `composer.json` has changed and you want viv to resolve fresh
+versions, write the lock and install them.
+
+```
+{{help:update}}
+```
+
+### viv update-lock
+
+Use this to re-derive `composer.lock` from itself, without solving or
+installing, for example after a manual edit.
+
+```
+{{help:update-lock}}
+```
+
+### viv add
+
+Edits `composer.json`, resolves the new dependency and installs it in one
+step.
+
+```
+{{help:add}}
+```
+
+### viv rm
+
+Edits `composer.json`, resolves the rest of the dependency graph and
+installs it, minus the package you removed.
+
+```
+{{help:rm}}
+```
+
+### viv dump-autoload
+
+Run this after you've added classes or changed autoload rules, without
+needing to reinstall any package.
+
+```
+{{help:dump-autoload}}
+```
+
+### viv init
+
+Writes a new project's `composer.json` and stops, with no interactive
+prompts.
+
+```
+{{help:init}}
+```
+
+### viv new
+
+Starts a project from scratch: a bare name creates an empty directory and
+runs `init`'s defaults inside it, or a `vendor/package` spec downloads that
+package's dist as a skeleton, Laravel's `new` command style.
+
+```
+{{help:new}}
+```
+
+### viv show
+
+Lists what's installed, or inspects a single package's detail with
+`--tree`.
+
+```
+{{help:show}}
+```
+
+### viv tree
+
+The shorthand for `show --tree`, printing the require graph.
+
+```
+{{help:tree}}
+```
+
+### viv why
+
+Finds which installed packages require the package you name.
+
+```
+{{help:why}}
+```
+
+### viv outdated
+
+Flags installed packages that have a newer version available.
+
+```
+{{help:outdated}}
+```
+
+### viv audit
+
+Run this before a release to check for known security advisories and
+abandoned packages among your installed or locked dependencies.
+
+```
+{{help:audit}}
+```
+
+### viv validate
+
+Catches a malformed `composer.json`, or a lock file that's out of sync
+with it, before you commit it.
+
+```
+{{help:validate}}
+```
+
+### viv normalize
+
+Tidies `composer.json`'s key order and formatting, the same result `add`,
+`rm` and `init` already apply automatically when they write.
+
+```
+{{help:normalize}}
+```
+
+### viv run
+
+Runs a `scripts` entry from the root `composer.json`, the same as
+`composer run-script`.
+
+```
+{{help:run}}
+```
+
+### viv exec
+
+Runs a `vendor/bin` binary with `vendor/bin` prepended to `PATH`, so you
+don't need the full path.
+
+```
+{{help:exec}}
+```
+
+### viv x
+
+Installs a package into an isolated, cached environment and runs its
+binary, `npx`-style, without touching your `composer.json` or `vendor/`.
+Handy for a one-off tool like PHPUnit or PHP CS Fixer.
+
+```
+{{help:x}}
+```
+
+### viv cache
+
+Manages viv's shared store: prune stale entries, check its size, or remove
+it outright.
+
+```
+{{help:cache}}
+```
+
+### viv diagnose
+
+Prints an environment and configuration report to paste into a bug report.
+
+```
+{{help:diagnose}}
 ```

@@ -8,7 +8,7 @@
 
   function load() {
     if (!loading) {
-      loading = fetch("search.json").then(function (r) { return r.json(); }).then(function (data) {
+      loading = fetch("/search.json").then(function (r) { return r.json(); }).then(function (data) {
         records = data;
       });
     }

@@ -1,3 +1,8 @@
+---
+title: For your framework
+order: 3
+summary: Install times and plugin handling for your framework starter.
+---
 # For your framework
 
 Install times, plugin handling, the local/Dockerfile/CI snippets and the

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import html as html_lib
 import json
+import tomllib
 import urllib.request
 from pathlib import Path
 
@@ -29,27 +30,28 @@ DIST = SITE / "dist"
 FEED = "https://vandragt.com/tag/vivace/feed.json"
 GITHUB_BLOB = "https://github.com/svandragt/vivace/blob/main/"
 
-NAV = [("Home", "index.html"), ("Manual", "manual.html"), ("Compare", "compare.html"),
+NAV = [("Home", "/"), ("Docs", "/getting-started/"), ("Compare", "/compare.html"),
        ("GitHub", "https://github.com/svandragt/vivace")]
 
-# Drives both the sidebar every non-index page renders and manual.html's own
-# list; order here is the order readers see.
-MANUAL = [
-    ("getting-started", "Getting started"),
-    ("cheatsheet", "Cheat sheet"),
-    ("install", "Install and upgrade"),
-    ("commands", "Commands"),
-    ("shim", "Using viv as composer"),
-    ("migrate", "Migrating from Composer"),
-    ("frameworks", "For your framework"),
-    ("plugins", "Plugins"),
-    ("cache", "Cache and offline use"),
-    ("compatibility", "Compatibility and scope"),
-    ("reference", "Reference"),
-    ("troubleshooting", "Troubleshooting"),
-    ("support", "Support"),
-    ("compare", "Compare"),
-]
+# Old flat page -> new URL, so every link this site ever published still
+# resolves (#site-structure). Two entries collapse two old pages into one
+# merged page (manual+getting-started, commands+reference).
+REDIRECTS = {
+    "manual.html": "/getting-started/",
+    "getting-started.html": "/getting-started/",
+    "cheatsheet.html": "/guides/cheatsheet.html",
+    "install.html": "/getting-started/install.html",
+    "commands.html": "/reference/",
+    "shim.html": "/getting-started/shim.html",
+    "migrate.html": "/guides/migrate.html",
+    "frameworks.html": "/guides/frameworks.html",
+    "plugins.html": "/guides/plugins.html",
+    "cache.html": "/guides/cache.html",
+    "compatibility.html": "/reference/compatibility.html",
+    "reference.html": "/reference/",
+    "troubleshooting.html": "/guides/troubleshooting.html",
+    "support.html": "/getting-started/support.html",
+}
 
 SHELL = """<!doctype html>
 <html lang="en">
@@ -57,12 +59,13 @@ SHELL = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 <header class="site-header">
-<a class="site-title" href="index.html">viv</a>
-{nav}
+<a class="site-title" href="/">viv</a>
+<nav aria-label="Primary">{nav}</nav>
 <input type="search" id="site-search" placeholder="Search" aria-label="Search the manual" autocomplete="off">
 </header>
 <div id="search-results" hidden></div>
@@ -70,7 +73,22 @@ SHELL = """<!doctype html>
 <footer class="site-footer">
 <a href="https://github.com/svandragt/vivace">svandragt/vivace</a> on GitHub
 </footer>
-<script src="search.js" defer></script>
+<script src="/search.js" defer></script>
+<script src="/nav.js" defer></script>
+</body>
+</html>
+"""
+
+REDIRECT_SHELL = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="0; url={url}">
+<link rel="canonical" href="{url}">
+<title>Moved - viv</title>
+</head>
+<body>
+<p>This page moved to <a href="{url}">{url}</a>.</p>
 </body>
 </html>
 """
@@ -80,17 +98,182 @@ def render_nav():
     return "\n".join(f'<a href="{href}">{label}</a>' for label, href in NAV)
 
 
-def render_sidebar(current_slug):
-    links = []
-    for slug, title in MANUAL:
-        # Every generated for-<framework> page highlights the hub entry,
-        # since none of them has its own MANUAL row (#265).
-        is_current = slug == current_slug or (
-            slug == "frameworks" and current_slug.startswith("for-")
+def load_nav():
+    """The left sidebar's sections, from site/nav.toml, in reader order."""
+    data = tomllib.loads((SITE / "nav.toml").read_text())
+    return sorted(data["section"], key=lambda s: s["order"])
+
+
+FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+
+
+def parse_front_matter(text):
+    """Split a page's front matter (flat `key: value` lines only -- title,
+    order, summary never need more) from its Markdown body."""
+    match = FRONT_MATTER_RE.match(text)
+    if not match:
+        return {}, text
+    meta = {}
+    for line in match.group(1).splitlines():
+        if not line.strip():
+            continue
+        key, _, value = line.partition(":")
+        meta[key.strip()] = value.strip()
+    if "order" in meta:
+        meta["order"] = int(meta["order"])
+    return meta, text[match.end():]
+
+
+def read_section_page(path, section):
+    """A section page's front matter plus body, as the page dict every
+    renderer below shares: title is required so a page can't silently go
+    nameless in the sidebar or a browser tab."""
+    meta, body = parse_front_matter(path.read_text())
+    if "title" not in meta:
+        raise SystemExit(f"site/build.py: {path} is missing required front matter 'title'")
+    rel = path.relative_to(ROOT).as_posix()
+    return make_page(section, path.stem, meta.get("title"), meta.get("order", 999),
+                      meta.get("summary", ""), body, src_rel=rel)
+
+
+def make_page(section, slug, title, order, summary, body, src_rel=None, nav_slug=None,
+              in_sequence=True):
+    return {
+        "section": section,
+        "slug": slug,
+        "title": title,
+        "order": order,
+        "summary": summary,
+        "body": body,
+        "src_rel": src_rel,
+        "url": page_url(section, slug),
+        "nav_slug": nav_slug if nav_slug is not None else slug,
+        "in_sequence": in_sequence,
+    }
+
+
+def page_url(section, slug):
+    if section is None:
+        return f"/{slug}.html"
+    if slug == "index":
+        return f"/{section}/"
+    return f"/{section}/{slug}.html"
+
+
+def page_dist_path(page):
+    if page["section"] is None:
+        return DIST / f"{page['slug']}.html"
+    d = DIST / page["section"]
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "index.html" if page["slug"] == "index" else d / f"{page['slug']}.html"
+
+
+def section_sequence(pages_by_section, slug):
+    """A section's pages in prev/next and sidebar order: its index first,
+    then the rest by `order`, then slug."""
+    pages = pages_by_section[slug]
+    rest = sorted((p for p in pages if p["slug"] != "index"), key=lambda p: (p["order"], p["slug"]))
+    index_pages = [p for p in pages if p["slug"] == "index"]
+    return index_pages + rest
+
+
+def render_sidebar(sections, pages_by_section, current_section, current_slug):
+    """The left nav tree: one collapsible group per section (a <details>,
+    open when it's the current section) so expand/collapse needs no JS at
+    all and the whole thing is already a plain nested list without it."""
+    groups = []
+    for sec in sections:
+        seq = section_sequence(pages_by_section, sec["slug"])
+        is_current_section = sec["slug"] == current_section
+        links = []
+        for p in seq:
+            is_current = is_current_section and p["nav_slug"] == current_slug
+            attrs = ' class="current" aria-current="page"' if is_current else ""
+            tip = f' title="{html_lib.escape(p["summary"])}"' if p["summary"] else ""
+            links.append(f'<a href="{p["url"]}"{attrs}{tip}>{html_lib.escape(p["title"])}</a>')
+        groups.append(
+            f'<details{" open" if is_current_section else ""}>\n'
+            f'<summary>{html_lib.escape(sec["title"])}</summary>\n' + "\n".join(links) + "\n</details>"
         )
-        current = ' class="current"' if is_current else ""
-        links.append(f'<a href="{slug}.html"{current}>{title}</a>')
-    return "\n".join(links)
+    return "\n".join(groups)
+
+
+def render_breadcrumbs(sections_by_slug, page):
+    items = ['<li><a href="/">Home</a></li>']
+    section = page["section"]
+    if section:
+        title = sections_by_slug[section]["title"]
+        if page["slug"] == "index":
+            items.append(f'<li aria-current="page">{html_lib.escape(title)}</li>')
+        else:
+            items.append(f'<li><a href="/{section}/">{html_lib.escape(title)}</a></li>')
+            items.append(f'<li aria-current="page">{html_lib.escape(page["title"])}</li>')
+    else:
+        items.append(f'<li aria-current="page">{html_lib.escape(page["title"])}</li>')
+    return '<nav class="breadcrumbs" aria-label="Breadcrumb"><ol>' + "".join(items) + "</ol></nav>"
+
+
+TOC_HEADING_RE = re.compile(r'<h([23]) id="([^"]+)">(.*?)</h\1>', re.DOTALL)
+
+
+def render_toc(content_html):
+    """"On this page": every h2/h3, ids from the toc extension's own
+    output, every h3 nested under the h2 above it (a stray leading h3, with
+    no h2 yet, just sits at the top level rather than nesting nowhere)."""
+    headings = TOC_HEADING_RE.findall(content_html)
+    if not headings:
+        return ""
+
+    def link(hid, text):
+        return f'<a href="#{hid}">{excerpt(text, 80)}</a>'
+
+    out = ['<p class="toc-title">On this page</p>', "<ul>"]
+    h2_open = h3_list_open = False
+    for level, hid, text in headings:
+        if level == "2":
+            if h3_list_open:
+                out.append("</ul>")
+                h3_list_open = False
+            if h2_open:
+                out.append("</li>")
+            out.append(f"<li>{link(hid, text)}")
+            h2_open = True
+        else:
+            if not h2_open:
+                out.append(f"<li>{link(hid, text)}</li>")
+                continue
+            if not h3_list_open:
+                out.append("<ul>")
+                h3_list_open = True
+            out.append(f"<li>{link(hid, text)}</li>")
+    if h3_list_open:
+        out.append("</ul>")
+    if h2_open:
+        out.append("</li>")
+    out.append("</ul>")
+    return "\n".join(out)
+
+
+def render_prevnext(prev_page, next_page):
+    if not prev_page and not next_page:
+        return ""
+    parts = ['<nav class="prev-next" aria-label="Page navigation">']
+    parts.append(
+        f'<a class="prev" href="{prev_page["url"]}">&larr; {html_lib.escape(prev_page["title"])}</a>'
+        if prev_page else "<span></span>"
+    )
+    parts.append(
+        f'<a class="next" href="{next_page["url"]}">{html_lib.escape(next_page["title"])} &rarr;</a>'
+        if next_page else "<span></span>"
+    )
+    parts.append("</nav>")
+    return "\n".join(parts)
+
+
+def render_edit_link(src_rel):
+    if not src_rel:
+        return ""
+    return f'<p class="edit-link"><a href="{GITHUB_BLOB}{src_rel}">Edit this page on GitHub</a></p>'
 
 
 def find_viv_binary():
@@ -320,7 +503,7 @@ def doc_section(path, heading, offset=1):
     return demote_relative(body, offset)
 
 
-GENERIC_PLACEHOLDER_RE = re.compile(r"\{\{(help|readme|doc):([^}]*)\}\}")
+GENERIC_PLACEHOLDER_RE = re.compile(r"\{\{(help|include):([^}]*)\}\}")
 
 
 def preceding_heading_level(text, pos):
@@ -330,18 +513,26 @@ def preceding_heading_level(text, pos):
     return len(heads[-1].group(1)) if heads else 1
 
 
+def include_whole_file(rel_path):
+    """{{include:<path>}} with no #heading: the file's whole body, its own
+    first H1 dropped and every remaining heading shifted down one level so
+    it nests under the page's own H1 instead of colliding with it."""
+    text = (ROOT / rel_path).read_text()
+    text = re.sub(r"\A# [^\n]*\n+", "", text, count=1)
+    return demote_relative(rewrite_relative_links(text, rel_path), 1)
+
+
 def resolve_generic_placeholder(match):
     kind, arg = match.group(1), match.group(2)
     if kind == "help":
         return viv_help(arg)
+    path, _, heading = arg.partition("#")
+    if not heading:
+        return include_whole_file(path)
     # Demote so the section's own top heading lands one level below whatever
     # page heading precedes this placeholder, not always one level down.
     page_level = preceding_heading_level(match.string, match.start())
-    if kind == "readme":
-        level, body = section_from_file("README.md", arg)
-    else:
-        path, _, heading = arg.partition("#")
-        level, body = section_from_file(path, heading)
+    level, body = section_from_file(path, heading)
     return demote_relative(body, page_level - level)
 
 
@@ -677,34 +868,68 @@ def index_placeholders():
     }
 
 
+CHANGELOG_RE = re.compile(r"^## \[(.+?)\](?: - (\S+))?$", re.MULTILINE)
+
+
+def changelog_releases():
+    """One page per CHANGELOG.md version, newest first (the file's own
+    order), skipping Unreleased when it has no entries yet."""
+    text = (ROOT / "CHANGELOG.md").read_text()
+    heads = list(CHANGELOG_RE.finditer(text))
+    pages = []
+    for i, head in enumerate(heads):
+        version, date = head.group(1), head.group(2)
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        body = text[head.end():end].strip("\n")
+        if version == "Unreleased" and not body.strip():
+            continue
+        dated = f"Released {date}" if date else "Not yet released"
+        page_md = f"# {version}\n\n{dated}\n\n{body}\n"
+        slug = version if version != "Unreleased" else "unreleased"
+        pages.append(make_page("releases", slug, version, len(pages), dated, page_md))
+    return pages
+
+
 PAGE_PLACEHOLDERS = {
     "index": index_placeholders,
     "compare": compare_placeholders,
-    "migrate": migrate_placeholders,
+    "guides/migrate": migrate_placeholders,
 }
 
 
+def markdown_to_html(text):
+    return wrap_tables(markdown.markdown(text, extensions=["tables", "fenced_code", "toc"]))
+
+
+def page_title_tag(title):
+    return title if title.lower() == "viv" else f"{title} - viv"
+
+
 def render_markdown(text):
+    """Top-level pages with no front matter (index.md): title comes from
+    the page's own first line, same as before front matter existed."""
     text = GENERIC_PLACEHOLDER_RE.sub(resolve_generic_placeholder, text)
     title = text.splitlines()[0].lstrip("# ").strip()
-    if title.lower() != "viv":
-        title = f"{title} - viv"
-    body_html = markdown.markdown(text, extensions=["tables", "fenced_code", "toc"])
-    return title, wrap_tables(body_html)
+    return page_title_tag(title), markdown_to_html(text)
 
 
-def render_page(md_path, placeholders=None):
-    text = md_path.read_text()
-    if placeholders:
-        for key, value in placeholders.items():
+def apply_custom_placeholders(body, custom_fn):
+    text = body
+    if custom_fn:
+        for key, value in custom_fn().items():
             text = text.replace(f"{{{{{key}}}}}", value)
-    return render_markdown(text)
+    return text
+
+
+def resolve_body(body, custom_fn):
+    text = apply_custom_placeholders(body, custom_fn)
+    return GENERIC_PLACEHOLDER_RE.sub(resolve_generic_placeholder, text)
 
 
 H2_RE = re.compile(r'<h2 id="([^"]+)">(.*?)</h2>', re.DOTALL)
 
 
-def index_sections(slug, title, content_html):
+def index_sections(url, title, content_html):
     """One search record for the page's intro (before its first h2) plus one
     per h2 section, {url, page, heading, text}; ids come from the toc
     extension's own <h2 id="..."> output rather than recomputing a slug."""
@@ -714,17 +939,54 @@ def index_sections(slug, title, content_html):
     intro_end = matches[0].start() if matches else len(content_html)
     intro_text = excerpt(content_html[:intro_end], 400)
     if intro_text:
-        records.append({"url": f"{slug}.html", "page": title, "heading": title, "text": intro_text})
+        records.append({"url": url, "page": title, "heading": title, "text": intro_text})
     for i, match in enumerate(matches):
         start = match.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(content_html)
         records.append({
-            "url": f"{slug}.html#{match.group(1)}",
+            "url": f"{url}#{match.group(1)}",
             "page": title,
             "heading": excerpt(match.group(2), 200),
             "text": excerpt(content_html[start:end], 400),
         })
     return records
+
+
+def render_doc_page(page, sections, pages_by_section, sections_by_slug, search_index):
+    """A page inside the sidebar/breadcrumb/TOC layout: every section page,
+    the generated framework and release pages, and top-level compare.md."""
+    key = f"{page['section']}/{page['slug']}" if page["section"] else page["slug"]
+    custom_fn = PAGE_PLACEHOLDERS.get(key)
+    content_html = markdown_to_html(resolve_body(page["body"], custom_fn))
+    title_tag = page_title_tag(page["title"])
+    search_index.extend(index_sections(page["url"], title_tag, content_html))
+
+    prev_page = next_page = None
+    if page["section"] and page["in_sequence"]:
+        seq = section_sequence(pages_by_section, page["section"])
+        idx = next(i for i, p in enumerate(seq) if p["slug"] == page["slug"])
+        prev_page = seq[idx - 1] if idx > 0 else None
+        next_page = seq[idx + 1] if idx + 1 < len(seq) else None
+
+    layout = (
+        '<div class="layout">\n'
+        '<button type="button" id="sidebar-toggle" class="sidebar-toggle" '
+        'aria-expanded="false" aria-controls="sidebar">Menu</button>\n'
+        f'<nav class="sidebar" id="sidebar" aria-label="Sections">\n'
+        f'{render_sidebar(sections, pages_by_section, page["section"], page["nav_slug"])}\n'
+        "</nav>\n"
+        '<div class="content">\n'
+        f'{render_breadcrumbs(sections_by_slug, page)}\n'
+        f'<main id="main-content">\n{content_html}\n'
+        f'{render_prevnext(prev_page, next_page)}\n'
+        f'{render_edit_link(page["src_rel"])}\n'
+        "</main>\n"
+        "</div>\n"
+        f'<aside class="page-toc" aria-label="On this page">\n{render_toc(content_html)}\n</aside>\n'
+        "</div>"
+    )
+    html = SHELL.format(title=title_tag, nav=render_nav(), layout=layout)
+    page_dist_path(page).write_text(html)
 
 
 def main():
@@ -733,61 +995,79 @@ def main():
     DIST.mkdir(parents=True)
 
     search_index = []
+    sections = load_nav()
+    sections_by_slug = {s["slug"]: s for s in sections}
+    pages_by_section = {s["slug"]: [] for s in sections}
 
-    # Generated pages, not files under site/pages/ (#265): built first so
-    # frameworks.md's {{framework_list}} can list only the ones with data.
+    for slug in pages_by_section:
+        for md_path in sorted((SITE / "pages" / slug).glob("*.md")):
+            pages_by_section[slug].append(read_section_page(md_path, slug))
+        if not any(p["slug"] == "index" for p in pages_by_section[slug]):
+            raise SystemExit(f"site/build.py: section '{slug}' has no index.md")
+
+    # Generated pages, not files under site/pages/ (#265): built before the
+    # main render loop so guides/frameworks.md's {{framework_list}} can list
+    # only the ones with data, and none of them takes part in guides' own
+    # prev/next sequence or sidebar listing -- they're reached only from
+    # that hub page, same as before this restructure.
     frameworks_generated = []
+    framework_pages = []
     for entry in FRAMEWORKS:
         md_text = framework_page(entry)
         if md_text is None:
             continue
-        title, content_html = render_markdown(md_text)
-        search_index.extend(index_sections(entry["slug"], title, content_html))
-        layout = (
-            '<div class="layout">\n'
-            f'<aside class="sidebar">\n{render_sidebar(entry["slug"])}\n</aside>\n'
-            f"<main>\n{content_html}\n</main>\n"
-            "</div>"
-        )
-        html = SHELL.format(title=title, nav="", layout=layout)
-        (DIST / f"{entry['slug']}.html").write_text(html)
+        page = make_page("guides", entry["slug"], entry["name"], 999, "", md_text,
+                          nav_slug="frameworks", in_sequence=False)
+        framework_pages.append(page)
         viv_cold = framework_corpus_times(entry["project"])[2]
         frameworks_generated.append((entry["slug"], entry["name"], fmt_time(viv_cold)))
 
-    PAGE_PLACEHOLDERS["frameworks"] = lambda: {
+    PAGE_PLACEHOLDERS["guides/frameworks"] = lambda: {
         "framework_list": "\n".join(
-            f"- [{name}]({slug}.html) ({cold} cold)"
+            f"- [{name}](/guides/{slug}.html) ({cold} cold)"
             for slug, name, cold in frameworks_generated
         )
     }
 
-    for md_path in sorted((SITE / "pages").glob("*.md")):
-        placeholder_fn = PAGE_PLACEHOLDERS.get(md_path.stem)
-        placeholders = placeholder_fn() if placeholder_fn else None
-        title, content_html = render_page(md_path, placeholders)
-        search_index.extend(index_sections(md_path.stem, title, content_html))
-        if md_path.stem == "index":
-            nav = f"<nav>{render_nav()}</nav>"
-            layout = f"<main>\n{content_html}\n</main>"
-        else:
-            nav = ""
-            layout = (
-                '<div class="layout">\n'
-                f'<aside class="sidebar">\n{render_sidebar(md_path.stem)}\n</aside>\n'
-                f"<main>\n{content_html}\n</main>\n"
-                "</div>"
-            )
-        html = SHELL.format(title=title, nav=nav, layout=layout)
-        (DIST / f"{md_path.stem}.html").write_text(html)
+    releases = changelog_releases()
+    pages_by_section["releases"].extend(releases)
+    PAGE_PLACEHOLDERS["releases/index"] = lambda: {
+        "changelog": "\n".join(f"- [{p['title']}]({p['url']}) -- {p['summary']}" for p in releases)
+    }
+
+    for slug in pages_by_section:
+        for page in section_sequence(pages_by_section, slug):
+            render_doc_page(page, sections, pages_by_section, sections_by_slug, search_index)
+    for page in framework_pages:
+        render_doc_page(page, sections, pages_by_section, sections_by_slug, search_index)
+
+    # Top-level pages: index.md is the flat homepage (no sidebar/TOC),
+    # compare.md gets the same doc layout as a section page, minus a section.
+    index_text = (SITE / "pages/index.md").read_text()
+    index_title, index_html = render_markdown(apply_custom_placeholders(index_text, index_placeholders))
+    search_index.extend(index_sections("/", index_title, index_html))
+    home_html = SHELL.format(
+        title=index_title, nav=render_nav(), layout=f"<main>\n{index_html}\n</main>"
+    )
+    (DIST / "index.html").write_text(home_html)
+
+    compare_meta, compare_body = parse_front_matter((SITE / "pages/compare.md").read_text())
+    compare_page = make_page(None, "compare", "Compare", 999, "", compare_body,
+                              src_rel="site/pages/compare.md")
+    render_doc_page(compare_page, sections, pages_by_section, sections_by_slug, search_index)
+
+    for old_name, url in REDIRECTS.items():
+        (DIST / old_name).write_text(REDIRECT_SHELL.format(url=url))
 
     shutil.copytree(SITE / "static", DIST, dirs_exist_ok=True)
     (DIST / "search.json").write_text(json.dumps(search_index))
     (DIST / "CNAME").write_text("vivace.vandragt.com\n")
     (DIST / ".nojekyll").write_text("")
 
-    for html_path in sorted(DIST.glob("*.html")):
+    for html_path in sorted(DIST.rglob("*.html")):
         if "{{" in html_path.read_text():
-            print(f"site/build.py: unfilled {{{{placeholder}}}} in {html_path.name}", file=sys.stderr)
+            rel = html_path.relative_to(DIST)
+            print(f"site/build.py: unfilled {{{{placeholder}}}} in {rel}", file=sys.stderr)
             return 1
     print(f"site/build.py: wrote {DIST}")
     return 0

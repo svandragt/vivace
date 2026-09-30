@@ -1,3 +1,8 @@
+---
+title: Getting started
+order: 999
+summary: What viv is, your first install, and your first viv install.
+---
 # Getting started
 
 For a PHP developer who has not used viv before: what it is, your first
@@ -18,7 +23,7 @@ shim passes those straight through.
 cargo binstall vivace
 ```
 
-See [Install and upgrade](install.html) for prebuilt binaries, the `.deb`
+See [Install and upgrade](/getting-started/install.html) for prebuilt binaries, the `.deb`
 package, and how to upgrade.
 
 ## Your first `viv install`
@@ -35,7 +40,7 @@ needed: it relinks every installed package from its own store in place, so
 the result matches what a fresh viv install would have written.
 
 Only one path asks first: running `composer install` through the [`composer`
-shim](shim.html) on a terminal prompts before it touches a Composer-written
+shim](/getting-started/shim.html) on a terminal prompts before it touches a Composer-written
 `vendor/`, since typing `composer install` didn't opt into viv rewriting
 your tree —
 
@@ -51,13 +56,13 @@ that package, prints a warning, and adopts the rest.
 
 ### Starting from nothing
 
-{{readme:Starting from nothing}}
+{{include:README.md#Starting from nothing}}
 
 ## What to read next
 
-- [Using viv as composer](shim.html) — drop viv into scripts and CI that
+- [Using viv as composer](/getting-started/shim.html) — drop viv into scripts and CI that
   still type `composer`.
-- [Migrating from Composer](migrate.html) — the shim, Dockerfiles and CI
+- [Migrating from Composer](/guides/migrate.html) — the shim, Dockerfiles and CI
   flags for moving a whole project over.
-- [Compatibility and scope](compatibility.html) — what viv's byte-identical
+- [Compatibility and scope](/reference/compatibility.html) — what viv's byte-identical
   promise covers, and what still needs Composer.
