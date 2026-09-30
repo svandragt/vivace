@@ -37,6 +37,7 @@ jobs:
           gh release download "$tag" -p "vivace-$tag-x86_64-unknown-linux-musl.tar.gz" -O - | tar xz
           echo "VIV=$PWD/vivace-$tag-x86_64-unknown-linux-musl/viv" >> "$GITHUB_ENV"
       - run: python3 site/build.py
+      - run: python3 site/check.py
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site/dist
