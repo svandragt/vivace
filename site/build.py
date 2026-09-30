@@ -905,7 +905,7 @@ PAGE_PLACEHOLDERS = {
 
 
 def markdown_to_html(text):
-    return wrap_tables(markdown.markdown(text, extensions=["tables", "fenced_code", "toc"]))
+    return wrap_tables(markdown.markdown(text, extensions=["tables", "fenced_code", "toc", "footnotes"]))
 
 
 def page_title_tag(title):

@@ -74,10 +74,23 @@ def check_redirects():
     return problems
 
 
+def check_footnotes():
+    """A literal [^n] in the HTML means the markdown "footnotes" extension
+    was not applied to that page."""
+    problems = []
+    for f in sorted(DIST.rglob("*.html")):
+        if re.search(r"\[\^\d+\]", f.read_text()):
+            problems.append(f"{f.relative_to(DIST)}: literal footnote marker")
+    return problems
+
+
 def main():
     if not DIST.exists():
         raise SystemExit("site/check.py: run site/build.py first")
-    problems = check_links() + check_titles() + check_section_indexes() + check_redirects()
+    problems = (
+        check_links() + check_titles() + check_section_indexes() + check_redirects()
+        + check_footnotes()
+    )
     if problems:
         for p in problems:
             print(f"site/check.py: {p}", file=sys.stderr)
@@ -89,3 +102,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
