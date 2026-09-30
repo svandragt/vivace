@@ -1,7 +1,7 @@
 # Targets shell through devbox so php, composer, hyperfine, cargo-nextest
 # and cargo-deny resolve.
 
-.PHONY: install install-shim build test check bench bench-check bench-smoke bench-ab bench-corpus bench-g3-isolation bench-g3-rules bench-g3-plugins profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
+.PHONY: install install-shim build test check bench bench-check bench-smoke bench-ab bench-corpus bench-g3-isolation bench-g3-isolation-sites bench-g3-rules bench-g3-plugins profile hooks fixtures fmt record-packagist record-satis record-wpackagist compat compat-refresh dist fuzz coverage changelog
 
 install:
 	cargo install --path . --locked --bin viv
@@ -69,6 +69,12 @@ bench-corpus:
 # target.
 bench-g3-isolation:
 	devbox run -- python3 bench/g3-isolation/inventory.py > bench/results/g3-isolation.md
+
+# g3 candidate 3.2 follow-up (#346): the same inventory, plus a runtime/
+# solver clash count, against real Composer-managed WordPress sites
+# (read-only, held outside this repository). SITES="path path ..."
+bench-g3-isolation-sites:
+	devbox run -- python3 bench/g3-isolation/sites.py $(SITES) --out bench/results/g3-isolation-sites.md
 
 # g3 candidate 3.5 (#333): static census of Composer resolution features
 # across the corpus, plus closed compat bugs classified by the feature
