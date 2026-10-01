@@ -394,12 +394,15 @@ if (extension_loaded('zlib')) {
 echo json_encode($out);
 "#;
 
-fn run_probe() -> Option<Probe> {
+/// `php_path` is run directly (no PATH search of its own): #353's own
+/// override seam, so a project's pinned PHP (resolved by the caller) probes
+/// exactly that binary rather than whatever `resolve_php_path` would find.
+fn run_probe(php_path: &Path) -> Option<Probe> {
     // No `-r`/`-f -` argument: this build's CLI SAPI treats a literal `-`
     // as a filename ("Could not open input file: -") rather than "read the
     // script from stdin", but bare `php` with redirected stdin and no
     // arguments does read the script from there.
-    let mut child = Command::new("php")
+    let mut child = Command::new(php_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -495,7 +498,7 @@ fn cached_probe(cache_dir: &Path, php_path: &Path) -> Option<Probe> {
     {
         return Some(probe);
     }
-    let probe = run_probe()?;
+    let probe = run_probe(php_path)?;
     if let Ok(bytes) = serde_json::to_vec(&probe) {
         let _ = cache_path.parent().map(fs_err::create_dir_all);
         let _ = fs_err::write(&cache_path, bytes);
@@ -1269,7 +1272,8 @@ fn php_entries(probe: &Probe) -> Vec<Entry> {
 /// semantics. Always probes fresh; [`cached_platform_packages`] is the
 /// cache-aware entry point pool building wants (#178).
 pub(crate) fn platform_packages(overrides: &Map<String, Value>) -> Result<Vec<Package>> {
-    packages_from_probe(run_probe().as_ref(), overrides)
+    let probe = resolve_php_path().and_then(|php_path| run_probe(&php_path));
+    packages_from_probe(probe.as_ref(), overrides)
 }
 
 /// Same as [`platform_packages`], except an unchanged `php` interpreter
@@ -1277,13 +1281,30 @@ pub(crate) fn platform_packages(overrides: &Map<String, Value>) -> Result<Vec<Pa
 /// `update`). `cache_dir` is the resolved store root (the same one
 /// `install`'s dist cache lives under); `None` (no cache dir resolved yet)
 /// falls back to a fresh probe every time, same as [`platform_packages`].
+///
+/// `php_override` (#353) names an exact binary to probe instead of
+/// [`resolve_php_path`]'s own PATH scan — `viv x`/`ensure_tool_env` resolving
+/// against a project's pinned PHP (`php::project_php_dir`) rather than
+/// whatever `php` happens to be on `PATH`. `None` (every caller but that one)
+/// is today's PATH-lookup behaviour, unchanged.
 pub(crate) fn cached_platform_packages(
     overrides: &Map<String, Value>,
     cache_dir: Option<&Path>,
+    php_override: Option<&Path>,
 ) -> Result<Vec<Package>> {
-    let probe = match (cache_dir, resolve_php_path()) {
-        (Some(cache_dir), Some(php_path)) => cached_probe(cache_dir, &php_path).or_else(run_probe),
-        _ => run_probe(),
+    let resolved_path;
+    let php_path = if let Some(path) = php_override {
+        Some(path)
+    } else {
+        resolved_path = resolve_php_path();
+        resolved_path.as_deref()
+    };
+    let probe = match (cache_dir, php_path) {
+        (Some(cache_dir), Some(php_path)) => {
+            cached_probe(cache_dir, php_path).or_else(|| run_probe(php_path))
+        }
+        (None, Some(php_path)) => run_probe(php_path),
+        (_, None) => None,
     };
     if probe.is_none() && !overrides.contains_key("php") {
         warn_no_php_once();
@@ -1562,10 +1583,11 @@ mod tests {
         let php_path = bin_dir.path().join("php");
         let counter = bin_dir.path().join("count");
         write_fake_php(&php_path, &counter);
-        // `run_probe`'s `Command::new("php")` does its own PATH lookup, so
-        // it has to resolve to this same fake script (and be serialised
-        // against every other test's own `PathGuard`, PATH being process-
-        // global).
+        // Not load-bearing for `cached_probe` itself any more (#353:
+        // `run_probe` runs the given `php_path` directly, no PATH lookup of
+        // its own) — kept so this test is serialised against every other
+        // one here that still does rely on `PATH` being process-global
+        // (`PathGuard`'s own doc comment).
         let _guard = PathGuard::prepend(bin_dir.path());
 
         let first = cached_probe(cache_dir.path(), &php_path).unwrap();
@@ -1599,12 +1621,30 @@ mod tests {
         write_fake_php(&bin_dir.path().join("php"), &bin_dir.path().join("count"));
         let _guard = PathGuard::prepend(bin_dir.path());
 
-        let packages = cached_platform_packages(&Map::new(), Some(cache_dir.path())).unwrap();
+        let packages = cached_platform_packages(&Map::new(), Some(cache_dir.path()), None).unwrap();
         let php = packages.iter().find(|p| p.name == "php").unwrap();
         assert_eq!(php.pretty_version, "8.4.1");
         assert!(
             cache_dir.path().join(PLATFORM_BUCKET).is_dir(),
             "a cache-miss detection must write the bucket back"
         );
+    }
+
+    /// #353: `php_override` reaches the real probe, not just the cache key —
+    /// `PATH` here names no `php` at all (an empty `PathGuard`), so a probe
+    /// that still succeeds and reports the fake script's own version can
+    /// only have come from the explicit override.
+    #[test]
+    fn cached_platform_packages_uses_the_override_instead_of_path() {
+        let bin_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let php_path = bin_dir.path().join("php");
+        write_fake_php(&php_path, &bin_dir.path().join("count"));
+        let _guard = PathGuard::prepend(Path::new("/does/not/exist"));
+
+        let packages =
+            cached_platform_packages(&Map::new(), Some(cache_dir.path()), Some(&php_path)).unwrap();
+        let php = packages.iter().find(|p| p.name == "php").unwrap();
+        assert_eq!(php.pretty_version, "8.4.1");
     }
 }

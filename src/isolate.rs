@@ -892,9 +892,18 @@ pub(crate) fn apply_for(
         return Ok(());
     }
 
-    let (_, _, scoper_env) =
-        tool::ensure_tool_env("humbug/php-scoper", Some(cache_dir), offline, false)
-            .with_context(|| format!("{}: resolving humbug/php-scoper", package.pretty_name()))?;
+    // #353: the same project pin `php_dir` above already resolved (its own
+    // caller's `php::project_php_dir`), so php-scoper's own version is
+    // resolved against it too rather than whatever `php` is on `PATH`.
+    let scoper_php_override = php_dir.map(|dir| dir.join("php"));
+    let (_, _, scoper_env) = tool::ensure_tool_env(
+        "humbug/php-scoper",
+        Some(cache_dir),
+        offline,
+        false,
+        scoper_php_override.as_deref(),
+    )
+    .with_context(|| format!("{}: resolving humbug/php-scoper", package.pretty_name()))?;
     let scoper_version = tool_package_version(&scoper_env, "humbug/php-scoper");
     let key = format!("{key_prefix}{scoper_version}");
     let dest = store.isolated_dir(&key)?;
@@ -1124,6 +1133,7 @@ fn wordpress_excludes_dir(cache_dir: &Path) -> Option<PathBuf> {
         Some(cache_dir),
         false,
         false,
+        None,
     ) {
         Ok((_, _, env_dir)) => {
             let dir = env_dir.join("vendor/sniccowp/php-scoper-wordpress-excludes/generated");

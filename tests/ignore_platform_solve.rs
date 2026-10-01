@@ -67,6 +67,7 @@ async fn update_fails_without_ignoring_the_missing_extension() {
         &HashMap::new(),
         None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
         None,
+        None,
         &IgnorePlatform::None,
     )
     .await
@@ -102,6 +103,7 @@ async fn ignore_platform_reqs_resolves_and_matches_composers_lock() {
         HashMap::new(),
         &HashMap::new(),
         None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
+        None,
         None,
         &IgnorePlatform::All,
     )
@@ -152,6 +154,7 @@ async fn ignore_platform_req_wildcard_resolves_and_matches_composers_lock() {
         HashMap::new(),
         &HashMap::new(),
         None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
+        None,
         None,
         &ignore,
     )

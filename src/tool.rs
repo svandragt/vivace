@@ -112,12 +112,31 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
         .map(String::as_str)
         .context("viv x needs a package, e.g. `viv x phpunit/phpunit`")?;
     let pass_args = pass_through(&args.command);
-    let (name, short_name, env_dir) =
-        ensure_tool_env(spec, Some(&cache_dir), offline, args.refresh)?;
+    let php_override = current_project_php_override(&cache_dir, offline)?;
+    let (name, short_name, env_dir) = ensure_tool_env(
+        spec,
+        Some(&cache_dir),
+        offline,
+        args.refresh,
+        php_override.as_deref(),
+    )?;
 
     let target = resolve_bin(&env_dir, &name, &short_name, args.bin.as_deref())?;
     let error = std::process::Command::new(&target).args(pass_args).exec();
     Err(anyhow::Error::from(error).context(format!("executing {}", target.display())))
+}
+
+/// `viv x`'s own notion of "the project" (#353), which has no `-d`/
+/// `--project-dir` of its own: the current directory, the same place `viv
+/// php install` looks for `composer.json`. A `config.platform.php` pin
+/// there resolves the tool's own dependencies against that PHP
+/// ([`php::project_php_dir`], installing it on a miss exactly like `viv run`
+/// does, honouring `--offline`) instead of whatever `php` happens to be on
+/// `PATH`. `Ok(None)` either way `project_php_dir` already means "use
+/// PATH" — no pin, or no `composer.json` here at all.
+fn current_project_php_override(cache_dir: &Path, offline: bool) -> Result<Option<PathBuf>> {
+    let project_dir = std::env::current_dir().context("resolving the current directory")?;
+    Ok(php::project_php_dir(&project_dir, Some(cache_dir), offline)?.map(|dir| dir.join("php")))
 }
 
 /// `run_x`'s own "resolve and install `spec` into its per-tool cache env,
@@ -130,11 +149,20 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
 ///
 /// Returns `(lowercased name, short name, env dir)`, the same three pieces
 /// `run_x` needs for `resolve_bin` right after calling this.
+///
+/// `php_override` (#353) names the exact `php` binary to resolve/install
+/// this tool's dependencies against — `run_x`'s own
+/// `current_project_php_override` when the current directory's
+/// `composer.json` pins one, `isolate.rs`'s own already-resolved project
+/// `php_dir` for its `humbug/php-scoper` env, `None` (PATH, today's
+/// behaviour) otherwise. Folded into the cache key below, so a pin change
+/// re-resolves instead of reusing an env resolved for a different PHP.
 pub fn ensure_tool_env(
     spec: &str,
     cache_dir: Option<&Path>,
     offline: bool,
     refresh: bool,
+    php_override: Option<&Path>,
 ) -> Result<(String, String, PathBuf)> {
     let cache_dir = match cache_dir {
         Some(dir) => dir.to_path_buf(),
@@ -148,7 +176,7 @@ pub fn ensure_tool_env(
         .with_context(|| format!("{name}: expected vendor/package"))?;
     let short_name = short_name.to_string();
 
-    let php_version = detect_php_version();
+    let php_version = detect_php_version(php_override);
     let key_input = format!("{constraint}|php={php_version}");
     let key = hex(Sha256::digest(key_input.as_bytes()));
 
@@ -186,7 +214,7 @@ pub fn ensure_tool_env(
             no_security_blocking: false,
             metadata_ttl: None,
         };
-        update::run(&update_args, Some(&cache_dir), offline)
+        update::run_impl(&update_args, Some(&cache_dir), offline, php_override)
             .with_context(|| format!("resolving {spec}"))?;
         let install_args = InstallArgs {
             no_dev: false,
@@ -211,7 +239,7 @@ pub fn ensure_tool_env(
             prefer_dist: false,
             no_suggest: false,
         };
-        install::run(&install_args, Some(&cache_dir), offline)
+        install::run_impl(&install_args, Some(&cache_dir), offline, true, php_override)
             .with_context(|| format!("installing {spec}"))?;
         fs_err::write(&marker, b"")?;
     }
@@ -355,14 +383,18 @@ fn split_spec(spec: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// The running `php` interpreter's own version, folded into a tool env's
-/// cache key so a different interpreter (or none installed) never reuses
-/// another one's resolve/install. `"unknown"` when `php` cannot be run at
-/// all, same fallback shape as `solver::pool_builder`'s own PHP detection
-/// (not reused directly: that one is private to the solver, and both copies
-/// are a few lines).
-fn detect_php_version() -> String {
-    std::process::Command::new("php")
+/// The `php` interpreter's own version, folded into a tool env's cache key
+/// so a different interpreter (or none installed) never reuses another
+/// one's resolve/install. `php_override` (#353) runs exactly that binary
+/// instead of PATH's `php` — a project's pinned PHP, when `ensure_tool_env`
+/// was given one, so changing the pin changes this string and re-resolves
+/// rather than reusing an env resolved for the old one. `"unknown"` when the
+/// chosen binary cannot be run at all, same fallback shape as
+/// `solver::pool_builder`'s own PHP detection (not reused directly: that one
+/// is private to the solver, and both copies are a few lines).
+fn detect_php_version(php_override: Option<&Path>) -> String {
+    let php_bin = php_override.unwrap_or_else(|| Path::new("php"));
+    std::process::Command::new(php_bin)
         .args(["-r", "echo PHP_VERSION;"])
         .output()
         .ok()
@@ -501,4 +533,52 @@ fn uninstall_tool(cache_dir: &Path, spec: &str) -> Result<()> {
 fn out(message: &str) {
     use std::io::Write as _;
     let _ = writeln!(std::io::stdout().lock(), "{message}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect_php_version;
+
+    /// `<cache>/php-v0/<version>-<os>-<arch>/php`-shaped (`tests/tool.rs`'s
+    /// own `fake_php_install`, duplicated rather than shared: that one lives
+    /// in an integration test's own crate, unreachable from here) — a
+    /// `php -r 'echo PHP_VERSION;'` stand-in that just echoes `version`, so
+    /// `detect_php_version(Some(&path))` proves it ran *this* binary and not
+    /// whatever `php` sits on `PATH`.
+    fn write_fake_php(path: &std::path::Path, version: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs_err::write(path, format!("#!/bin/sh\nprintf '%s' '{version}'\n")).unwrap();
+        let mut perms = fs_err::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs_err::set_permissions(path, perms).unwrap();
+    }
+
+    /// #353: the tool-env cache key folds in `detect_php_version`'s result,
+    /// so two different `php_override` binaries (standing in for two
+    /// different `config.platform.php` pins) must report two different
+    /// versions — proving a pin change changes the key instead of reusing
+    /// an env resolved for the other PHP.
+    #[test]
+    fn detect_php_version_uses_the_override_not_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let php_a = dir.path().join("php-a");
+        let php_b = dir.path().join("php-b");
+        write_fake_php(&php_a, "8.1.0");
+        write_fake_php(&php_b, "8.3.0");
+
+        let version_a = detect_php_version(Some(&php_a));
+        let version_b = detect_php_version(Some(&php_b));
+        assert_eq!(version_a, "8.1.0");
+        assert_eq!(version_b, "8.3.0");
+        assert_ne!(
+            version_a, version_b,
+            "a changed pin must change the cache key input"
+        );
+    }
+
+    #[test]
+    fn detect_php_version_falls_back_to_unknown_for_a_missing_binary() {
+        let missing = std::path::Path::new("/does/not/exist/php");
+        assert_eq!(detect_php_version(Some(missing)), "unknown");
+    }
 }

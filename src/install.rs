@@ -364,13 +364,23 @@ fn verify_platform_requirements(
     dev: bool,
     ignore: &IgnorePlatform,
     cache_dir: Option<&Path>,
+    php_override: Option<&Path>,
     snapshot: &Snapshot,
 ) -> Result<()> {
     if *ignore == IgnorePlatform::All {
         return Ok(());
     }
-    let Some(php_path) = crate::solver::platform::resolve_php_path() else {
-        return Ok(());
+    // #353: an explicit override (`tool::ensure_tool_env` resolving a
+    // project's pinned PHP) is checked against regardless of `PATH`; with
+    // none given (every other caller, unchanged), no `php` on `PATH` at all
+    // still skips the check outright, same as before this override existed.
+    let php_path = if let Some(path) = php_override {
+        path.to_path_buf()
+    } else {
+        let Some(path) = crate::solver::platform::resolve_php_path() else {
+            return Ok(());
+        };
+        path
     };
 
     let sidecar =
@@ -383,8 +393,11 @@ fn verify_platform_requirements(
     }
 
     let mut cache = ConstraintCache::new();
-    let mut packages =
-        crate::solver::platform::cached_platform_packages(&root.config.platform, cache_dir)?;
+    let mut packages = crate::solver::platform::cached_platform_packages(
+        &root.config.platform,
+        cache_dir,
+        php_override,
+    )?;
     for package in lock.packages(dev) {
         if let Some(entry) = platform_relevant_entry(&package.raw) {
             packages.push(pool_builder::package_from_lock_entry(&entry, &mut cache)?);
@@ -603,7 +616,7 @@ struct State {
 }
 
 pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
-    run_impl(args, cache_dir, offline, true)
+    run_impl(args, cache_dir, offline, true, None)
 }
 
 /// `update`/`require`/`remove` chaining into `install` once `composer.lock`
@@ -615,14 +628,21 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Resul
 /// `post-install-cmd` (`Installer::run`'s own event-name switch on its
 /// `update` flag — Composer never fires both pairs for one invocation).
 pub fn run_after_update(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
-    run_impl(args, cache_dir, offline, false)
+    run_impl(args, cache_dir, offline, false, None)
 }
 
-fn run_impl(
+/// [`run`]/[`run_after_update`]'s shared body, plus `php_override` (#353):
+/// `update.rs`'s own `run_impl` (chaining `update` into `install`) and
+/// `tool::ensure_tool_env` both call this directly (same crate) with the
+/// real project's resolved pinned PHP, past the fixed 3-arg public
+/// `run`/`run_after_update` neither can use for that. `None` from both
+/// public wrappers, unchanged.
+pub(crate) fn run_impl(
     args: &InstallArgs,
     cache_dir: Option<&Path>,
     offline: bool,
     dispatch_install_cmd_events: bool,
+    php_override: Option<&Path>,
 ) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
@@ -802,6 +822,7 @@ fn run_impl(
         dev,
         &ignore_platform_reqs,
         Some(&cache_dir),
+        php_override,
         &snapshot,
     )?;
 

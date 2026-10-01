@@ -822,6 +822,7 @@ pub async fn escalate_resolve<T: Transport>(
                         &locked_by_name,
                         None,
                         cache_dir,
+                        None,
                         &crate::autoload::platform::IgnorePlatform::None,
                     )
                     .await

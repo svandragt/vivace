@@ -310,6 +310,7 @@ pub async fn build<T: Transport>(
         &HashMap::new(),
         None,
         None,
+        None,
         &IgnorePlatform::None,
     )
     .await
@@ -345,8 +346,8 @@ pub async fn build<T: Transport>(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors build plus one seed slice, the minimal-changes pin set, the current lock's \
-              packages (#345), the advisory pool filter, the platform-probe cache dir, and the \
-              ignore-platform-reqs filter"
+              packages (#345), the advisory pool filter, the platform-probe cache dir, the \
+              platform-probe php override (#353), and the ignore-platform-reqs filter"
 )]
 pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -359,6 +360,7 @@ pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
     locked_by_name: &HashMap<String, Value>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
+    php_override: Option<&Path>,
     ignore: &IgnorePlatform,
 ) -> Result<BuildResult> {
     let allow_names: HashSet<String> = locked_by_name.keys().cloned().collect();
@@ -374,6 +376,7 @@ pub async fn build_seeded<T: Transport, A: AdvisoriesTransport>(
         preferred,
         advisories,
         cache_dir,
+        php_override,
         None,
         ignore,
     )
@@ -522,6 +525,7 @@ pub async fn build_partial<T: Transport>(
         None,
         None,
         None,
+        None,
         &IgnorePlatform::None,
     )
     .await
@@ -549,8 +553,8 @@ pub async fn build_partial<T: Transport>(
     clippy::too_many_arguments,
     reason = "mirrors build_partial plus the project directory (#312's root-version guess), \
               one seed slice, the minimal-changes pin set, the advisory pool filter, the \
-              platform-probe cache dir, the ignore-platform-reqs filter, and lock_merge's \
-              --as-of cutoff"
+              platform-probe cache dir, the platform-probe php override (#353), the \
+              ignore-platform-reqs filter, and lock_merge's --as-of cutoff"
 )]
 pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -564,6 +568,7 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     preferred: &HashMap<String, semver::NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
+    php_override: Option<&Path>,
     as_of: Option<i64>,
     ignore: &IgnorePlatform,
 ) -> Result<BuildResult> {
@@ -707,7 +712,7 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         .cloned()
         .unwrap_or_default();
     let platform_started = Instant::now();
-    let mut packages = cached_platform_packages(&platform_overrides, cache_dir)?;
+    let mut packages = cached_platform_packages(&platform_overrides, cache_dir, php_override)?;
     tracing::debug!(
         elapsed_ms = platform_started.elapsed().as_millis(),
         "detected platform packages (shells out to `php`)"
