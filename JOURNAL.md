@@ -1770,3 +1770,13 @@ against 0.5, and the AWS SDK with the Guzzle stack, the pairing behind
 the earlier incidents. Every one is a plugin viv writes. Holds on the
 plugin side; the build would run php-scoper on the pinned PHP over the
 named plugins' bundled trees. Decision open.
+
+## 2026-10-01: a bundled library that clashes is named (#350)
+
+After linking, `viv install` reads each installed plugin's bundled
+dependency tree and names every library the site also locks at
+another version where the plugin's copy is unprefixed, with the one
+line that fixes it: `Run viv isolate <package> to keep both.`
+Libraries built to coexist are listed in a data file and skipped. The
+verdict is cached per plugin archive and lock hash, so a warm install
+re-reads nothing; projects with no plugin pay nothing.
