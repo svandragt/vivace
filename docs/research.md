@@ -1016,6 +1016,17 @@ bundle this large, reported as found rather than patched around; a
 `memory_limit` override for the scoper run is a follow-up, not built
 here.
 
+
+On the five measured sites: the migration plugin on site A isolates
+end to end (403 files prefixed in 0.6 s, every file passes `php -l`,
+the load check passes, `checked` recorded). The AWS SDK plugin on site
+D, the case behind the three incidents, is not yet verified: the site
+runs Altis, whose own Composer plugins viv refuses, so `viv install`
+there needs `--no-plugins`, and `--no-plugins` also disables the
+installer-paths adapter, so the plugin lands in `vendor/` instead of
+`content/plugins/`, as Composer's own `--no-plugins` would. The next
+step is not in this candidate: classify Altis's plugins as data file,
+adapter or inert (#355), then re-run site D.
 ### Candidate 3.3: a lock that pins commits and merges by record
 
 **Question.** If branch dependencies are pinned to commits and a

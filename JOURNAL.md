@@ -1807,3 +1807,13 @@ migration plugin on site A passes (403 files, 0.6 s); the AWS SDK
 plugin on site D exhausts php-scoper's 128 MB default on 2,386 files,
 so the scoper needs `memory_limit=-1`, and `viv isolate` needs
 `--no-plugins` for Altis sites. Both next.
+
+## 2026-10-01: milestone g3 research 4 closes
+
+`viv isolate` exists, opt-in, with detection always on: a bundled
+library that clashes is named at every install, and a named plugin
+gets its bundled tree prefixed by php-scoper on the project's PHP,
+checked with `php -l` and a stubbed load before it is cached. Proven
+end to end on one real site. The AWS SDK case on an Altis site waits
+on Altis's own plugins, which viv refuses; that is the next adapter
+decision, and it is now one the maintainer has hit.
