@@ -793,7 +793,7 @@ could be if it no longer had to produce Composer's output.
 Status, 2026-09-29: all five candidates measured. 3.1 (managed PHP) and
 3.4 (installs that run no code) hold and are built, released in 0.19.0.
 3.3 (a lock that pins commits) holds and is built (#343 to #345, #347): 46 of the 52 merges chapter 1 left to a person finish with the shipped driver. 3.2 (isolation per plugin) holds on the plugin side after a five-site
-follow-up, build decision open; 3.5 (simpler rules) measured, not built.
+follow-up and is being built opt-in (#350 to #352); 3.5 (simpler rules) measured, not built.
 
 ### Rules for generation 3
 
@@ -976,8 +976,16 @@ linking, viv rewrites that plugin's bundled `vendor/` under a prefix
 derived from the plugin slug and records the prefix in the lock. The
 rewriting is php-scoper's job, run on the project's pinned PHP through
 `viv x humbug/php-scoper`, so candidate 3.1 pays for this one; a
-prefixer in Rust would be a PHP parser and is not proposed. The build
-decision is the maintainer's.
+prefixer in Rust would be a PHP parser and is not proposed.
+
+**Decision, 2026-10-01: build, opt-in.** Detection is on in every mode:
+viv names a bundled library that clashes with the site's copy and the
+one-line fix. Prefixing happens only for a plugin named in
+`extra.viv.isolate`, in every mode, because two copies of a library that
+migrates or writes the same database tables would fight, and no site
+should pay that risk unasked. #350 detection, #351 the setting and the
+php-scoper run on the pinned PHP, #352 the boot check, in the `g3
+research 4: isolate per plugin` milestone.
 
 ### Candidate 3.3: a lock that pins commits and merges by record
 
