@@ -883,6 +883,14 @@ fn run_impl(
     // path skips all of that for speed, which is only safe when there is no
     // `scripts` listener relying on running anyway.
     if plan.is_noop() && read_state(&state_path).as_ref() == Some(&state) && !scripts.enabled() {
+        crate::isolate::check(
+            &lock,
+            dev,
+            &vendor_dir,
+            &project_dir,
+            Some(&cache_dir),
+            || snapshot.lock_sha256().map(str::to_string),
+        )?;
         out("Nothing to install, update or remove");
         return Ok(());
     }
@@ -1046,6 +1054,17 @@ fn run_impl(
         elapsed_ms = link_started.elapsed().as_millis(),
         "linked packages into vendor"
     );
+
+    // #350: every installed plugin's bundled `vendor/` against the site's
+    // own lock, once linking has put both on disk to compare.
+    crate::isolate::check(
+        &lock,
+        dev,
+        &vendor_dir,
+        &project_dir,
+        Some(&cache_dir),
+        || snapshot.lock_sha256().map(str::to_string),
+    )?;
 
     // #53/#93: cweagans/composer-patches and drupal/core-composer-scaffold.
     // Runs before the autoloader is (re)generated, same as Composer's own

@@ -232,6 +232,36 @@ fn rules() -> &'static [Rule] {
     })
 }
 
+/// #350's coexist-by-design library list (`data/coexist-libraries.toml`),
+/// embedded the same way as `FILES` but outside the `Rule` machinery: it
+/// answers "is this bundled library exempt", not "where does this package
+/// install", so it has no `install_path`/`Adapter` caller at all —
+/// `isolate::check`'s only reader.
+#[derive(Deserialize)]
+struct CoexistLibraries {
+    libraries: Vec<String>,
+}
+
+fn coexist_patterns() -> &'static [String] {
+    static PATTERNS: OnceLock<Vec<String>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        toml::from_str::<CoexistLibraries>(include_str!("data/coexist-libraries.toml"))
+            .expect("embedded coexist-libraries.toml")
+            .libraries
+    })
+}
+
+/// Whether `name` (a lowercased `vendor/name`) is on the coexist-by-design
+/// list: a trailing `*` in the data file matches by prefix, anything else
+/// matches the name exactly.
+pub(crate) fn is_coexist_library(name: &str) -> bool {
+    coexist_patterns().iter().any(|pattern| {
+        pattern
+            .strip_suffix('*')
+            .map_or_else(|| pattern == name, |prefix| name.starts_with(prefix))
+    })
+}
+
 /// The project-relative install directory `package` maps to under `root`'s
 /// `extra` (`docs/plugin-strategy.md`'s rule 1: `composer/installers` and
 /// the `WordPress` core installer pair), or `None` to leave the package at

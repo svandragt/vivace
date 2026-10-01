@@ -34,7 +34,7 @@ use crate::store::Store;
 
 mod c3;
 mod craft;
-mod data;
+pub(crate) mod data;
 mod discovery;
 mod drupal_scaffold;
 mod installers;
