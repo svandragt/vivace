@@ -323,7 +323,43 @@ pub fn export(project_dir: &Path) -> Result<String> {
         platform_overrides: &aggregates.platform_overrides,
         aliases: &aliases,
     };
-    crate::lock_writer::write(&non_dev, Some(&dev), &options, &composer_json)
+    let generated = crate::lock_writer::write(&non_dev, Some(&dev), &options, &composer_json)?;
+    let isolated_root = crate::lock::root_from_value(&root)?;
+    with_isolate_extra(generated, &crate::isolate::prefix_map(&isolated_root))
+}
+
+/// #352: Composer's own lock format carries no top-level `extra` key
+/// (`Locker::setLockData` never writes one), but it ignores unknown
+/// top-level keys reading one back in — `devbox run -- composer validate
+/// --no-check-all` against a lock built this way is the test for that, not
+/// a guess. Added only once a project has at least one isolated plugin, so
+/// one with none exports byte-identical to before this existed (the whole
+/// reason this is a post-processing pass over `lock_writer::write`'s own
+/// output rather than a new field on [`crate::lock_writer::LockOptions`]
+/// threaded through every one of its other callers, none of which have
+/// anything to say about `extra.viv.isolate`).
+fn with_isolate_extra(
+    generated: String,
+    isolate: &std::collections::BTreeMap<String, String>,
+) -> Result<String> {
+    if isolate.is_empty() {
+        return Ok(generated);
+    }
+    let mut value: Value =
+        serde_json::from_str(&generated).context("parsing the generated composer.lock")?;
+    let obj = value
+        .as_object_mut()
+        .context("the generated composer.lock must be a JSON object")?;
+    obj.insert(
+        "extra".to_string(),
+        serde_json::json!({"viv": {"isolate": isolate}}),
+    );
+    let mut buf = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
+    let mut serializer = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    serde::Serialize::serialize(&value, &mut serializer)?;
+    buf.push(b'\n');
+    Ok(String::from_utf8(buf)?)
 }
 
 /// Which of `root_aliases`' declared alias targets (`extract_alias`'s own

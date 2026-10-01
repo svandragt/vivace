@@ -987,6 +987,35 @@ should pay that risk unasked. #350 detection, #351 the setting and the
 php-scoper run on the pinned PHP, #352 the boot check, in the `g3
 research 4: isolate per plugin` milestone.
 
+**Built, 2026-10-01.** `viv isolate <package>` scopes a plugin's bundled
+`vendor/` with php-scoper, then checks it before the result ever reaches
+the store or the plugin's install path: `php -l` on every file the scoper
+wrote, then a load check that requires the scoped `vendor/autoload.php`
+and the plugin's own main file (the one with the `Plugin Name:` header)
+under a generated bootstrap defining the `WordPress` function stubs
+php-scoper's own excludes assume are global (`add_action`, `do_action`,
+`plugin_dir_path` and the rest, a data file beside the plugin ones,
+extensible). A failure — a syntax error, or a class the check can't load —
+drops the build, leaves the plugin's plain archive linked, and `viv
+isolate` exits 1 naming the file and message; `wp plugin activate` (needs
+a database) is not attempted. A pass records `checked: <php-scoper
+version>` beside the prefix in `.vivace-state`, so a later php-scoper
+upgrade re-scopes and re-checks instead of trusting a stale build.
+`viv lock export` carries the isolate map into `composer.lock`'s own
+`extra.viv.isolate`, a key Composer ignores (`composer validate
+--no-check-all` against a generated lock with and without it produces the
+same warnings either way). Exercised with the real php-scoper, on the
+project's own pinned PHP, against two of the five sites on scratch
+copies: on A, `wpackagist-plugin/wp-migrate-db`'s bundled
+`phpdotenv`/`phpoption` isolated cleanly — 403 files prefixed in 0.64s,
+264 `.php` files linted, the load check passed first try. On D,
+`humanmade-pro/multilingualpress`'s bundled AWS SDK tree (2,386 files)
+exhausted the pinned PHP's default 128 MB `memory_limit` inside the
+scoper run itself, before the check ever got to run — a real ceiling on a
+bundle this large, reported as found rather than patched around; a
+`memory_limit` override for the scoper run is a follow-up, not built
+here.
+
 ### Candidate 3.3: a lock that pins commits and merges by record
 
 **Question.** If branch dependencies are pinned to commits and a

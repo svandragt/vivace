@@ -613,6 +613,37 @@ struct State {
     /// so a `.vivace-state` written before #351 still parses.
     #[serde(default)]
     isolate: BTreeMap<String, String>,
+    /// #352's own sibling map: the humbug/php-scoper version active the
+    /// last time this package's scoped tree actually passed `isolate::check`
+    /// (the `php -l` + load check, not #350's clash check). Only ever
+    /// written by a fresh scope-and-check (`isolate::apply_for`'s build
+    /// branch, keyed by the same (archive, prefix, scoper version) as the
+    /// store itself); a cache hit carries its existing entry forward
+    /// unchanged, same as `isolate` above. A sibling map rather than
+    /// widening `isolate`'s own values to a struct: every existing reader
+    /// of `isolate` (`read_isolate_state`, `prefix_map`, `--list`) keeps
+    /// reading plain prefixes, no round trip through a new shape.
+    /// `#[serde(default)]` so a `.vivace-state` written before #352 still
+    /// parses.
+    #[serde(default)]
+    isolate_checked: BTreeMap<String, String>,
+}
+
+/// The on-disk `isolate_checked` map, filtered down to `isolate`'s own keys:
+/// a package no longer named in `extra.viv.isolate` (or renamed) drops its
+/// stale entry here rather than carrying it forever, and a package that
+/// hasn't been (re)built this run keeps whatever was last recorded for it —
+/// shared by the fast no-op path (seeds the freshly built [`State`] so it
+/// compares equal to what's already on disk) and the real install/`viv
+/// isolate` paths (seeds the baseline this run's `apply_for` calls then
+/// overwrite per package).
+pub(crate) fn seed_isolate_checked(
+    vendor_dir: &Path,
+    isolate: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut checked = read_isolate_checked(vendor_dir);
+    checked.retain(|name, _| isolate.contains_key(name));
+    checked
 }
 
 pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -900,12 +931,18 @@ pub(crate) fn run_impl(
     // scoper actually ran this time.
     let isolated_names: HashSet<String> =
         crate::isolate::isolated_names(&root).into_iter().collect();
-    let state = State {
+    let isolate_prefixes = crate::isolate::prefix_map(&root);
+    // #352: seeded from whatever `.vivace-state` already recorded, so a true
+    // no-op (nothing below ever calls `isolate::apply_for`) compares equal
+    // to what's on disk; the per-plugin loop further down overwrites an
+    // entry only for a package it actually (re)scoped-and-checked this run.
+    let mut state = State {
         content_hash: lock.content_hash.clone(),
         dev,
         composer_json_sha256: snapshot.composer_json_sha256.clone(),
         patches_fingerprint: patches_fingerprint(&plugins, &root, &project_dir)?,
-        isolate: crate::isolate::prefix_map(&root),
+        isolate_checked: seed_isolate_checked(&vendor_dir, &isolate_prefixes),
+        isolate: isolate_prefixes,
     };
     let mut scripts = scripts::Runner::new(
         &composer_json_value,
@@ -1112,7 +1149,7 @@ pub(crate) fn run_impl(
             if !plugin_dir.is_dir() {
                 continue;
             }
-            crate::isolate::apply_for(
+            let scoper_version = crate::isolate::apply_for(
                 package,
                 &plugin_dir,
                 &store,
@@ -1121,6 +1158,7 @@ pub(crate) fn run_impl(
                 args.link_mode,
                 offline,
             )?;
+            state.isolate_checked.insert(name.clone(), scoper_version);
         }
     }
 
@@ -1392,6 +1430,7 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
         }
     }
 
+    let isolate_prefixes = crate::isolate::prefix_map(&root);
     let state = State {
         content_hash: lock.content_hash.clone(),
         dev,
@@ -1400,8 +1439,10 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
         // #351: purely derived from `extra.viv.isolate` + the slug, so it
         // stays correct even though `dump-autoload` never runs the scoper
         // itself (it only ever regenerates an autoloader over whatever is
-        // already on disk).
-        isolate: crate::isolate::prefix_map(&root),
+        // already on disk). #352's `isolate_checked` carries forward
+        // unchanged for the same reason: no scoping happens here to recheck.
+        isolate_checked: seed_isolate_checked(&vendor_dir, &isolate_prefixes),
+        isolate: isolate_prefixes,
     };
     let state_path = vendor_dir.join("composer/.vivace-state");
 
@@ -2031,16 +2072,17 @@ fn read_state(path: &Path) -> Option<State> {
     serde_json::from_str(&content).ok()
 }
 
-/// #351's `viv isolate <package>`/`--rm`: overwrites just `State::isolate`
-/// in `.vivace-state`, leaving every other field as the last real install
-/// left it (stale now, but the next one rewrites the whole file anyway —
-/// `composer_json_sha256` already changed the moment `extra.viv.isolate`
-/// did). A project with no state file yet (never installed) gets one with
-/// placeholder install-identity fields, overwritten wholesale the first
-/// time `viv install` actually runs.
+/// #351's `viv isolate <package>`/`--rm`: overwrites `State::isolate` and
+/// `State::isolate_checked` in `.vivace-state`, leaving every other field as
+/// the last real install left it (stale now, but the next one rewrites the
+/// whole file anyway — `composer_json_sha256` already changed the moment
+/// `extra.viv.isolate` did). A project with no state file yet (never
+/// installed) gets one with placeholder install-identity fields, overwritten
+/// wholesale the first time `viv install` actually runs.
 pub(crate) fn write_isolate_state(
     vendor_dir: &Path,
     isolate: &BTreeMap<String, String>,
+    checked: &BTreeMap<String, String>,
 ) -> Result<()> {
     let state_path = vendor_dir.join("composer/.vivace-state");
     let mut state = read_state(&state_path).unwrap_or(State {
@@ -2049,8 +2091,10 @@ pub(crate) fn write_isolate_state(
         composer_json_sha256: String::new(),
         patches_fingerprint: None,
         isolate: BTreeMap::new(),
+        isolate_checked: BTreeMap::new(),
     });
     state.isolate = isolate.clone();
+    state.isolate_checked = checked.clone();
     write_atomic(&state_path, &serde_json::to_vec(&state)?)
 }
 
@@ -2059,6 +2103,15 @@ pub(crate) fn write_isolate_state(
 pub(crate) fn read_isolate_state(vendor_dir: &Path) -> BTreeMap<String, String> {
     read_state(&vendor_dir.join("composer/.vivace-state"))
         .map(|state| state.isolate)
+        .unwrap_or_default()
+}
+
+/// [`read_isolate_state`]'s own sibling: package name -> the
+/// humbug/php-scoper version #352's own check last passed against, or an
+/// empty map for a project never installed (or installed before #352).
+pub(crate) fn read_isolate_checked(vendor_dir: &Path) -> BTreeMap<String, String> {
+    read_state(&vendor_dir.join("composer/.vivace-state"))
+        .map(|state| state.isolate_checked)
         .unwrap_or_default()
 }
 

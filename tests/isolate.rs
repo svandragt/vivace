@@ -278,20 +278,42 @@ fn a_second_install_reprints_the_cached_message_without_reading_the_plugin_tree(
 /// declaration — the fake `php-scoper` below rewrites that token, which is
 /// enough to prove the whole pipeline (copy, scope, classmap-regenerate,
 /// cache, link) without fighting backslash escaping through a shell
-/// script's own `sed` call for a real `namespace Foo\Bar;` line.
+/// script's own `sed` call for a real `namespace Foo\Bar;` line. #352's own
+/// `class_exists` check (the main file, below) is what actually exercises
+/// the regenerated autoloader, not just the file's own text.
 const ORIGINAL_TOKEN: &str = "ORIGINAL_NAMESPACE_TOKEN";
 const REWRITTEN_TOKEN: &str = "Viv_Isolated_IsolatePlugin";
 
+/// #352: the main file's own load check — `class_exists` on the class
+/// under its *rewritten* namespace, `or throw`, so a fake scoper that
+/// leaves the string unprefixed (`FakeScoperMode::LeaveUnrewritten`, below)
+/// fails the same way a real `exclude-classes` miss would.
+fn isolate_plugin_main_php() -> Vec<u8> {
+    format!(
+        "<?php\n// Plugin Name: Isolate Plugin\nclass_exists('{REWRITTEN_TOKEN}\\\\Baz', true) or \
+         throw new \\RuntimeException('{REWRITTEN_TOKEN}\\\\Baz missing');\n"
+    )
+    .into_bytes()
+}
+
 fn isolate_plugin_zip() -> Vec<u8> {
+    // `autoload.psr-4` maps the package's own root (an empty relative path)
+    // so the classmap scan `dump_scoped_autoload` runs after scoping has a
+    // directory to look in at all — the scan itself reads each file's own
+    // *current* namespace, not this declared prefix (`dump_scoped_autoload`'s
+    // own doc comment), which is exactly what lets `class_exists` below find
+    // `Baz` under its rewritten name without this entry ever changing.
     let installed_json = json!({
-        "packages": [{"name": "foo/bar", "version": "1.0.0", "type": "library"}]
+        "packages": [{
+            "name": "foo/bar",
+            "version": "1.0.0",
+            "type": "library",
+            "autoload": {"psr-4": {"Foo\\Bar\\": ""}},
+        }]
     })
     .to_string();
     zip_of_files(&[
-        (
-            "isolate-plugin.php",
-            b"<?php\n// Plugin Name: Isolate Plugin\n",
-        ),
+        ("isolate-plugin.php", &isolate_plugin_main_php()),
         ("vendor/composer/installed.json", installed_json.as_bytes()),
         (
             "vendor/foo/bar/Baz.php",
@@ -390,12 +412,25 @@ fn tool_env_key() -> String {
 }
 
 /// Primes `cache_dir`'s `tools-v0/humbug/php-scoper/<key>/` as if `viv x`
-/// had already resolved and installed it: a `.viv-tool-complete` marker,
-/// an `installed.json` entry (name, a fake version, one `bin`), and the
-/// fake script itself at `vendor/bin/php-scoper` — so `apply_for`'s own
-/// `tool::ensure_tool_env` call takes its warm path (a stat, nothing else)
-/// and never reaches the network this test must not touch.
-fn prime_fake_php_scoper(cache_dir: &Path, key: &str, called_marker: &Path) {
+/// had already resolved and installed it: a `.viv-tool-complete` marker, an
+/// `installed.json` entry (name, `version`, one `bin`), and a fake script at
+/// `vendor/bin/php-scoper` that always copies the input tree over
+/// `--output-dir` (`cp -a`, same as the real tool's own "every file it
+/// finds" behaviour) then runs `rewrite_body` (a shell fragment; empty
+/// leaves the copy untouched) — so `apply_for`'s own `tool::ensure_tool_env`
+/// call takes its warm path (a stat, nothing else) and never reaches the
+/// network this test must not touch. Re-priming the same `key` with a
+/// different `version` overwrites `installed.json` in place: `tool_env_key`
+/// never depends on the scoper's own reported version, only the PHP one, so
+/// this is exactly #352's "a later run with a different php-scoper version"
+/// case, not a second tool env.
+fn prime_fake_php_scoper(
+    cache_dir: &Path,
+    key: &str,
+    called_marker: &Path,
+    version: &str,
+    rewrite_body: &str,
+) {
     let env_dir = cache_dir
         .join("tools-v0")
         .join("humbug")
@@ -408,7 +443,7 @@ fn prime_fake_php_scoper(cache_dir: &Path, key: &str, called_marker: &Path) {
         json!({
             "packages": [{
                 "name": "humbug/php-scoper",
-                "version": "0.0.0-fake",
+                "version": version,
                 "bin": ["bin/php-scoper"],
             }]
         })
@@ -418,10 +453,8 @@ fn prime_fake_php_scoper(cache_dir: &Path, key: &str, called_marker: &Path) {
     let script = format!(
         "#!/bin/sh\nset -e\necho called >> {marker}\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  case \
          \"$1\" in\n    --output-dir) out=\"$2\"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\nmkdir \
-         -p \"$out\"\ncp -a ./. \"$out/\"\nf=\"$out/vendor/foo/bar/Baz.php\"; sed 's/{from}/{to}/' \"$f\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"\n",
+         -p \"$out\"\ncp -a ./. \"$out/\"\n{rewrite_body}\n",
         marker = called_marker.display(),
-        from = ORIGINAL_TOKEN,
-        to = REWRITTEN_TOKEN,
     );
     let bin = env_dir.join("vendor/bin/php-scoper");
     fs::write(&bin, script).unwrap();
@@ -429,6 +462,33 @@ fn prime_fake_php_scoper(cache_dir: &Path, key: &str, called_marker: &Path) {
     std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
     fs::set_permissions(&bin, perms).unwrap();
     fs::write(env_dir.join(".viv-tool-complete"), b"").unwrap();
+}
+
+const FAKE_SCOPER_VERSION: &str = "0.0.0-fake";
+
+/// The fake scoper's own "good" rewrite: `foo/bar`'s single file's
+/// namespace token, prefixed — exactly what a real php-scoper run would do
+/// to it, just via `sed` instead of the real AST rewrite.
+fn rewrite_the_namespace_token() -> String {
+    format!(
+        "f=\"$out/vendor/foo/bar/Baz.php\"; sed 's/{ORIGINAL_TOKEN}/{REWRITTEN_TOKEN}/' \"$f\" > \
+         \"$f.tmp\" && mv \"$f.tmp\" \"$f\""
+    )
+}
+
+/// #352: a fake scoper that copies the input tree straight through with no
+/// rewrite at all — syntactically valid PHP, but `foo/bar\Baz`'s class
+/// stays under its own original namespace, so the main file's own
+/// `class_exists` check (looking for the *rewritten* name) never finds it.
+fn leave_the_class_unprefixed() -> String {
+    String::new()
+}
+
+/// #352: a fake scoper whose output replaces `foo/bar`'s own file with
+/// invalid PHP — `php -l`'s own failure case, caught before the load check
+/// ever runs.
+fn corrupt_a_rewritten_file() -> String {
+    "printf '<?php\\nclass {\\n' > \"$out/vendor/foo/bar/Baz.php\"".to_string()
 }
 
 /// Primes `sniccowp/php-scoper-wordpress-excludes`'s own tool env the same
@@ -458,6 +518,24 @@ fn called_count(marker: &Path) -> usize {
     fs::read_to_string(marker).map_or(0, |content| content.lines().count())
 }
 
+/// `.vivace-state`'s own JSON, parsed — #352's `isolate_checked` map lives
+/// here beside `isolate`'s own prefixes.
+fn read_vivace_state(project: &Path) -> serde_json::Value {
+    serde_json::from_str(
+        &fs::read_to_string(project.join("vendor/composer/.vivace-state")).unwrap(),
+    )
+    .unwrap()
+}
+
+/// `cache_dir`'s own `isolated-v0` bucket, every entry — empty after a
+/// failed `viv isolate` (#352's own check removes `dest` before returning),
+/// non-empty after a real build.
+fn isolated_bucket_entries(cache_dir: &Path) -> Vec<PathBuf> {
+    fs::read_dir(cache_dir.join("isolated-v0"))
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default()
+}
+
 #[test]
 fn isolate_add_list_and_a_second_install_use_the_cache_with_no_scoper_run() {
     if skip_without_php() {
@@ -470,7 +548,13 @@ fn isolate_add_list_and_a_second_install_use_the_cache_with_no_scoper_run() {
 
     let key = tool_env_key();
     let called_marker = ctx.cache.path().join("fake-scoper-called");
-    prime_fake_php_scoper(ctx.cache.path(), &key, &called_marker);
+    prime_fake_php_scoper(
+        ctx.cache.path(),
+        &key,
+        &called_marker,
+        FAKE_SCOPER_VERSION,
+        &rewrite_the_namespace_token(),
+    );
     prime_fake_wordpress_excludes(ctx.cache.path(), &key);
 
     // Materialise the plain archive first: `viv isolate` refuses to isolate
@@ -506,6 +590,11 @@ fn isolate_add_list_and_a_second_install_use_the_cache_with_no_scoper_run() {
             .contains(REWRITTEN_TOKEN),
         "the rewritten file reached the plugin's real install path"
     );
+    assert_eq!(
+        read_vivace_state(project)["isolate_checked"]["acme/isolate-plugin"],
+        json!(FAKE_SCOPER_VERSION),
+        "the scoper version is recorded beside the prefix once the check passes"
+    );
     let composer_json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(project.join("composer.json")).unwrap()).unwrap();
     assert_eq!(
@@ -533,6 +622,32 @@ fn isolate_add_list_and_a_second_install_use_the_cache_with_no_scoper_run() {
         fs::read_to_string(&scoped_file)
             .unwrap()
             .contains(REWRITTEN_TOKEN)
+    );
+
+    // #352: a different humbug/php-scoper version is a different store key
+    // regardless of the plugin or its prefix, so this re-scopes (and
+    // re-checks) even though nothing about the plugin itself changed.
+    let bumped_version = "0.0.1-fake";
+    prime_fake_php_scoper(
+        ctx.cache.path(),
+        &key,
+        &called_marker,
+        bumped_version,
+        &rewrite_the_namespace_token(),
+    );
+    ctx.viv()
+        .args(["isolate", "acme/isolate-plugin"])
+        .assert()
+        .success();
+    assert_eq!(
+        called_count(&called_marker),
+        2,
+        "a scoper version bump must run the scoper again"
+    );
+    assert_eq!(
+        read_vivace_state(project)["isolate_checked"]["acme/isolate-plugin"],
+        json!(bumped_version),
+        "the recorded version reflects the re-check, not the stale one"
     );
 
     // `--rm` restores the plain, unscoped tree and drops the composer.json
@@ -566,4 +681,100 @@ fn isolate_offline_without_a_cached_build_errors_naming_the_package() {
         .failure()
         .stderr(predicates::str::contains("acme/isolate-plugin"))
         .stderr(predicates::str::contains("no isolated build cached"));
+}
+
+// --- #352: a scoped plugin still boots -------------------------------------
+
+/// A syntax error in the scoped output fails `php -l` before the load check
+/// ever runs: `viv isolate` exits 1 naming the file, the plain tree stays
+/// linked, and nothing is cached under `isolated-v0`.
+#[test]
+fn a_php_syntax_error_in_the_scoped_output_fails_isolate_and_keeps_the_plain_tree() {
+    if skip_without_php() {
+        return;
+    }
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    write_isolate_project(project);
+    seed_isolate_plugin(ctx.cache.path());
+
+    let key = tool_env_key();
+    let called_marker = ctx.cache.path().join("fake-scoper-called");
+    prime_fake_php_scoper(
+        ctx.cache.path(),
+        &key,
+        &called_marker,
+        FAKE_SCOPER_VERSION,
+        &corrupt_a_rewritten_file(),
+    );
+    prime_fake_wordpress_excludes(ctx.cache.path(), &key);
+    ctx.viv().args(["install", "--offline"]).assert().success();
+    let scoped_file = project.join("vendor/acme/isolate-plugin/vendor/foo/bar/Baz.php");
+
+    ctx.viv()
+        .args(["isolate", "acme/isolate-plugin"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Baz.php"))
+        .stderr(predicates::str::contains("php -l failed"));
+
+    assert!(
+        fs::read_to_string(&scoped_file)
+            .unwrap()
+            .contains(ORIGINAL_TOKEN),
+        "the plain tree must stay linked, not the broken scoped one"
+    );
+    assert!(
+        isolated_bucket_entries(ctx.cache.path()).is_empty(),
+        "a failed check must leave nothing cached under isolated-v0"
+    );
+}
+
+/// A fake scoper that leaves `foo/bar\Baz`'s class under its own original
+/// namespace (syntactically valid, so `php -l` passes) fails the load
+/// check instead: the main file's own `class_exists` on the rewritten name
+/// throws, and `viv isolate` reports that message, the same as a real
+/// `exclude-classes` miss would.
+#[test]
+fn a_fake_scoper_that_leaves_a_class_name_unprefixed_fails_the_load_check() {
+    if skip_without_php() {
+        return;
+    }
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    write_isolate_project(project);
+    seed_isolate_plugin(ctx.cache.path());
+
+    let key = tool_env_key();
+    let called_marker = ctx.cache.path().join("fake-scoper-called");
+    prime_fake_php_scoper(
+        ctx.cache.path(),
+        &key,
+        &called_marker,
+        FAKE_SCOPER_VERSION,
+        &leave_the_class_unprefixed(),
+    );
+    prime_fake_wordpress_excludes(ctx.cache.path(), &key);
+    ctx.viv().args(["install", "--offline"]).assert().success();
+    let scoped_file = project.join("vendor/acme/isolate-plugin/vendor/foo/bar/Baz.php");
+
+    ctx.viv()
+        .args(["isolate", "acme/isolate-plugin"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("load check failed"))
+        .stderr(predicates::str::contains(format!(
+            "{REWRITTEN_TOKEN}\\Baz missing"
+        )));
+
+    assert!(
+        fs::read_to_string(&scoped_file)
+            .unwrap()
+            .contains(ORIGINAL_TOKEN),
+        "the plain tree must stay linked"
+    );
+    assert!(
+        isolated_bucket_entries(ctx.cache.path()).is_empty(),
+        "a failed check must leave nothing cached under isolated-v0"
+    );
 }
