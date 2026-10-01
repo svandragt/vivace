@@ -224,6 +224,7 @@ async fn solve(
         &locked,
         None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
         Some(cache_dir),
+        None,
         &vivace::autoload::platform::IgnorePlatform::None,
     )
     .await
@@ -438,6 +439,7 @@ async fn a_pinned_commit_missing_upstream_is_cached_and_does_not_block_other_pin
                 &locked,
                 None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
                 Some(&cache_path),
+                None,
                 &vivace::autoload::platform::IgnorePlatform::None,
             )
             .await

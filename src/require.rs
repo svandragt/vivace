@@ -416,6 +416,7 @@ pub(crate) fn partial_update(
             HashMap::new(),
             advisories,
             Some(&cache_dir),
+            None,
             &ignore,
         ))?
     } else {
@@ -430,6 +431,7 @@ pub(crate) fn partial_update(
             &HashMap::new(),
             advisories,
             Some(&cache_dir),
+            None,
             &ignore,
         ))?
     };

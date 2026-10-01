@@ -164,8 +164,8 @@ pub async fn solve_update<T: Transport>(
     clippy::too_many_arguments,
     reason = "mirrors solve_update plus the project directory (#312's root-version guess), one \
               seed slice, the minimal-changes pin set, the current lock's packages (#345), the \
-              advisory pool filter, the platform-probe cache dir, and the ignore-platform-reqs \
-              filter"
+              advisory pool filter, the platform-probe cache dir, the platform-probe php \
+              override (#353), and the ignore-platform-reqs filter"
 )]
 pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -178,6 +178,7 @@ pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
     locked_by_name: &HashMap<String, Value>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
+    php_override: Option<&Path>,
     ignore: &IgnorePlatform,
 ) -> Result<UpdateResult> {
     let built = pool_builder::build_seeded(
@@ -191,6 +192,7 @@ pub async fn solve_update_seeded<T: Transport, A: AdvisoriesTransport>(
         locked_by_name,
         advisories,
         cache_dir,
+        php_override,
         ignore,
     )
     .await?;
@@ -234,6 +236,7 @@ pub async fn solve_partial_update<T: Transport>(
         HashMap::new(),
         None,
         None,
+        None,
         &IgnorePlatform::None,
     )
     .await
@@ -252,7 +255,8 @@ pub async fn solve_partial_update<T: Transport>(
     clippy::too_many_arguments,
     reason = "mirrors solve_partial_update plus the project directory (#312's root-version \
               guess), one seed slice, the minimal-changes pin set, the advisory pool filter, \
-              the platform-probe cache dir, and the ignore-platform-reqs filter"
+              the platform-probe cache dir, the platform-probe php override (#353), and the \
+              ignore-platform-reqs filter"
 )]
 pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -267,6 +271,7 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
     preferred: HashMap<String, NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
+    php_override: Option<&Path>,
     ignore: &IgnorePlatform,
 ) -> Result<UpdateResult> {
     solve_partial_update_seeded_inner(
@@ -282,6 +287,7 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
         preferred,
         advisories,
         cache_dir,
+        php_override,
         None,
         ignore,
     )
@@ -327,6 +333,7 @@ pub async fn solve_partial_update_as_of<T: Transport>(
         HashMap::new(),
         None,
         None,
+        None,
         as_of,
         &IgnorePlatform::None,
     )
@@ -343,8 +350,8 @@ pub async fn solve_partial_update_as_of<T: Transport>(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors solve_partial_update plus one seed slice, the minimal-changes pin set, \
-              the advisory pool filter, the platform-probe cache dir, lock_merge's --as-of \
-              cutoff, and the ignore-platform-reqs filter"
+              the advisory pool filter, the platform-probe cache dir, the platform-probe php \
+              override (#353), lock_merge's --as-of cutoff, and the ignore-platform-reqs filter"
 )]
 async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>(
     repo: &Repository<T>,
@@ -359,6 +366,7 @@ async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>
     preferred: HashMap<String, NormalizedVersion>,
     advisories: Option<AdvisoryFilter<'_, A>>,
     cache_dir: Option<&Path>,
+    php_override: Option<&Path>,
     as_of: Option<i64>,
     ignore: &IgnorePlatform,
 ) -> Result<UpdateResult> {
@@ -402,6 +410,7 @@ async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>
         &preferred,
         advisories,
         cache_dir,
+        php_override,
         as_of,
         ignore,
     )

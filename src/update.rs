@@ -205,6 +205,23 @@ pub(crate) fn audit_config_and_no_blocking(
 }
 
 pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
+    run_impl(args, cache_dir, offline, None)
+}
+
+/// [`run`]'s own body, plus `php_override` (#353): `tool::ensure_tool_env`'s
+/// own call resolves the *real* project's pinned PHP itself (its own
+/// `UpdateArgs::project_dir` is a synthetic per-tool cache dir, which never
+/// carries a `config.platform.php` pin of its own) and passes the resolved
+/// binary straight through here, past `solve`'s own project-agnostic
+/// `cache_dir`/`offline`. `None` for every other caller, unchanged.
+/// `pub(crate)`: `tool::ensure_tool_env` calls this directly (same crate)
+/// rather than through [`run`]'s fixed 3-arg public signature.
+pub(crate) fn run_impl(
+    args: &UpdateArgs,
+    cache_dir: Option<&Path>,
+    offline: bool,
+    php_override: Option<&Path>,
+) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
@@ -264,6 +281,7 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
         &lock_path,
         cache_dir,
         offline,
+        php_override,
     ))?;
     tracing::debug!(
         elapsed_ms = solve_started.elapsed().as_millis(),
@@ -375,7 +393,7 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
             prefer_dist: false,
             no_suggest: false,
         };
-        install::run_after_update(&install_args, cache_dir, offline)?;
+        install::run_impl(&install_args, cache_dir, offline, false, php_override)?;
     }
 
     scripts.dispatch("post-update-cmd")?;
@@ -443,6 +461,7 @@ async fn solve(
     lock_path: &Path,
     cache_dir: Option<&Path>,
     offline: bool,
+    php_override: Option<&Path>,
 ) -> Result<solver::UpdateResult> {
     // #159: fetcher/repository construction plus the current lock's own
     // read+parse (seeding `--minimal-changes`/#90's prefetch), all of it
@@ -529,6 +548,7 @@ async fn solve(
             &locked_by_name,
             advisories,
             Some(&cache_dir),
+            php_override,
             &ignore_platform_reqs,
         )
         .await;
@@ -572,6 +592,7 @@ async fn solve(
         preferred,
         advisories,
         Some(&cache_dir),
+        php_override,
         &ignore_platform_reqs,
     )
     .await;

@@ -442,6 +442,7 @@ async fn resolved_monolog_version(no_blocking: bool, ignore: vivace::lock::Audit
         &HashMap::new(),
         Some(filter),
         None,
+        None,
         &IgnorePlatform::None,
     )
     .await
@@ -525,6 +526,7 @@ async fn solve_security_advisory_fixture(
         &HashMap::new(),
         Some(filter),
         Some(cache),
+        None,
         &IgnorePlatform::None,
     )
     .await
@@ -710,6 +712,7 @@ async fn update_makes_no_advisory_request_when_no_repository_advertises() {
         &HashMap::new(),
         Some(filter),
         None,
+        None,
         &IgnorePlatform::None,
     )
     .await
@@ -804,6 +807,7 @@ async fn update_does_not_panic_when_the_advisory_filter_drops_an_aliased_version
         HashMap::new(),
         &HashMap::new(),
         Some(filter),
+        None,
         None,
         &IgnorePlatform::None,
     )
@@ -920,6 +924,7 @@ async fn seeding_with_an_unreachable_lock_name_does_not_change_the_lock() {
         HashMap::new(),
         &HashMap::new(),
         None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
+        None,
         None,
         &IgnorePlatform::None,
     )
@@ -1221,6 +1226,7 @@ async fn minimal_changes_keeps_the_locked_version() {
         preferred,
         &HashMap::new(),
         None::<vivace::solver::pool_builder::AdvisoryFilter<'_, vivace::audit::NoAdvisories>>,
+        None,
         None,
         &IgnorePlatform::None,
     )

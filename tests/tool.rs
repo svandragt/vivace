@@ -16,8 +16,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use common::TestContext;
+use common::{FixtureTransport, TestContext, fixtures_root};
 use predicates::prelude::*;
+use vivace::repository::Repository;
+use vivace::store::Store;
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tool/run-exec")
@@ -554,4 +556,185 @@ fn x_installs_once_then_execs_from_cache_without_any_network() {
         .assert()
         .success()
         .stdout(predicates::str::contains(TOOL_PACKAGE).not());
+}
+
+/// #353: `viv x` resolves a tool against the project's pinned PHP, not
+/// whatever `php` (if any) is on `PATH`. `<cache>/php-v0/<version>-<os>-
+/// <arch>/php`-shaped, like `fake_php_install` above, but answering *both*
+/// shapes `ensure_tool_env`'s resolve path asks a `php` binary: `-r 'echo
+/// PHP_VERSION;'` (`tool::detect_php_version`'s own cache-key probe) and no
+/// args with the solver's platform-probe script piped to stdin
+/// (`solver::platform::run_probe`), which needs a `Probe`-shaped JSON back,
+/// not just a bare version string.
+fn fake_probing_php_install(cache_dir: &Path, version: &str) {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let dir = cache_dir
+        .join("php-v0")
+        .join(format!("{version}-{os}-{arch}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let php_path = dir.join("php");
+    std::fs::write(
+        &php_path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"-r\" ]; then\n  printf '%s' '{version}'\n  exit 0\nfi\ncat \
+             > /dev/null\nprintf '{{\"php_version\":\"{version}\",\"int_size\":8,\"extensions\":{{}}}}'\n"
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&php_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(dir.join(".ok"), b"").unwrap();
+}
+
+/// `tests/fixtures/packagist/repo.packagist.org/p2/h/tool.json`'s own
+/// fixture package: two versions, one needing `php` `>=8.2`, the other
+/// `php` `>=8.0`, so whichever `php` the solver's platform probe reports
+/// decides which one `viv x` resolves.
+const H_TOOL: &str = "h/tool";
+
+/// Warms `cache_dir`'s on-disk Packagist cache from the local fixture
+/// corpus (`tests/update.rs`'s own `offline_partial_update_context`
+/// pattern) so a real `viv` subprocess can resolve `h/tool` with
+/// `--offline`, no network at all. `Repository::load` alone only fetches
+/// the root `packages.json`; a provider file like `p2/h/tool.json` is only
+/// ever requested once something actually asks for that name, so this
+/// drives one throwaway `solve_update` naming it, purely for that fetch's
+/// caching side effect (the resolved version here is never used).
+async fn warm_h_tool_metadata(project_dir: &Path, cache_dir: &Path) {
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache_dir, &transport)
+        .await
+        .unwrap();
+    let root = serde_json::json!({"name": "warm/root", "require": {H_TOOL: "*"}});
+    vivace::solver::solve_update(&repo, &root, project_dir, false, false)
+        .await
+        .unwrap();
+}
+
+/// A zip containing the declared `bin/tool` entry plus a sibling root file:
+/// a *single* top-level directory (`bin/` alone) would trip
+/// `store::strip_single_top_dir`'s own "wrapper directory" heuristic and
+/// hoist `tool` out of `bin/` — a second root entry, same as any real
+/// package's own `composer.json`, keeps it from firing. `bin/tool` itself
+/// is a plain `sh` script (no `#!/usr/bin/env php`), so viv's own
+/// bin-linking (`tests/bin_goldens.rs`) writes an `sh` proxy into
+/// `vendor/bin/tool` rather than a PHP one — this test execs the resolved
+/// bin to prove the install finished, and the sandbox this runs in may have
+/// no real `php` on `PATH` at all.
+fn h_tool_zip() -> Vec<u8> {
+    use std::io::Write as _;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    writer.start_file("composer.json", options).unwrap();
+    writer.write_all(b"{}").unwrap();
+    writer
+        .start_file("bin/tool", options.unix_permissions(0o755))
+        .unwrap();
+    writer.write_all(b"#!/bin/sh\necho ok\n").unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
+/// A minimal `vivace::lock::Package` for `h/tool`'s own dist-by-reference
+/// store key (`Store::add_zip`/`lookup` only ever read `name`/`dist`,
+/// `tests/update.rs`'s own `offline_partial_update_context` pattern).
+fn h_tool_package(version: &str, reference: &str) -> vivace::lock::Package {
+    serde_json::from_value(serde_json::json!({
+        "name": H_TOOL,
+        "version": version,
+        "dist": {
+            "type": "zip",
+            "url": format!("https://example.invalid/dist/h-tool-{version}.zip"),
+            "reference": reference,
+            "shasum": "",
+        },
+    }))
+    .unwrap()
+}
+
+/// Every resolved version of `h/tool` found across every tool env `viv x`
+/// has ever cached under `cache_dir` (`tool::list_tools`'s own walk,
+/// `tools-v0/<vendor>/<name>/<key>/vendor/composer/installed.json`) — proof
+/// of *which* version a run resolved, since `viv x --list` alone only
+/// names the package, not its version.
+fn cached_tool_versions(cache_dir: &Path, vendor: &str, short_name: &str) -> Vec<String> {
+    let base = cache_dir.join("tools-v0").join(vendor).join(short_name);
+    let Ok(keys) = std::fs::read_dir(&base) else {
+        return Vec::new();
+    };
+    keys.flatten()
+        .filter_map(|entry| {
+            let installed = entry.path().join("vendor/composer/installed.json");
+            let bytes = std::fs::read(&installed).ok()?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            value
+                .get("packages")?
+                .as_array()?
+                .iter()
+                .find(|p| p.get("name").and_then(serde_json::Value::as_str) == Some(H_TOOL))?
+                .get("version")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn x_resolves_against_the_projects_pinned_php() {
+    let ctx = TestContext::new();
+    warm_h_tool_metadata(ctx.project.path(), ctx.cache.path()).await;
+    let store = Store::open(ctx.cache.path()).unwrap();
+    store
+        .add_zip(&h_tool_package("1.0.0", "h-tool-100"), &h_tool_zip())
+        .unwrap();
+    store
+        .add_zip(&h_tool_package("2.0.0", "h-tool-200"), &h_tool_zip())
+        .unwrap();
+    drop(store);
+
+    fake_probing_php_install(ctx.cache.path(), "8.1.0");
+    std::fs::write(
+        ctx.project.path().join("composer.json"),
+        "{\n    \"config\": { \"platform\": { \"php\": \"8.1.0\" } }\n}\n",
+    )
+    .unwrap();
+
+    ctx.viv()
+        .args(["--offline", "x", H_TOOL])
+        .assert()
+        .success();
+    assert_eq!(
+        cached_tool_versions(ctx.cache.path(), "h", "tool"),
+        vec!["1.0.0".to_string()],
+        "php 8.1.0 satisfies only the >=8.0 version"
+    );
+
+    // Changing the pin to a PHP the first version never needed re-resolves
+    // (the cache key folds in the PHP version, #353) rather than reusing
+    // the 8.1.0-keyed env: the newer version's own `php >=8.2` is now
+    // satisfied too, and the solver prefers the newest match.
+    fake_probing_php_install(ctx.cache.path(), "8.3.0");
+    std::fs::write(
+        ctx.project.path().join("composer.json"),
+        "{\n    \"config\": { \"platform\": { \"php\": \"8.3.0\" } }\n}\n",
+    )
+    .unwrap();
+
+    ctx.viv()
+        .args(["--offline", "x", H_TOOL])
+        .assert()
+        .success();
+    let mut versions = cached_tool_versions(ctx.cache.path(), "h", "tool");
+    versions.sort();
+    assert_eq!(
+        versions,
+        vec!["1.0.0".to_string(), "2.0.0".to_string()],
+        "the 8.1.0-keyed env from the first run stays cached; the new pin resolves the \
+         >=8.2 version into its own new env"
+    );
 }
