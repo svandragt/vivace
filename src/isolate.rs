@@ -647,7 +647,7 @@ fn add_isolate(project_dir: &Path, package: &str, cache_dir: &Path, offline: boo
 
     let store = Store::open(cache_dir)?;
     let php_dir = php::project_php_dir(project_dir, Some(cache_dir), offline)?;
-    apply_for(
+    let scoper_version = apply_for(
         &locked,
         &plugin_dir,
         &store,
@@ -656,7 +656,10 @@ fn add_isolate(project_dir: &Path, package: &str, cache_dir: &Path, offline: boo
         LinkMode::default(),
         offline,
     )?;
-    install::write_isolate_state(&vendor_dir, &prefix_map(&root))
+    let prefixes = prefix_map(&root);
+    let mut checked = install::seed_isolate_checked(&vendor_dir, &prefixes);
+    checked.insert(package.to_string(), scoper_version);
+    install::write_isolate_state(&vendor_dir, &prefixes, &checked)
 }
 
 fn remove_isolate(project_dir: &Path, package: &str, cache_dir: &Path) -> Result<()> {
@@ -681,7 +684,9 @@ fn remove_isolate(project_dir: &Path, package: &str, cache_dir: &Path) -> Result
             }
         }
     }
-    install::write_isolate_state(&vendor_dir, &prefix_map(&root))
+    let prefixes = prefix_map(&root);
+    let checked = install::seed_isolate_checked(&vendor_dir, &prefixes);
+    install::write_isolate_state(&vendor_dir, &prefixes, &checked)
 }
 
 /// Edits `extra.viv.isolate` in place: adds or removes `package`
@@ -860,10 +865,14 @@ fn tool_package_version(env_dir: &Path, name: &str) -> String {
 /// The isolation step for one already-linked plugin (#351): links the
 /// store's cached scoped tree over `plugin_dir` if (archive, prefix,
 /// scoper version) is already built, otherwise scopes it fresh (network
-/// allowed) and caches the result first. Called once per plugin
-/// `extra.viv.isolate` names, both by `viv isolate` itself (the one
-/// package it just edited) and by `install`/`update` (every listed
-/// plugin, right after linking).
+/// allowed), runs #352's own boot check, and caches the result only once
+/// that passes. Called once per plugin `extra.viv.isolate` names, both by
+/// `viv isolate` itself (the one package it just edited) and by
+/// `install`/`update` (every listed plugin, right after linking). Returns
+/// the humbug/php-scoper version this build was checked against (recomputed
+/// from the cache entry's own name on a hit, not re-verified — the `.ok`
+/// marker only ever exists once), so a caller can record it beside the
+/// prefix in `.vivace-state`.
 pub(crate) fn apply_for(
     package: &Package,
     plugin_dir: &Path,
@@ -872,7 +881,7 @@ pub(crate) fn apply_for(
     php_dir: Option<&Path>,
     link_mode: LinkMode,
     offline: bool,
-) -> Result<()> {
+) -> Result<String> {
     let prefix = prefix_for(&package.name);
     let archive_hash = store
         .lookup(package)
@@ -888,8 +897,14 @@ pub(crate) fn apply_for(
                 package.pretty_name()
             )
         })?;
+        let scoper_version = dest
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(&key_prefix))
+            .unwrap_or("unknown")
+            .to_string();
         link::link_tree(&dest, plugin_dir, link_mode)?;
-        return Ok(());
+        return Ok(scoper_version);
     }
 
     // #353: the same project pin `php_dir` above already resolved (its own
@@ -919,6 +934,17 @@ pub(crate) fn apply_for(
             &scoper_env,
             &dest,
         )?;
+        // #352: a scoped plugin that doesn't even boot is worse than the
+        // clash it was meant to fix — checked right here, before `dest`
+        // is marked `.ok` and becomes a cache hit forever after. A failure
+        // drops `dest` entirely (nothing cached, nothing linked); the plain
+        // archive `link_tree` below never runs for this plugin this call,
+        // so the caller's own `plugin_dir` is left exactly as linking put
+        // it before this function was ever called.
+        if let Err(err) = boot_check(package, &dest, php_dir) {
+            let _ = fs_err::remove_dir_all(&dest);
+            return Err(err);
+        }
         fs_err::write(&marker, b"")?;
         out(&format!(
             "isolated {} under {prefix}",
@@ -926,7 +952,7 @@ pub(crate) fn apply_for(
         ));
     }
     link::link_tree(&dest, plugin_dir, link_mode)?;
-    Ok(())
+    Ok(scoper_version)
 }
 
 /// Builds `dest` (not yet in the store): a scratch copy of `plugin_dir`,
@@ -1034,10 +1060,24 @@ fn make_tree_writable(dir: &Path) -> Result<()> {
 /// Classmap-authoritative, not PSR-4, because php-scoper rewrites a file's
 /// `namespace` declaration without moving the file: the `installed.json`
 /// psr-4 mapping it still carries now points a stale namespace at the
-/// right directory, which a classmap built by scanning the actual files
-/// does not depend on.
+/// right directory. That alone isn't enough, though — Composer's own
+/// classmap generator still *validates* a PSR-4/PSR-0-scanned class's
+/// namespace against the prefix it was scanned under and silently drops a
+/// mismatch (proven the hard way: #352's own load check, run against a
+/// first version of this function that left `psr-4` in place, failed every
+/// scoped plugin's `class_exists`). [`classmap_safe_autoload`] below
+/// rewrites every package's own `autoload` to a plain `classmap` scan of
+/// its whole directory before the synthetic lock is ever written, so no
+/// scanned class' new, scoped namespace is checked against a mapping that
+/// predates the scoper run at all.
 fn dump_scoped_autoload(output_dir: &Path) -> Result<()> {
-    let packages = installed_json_packages_raw(output_dir).unwrap_or_default();
+    let mut packages = installed_json_packages_raw(output_dir).unwrap_or_default();
+    for package in &mut packages {
+        if let Some(entry) = package.as_object_mut() {
+            let autoload = classmap_safe_autoload(entry.get("autoload"));
+            entry.insert("autoload".to_string(), autoload);
+        }
+    }
     let lock_json = json!({ "packages": packages, "packages-dev": [] });
     fs_err::write(
         output_dir.join("composer.lock"),
@@ -1067,6 +1107,177 @@ fn dump_scoped_autoload(output_dir: &Path) -> Result<()> {
     let _ = fs_err::remove_file(output_dir.join("composer.lock"));
     let _ = fs_err::remove_file(output_dir.join("vendor/composer/.vivace-state"));
     Ok(())
+}
+
+/// `autoload`'s own declared directories (`psr-4`, `psr-0`, `classmap`
+/// values alike — the keys, not their namespaces, are what point at a
+/// directory worth scanning), reduced to a single `classmap` entry per
+/// directory and nothing else, so [`dump_scoped_autoload`]'s own classmap
+/// scan accepts every class a directory's files now declare, whatever
+/// namespace the scoper rewrote it to. `files`/`exclude-from-classmap`
+/// carry over untouched (not namespace-sensitive, no validation to trip on)
+/// so a bundled polyfill-style library's global functions still load. A
+/// package with no declared directory at all (a plain procedural plugin, or
+/// `None`) gets a single `classmap: [""]` covering its own root — a
+/// superset scan is harmless; `install::dump_autoload`'s own install-path
+/// check already bounds it to the package's own directory.
+fn classmap_safe_autoload(autoload: Option<&Value>) -> Value {
+    let mut dirs: BTreeSet<String> = BTreeSet::new();
+    if let Some(Value::Object(orig)) = autoload {
+        for key in ["psr-4", "psr-0", "classmap"] {
+            match orig.get(key) {
+                Some(Value::Object(map)) => {
+                    for paths in map.values() {
+                        match paths {
+                            Value::String(s) => {
+                                dirs.insert(s.clone());
+                            }
+                            Value::Array(items) => {
+                                dirs.extend(
+                                    items.iter().filter_map(Value::as_str).map(String::from),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Some(Value::Array(items)) => {
+                    dirs.extend(items.iter().filter_map(Value::as_str).map(String::from));
+                }
+                _ => {}
+            }
+        }
+    }
+    if dirs.is_empty() {
+        dirs.insert(String::new());
+    }
+
+    let mut out = serde_json::Map::new();
+    if let Some(Value::Object(orig)) = autoload {
+        for key in ["files", "exclude-from-classmap"] {
+            if let Some(value) = orig.get(key) {
+                out.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    out.insert(
+        "classmap".to_string(),
+        Value::Array(dirs.into_iter().map(Value::String).collect()),
+    );
+    Value::Object(out)
+}
+
+// --- #352: a scoped plugin still boots -------------------------------------
+
+/// The minimal `WordPress` function stubs php-scoper's own `exclude-*`
+/// config (`write_scoper_config`) assumes are already global when a plugin's
+/// main file loads: beside the plugin data files
+/// (`src/plugins/data/*`), not under that module's own `rules()` loader —
+/// those parse a specific `Rule` shape off `.toml`, this is plain PHP
+/// `include_str!`'d whole. Extend the file the first time a real plugin's
+/// load check needs a stub it doesn't define.
+const WORDPRESS_STUBS: &str = include_str!("plugins/data/wordpress-stubs.php");
+
+/// `php -l` every `.php` file under `dest` (the whole scoped tree php-scoper
+/// just wrote, not only `vendor/`) on `php_dir`'s own `php` (the project's
+/// pin, same binary [`build_scoped_tree`]'s caller resolved; PATH's `php`
+/// when there is none), then a load check: a generated bootstrap, in its own
+/// temp dir, that requires [`WORDPRESS_STUBS`], the scoped tree's own
+/// `vendor/autoload.php`, then the plugin's own main file
+/// ([`plugin_main_file`]) inside a `try`/`catch (\Throwable)` — a fatal
+/// (PHP 7+ turns most of those into a catchable `Error`) or an uncaught
+/// exception fails the check with PHP's own message. `wp plugin activate`
+/// (needs a database) is deliberately not attempted here — see
+/// `docs/research.md` candidate 3.2's built verdict.
+fn boot_check(package: &Package, dest: &Path, php_dir: Option<&Path>) -> Result<()> {
+    let php_bin = php_dir.map_or_else(|| PathBuf::from("php"), |dir| dir.join("php"));
+
+    let mut php_files = Vec::new();
+    collect_php_files(dest, &mut php_files, usize::MAX);
+    let mut failures = Vec::new();
+    for file in &php_files {
+        let output = std::process::Command::new(&php_bin)
+            .args(["-l", &file.to_string_lossy()])
+            .output()
+            .with_context(|| format!("running {} -l {}", php_bin.display(), file.display()))?;
+        if !output.status.success() {
+            failures.push(format!(
+                "{}: {}",
+                file.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+    if !failures.is_empty() {
+        bail!(
+            "{}: php -l failed on {} file{}:\n{}",
+            package.pretty_name(),
+            failures.len(),
+            if failures.len() == 1 { "" } else { "s" },
+            failures.join("\n")
+        );
+    }
+
+    let main_file = plugin_main_file(dest).with_context(|| {
+        format!(
+            "{}: no file under {} declares a `Plugin Name:` header to load-check",
+            package.pretty_name(),
+            dest.display()
+        )
+    })?;
+    let check_dir =
+        tempfile::tempdir().context("creating a temp dir for the isolated plugin's load check")?;
+    let stubs_path = check_dir.path().join("wordpress-stubs.php");
+    fs_err::write(&stubs_path, WORDPRESS_STUBS)?;
+    let bootstrap_path = check_dir.path().join("bootstrap.php");
+    fs_err::write(
+        &bootstrap_path,
+        boot_check_source(&stubs_path, &dest.join("vendor/autoload.php"), &main_file),
+    )?;
+    let output = std::process::Command::new(&php_bin)
+        .arg(&bootstrap_path)
+        .output()
+        .with_context(|| format!("running {} on the load check", php_bin.display()))?;
+    if !output.status.success() {
+        bail!(
+            "{}: load check failed loading {}: {}",
+            package.pretty_name(),
+            main_file.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// The scoped tree's own main plugin file: the first top-level `.php` file,
+/// in name order (never `vendor/`, same scope [`plugin_root_namespaces`]
+/// reads), whose contents carry a `Plugin Name:` line — `WordPress`' own
+/// convention for a plugin's entry point.
+fn plugin_main_file(plugin_dir: &Path) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = fs_err::read_dir(plugin_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "php"))
+        .collect();
+    candidates.sort();
+    candidates.into_iter().find(|path| {
+        fs_err::read(path)
+            .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("Plugin Name:"))
+    })
+}
+
+/// [`boot_check`]'s generated bootstrap source: no config to vary beyond the
+/// three paths, so this stays a plain format rather than a templating crate.
+fn boot_check_source(stubs_path: &Path, autoload_path: &Path, main_file: &Path) -> String {
+    format!(
+        "<?php\n\nrequire {};\nrequire {};\n\ntry {{\n    require {};\n}} catch (\\Throwable $e) \
+         {{\n    fwrite(STDERR, $e->getMessage() . ' in ' . $e->getFile() . ':' . \
+         $e->getLine() . \"\\n\");\n    exit(1);\n}}\n\nexit(0);\n",
+        php_string(&stubs_path.to_string_lossy()),
+        php_string(&autoload_path.to_string_lossy()),
+        php_string(&main_file.to_string_lossy()),
+    )
 }
 
 /// The plugin's own root namespaces: its `composer.json`'s (if it ships

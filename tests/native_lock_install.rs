@@ -166,6 +166,45 @@ fn install_generates_composer_lock_from_viv_lock_alone() {
     );
 }
 
+/// #352: `viv lock export` carries `extra.viv.isolate` into the generated
+/// `composer.lock` as a top-level `extra` (Composer ignores it —
+/// `devbox run -- composer validate --no-check-all` against a generated
+/// lock like this one produces no new error or warning over the same lock
+/// without it) — derived purely from `extra.viv.isolate`'s own names
+/// (`isolate::prefix_map`), so a team member on plain Composer sees the
+/// prefix without viv ever having scoped this package. The companion "no
+/// isolated plugins" case is
+/// [`install_generates_composer_lock_from_viv_lock_alone`]'s own byte-for-
+/// byte assertion, above: that fixture's `composer.json` carries no
+/// `extra.viv.isolate` at all, so its generated lock has no `extra` key
+/// either.
+#[test]
+fn lock_export_carries_the_isolate_map_into_composer_lock_extra() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_path_sources(project);
+    ctx.viv().arg("lock").arg("convert").assert().success();
+
+    let composer_json_path = project.join("composer.json");
+    let mut composer_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&composer_json_path).unwrap()).unwrap();
+    composer_json["extra"] = serde_json::json!({"viv": {"isolate": ["acme/hello"]}});
+    fs::write(
+        &composer_json_path,
+        serde_json::to_string_pretty(&composer_json).unwrap(),
+    )
+    .unwrap();
+
+    ctx.viv().args(["lock", "export"]).assert().success();
+
+    let lock: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(project.join("composer.lock")).unwrap()).unwrap();
+    assert_eq!(
+        lock["extra"]["viv"]["isolate"]["acme/hello"].as_str(),
+        Some("Viv\\Isolated\\Hello")
+    );
+}
+
 /// Reviewed 2026-09-29: a `composer.lock`/`viv.lock` pair that has genuinely
 /// diverged (the same package resolved differently by each) must never be
 /// silently rewritten from either side — `install` refuses, the same way
