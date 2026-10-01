@@ -1780,3 +1780,16 @@ line that fixes it: `Run viv isolate <package> to keep both.`
 Libraries built to coexist are listed in a data file and skipped. The
 verdict is cached per plugin archive and lock hash, so a warm install
 re-reads nothing; projects with no plugin pay nothing.
+
+## 2026-10-01: viv isolate (#351)
+
+`viv isolate <package>` names a plugin in `extra.viv.isolate`, copies
+its tree, runs php-scoper on the project's PHP through `viv x` with a
+prefix derived from the slug, rebuilds the classmap and links the
+scoped tree from the store; a second install links the cache. `--rm`
+restores the plain archive, `--list` shows prefixes. Real run on a
+small wpackagist plugin: 429 files prefixed, every rewritten file
+passes `php -l`, the prefixed class instantiates. Found on the way:
+`viv x` probes the PATH PHP to resolve a tool, never the pinned one,
+so a machine with no system PHP can resolve a tool build its pinned
+PHP refuses; that is the next issue.
