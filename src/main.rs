@@ -11,6 +11,7 @@ use vivace::audit::{self, AuditArgs};
 use vivace::diagnose::{self, DiagnoseArgs};
 use vivace::init::{self, InitArgs};
 use vivace::install::{self, CacheArgs, DumpAutoloadArgs, InstallArgs};
+use vivace::isolate::{self, IsolateArgs};
 use vivace::native_lock::{self, LockArgs};
 use vivace::new::{self, NewArgs};
 use vivace::normalize::{self, NormalizeArgs};
@@ -159,6 +160,12 @@ enum Command {
     /// Download a static-php-cli PHP build and pin `config.platform.php`
     /// to it (#337), or list what's already installed.
     Php(PhpArgs),
+    /// Prefix a plugin's bundled dependency tree with php-scoper so it can
+    /// coexist with the site's own copy of the same library (#351):
+    /// `<package>` adds it to `extra.viv.isolate` and isolates it,
+    /// `--rm <package>` removes it and relinks the plain archive, `--list`
+    /// prints every isolated plugin and its prefix.
+    Isolate(IsolateArgs),
 }
 
 fn main() -> ExitCode {
@@ -324,6 +331,15 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Command::Isolate(args) => {
+            match isolate::run_isolate(&args, cli.cache_dir.as_deref(), offline) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    err_out(&format!("{err:#}"));
+                    ExitCode::from(1)
+                }
+            }
+        }
     }
 }
 

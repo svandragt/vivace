@@ -79,6 +79,11 @@ pub(crate) const COMMIT_META_BUCKET: &str = "commit-meta-v0";
 /// `vendor/` to reprint the same message — see [`isolate_check_sidecar`].
 /// Same unbounded-growth ponytail as [`ROOT_CLASSMAP_BUCKET`].
 pub(crate) const ISOLATE_CHECK_BUCKET: &str = "isolate-check-v0";
+/// #351's scoped plugin trees: `isolated-v0/<archive hash>-<prefix hash>-
+/// <scoper version>/`, built once per distinct triple and linked into the
+/// plugin's install path on every later `viv install`/`update` with no
+/// scoper run — see [`Store::isolated_dir`].
+pub(crate) const ISOLATED_BUCKET: &str = "isolated-v0";
 const LOCK_FILE: &str = ".lock";
 
 /// Every current bucket name, shared by `prune` (what a stale-bucket sweep
@@ -99,6 +104,7 @@ const KNOWN_BUCKETS: &[&str] = &[
     PHP_BUCKET,
     COMMIT_META_BUCKET,
     ISOLATE_CHECK_BUCKET,
+    ISOLATED_BUCKET,
     LOCK_FILE,
 ];
 
@@ -155,6 +161,13 @@ impl Store {
             .join(vendor)
             .join(name)
             .join(key))
+    }
+
+    /// `isolated-v0/<key>/`: the built scoped tree a cache hit links
+    /// straight into a plugin's install path, see [`ISOLATED_BUCKET`].
+    pub(crate) fn isolated_dir(&self, key: &str) -> Result<PathBuf> {
+        sanitise_path_component("isolate key", key)?;
+        Ok(self.root.join(ISOLATED_BUCKET).join(key))
     }
 
     /// `dists-v0/<vendor>/<name>/<reference>`. Falls back to Composer's own

@@ -99,7 +99,12 @@ fn remove_existing(dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
+/// Recursive plain-file copy, no symlink/hardlink sharing: `install_path`'s
+/// own mirror fallback, and #351's reuse for copying a plugin's installed
+/// tree into a scratch dir before scoping it (a tree `link_tree` just
+/// hardlinked from the store, so writing into it in place would corrupt the
+/// shared inode).
+pub(crate) fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
     fs_err::create_dir_all(dest)?;
     for entry in fs_err::read_dir(src)? {
         let entry = entry?;
