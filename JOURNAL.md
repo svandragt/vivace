@@ -1793,3 +1793,17 @@ passes `php -l`, the prefixed class instantiates. Found on the way:
 `viv x` probes the PATH PHP to resolve a tool, never the pinned one,
 so a machine with no system PHP can resolve a tool build its pinned
 PHP refuses; that is the next issue.
+
+## 2026-10-01: a scoped plugin must boot (#352)
+
+Before a scoped tree is cached, every rewritten file passes `php -l`
+and a generated bootstrap with WordPress function stubs loads the
+scoped autoloader and the plugin's main file; a fatal leaves the
+plugin unisolated and says why. The check found that the scoped
+autoloader was empty: Composer's classmap generator was validating
+scanned classes against their pre-scope PSR-4 namespaces and dropping
+them; the scoped packages are now classmap-only. On real plugins: the
+migration plugin on site A passes (403 files, 0.6 s); the AWS SDK
+plugin on site D exhausts php-scoper's 128 MB default on 2,386 files,
+so the scoper needs `memory_limit=-1`, and `viv isolate` needs
+`--no-plugins` for Altis sites. Both next.
