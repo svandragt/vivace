@@ -322,33 +322,28 @@ fn isolate_plugin_zip() -> Vec<u8> {
     ])
 }
 
-fn write_isolate_project(project: &Path) {
-    fs::write(
-        project.join("composer.json"),
-        json!({
-            "name": "acme/site",
-            "require": {"acme/isolate-plugin": "^1.0"},
-        })
-        .to_string(),
-    )
-    .unwrap();
+/// `acme/isolate-plugin`'s own locked entry plus `extra_packages` (#354: the
+/// no-plugins test adds a refused `composer-plugin` entry here), split out
+/// of `write_isolate_project` so that test and the memory-limit/PHP-pin one
+/// below can each write their own `composer.json` over the same lock.
+fn write_isolate_lock(project: &Path, extra_packages: &[serde_json::Value]) {
+    let mut packages = vec![json!({
+        "name": "acme/isolate-plugin",
+        "version": "1.0.0",
+        "type": "wordpress-plugin",
+        "dist": {
+            "type": "zip",
+            "url": "https://example.invalid/isolate-ref.zip",
+            "reference": "isolate-ref",
+            "shasum": "",
+        },
+    })];
+    packages.extend_from_slice(extra_packages);
     fs::write(
         project.join("composer.lock"),
         json!({
             "content-hash": "test",
-            "packages": [
-                {
-                    "name": "acme/isolate-plugin",
-                    "version": "1.0.0",
-                    "type": "wordpress-plugin",
-                    "dist": {
-                        "type": "zip",
-                        "url": "https://example.invalid/isolate-ref.zip",
-                        "reference": "isolate-ref",
-                        "shasum": "",
-                    },
-                },
-            ],
+            "packages": packages,
             "packages-dev": [],
             "aliases": [],
             "minimum-stability": "stable",
@@ -364,6 +359,34 @@ fn write_isolate_project(project: &Path) {
     .unwrap();
 }
 
+/// #354: every isolate test pins `PHP_PIN` here (rather than falling back to
+/// `PATH`'s real `php`) because the fake php-scoper [`prime_fake_php_scoper`]
+/// installs is a shell script, not a real PHP file — `build_scoped_tree`
+/// now calls it as `<php> -d memory_limit=-1 <bin> ...`, and the real system
+/// `php` would try to parse that shell script's own bytes as PHP source
+/// (and, worse, can trip on a `<?php` sequence any fake's own rewrite body
+/// happens to embed, as `corrupt_a_rewritten_file`'s does). [`seed_isolate_plugin`]
+/// pairs this with [`fake_pinned_php`], which execs the fake scoper
+/// correctly instead.
+fn write_isolate_project(project: &Path) {
+    fs::write(
+        project.join("composer.json"),
+        json!({
+            "name": "acme/site",
+            "require": {"acme/isolate-plugin": "^1.0"},
+            "config": {"platform": {"php": PHP_PIN}},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_isolate_lock(project, &[]);
+}
+
+/// `acme/isolate-plugin`'s own dist, plus (#354) [`fake_pinned_php`] under
+/// `PHP_PIN` with a default, usually-unchecked marker — every test that
+/// needs its own distinguishable marker (the memory-limit one, below) calls
+/// `fake_pinned_php` again afterwards with its own path, overwriting this
+/// default at the same `php-v0/<PHP_PIN>-<os>-<arch>/php` location.
 fn seed_isolate_plugin(cache_dir: &Path) {
     let store = Store::open(cache_dir).unwrap();
     store
@@ -377,6 +400,11 @@ fn seed_isolate_plugin(cache_dir: &Path) {
             &isolate_plugin_zip(),
         )
         .unwrap();
+    fake_pinned_php(
+        cache_dir,
+        PHP_PIN,
+        &cache_dir.join(".fake-pinned-php-marker"),
+    );
 }
 
 fn skip_without_php() -> bool {
@@ -777,4 +805,206 @@ fn a_fake_scoper_that_leaves_a_class_name_unprefixed_fails_the_load_check() {
         isolated_bucket_entries(ctx.cache.path()).is_empty(),
         "a failed check must leave nothing cached under isolated-v0"
     );
+}
+
+// --- #354: php-scoper runs under an explicit memory_limit override --------
+
+const PHP_PIN: &str = "9.9.9";
+
+/// A real `php` on `PATH` (already required by [`skip_without_php`]),
+/// resolved to its absolute path: [`fake_pinned_php`]'s own script bakes
+/// this in rather than calling bare `php` by name, since the `PATH`
+/// `build_scoped_tree` composes for the scoper's own subprocess puts the
+/// fake's own directory first — calling `php` by name from inside the fake
+/// would just re-exec itself.
+fn real_php_path() -> PathBuf {
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join("php"))
+                .find(|p| p.is_file())
+        })
+        .expect("skip_without_php already checked php is on PATH")
+}
+
+/// `<cache>/php-v0/<version>-<os>-<arch>/php` (mirrors `tests/tool.rs`'s own
+/// `fake_php_install`): intercepts only the one shape #354 makes
+/// `build_scoped_tree` call the scoper with (`-d memory_limit=-1 <bin>
+/// ...`), recording that it saw the override to `marker`, then `exec`s the
+/// remaining args (the fake php-scoper script) directly. Every other
+/// invocation on this same pinned interpreter — `tool::ensure_tool_env`'s
+/// own `-r` version probe, `boot_check`'s `-l`/bootstrap run — is handed
+/// straight to the real interpreter unchanged (its absolute path, not a
+/// `PATH` lookup, so it can never resolve back to this fake), so neither of
+/// those checks' behaviour is affected by priming this pin.
+fn fake_pinned_php(cache_dir: &Path, version: &str, marker: &Path) {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let dir = cache_dir
+        .join("php-v0")
+        .join(format!("{version}-{os}-{arch}"));
+    fs::create_dir_all(&dir).unwrap();
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"-d\" ] && [ \"$2\" = \"memory_limit=-1\" ]; then\n  echo ok \
+         > \"{marker}\"\n  shift 2\n  exec \"$@\"\nfi\nexec \"{real_php}\" \"$@\"\n",
+        marker = marker.display(),
+        real_php = real_php_path().display(),
+    );
+    let php_path = dir.join("php");
+    fs::write(&php_path, script).unwrap();
+    let mut perms = fs::metadata(&php_path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    fs::set_permissions(&php_path, perms).unwrap();
+    fs::write(dir.join(".ok"), b"").unwrap();
+}
+
+/// #354: `build_scoped_tree` now calls the scoper as `<php> -d
+/// memory_limit=-1 <bin> add-prefix ...` instead of execing the bin's own
+/// shebang straight off `PATH` — the only way an `-d` ini override reaches
+/// php-scoper at all. [`fake_pinned_php`] stands in for the project's own
+/// pinned interpreter and records whether it saw the override.
+#[test]
+fn isolate_runs_the_scoper_with_an_explicit_memory_limit_override() {
+    if skip_without_php() {
+        return;
+    }
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    write_isolate_project(project);
+    seed_isolate_plugin(ctx.cache.path());
+
+    let memory_marker = ctx.cache.path().join("saw-memory-limit-override");
+    fake_pinned_php(ctx.cache.path(), PHP_PIN, &memory_marker);
+
+    let key = tool_env_key();
+    let called_marker = ctx.cache.path().join("fake-scoper-called");
+    prime_fake_php_scoper(
+        ctx.cache.path(),
+        &key,
+        &called_marker,
+        FAKE_SCOPER_VERSION,
+        &rewrite_the_namespace_token(),
+    );
+    prime_fake_wordpress_excludes(ctx.cache.path(), &key);
+
+    ctx.viv().args(["install", "--offline"]).assert().success();
+
+    ctx.viv()
+        .args(["isolate", "acme/isolate-plugin"])
+        .assert()
+        .success();
+
+    assert!(
+        memory_marker.is_file(),
+        "the scoper must run under an explicit -d memory_limit=-1, not the bin's own shebang"
+    );
+}
+
+// --- #354: `viv isolate --no-plugins` reaches the scoper -------------------
+
+/// `acme/isolate-plugin` (the isolate target) plus `acme/mystery-plugin`, an
+/// enabled `composer-plugin` neither a native adapter nor known-inert
+/// (`tests/cli.rs`'s own `write_unknown_plugin_lock`, same shape, extended
+/// with the isolate target): the site-level refusal `plugins::resolve`
+/// raises blocks every `viv isolate` call regardless of which plugin it
+/// names, since `load_project` resolves the whole lock before anything else
+/// here runs.
+fn write_isolate_project_with_unknown_plugin(project: &Path) {
+    fs::write(
+        project.join("composer.json"),
+        json!({
+            "name": "acme/site",
+            "require": {"acme/isolate-plugin": "^1.0"},
+            "config": {
+                "allow-plugins": {"acme/mystery-plugin": true},
+                "platform": {"php": PHP_PIN},
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    write_isolate_lock(
+        project,
+        &[json!({
+            "name": "acme/mystery-plugin",
+            "version": "1.0.0",
+            "type": "composer-plugin",
+            "dist": {
+                "type": "zip",
+                "url": "https://example.invalid/mystery-ref.zip",
+                "reference": "mystery-ref",
+                "shasum": "",
+            },
+        })],
+    );
+}
+
+fn seed_mystery_plugin(cache_dir: &Path) {
+    let store = Store::open(cache_dir).unwrap();
+    store
+        .add_zip(
+            &dist_package(
+                "acme/mystery-plugin",
+                "1.0.0",
+                "mystery-ref",
+                "composer-plugin",
+            ),
+            &zip_of_files(&[("src/Plugin.php", b"<?php\n")]),
+        )
+        .unwrap();
+}
+
+/// #354's own done-when: `viv isolate` on a lock naming a plugin viv refuses
+/// never reaches the scoper at all without `--no-plugins`; with it, the
+/// refusal downgrades to a warning (same as `install`) and isolation
+/// proceeds normally.
+#[test]
+fn isolate_no_plugins_reaches_the_scoper_past_a_refused_plugin() {
+    if skip_without_php() {
+        return;
+    }
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    write_isolate_project_with_unknown_plugin(project);
+    seed_isolate_plugin(ctx.cache.path());
+    seed_mystery_plugin(ctx.cache.path());
+
+    let key = tool_env_key();
+    let called_marker = ctx.cache.path().join("fake-scoper-called");
+    prime_fake_php_scoper(
+        ctx.cache.path(),
+        &key,
+        &called_marker,
+        FAKE_SCOPER_VERSION,
+        &rewrite_the_namespace_token(),
+    );
+    prime_fake_wordpress_excludes(ctx.cache.path(), &key);
+
+    // `install` needs `--no-plugins` too: the same refusal blocks it before
+    // `acme/isolate-plugin` is even materialised on disk.
+    ctx.viv()
+        .args(["install", "--offline", "--no-plugins"])
+        .assert()
+        .success();
+
+    ctx.viv()
+        .args(["isolate", "acme/isolate-plugin"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("cannot run the Composer plugin"))
+        .stderr(predicates::str::contains("acme/mystery-plugin"));
+    assert_eq!(
+        called_count(&called_marker),
+        0,
+        "the scoper never ran without --no-plugins"
+    );
+
+    ctx.viv()
+        .args(["isolate", "--no-plugins", "acme/isolate-plugin"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "isolated acme/isolate-plugin under Viv\\Isolated\\IsolatePlugin",
+        ));
+    assert_eq!(called_count(&called_marker), 1);
 }
