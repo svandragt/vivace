@@ -418,7 +418,7 @@ fn prime_fake_php_scoper(cache_dir: &Path, key: &str, called_marker: &Path) {
     let script = format!(
         "#!/bin/sh\nset -e\necho called >> {marker}\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  case \
          \"$1\" in\n    --output-dir) out=\"$2\"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\nmkdir \
-         -p \"$out\"\ncp -a ./. \"$out/\"\nsed -i 's/{from}/{to}/' \"$out/vendor/foo/bar/Baz.php\"\n",
+         -p \"$out\"\ncp -a ./. \"$out/\"\nf=\"$out/vendor/foo/bar/Baz.php\"; sed 's/{from}/{to}/' \"$f\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"\n",
         marker = called_marker.display(),
         from = ORIGINAL_TOKEN,
         to = REWRITTEN_TOKEN,
