@@ -559,11 +559,26 @@ pub struct IsolateArgs {
     /// Project directory holding `composer.json`.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
+    /// #354: resolve the site's own lock as Composer would with the same
+    /// flag — the native installer adapters disabled, any other enabled
+    /// plugin viv would otherwise refuse only warns
+    /// (`docs/plugin-strategy.md`). Without it, a lock naming a plugin viv
+    /// refuses (e.g. Altis) never reaches the scoper at all: `load_project`
+    /// resolves the whole site lock before anything else here runs.
+    #[arg(long)]
+    pub no_plugins: bool,
+    /// Accepted for symmetry with `install`/`dump-autoload`: `viv isolate`
+    /// never runs scripts itself, so this is already true and only logged.
+    #[arg(long)]
+    pub no_scripts: bool,
 }
 
 pub fn run_isolate(args: &IsolateArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
+    if args.no_scripts {
+        tracing::debug!("ignoring --no-scripts, viv isolate runs no scripts");
+    }
     if args.list {
         return list_isolated(&project_dir);
     }
@@ -572,14 +587,19 @@ pub fn run_isolate(args: &IsolateArgs, cache_dir: Option<&Path>, offline: bool) 
         None => crate::update::default_cache_dir()?,
     };
     if let Some(package) = &args.rm {
-        return remove_isolate(&project_dir, &package.to_ascii_lowercase(), &cache_dir);
+        return remove_isolate(
+            &project_dir,
+            &package.to_ascii_lowercase(),
+            &cache_dir,
+            args.no_plugins,
+        );
     }
     let package = args
         .package
         .as_deref()
         .expect("clap requires `package` without --list/--rm")
         .to_ascii_lowercase();
-    add_isolate(&project_dir, &package, &cache_dir, offline)
+    add_isolate(&project_dir, &package, &cache_dir, offline, args.no_plugins)
 }
 
 fn list_isolated(project_dir: &Path) -> Result<()> {
@@ -597,15 +617,21 @@ fn list_isolated(project_dir: &Path) -> Result<()> {
 /// each locked package's `install_dir` resolved the same way
 /// `install::dump_autoload` resolves it — the shared setup `add_isolate`/
 /// `remove_isolate` both need before they can find the named package's
-/// on-disk plugin directory.
-fn load_project(project_dir: &Path) -> Result<(String, Value, Root, Lock, PathBuf)> {
+/// on-disk plugin directory. `no_plugins` (#354) is `IsolateArgs`' own flag,
+/// forwarded to `plugins::resolve` exactly as `install` forwards its own:
+/// without it, a lock naming a plugin viv refuses bails right here, before
+/// either caller ever reaches the scoper.
+fn load_project(
+    project_dir: &Path,
+    no_plugins: bool,
+) -> Result<(String, Value, Root, Lock, PathBuf)> {
     let composer_json_path = project_dir.join("composer.json");
     let original = fs_err::read_to_string(&composer_json_path).context("reading composer.json")?;
     let root_value: Value = serde_json::from_str(&original).context("parsing composer.json")?;
     let root = lock::root_from_value(&root_value).context("parsing composer.json")?;
     let mut lock =
         lock::read_lock(&project_dir.join("composer.lock")).context("reading composer.lock")?;
-    let (resolved, warnings) = plugins::resolve(&lock, &root, false)?;
+    let (resolved, warnings) = plugins::resolve(&lock, &root, no_plugins)?;
     for warning in &warnings {
         warn_out(warning);
     }
@@ -620,8 +646,15 @@ fn find_package<'a>(lock: &'a Lock, name: &str) -> Option<&'a Package> {
     lock.packages(true).find(|p| p.name == name)
 }
 
-fn add_isolate(project_dir: &Path, package: &str, cache_dir: &Path, offline: bool) -> Result<()> {
-    let (original, mut root_value, _root, lock, vendor_dir) = load_project(project_dir)?;
+fn add_isolate(
+    project_dir: &Path,
+    package: &str,
+    cache_dir: &Path,
+    offline: bool,
+    no_plugins: bool,
+) -> Result<()> {
+    let (original, mut root_value, _root, lock, vendor_dir) =
+        load_project(project_dir, no_plugins)?;
     let locked = find_package(&lock, package)
         .with_context(|| format!("{package}: not in composer.lock; run `viv install` first"))?;
     if !is_plugin_package(locked) {
@@ -662,8 +695,14 @@ fn add_isolate(project_dir: &Path, package: &str, cache_dir: &Path, offline: boo
     install::write_isolate_state(&vendor_dir, &prefixes, &checked)
 }
 
-fn remove_isolate(project_dir: &Path, package: &str, cache_dir: &Path) -> Result<()> {
-    let (original, mut root_value, _root, lock, vendor_dir) = load_project(project_dir)?;
+fn remove_isolate(
+    project_dir: &Path,
+    package: &str,
+    cache_dir: &Path,
+    no_plugins: bool,
+) -> Result<()> {
+    let (original, mut root_value, _root, lock, vendor_dir) =
+        load_project(project_dir, no_plugins)?;
     let locked = find_package(&lock, package).cloned();
 
     edit_isolate_list(&mut root_value, package, false)?;
@@ -995,8 +1034,20 @@ fn build_scoped_tree(
     write_scoper_config(&input_dir, package, prefix, cache_dir)?;
 
     let scoper_bin = tool::resolve_bin(scoper_env, "humbug/php-scoper", "php-scoper", None)?;
-    let status = std::process::Command::new(&scoper_bin)
+    // #354: `scoper_bin` is a Composer bin proxy whose own shebang
+    // (`#!/usr/bin/env php`) only ever picks up PATH's `php` — no way to
+    // slip an `-d` override through a shebang line. Calling the resolved
+    // interpreter explicitly instead means `-d memory_limit=-1` actually
+    // applies: php-scoper's AST walk over a large bundled `vendor/` (the
+    // AWS SDK plugin's 2,386 files, #352) blows the default 128M limit
+    // otherwise. Stderr is left inherited (not captured), so the scoper's
+    // own peak-memory line still reaches the terminal under `-v`.
+    let php_bin = php_dir.map_or_else(|| PathBuf::from("php"), |dir| dir.join("php"));
+    let status = std::process::Command::new(&php_bin)
         .args([
+            "-d",
+            "memory_limit=-1",
+            &scoper_bin.to_string_lossy(),
             "add-prefix",
             "--output-dir",
             &output_dir.to_string_lossy(),
@@ -1009,9 +1060,19 @@ fn build_scoped_tree(
             php::compose_path(php_dir, &scoper_env.join("vendor/bin")),
         )
         .status()
-        .with_context(|| format!("running {}", scoper_bin.display()))?;
+        .with_context(|| {
+            format!(
+                "running {} -d memory_limit=-1 {}",
+                php_bin.display(),
+                scoper_bin.display()
+            )
+        })?;
     if !status.success() {
-        bail!("{}: php-scoper exited with {status}", package.pretty_name());
+        bail!(
+            "{}: php-scoper exited with {status} (already run with -d memory_limit=-1; if this \
+             is still a memory error, try php-scoper's own --no-parallel)",
+            package.pretty_name()
+        );
     }
 
     dump_scoped_autoload(&output_dir).with_context(|| {
