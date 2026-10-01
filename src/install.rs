@@ -5,7 +5,7 @@
 //! and installed.* steps defer to; this module only decides *when* to run
 //! them and *where* things live on disk.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -591,6 +591,15 @@ struct State {
     composer_json_sha256: String,
     #[serde(default)]
     patches_fingerprint: Option<String>,
+    /// #351's `extra.viv.isolate` -> prefix map, package name to prefix.
+    /// Derived purely from the names and each one's slug (never from
+    /// whether the scoper actually ran yet), so its presence here is only
+    /// a cache for `viv isolate --list`: `composer_json_sha256` above
+    /// already changes the moment `extra.viv.isolate` does, so this field
+    /// adds no extra invalidation logic of its own. `#[serde(default)]`
+    /// so a `.vivace-state` written before #351 still parses.
+    #[serde(default)]
+    isolate: BTreeMap<String, String>,
 }
 
 pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -864,11 +873,18 @@ fn run_impl(
         return Ok(());
     }
 
+    // #351: `extra.viv.isolate`'s names, lowercased — both to silence
+    // #350's clash message for a plugin already prefixed and to record its
+    // (purely slug-derived) prefix in `State` regardless of whether the
+    // scoper actually ran this time.
+    let isolated_names: HashSet<String> =
+        crate::isolate::isolated_names(&root).into_iter().collect();
     let state = State {
         content_hash: lock.content_hash.clone(),
         dev,
         composer_json_sha256: snapshot.composer_json_sha256.clone(),
         patches_fingerprint: patches_fingerprint(&plugins, &root, &project_dir)?,
+        isolate: crate::isolate::prefix_map(&root),
     };
     let mut scripts = scripts::Runner::new(
         &composer_json_value,
@@ -889,6 +905,7 @@ fn run_impl(
             &vendor_dir,
             &project_dir,
             Some(&cache_dir),
+            &isolated_names,
             || snapshot.lock_sha256().map(str::to_string),
         )?;
         out("Nothing to install, update or remove");
@@ -1055,6 +1072,37 @@ fn run_impl(
         "linked packages into vendor"
     );
 
+    // #351: for every plugin `extra.viv.isolate` names, link php-scoper's
+    // prefixed tree over the plain archive linking just put in place (a
+    // store hit skips the scoper run entirely). Lenient about a stale or
+    // not-actually-a-plugin entry here, unlike `viv isolate`'s own strict
+    // validation, so a leftover or typo'd name never breaks a plain
+    // install.
+    if !isolated_names.is_empty() {
+        let php_dir = crate::php::project_php_dir(&project_dir, Some(&cache_dir), offline)?;
+        for name in &isolated_names {
+            let Some(package) = lock.packages(dev).find(|p| &p.name == name) else {
+                continue;
+            };
+            if package.r#type == "metapackage" || !crate::isolate::is_plugin_package(package) {
+                continue;
+            }
+            let plugin_dir = package_dir(&vendor_dir, &project_dir, package);
+            if !plugin_dir.is_dir() {
+                continue;
+            }
+            crate::isolate::apply_for(
+                package,
+                &plugin_dir,
+                &store,
+                &cache_dir,
+                php_dir.as_deref(),
+                args.link_mode,
+                offline,
+            )?;
+        }
+    }
+
     // #350: every installed plugin's bundled `vendor/` against the site's
     // own lock, once linking has put both on disk to compare.
     crate::isolate::check(
@@ -1063,6 +1111,7 @@ fn run_impl(
         &vendor_dir,
         &project_dir,
         Some(&cache_dir),
+        &isolated_names,
         || snapshot.lock_sha256().map(str::to_string),
     )?;
 
@@ -1327,6 +1376,11 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
         dev,
         composer_json_sha256: hex(Sha256::digest(&composer_json)),
         patches_fingerprint: patches_fingerprint(&plugins, &root, &project_dir)?,
+        // #351: purely derived from `extra.viv.isolate` + the slug, so it
+        // stays correct even though `dump-autoload` never runs the scoper
+        // itself (it only ever regenerates an autoloader over whatever is
+        // already on disk).
+        isolate: crate::isolate::prefix_map(&root),
     };
     let state_path = vendor_dir.join("composer/.vivace-state");
 
@@ -1954,6 +2008,37 @@ fn random_hex32() -> Result<String> {
 fn read_state(path: &Path) -> Option<State> {
     let content = fs_err::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+/// #351's `viv isolate <package>`/`--rm`: overwrites just `State::isolate`
+/// in `.vivace-state`, leaving every other field as the last real install
+/// left it (stale now, but the next one rewrites the whole file anyway —
+/// `composer_json_sha256` already changed the moment `extra.viv.isolate`
+/// did). A project with no state file yet (never installed) gets one with
+/// placeholder install-identity fields, overwritten wholesale the first
+/// time `viv install` actually runs.
+pub(crate) fn write_isolate_state(
+    vendor_dir: &Path,
+    isolate: &BTreeMap<String, String>,
+) -> Result<()> {
+    let state_path = vendor_dir.join("composer/.vivace-state");
+    let mut state = read_state(&state_path).unwrap_or(State {
+        content_hash: None,
+        dev: true,
+        composer_json_sha256: String::new(),
+        patches_fingerprint: None,
+        isolate: BTreeMap::new(),
+    });
+    state.isolate = isolate.clone();
+    write_atomic(&state_path, &serde_json::to_vec(&state)?)
+}
+
+/// `viv isolate --list`'s own read of the same file, package name ->
+/// prefix, or an empty map for a project never installed.
+pub(crate) fn read_isolate_state(vendor_dir: &Path) -> BTreeMap<String, String> {
+    read_state(&vendor_dir.join("composer/.vivace-state"))
+        .map(|state| state.isolate)
+        .unwrap_or_default()
 }
 
 /// `State::patches_fingerprint`: `None` when `cweagans/composer-patches`

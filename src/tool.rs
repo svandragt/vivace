@@ -112,12 +112,41 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
         .map(String::as_str)
         .context("viv x needs a package, e.g. `viv x phpunit/phpunit`")?;
     let pass_args = pass_through(&args.command);
+    let (name, short_name, env_dir) =
+        ensure_tool_env(spec, Some(&cache_dir), offline, args.refresh)?;
+
+    let target = resolve_bin(&env_dir, &name, &short_name, args.bin.as_deref())?;
+    let error = std::process::Command::new(&target).args(pass_args).exec();
+    Err(anyhow::Error::from(error).context(format!("executing {}", target.display())))
+}
+
+/// `run_x`'s own "resolve and install `spec` into its per-tool cache env,
+/// returning its dir" half, split out (#351) so `isolate.rs`'s php-scoper
+/// invocation can reuse the exact same resolve/install/cache-key logic
+/// without reaching `run_x`'s own tail: that one `exec()`s over the current
+/// process on success and never returns, which the isolation pipeline
+/// can't use (it has a scoper run and a `dump-autoload` left to do
+/// afterwards, in the same process).
+///
+/// Returns `(lowercased name, short name, env dir)`, the same three pieces
+/// `run_x` needs for `resolve_bin` right after calling this.
+pub fn ensure_tool_env(
+    spec: &str,
+    cache_dir: Option<&Path>,
+    offline: bool,
+    refresh: bool,
+) -> Result<(String, String, PathBuf)> {
+    let cache_dir = match cache_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => update::default_cache_dir()?,
+    };
     let (name, constraint) = split_spec(spec);
     let name = name.to_ascii_lowercase();
     let constraint = constraint.unwrap_or("*");
     let (vendor, short_name) = name
         .split_once('/')
         .with_context(|| format!("{name}: expected vendor/package"))?;
+    let short_name = short_name.to_string();
 
     let php_version = detect_php_version();
     let key_input = format!("{constraint}|php={php_version}");
@@ -125,11 +154,11 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
 
     let env_dir = {
         let store = Store::open(&cache_dir)?;
-        store.tool_env_dir(vendor, short_name, &key)?
+        store.tool_env_dir(vendor, &short_name, &key)?
     };
     let marker = env_dir.join(TOOL_COMPLETE_MARKER);
 
-    if args.refresh || !marker.is_file() {
+    if refresh || !marker.is_file() {
         fs_err::create_dir_all(&env_dir)?;
         write_synthetic_root(&env_dir, &name, constraint)?;
         let update_args = UpdateArgs {
@@ -187,9 +216,7 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
         fs_err::write(&marker, b"")?;
     }
 
-    let target = resolve_bin(&env_dir, &name, short_name, args.bin.as_deref())?;
-    let error = std::process::Command::new(&target).args(pass_args).exec();
-    Err(anyhow::Error::from(error).context(format!("executing {}", target.display())))
+    Ok((name, short_name, env_dir))
 }
 
 pub fn run_run(args: &RunArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -357,7 +384,7 @@ fn write_synthetic_root(env_dir: &Path, name: &str, constraint: &str) -> Result<
 /// — candidates are the requested package's own `bin` entries (read from the
 /// just-installed `vendor/composer/installed.json`), not every bin any
 /// transitive dependency happens to ship into the same `vendor/bin`.
-fn resolve_bin(
+pub(crate) fn resolve_bin(
     env_dir: &Path,
     name: &str,
     short_name: &str,
