@@ -73,6 +73,12 @@ pub(crate) const PHP_BUCKET: &str = "php-v0";
 /// given commit once no matter how many packages happen to share it (a
 /// fork, a monorepo). See [`commit_meta_path`].
 pub(crate) const COMMIT_META_BUCKET: &str = "commit-meta-v0";
+/// #350's per-plugin bundled-library-clash verdict (`isolate::check`): keyed
+/// on the plugin's own archive hash plus the site lock's content hash, so a
+/// warm install with neither changed re-reads nothing under the plugin's own
+/// `vendor/` to reprint the same message — see [`isolate_check_sidecar`].
+/// Same unbounded-growth ponytail as [`ROOT_CLASSMAP_BUCKET`].
+pub(crate) const ISOLATE_CHECK_BUCKET: &str = "isolate-check-v0";
 const LOCK_FILE: &str = ".lock";
 
 /// Every current bucket name, shared by `prune` (what a stale-bucket sweep
@@ -92,6 +98,7 @@ const KNOWN_BUCKETS: &[&str] = &[
     PLATFORM_CHECK_BUCKET,
     PHP_BUCKET,
     COMMIT_META_BUCKET,
+    ISOLATE_CHECK_BUCKET,
     LOCK_FILE,
 ];
 
@@ -742,6 +749,18 @@ pub fn platform_check_sidecar(cache_root: &Path, base: &str) -> PathBuf {
     cache_root
         .join(PLATFORM_CHECK_BUCKET)
         .join(format!("{}.json", hex(Sha256::digest(base.as_bytes()))))
+}
+
+/// #350's per-plugin isolation-check verdict cache: `key` is the plugin's
+/// archive hash and the site lock's content hash joined by a caller
+/// (`isolate::check`), not a project path — two different projects whose
+/// plugin and lock happen to match byte-for-byte share a cache entry on
+/// purpose, the same way [`archive_classmap_sidecar`] shares across
+/// projects for a package's own classmap.
+pub fn isolate_check_sidecar(cache_root: &Path, key: &str) -> PathBuf {
+    cache_root
+        .join(ISOLATE_CHECK_BUCKET)
+        .join(format!("{}.json", hex(Sha256::digest(key.as_bytes()))))
 }
 
 /// #345's `commit-meta-v0` bucket path for one commit's `composer.json`:

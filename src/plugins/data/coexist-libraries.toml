@@ -1,0 +1,21 @@
+# #350: libraries a plugin bundles at a different version from the site's
+# own copy by design, not by accident -- excluded from the bundled-library
+# clash report (`src/isolate.rs`) even when the two versions differ and the
+# bundled copy reads unprefixed. Ported from `docs/research.md` candidate
+# 3.2's own list (`bench/g3-isolation/inventory.py`'s reading): every copy
+# registers itself and the newest wins (`woocommerce/action-scheduler`, the
+# `automattic/jetpack-*` family), guards its own definitions
+# (`paragonie/random_compat`, `ralouphie/getallheaders`,
+# `symfony/polyfill-*`), runs at install time only (`composer/installers`),
+# or is a set of interfaces compatible across the versions seen (`psr/*`).
+# A trailing `*` is the only wildcard (`is_coexist_library`'s own match, a
+# plain prefix check); every other entry matches the full name.
+libraries = [
+    "woocommerce/action-scheduler",
+    "automattic/jetpack-*",
+    "paragonie/random_compat",
+    "ralouphie/getallheaders",
+    "symfony/polyfill-*",
+    "composer/installers",
+    "psr/*",
+]

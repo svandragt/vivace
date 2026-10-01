@@ -7,6 +7,7 @@ pub mod diagnose;
 pub mod fetch;
 pub mod init;
 pub mod install;
+pub mod isolate;
 pub mod link;
 pub mod lock;
 pub mod lock_merge;
