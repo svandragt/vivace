@@ -1027,6 +1027,13 @@ a hand list (#357): 2,386 bundled files, php-scoper 4.6 s at 134 MB
 peak, lint 51 s across eight workers, the plugin's main file loads,
 87 s in all on a cold cache. `viv install` on that site now names the
 clash and `viv isolate humanmade-pro/multilingualpress` resolves it.
+
+What this does not address, by decision on 2026-10-02: a clash at solve
+time, two packages declaring incompatible requirements for one library.
+That would need per-plugin resolution, a separate solve and prefixed
+tree per plugin, and the five-site count found it uncommon; no
+measurement is planned. A solver conflict keeps Composer's wording and
+no pointer to `viv isolate`, which would be wrong advice there.
 ### Candidate 3.3: a lock that pins commits and merges by record
 
 **Question.** If branch dependencies are pinned to commits and a
