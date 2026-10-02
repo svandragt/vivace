@@ -31,8 +31,22 @@ use std::path::Path;
 use common::git_command;
 use reqwest::Url;
 use serde_json::Value;
+use tokio::sync::Mutex;
 use vivace::fetch::Conditional;
 use vivace::repository::{Repository, Transport};
+
+/// Serialises every test here that can observe `COMPOSER_ROOT_VERSION`:
+/// `composer_root_version_env_wins_over_the_guess` mutates process env,
+/// which `root_pretty_version`'s own `std::env::var` read lets any other
+/// test in this file see mid-flight too, since cargo test runs a file's
+/// tests as threads sharing one process (nextest gives each test its own
+/// process and never needs this lock). Only tests whose fixture has no
+/// explicit root `version` are ever affected — the others short-circuit
+/// before `root_pretty_version` would check the env var at all. `tokio::sync`
+/// rather than `std::sync`, since the guard is held across each test's own
+/// `.await` points and clippy's `await_holding_lock` flags a `std::sync`
+/// guard there.
+static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 fn fixture(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -172,6 +186,7 @@ async fn root_self_version_locks_the_roots_own_version() {
 /// default, the same one `root_package` already applies.
 #[tokio::test]
 async fn root_self_version_falls_back_to_the_default_root_version() {
+    let _lock = ENV_LOCK.lock().await;
     let got = update_lock("default-version").await;
     let want = fs_err::read_to_string(fixture("default-version").join("composer.lock")).unwrap();
     assert_eq!(got, want, "viv's lock does not byte-match composer's");
@@ -199,6 +214,7 @@ async fn root_self_version_survives_the_dev_split_second_solve() {
 /// to "newest available" either).
 #[tokio::test]
 async fn root_self_version_guesses_a_tag_at_head() {
+    let _lock = ENV_LOCK.lock().await;
     let got = update_lock_in_git_repo("git-tag", |dir| {
         git(dir, &["tag", "-m", "1.2.0", "1.2.0"]);
         git(dir, &["checkout", "-q", "1.2.0"]);
@@ -217,6 +233,7 @@ async fn root_self_version_guesses_a_tag_at_head() {
 /// `root_self_version_guesses_a_tag_at_head`'s `1.3.0` is.
 #[tokio::test]
 async fn root_self_version_guesses_the_current_branch() {
+    let _lock = ENV_LOCK.lock().await;
     let got = update_lock_in_git_repo("git-branch", |_dir| {}).await;
     let want = fs_err::read_to_string(fixture("git-branch").join("composer.lock")).unwrap();
     assert_eq!(got, want, "viv's lock does not byte-match composer's");
@@ -230,21 +247,23 @@ async fn root_self_version_guesses_the_current_branch() {
 /// guess instead would fail outright (no `acme/sibling` release named
 /// `1.2.0` in this run) rather than quietly picking the wrong one.
 ///
-/// No `EnvGuard`/lock (`src/auth.rs`'s own test-only one, private to that
-/// module): `make check`'s gate is `cargo nextest run`
-/// (`Makefile`/`AGENTS.md`), which process-isolates every test, so this
-/// can set and restore the var with no other test ever observing it
-/// mid-flight; restoring it afterwards is only for a plain `cargo test`
-/// run of this same file, sharing this process's threads.
+/// Takes [`ENV_LOCK`] for the same reason `src/auth.rs`'s own test-only
+/// `EnvGuard` does: `make check`'s gate is `cargo nextest run`
+/// (`Makefile`/`AGENTS.md`), which process-isolates every test and never
+/// needs this, but a plain `cargo test` run of this same file shares one
+/// process's threads, and without the lock the three fixtures with no
+/// explicit root `version` (`default-version`, `git-tag`, `git-branch`)
+/// could read this var mid-mutation and fail to resolve `acme/sibling`.
 #[tokio::test]
 #[allow(
     unsafe_code,
-    reason = "nextest gives this test its own process; no other thread touches this var"
+    reason = "serialised by ENV_LOCK for the guard's lifetime"
 )]
 async fn composer_root_version_env_wins_over_the_guess() {
+    let _lock = ENV_LOCK.lock().await;
     let previous = std::env::var("COMPOSER_ROOT_VERSION").ok();
-    // SAFETY: no other test in this process reads/writes this var
-    // concurrently — see this test's own doc comment.
+    // SAFETY: serialised by ENV_LOCK for this guard's lifetime — see this
+    // test's own doc comment.
     unsafe {
         std::env::set_var("COMPOSER_ROOT_VERSION", "2.3.4");
     }
