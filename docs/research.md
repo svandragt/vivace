@@ -1020,13 +1020,13 @@ here.
 On the five measured sites: the migration plugin on site A isolates
 end to end (403 files prefixed in 0.6 s, every file passes `php -l`,
 the load check passes, `checked` recorded). The AWS SDK plugin on site
-D, the case behind the three incidents, is not yet verified: the site
-runs Altis, whose own Composer plugins viv refuses, so `viv install`
-there needs `--no-plugins`, and `--no-plugins` also disables the
-installer-paths adapter, so the plugin lands in `vendor/` instead of
-`content/plugins/`, as Composer's own `--no-plugins` would. The next
-step is not in this candidate: classify Altis's plugins as data file,
-adapter or inert (#355), then re-run site D.
+D, the case behind the three incidents, isolates too, once viv could
+install the site at all (#355 made Altis's own plugins adapters) and
+the load check loaded the real `php-stubs/wordpress-stubs` instead of
+a hand list (#357): 2,386 bundled files, php-scoper 4.6 s at 134 MB
+peak, lint 51 s across eight workers, the plugin's main file loads,
+87 s in all on a cold cache. `viv install` on that site now names the
+clash and `viv isolate humanmade-pro/multilingualpress` resolves it.
 ### Candidate 3.3: a lock that pins commits and merges by record
 
 **Question.** If branch dependencies are pinned to commits and a

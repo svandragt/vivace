@@ -1831,3 +1831,13 @@ entries, and `viv install` on an Altis site runs with no
 The `viv isolate` run on that site's AWS SDK plugin then reached the
 boot check and failed on `untrailingslashit`, a WordPress function the
 hand-written stub set lacks; the stubs need to be the real thing.
+
+## 2026-10-02: the AWS SDK case isolates (#357)
+
+The boot check now loads `php-stubs/wordpress-stubs`, the real
+declarations, so a plugin calling any WordPress function loads under
+the check; the hand list shrank to `ABSPATH`. Lint runs eight-wide and
+`composer.json` is written only after the check passes. On the Altis
+site whose AWS SDK plugin produced the incidents: php-scoper 4.6 s,
+lint 51 s, the plugin loads, 87 s cold. Candidate 3.2's target case
+is solved on a copy of the site that had it.
