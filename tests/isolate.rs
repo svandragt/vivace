@@ -405,6 +405,14 @@ fn seed_isolate_plugin(cache_dir: &Path) {
         PHP_PIN,
         &cache_dir.join(".fake-pinned-php-marker"),
     );
+    // #357: `boot_check` now resolves `php-stubs/wordpress-stubs` through
+    // the tool environment unconditionally (same path as php-scoper), so
+    // every test that reaches the load check needs this primed or it would
+    // reach the network. `acme/isolate-plugin`'s own main file never calls a
+    // real `WordPress` function (only `class_exists`), so an empty stub file
+    // is enough here; the dedicated #357 tests below override it with their
+    // own content.
+    prime_fake_wordpress_stubs(cache_dir, &tool_env_key(), b"<?php\n");
 }
 
 fn skip_without_php() -> bool {
@@ -539,6 +547,26 @@ fn prime_fake_wordpress_excludes(cache_dir: &Path, key: &str) {
     ] {
         fs::write(generated.join(name), b"[]").unwrap();
     }
+    fs::write(env_dir.join(".viv-tool-complete"), b"").unwrap();
+}
+
+/// #357: primes `php-stubs/wordpress-stubs`'s own tool env the same way —
+/// `boot_check` resolves it exactly like `humbug/php-scoper` (same `key`,
+/// since `tool::ensure_tool_env`'s cache key folds in only the constraint
+/// and the detected PHP version, not the package name), then requires
+/// `vendor/php-stubs/wordpress-stubs/wordpress-stubs.php` from it. `body` is
+/// the fake's own stand-in for the real package's one file: callers decide
+/// what it defines (or doesn't) to prove the load check actually depends on
+/// it.
+fn prime_fake_wordpress_stubs(cache_dir: &Path, key: &str, body: &[u8]) {
+    let env_dir = cache_dir
+        .join("tools-v0")
+        .join("php-stubs")
+        .join("wordpress-stubs")
+        .join(key);
+    let stubs_dir = env_dir.join("vendor/php-stubs/wordpress-stubs");
+    fs::create_dir_all(&stubs_dir).unwrap();
+    fs::write(stubs_dir.join("wordpress-stubs.php"), body).unwrap();
     fs::write(env_dir.join(".viv-tool-complete"), b"").unwrap();
 }
 
@@ -715,7 +743,9 @@ fn isolate_offline_without_a_cached_build_errors_naming_the_package() {
 
 /// A syntax error in the scoped output fails `php -l` before the load check
 /// ever runs: `viv isolate` exits 1 naming the file, the plain tree stays
-/// linked, and nothing is cached under `isolated-v0`.
+/// linked, nothing is cached under `isolated-v0`, and (#357) `composer.json`
+/// is byte-identical to before — the edit is written only once the scope +
+/// check succeeds, never partially — so `--list` agrees and prints nothing.
 #[test]
 fn a_php_syntax_error_in_the_scoped_output_fails_isolate_and_keeps_the_plain_tree() {
     if skip_without_php() {
@@ -725,6 +755,7 @@ fn a_php_syntax_error_in_the_scoped_output_fails_isolate_and_keeps_the_plain_tre
     let project = ctx.project.path();
     write_isolate_project(project);
     seed_isolate_plugin(ctx.cache.path());
+    let composer_json_before = fs::read(project.join("composer.json")).unwrap();
 
     let key = tool_env_key();
     let called_marker = ctx.cache.path().join("fake-scoper-called");
@@ -756,6 +787,16 @@ fn a_php_syntax_error_in_the_scoped_output_fails_isolate_and_keeps_the_plain_tre
         isolated_bucket_entries(ctx.cache.path()).is_empty(),
         "a failed check must leave nothing cached under isolated-v0"
     );
+    assert_eq!(
+        fs::read(project.join("composer.json")).unwrap(),
+        composer_json_before,
+        "a failed check must leave composer.json byte-identical to before"
+    );
+    ctx.viv()
+        .args(["isolate", "--list"])
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty());
 }
 
 /// A fake scoper that leaves `foo/bar\Baz`'s class under its own original
@@ -1007,4 +1048,294 @@ fn isolate_no_plugins_reaches_the_scoper_past_a_refused_plugin() {
             "isolated acme/isolate-plugin under Viv\\Isolated\\IsolatePlugin",
         ));
     assert_eq!(called_count(&called_marker), 1);
+}
+
+// --- #357: the real `php-stubs/wordpress-stubs` package, parallel lint -----
+
+/// A minimal single-plugin project/lock pair: no bundled library, no
+/// site-level clash to detect — just `name` locked at `1.0.0` from a zip,
+/// pinned to [`PHP_PIN`] the same way every other isolate fixture is. Split
+/// out of [`write_isolate_project`]/[`write_isolate_lock`] (which both hard-
+/// code `acme/isolate-plugin`) for #357's own fixtures, neither of which
+/// needs a bundled `vendor/` tree at all.
+fn write_single_plugin_project(project: &Path, name: &str) {
+    fs::write(
+        project.join("composer.json"),
+        json!({
+            "name": "acme/site",
+            "require": {name: "^1.0"},
+            "config": {"platform": {"php": PHP_PIN}},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        project.join("composer.lock"),
+        json!({
+            "content-hash": "test",
+            "packages": [{
+                "name": name,
+                "version": "1.0.0",
+                "type": "wordpress-plugin",
+                "dist": {
+                    "type": "zip",
+                    "url": format!("https://example.invalid/{}.zip", name.replace('/', "-")),
+                    "reference": "ref",
+                    "shasum": "",
+                },
+            }],
+            "packages-dev": [],
+            "aliases": [],
+            "minimum-stability": "stable",
+            "stability-flags": {},
+            "prefer-stable": false,
+            "prefer-lowest": false,
+            "platform": {},
+            "platform-dev": {},
+            "plugin-api-version": "2.9.0",
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+fn seed_single_plugin(cache_dir: &Path, name: &str, zip: &[u8]) {
+    Store::open(cache_dir)
+        .unwrap()
+        .add_zip(&dist_package(name, "1.0.0", "ref", "wordpress-plugin"), zip)
+        .unwrap();
+}
+
+const STUB_CHECK_PLUGIN: &str = "acme/stub-check-plugin";
+
+/// A plugin with no real bundled library: its own main file is the only
+/// thing `boot_check`'s load check exercises, calling `untrailingslashit` —
+/// the exact `WordPress` core function #357's own incident named as missing
+/// from the hand-written stub list. An empty `vendor/composer/installed.json`
+/// is still needed: `dump_scoped_autoload`'s own `install::dump_autoload`
+/// call requires a `vendor/` directory to exist at all, even an empty one.
+fn stub_check_plugin_zip() -> Vec<u8> {
+    zip_of_files(&[
+        (
+            "stub-check-plugin.php",
+            b"<?php\n// Plugin Name: Stub Check Plugin\nuntrailingslashit('/foo/');\n",
+        ),
+        ("vendor/composer/installed.json", br#"{"packages": []}"#),
+    ])
+}
+
+/// #357: `boot_check` now resolves `php-stubs/wordpress-stubs` loads the
+/// real stub set (here, the fake's own stand-in) before the plugin's main
+/// file, so a function the hand-written list never covered — this fixture's
+/// `untrailingslashit` — is defined by the time the main file calls it.
+#[test]
+fn boot_check_passes_when_the_resolved_stubs_define_untrailingslashit() {
+    if skip_without_php() {
+        return;
+    }
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    write_single_plugin_project(project, STUB_CHECK_PLUGIN);
+    seed_single_plugin(
+        ctx.cache.path(),
+        STUB_CHECK_PLUGIN,
+        &stub_check_plugin_zip(),
+    );
+    fake_pinned_php(
+        ctx.cache.path(),
+        PHP_PIN,
+        &ctx.cache.path().join(".fake-pinned-php-marker"),
+    );
+
+    let key = tool_env_key();
+    prime_fake_wordpress_stubs(
+        ctx.cache.path(),
+        &key,
+        b"<?php\nfunction untrailingslashit($string) { return rtrim((string) $string, '/'); }\n",
+    );
+    prime_fake_php_scoper(
+        ctx.cache.path(),
+        &key,
+        &ctx.cache.path().join("fake-scoper-called"),
+        FAKE_SCOPER_VERSION,
+        "", // no rewrite needed: nothing bundled
+    );
+    prime_fake_wordpress_excludes(ctx.cache.path(), &key);
+
+    ctx.viv().args(["install", "--offline"]).assert().success();
+    ctx.viv()
+        .args(["isolate", STUB_CHECK_PLUGIN])
+        .assert()
+        .success();
+}
+
+/// The same fixture, but the resolved stubs leave `untrailingslashit`
+/// undefined (as the hand-written list alone always has): the load check
+/// fails on PHP's own "undefined function" fatal, proving the pass above
+/// actually depends on the resolved stub set rather than succeeding anyway.
+#[test]
+fn boot_check_fails_when_the_resolved_stubs_leave_untrailingslashit_undefined() {
+    if skip_without_php() {
+        return;
+    }
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    write_single_plugin_project(project, STUB_CHECK_PLUGIN);
+    seed_single_plugin(
+        ctx.cache.path(),
+        STUB_CHECK_PLUGIN,
+        &stub_check_plugin_zip(),
+    );
+    fake_pinned_php(
+        ctx.cache.path(),
+        PHP_PIN,
+        &ctx.cache.path().join(".fake-pinned-php-marker"),
+    );
+
+    let key = tool_env_key();
+    prime_fake_wordpress_stubs(ctx.cache.path(), &key, b"<?php\n");
+    prime_fake_php_scoper(
+        ctx.cache.path(),
+        &key,
+        &ctx.cache.path().join("fake-scoper-called"),
+        FAKE_SCOPER_VERSION,
+        "",
+    );
+    prime_fake_wordpress_excludes(ctx.cache.path(), &key);
+
+    ctx.viv().args(["install", "--offline"]).assert().success();
+    ctx.viv()
+        .args(["isolate", STUB_CHECK_PLUGIN])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("undefined function"))
+        .stderr(predicates::str::contains("untrailingslashit"));
+}
+
+const LINT_PLUGIN: &str = "acme/lint-plugin";
+
+/// 20 trivial `.php` files (one main plugin file, 19 bundled ones) — just
+/// enough for `boot_check`'s own `php -l` loop to have 20 files to fan out
+/// across `LINT_CONCURRENCY` workers. Nothing here is namespaced or
+/// exercises the rewrite itself (#351/#352's own tests already cover that);
+/// this fixture only proves every file reaches the lint step, via
+/// [`fake_counting_php`]'s own marker.
+fn lint_plugin_zip() -> Vec<u8> {
+    let mut files: Vec<(String, Vec<u8>)> = vec![(
+        "lint-plugin.php".to_string(),
+        b"<?php\n// Plugin Name: Lint Plugin\n".to_vec(),
+    )];
+    for i in 0..19 {
+        files.push((
+            format!("vendor/acme/bundled/File{i:02}.php"),
+            b"<?php\n".to_vec(),
+        ));
+    }
+    let refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(name, content)| (name.as_str(), content.as_slice()))
+        .collect();
+    zip_of_files(&refs)
+}
+
+/// `<cache>/php-v0/<version>-<os>-<arch>/php` (mirrors [`fake_pinned_php`]),
+/// intercepting `-l <file>` instead of `-d memory_limit=-1`: each call
+/// appends one line to `marker` and exits 0 without actually invoking PHP's
+/// parser — this fixture's files are trivially valid, and the point here is
+/// concurrency (how many ran), not lint correctness (already covered by the
+/// real `php -l` the other #352 tests run against real syntax errors).
+/// Every other invocation (the scoper's own `-d memory_limit=-1`, the final
+/// bootstrap run, `tool::ensure_tool_env`'s own `-r` version probe) passes
+/// through to the real interpreter unchanged.
+fn fake_counting_php(cache_dir: &Path, version: &str, marker: &Path) {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let dir = cache_dir
+        .join("php-v0")
+        .join(format!("{version}-{os}-{arch}"));
+    fs::create_dir_all(&dir).unwrap();
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"-l\" ]; then\n  echo \"$2\" >> \"{marker}\"\n  exit \
+         0\nfi\nif [ \"$1\" = \"-d\" ] && [ \"$2\" = \"memory_limit=-1\" ]; then\n  shift \
+         2\n  exec \"$@\"\nfi\nexec \"{real_php}\" \"$@\"\n",
+        marker = marker.display(),
+        real_php = real_php_path().display(),
+    );
+    let php_path = dir.join("php");
+    fs::write(&php_path, script).unwrap();
+    let mut perms = fs::metadata(&php_path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    fs::set_permissions(&php_path, perms).unwrap();
+    fs::write(dir.join(".ok"), b"").unwrap();
+}
+
+/// Every `.php` file under `dir`, recursively — the test's own stand-in for
+/// `collect_php_files` (crate-private, unreachable from an integration
+/// test), used only to know how many `php -l` calls `boot_check` ought to
+/// have made against the fixture's 20 files plus whatever Composer's own
+/// regenerated autoloader ([`dump_scoped_autoload`]) added beside them.
+fn count_php_files(dir: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                count_php_files(&path)
+            } else {
+                usize::from(path.extension().is_some_and(|ext| ext == "php"))
+            }
+        })
+        .sum()
+}
+
+/// #357's own done-when: every rewritten file reaches `php -l` exactly
+/// once, fanned out across `LINT_CONCURRENCY` workers rather than one
+/// process at a time — not asserted on timing (the ticket's own 6:38-minute
+/// incident is a real-world measurement, not a unit-test budget), only that
+/// nothing was skipped or double-counted. The marker count is compared
+/// against the scoped tree's own file count rather than a literal 20: the
+/// fixture contributes 20, but `dump_scoped_autoload`'s regenerated
+/// Composer autoloader adds its own handful of `.php` files alongside them,
+/// and those get linted too.
+#[test]
+fn boot_check_lints_every_rewritten_file() {
+    if skip_without_php() {
+        return;
+    }
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    write_single_plugin_project(project, LINT_PLUGIN);
+    seed_single_plugin(ctx.cache.path(), LINT_PLUGIN, &lint_plugin_zip());
+
+    let lint_marker = ctx.cache.path().join("lint-calls");
+    fake_counting_php(ctx.cache.path(), PHP_PIN, &lint_marker);
+
+    let key = tool_env_key();
+    prime_fake_wordpress_stubs(ctx.cache.path(), &key, b"<?php\n");
+    prime_fake_php_scoper(
+        ctx.cache.path(),
+        &key,
+        &ctx.cache.path().join("fake-scoper-called"),
+        FAKE_SCOPER_VERSION,
+        "",
+    );
+    prime_fake_wordpress_excludes(ctx.cache.path(), &key);
+
+    ctx.viv().args(["install", "--offline"]).assert().success();
+    ctx.viv().args(["isolate", LINT_PLUGIN]).assert().success();
+
+    let plugin_dir = project.join("vendor/acme/lint-plugin");
+    let total_files = count_php_files(&plugin_dir);
+    assert!(
+        total_files >= 20,
+        "the fixture's own 20 files must all have survived scoping"
+    );
+    assert_eq!(
+        fs::read_to_string(&lint_marker).unwrap().lines().count(),
+        total_files,
+        "every rewritten file reached php -l exactly once"
+    );
 }

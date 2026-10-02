@@ -22,7 +22,9 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
@@ -669,13 +671,11 @@ fn add_isolate(
     }
     let locked = locked.clone();
 
+    // #357: the edit lives in `root_value` only — nothing is written to
+    // `composer.json` until `apply_for` (scope + #352's own boot check)
+    // below actually succeeds, so a failure of either leaves the file
+    // byte-identical to what `load_project` read, not just un-normalized.
     edit_isolate_list(&mut root_value, package, true)?;
-    let composer_json_path = project_dir.join("composer.json");
-    let indent = normalize::detect_indent(&original);
-    write_composer_json(&composer_json_path, &root_value)?;
-    if normalize::maybe_normalize(&composer_json_path, &indent)? {
-        warn_out(&format!("Normalized {}", composer_json_path.display()));
-    }
     let root = lock::root_from_value(&root_value)?;
 
     let store = Store::open(cache_dir)?;
@@ -689,6 +689,14 @@ fn add_isolate(
         LinkMode::default(),
         offline,
     )?;
+
+    let composer_json_path = project_dir.join("composer.json");
+    let indent = normalize::detect_indent(&original);
+    write_composer_json(&composer_json_path, &root_value)?;
+    if normalize::maybe_normalize(&composer_json_path, &indent)? {
+        warn_out(&format!("Normalized {}", composer_json_path.display()));
+    }
+
     let prefixes = prefix_map(&root);
     let mut checked = install::seed_isolate_checked(&vendor_dir, &prefixes);
     checked.insert(package.to_string(), scoper_version);
@@ -980,7 +988,7 @@ pub(crate) fn apply_for(
         // archive `link_tree` below never runs for this plugin this call,
         // so the caller's own `plugin_dir` is left exactly as linking put
         // it before this function was ever called.
-        if let Err(err) = boot_check(package, &dest, php_dir) {
+        if let Err(err) = boot_check(package, &dest, php_dir, cache_dir, offline) {
             let _ = fs_err::remove_dir_all(&dest);
             return Err(err);
         }
@@ -1228,47 +1236,136 @@ fn classmap_safe_autoload(autoload: Option<&Value>) -> Value {
     Value::Object(out)
 }
 
-// --- #352: a scoped plugin still boots -------------------------------------
+// --- #352/#357: a scoped plugin still boots --------------------------------
 
-/// The minimal `WordPress` function stubs php-scoper's own `exclude-*`
-/// config (`write_scoper_config`) assumes are already global when a plugin's
-/// main file loads: beside the plugin data files
-/// (`src/plugins/data/*`), not under that module's own `rules()` loader —
-/// those parse a specific `Rule` shape off `.toml`, this is plain PHP
-/// `include_str!`'d whole. Extend the file the first time a real plugin's
-/// load check needs a stub it doesn't define.
+/// #357: `ABSPATH` only — the real `php-stubs/wordpress-stubs` package
+/// (resolved in [`boot_check`] below, same tool-env path as php-scoper)
+/// covers every `WordPress` core function/class a plugin's main file might
+/// call; this hand-written file is just what that package leaves undefined,
+/// not under `plugins`' own `rules()` loader (those parse a specific `Rule`
+/// shape off `.toml`, this is plain PHP `include_str!`'d whole). Extend the
+/// file the first time a real plugin's load check needs something else the
+/// real stubs don't cover.
 const WORDPRESS_STUBS: &str = include_str!("plugins/data/wordpress-stubs.php");
 
+/// Up to this many workers run `php -l` concurrently in [`lint_php_files`] —
+/// `install.rs`'s own `link_archives`/`EXTRACT_CONCURRENCY`'s ceiling, disk-
+/// and process-spawn-bound the same way.
+const LINT_CONCURRENCY: usize = 8;
+
+/// [`boot_check`]'s own `php -l` loop, fanned out across up to
+/// [`LINT_CONCURRENCY`] workers pulling from a shared index
+/// (`install.rs`'s own `link_archives` work-stealing shape, reused here
+/// rather than threaded through a new shared helper for one caller): a
+/// plugin with thousands of rewritten files (#352's own incident — six of a
+/// 6:38 minute run was this loop, one `php -l` process at a time) no longer
+/// serialises a process spawn per file. Per-file results are unchanged (the
+/// same `-l` invocation, the same stderr capture); only the order work
+/// happens in changes, so failures are sorted back into `php_files`' own
+/// order before being returned, not left in whichever order workers finished.
+fn lint_php_files(php_bin: &Path, php_files: &[PathBuf]) -> Result<Vec<String>> {
+    if php_files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(LINT_CONCURRENCY)
+        .min(php_files.len());
+    let next = AtomicUsize::new(0);
+    let error: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    let failures: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(file) = php_files.get(index) else {
+                        break;
+                    };
+                    if error
+                        .lock()
+                        .expect("error mutex is never poisoned")
+                        .is_some()
+                    {
+                        break;
+                    }
+                    let output = match std::process::Command::new(php_bin)
+                        .args(["-l", &file.to_string_lossy()])
+                        .output()
+                    {
+                        Ok(output) => output,
+                        Err(err) => {
+                            let mut guard = error.lock().expect("error mutex is never poisoned");
+                            if guard.is_none() {
+                                *guard = Some(anyhow::Error::new(err).context(format!(
+                                    "running {} -l {}",
+                                    php_bin.display(),
+                                    file.display()
+                                )));
+                            }
+                            break;
+                        }
+                    };
+                    if !output.status.success() {
+                        failures
+                            .lock()
+                            .expect("failures mutex is never poisoned")
+                            .push((
+                                index,
+                                format!(
+                                    "{}: {}",
+                                    file.display(),
+                                    String::from_utf8_lossy(&output.stderr).trim()
+                                ),
+                            ));
+                    }
+                }
+            });
+        }
+    });
+    if let Some(err) = error.into_inner().expect("error mutex is never poisoned") {
+        return Err(err);
+    }
+    let mut failures = failures
+        .into_inner()
+        .expect("failures mutex is never poisoned");
+    failures.sort_by_key(|(index, _)| *index);
+    Ok(failures.into_iter().map(|(_, message)| message).collect())
+}
+
 /// `php -l` every `.php` file under `dest` (the whole scoped tree php-scoper
-/// just wrote, not only `vendor/`) on `php_dir`'s own `php` (the project's
-/// pin, same binary [`build_scoped_tree`]'s caller resolved; PATH's `php`
-/// when there is none), then a load check: a generated bootstrap, in its own
-/// temp dir, that requires [`WORDPRESS_STUBS`], the scoped tree's own
+/// just wrote, not only `vendor/`), in parallel ([`lint_php_files`]), on
+/// `php_dir`'s own `php` (the project's pin, same binary
+/// [`build_scoped_tree`]'s caller resolved; PATH's `php` when there is
+/// none); then a load check: a generated bootstrap, in its own temp dir,
+/// that requires the real `php-stubs/wordpress-stubs` package (resolved
+/// through the tool environment the same way [`apply_for`] resolves
+/// php-scoper, `offline` honoured), [`WORDPRESS_STUBS`] (just `ABSPATH`,
+/// everything the real stubs leave undefined), the scoped tree's own
 /// `vendor/autoload.php`, then the plugin's own main file
 /// ([`plugin_main_file`]) inside a `try`/`catch (\Throwable)` — a fatal
 /// (PHP 7+ turns most of those into a catchable `Error`) or an uncaught
 /// exception fails the check with PHP's own message. `wp plugin activate`
 /// (needs a database) is deliberately not attempted here — see
 /// `docs/research.md` candidate 3.2's built verdict.
-fn boot_check(package: &Package, dest: &Path, php_dir: Option<&Path>) -> Result<()> {
+fn boot_check(
+    package: &Package,
+    dest: &Path,
+    php_dir: Option<&Path>,
+    cache_dir: &Path,
+    offline: bool,
+) -> Result<()> {
     let php_bin = php_dir.map_or_else(|| PathBuf::from("php"), |dir| dir.join("php"));
 
     let mut php_files = Vec::new();
     collect_php_files(dest, &mut php_files, usize::MAX);
-    let mut failures = Vec::new();
-    for file in &php_files {
-        let output = std::process::Command::new(&php_bin)
-            .args(["-l", &file.to_string_lossy()])
-            .output()
-            .with_context(|| format!("running {} -l {}", php_bin.display(), file.display()))?;
-        if !output.status.success() {
-            failures.push(format!(
-                "{}: {}",
-                file.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-    }
+    let lint_started = Instant::now();
+    let failures = lint_php_files(&php_bin, &php_files)?;
+    tracing::debug!(
+        files = php_files.len(),
+        elapsed_ms = lint_started.elapsed().as_millis(),
+        "php -l on the scoped tree"
+    );
     if !failures.is_empty() {
         bail!(
             "{}: php -l failed on {} file{}:\n{}",
@@ -1286,14 +1383,39 @@ fn boot_check(package: &Package, dest: &Path, php_dir: Option<&Path>) -> Result<
             dest.display()
         )
     })?;
+
+    // #357: resolved only once the lint above passed — a cheap `php -r`
+    // version probe on a cache hit, a real install on a cold cache, neither
+    // of which a syntax-broken scoped tree should ever pay for.
+    let stubs_php_override = php_dir.map(|dir| dir.join("php"));
+    let (_, _, stubs_env) = tool::ensure_tool_env(
+        "php-stubs/wordpress-stubs",
+        Some(cache_dir),
+        offline,
+        false,
+        stubs_php_override.as_deref(),
+    )
+    .with_context(|| {
+        format!(
+            "{}: resolving php-stubs/wordpress-stubs",
+            package.pretty_name()
+        )
+    })?;
+    let wp_stubs_path = stubs_env.join("vendor/php-stubs/wordpress-stubs/wordpress-stubs.php");
+
     let check_dir =
         tempfile::tempdir().context("creating a temp dir for the isolated plugin's load check")?;
-    let stubs_path = check_dir.path().join("wordpress-stubs.php");
-    fs_err::write(&stubs_path, WORDPRESS_STUBS)?;
+    let hand_stubs_path = check_dir.path().join("wordpress-stubs-extra.php");
+    fs_err::write(&hand_stubs_path, WORDPRESS_STUBS)?;
     let bootstrap_path = check_dir.path().join("bootstrap.php");
     fs_err::write(
         &bootstrap_path,
-        boot_check_source(&stubs_path, &dest.join("vendor/autoload.php"), &main_file),
+        boot_check_source(
+            &wp_stubs_path,
+            &hand_stubs_path,
+            &dest.join("vendor/autoload.php"),
+            &main_file,
+        ),
     )?;
     let output = std::process::Command::new(&php_bin)
         .arg(&bootstrap_path)
@@ -1329,13 +1451,23 @@ fn plugin_main_file(plugin_dir: &Path) -> Option<PathBuf> {
 }
 
 /// [`boot_check`]'s generated bootstrap source: no config to vary beyond the
-/// three paths, so this stays a plain format rather than a templating crate.
-fn boot_check_source(stubs_path: &Path, autoload_path: &Path, main_file: &Path) -> String {
+/// four paths, so this stays a plain format rather than a templating crate.
+/// `wp_stubs_path` (the real `php-stubs/wordpress-stubs` package) loads
+/// before `hand_stubs_path` ([`WORDPRESS_STUBS`], just `ABSPATH`) — neither
+/// redeclares anything the other already has, so the order only matters for
+/// which one a future duplicate would be caught against.
+fn boot_check_source(
+    wp_stubs_path: &Path,
+    hand_stubs_path: &Path,
+    autoload_path: &Path,
+    main_file: &Path,
+) -> String {
     format!(
-        "<?php\n\nrequire {};\nrequire {};\n\ntry {{\n    require {};\n}} catch (\\Throwable $e) \
-         {{\n    fwrite(STDERR, $e->getMessage() . ' in ' . $e->getFile() . ':' . \
-         $e->getLine() . \"\\n\");\n    exit(1);\n}}\n\nexit(0);\n",
-        php_string(&stubs_path.to_string_lossy()),
+        "<?php\n\nrequire {};\nrequire {};\nrequire {};\n\ntry {{\n    require {};\n}} catch \
+         (\\Throwable $e) {{\n    fwrite(STDERR, $e->getMessage() . ' in ' . $e->getFile() . \
+         ':' . $e->getLine() . \"\\n\");\n    exit(1);\n}}\n\nexit(0);\n",
+        php_string(&wp_stubs_path.to_string_lossy()),
+        php_string(&hand_stubs_path.to_string_lossy()),
         php_string(&autoload_path.to_string_lossy()),
         php_string(&main_file.to_string_lossy()),
     )
