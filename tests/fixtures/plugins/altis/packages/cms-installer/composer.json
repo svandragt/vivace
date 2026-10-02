@@ -1,0 +1,8 @@
+{
+    "name": "altis/cms-installer",
+    "type": "composer-plugin",
+    "license": "GPL-2.0",
+    "require": { "composer-plugin-api": "^2.0" },
+    "extra": { "class": "Altis\\CMS\\Composer\\Plugin" },
+    "autoload": { "classmap": ["inc/"] }
+}

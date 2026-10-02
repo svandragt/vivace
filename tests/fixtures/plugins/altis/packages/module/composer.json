@@ -1,0 +1,10 @@
+{
+    "name": "acme/altis-module",
+    "type": "library",
+    "license": "GPL-2.0",
+    "extra": {
+        "altis": {
+            "install-overrides": ["acme/bundled-plugin"]
+        }
+    }
+}

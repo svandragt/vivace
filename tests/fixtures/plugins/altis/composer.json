@@ -1,0 +1,123 @@
+{
+    "name": "vivace/fixture-altis",
+    "license": "proprietary",
+    "type": "project",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/cms-installer",
+            "options": {
+                "versions": {
+                    "altis/cms-installer": "0.4.4"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "packages/core",
+            "options": {
+                "versions": {
+                    "altis/core": "25.0.8"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "packages/dev-tools-command",
+            "options": {
+                "versions": {
+                    "altis/dev-tools-command": "0.8.2"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "packages/cms",
+            "options": {
+                "versions": {
+                    "altis/cms": "1.0.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "packages/dev-tools",
+            "options": {
+                "versions": {
+                    "altis/dev-tools": "1.0.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "packages/module",
+            "options": {
+                "versions": {
+                    "acme/altis-module": "1.0.0"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "packages/bundled-plugin",
+            "options": {
+                "versions": {
+                    "acme/bundled-plugin": "1.0.0"
+                },
+                "symlink": false
+            }
+        },
+        {
+            "type": "path",
+            "url": "packages/normal-plugin",
+            "options": {
+                "versions": {
+                    "acme/normal-plugin": "1.0.0"
+                },
+                "symlink": false
+            }
+        }
+    ],
+    "require": {
+        "composer/installers": "^2.3",
+        "altis/cms-installer": "0.4.4",
+        "altis/core": "25.0.8",
+        "altis/dev-tools-command": "0.8.2",
+        "altis/cms": "1.0.0",
+        "altis/dev-tools": "1.0.0",
+        "acme/altis-module": "1.0.0",
+        "acme/bundled-plugin": "1.0.0",
+        "acme/normal-plugin": "1.0.0"
+    },
+    "config": {
+        "secure-http": true,
+        "allow-plugins": {
+            "composer/installers": true,
+            "altis/cms-installer": true,
+            "altis/core": true,
+            "altis/dev-tools-command": true
+        }
+    },
+    "extra": {
+        "installer-paths": {
+            "content/mu-plugins/{$name}/": [
+                "type:wordpress-muplugin"
+            ],
+            "content/plugins/{$name}/": [
+                "type:wordpress-plugin"
+            ],
+            "content/themes/{$name}/": [
+                "type:wordpress-theme"
+            ]
+        },
+        "altis": {
+            "modules": {
+                "custom": {
+                    "entrypoint": [
+                        "custom-entrypoint.php"
+                    ]
+                }
+            }
+        }
+    }
+}

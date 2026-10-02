@@ -1,0 +1,2 @@
+<?php
+// root custom entrypoint
