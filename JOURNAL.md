@@ -1817,3 +1817,17 @@ checked with `php -l` and a stubbed load before it is cached. Proven
 end to end on one real site. The AWS SDK case on an Altis site waits
 on Altis's own plugins, which viv refuses; that is the next adapter
 decision, and it is now one the maintainer has hit.
+
+## 2026-10-02: viv installs an Altis site (#355)
+
+Read at their pinned tags, the Altis Composer plugins were not what
+the issue guessed: `cms-installer` scaffolds `index.php`,
+`wp-config.php` and writes `vendor/modules.php`; `core` overrides
+install paths for every plugin any package names in
+`extra.altis.install-overrides`, lock-wide; `dev-tools-command` seeds
+`.travis.yml` on `post-autoload-dump`. Three adapters, two inert
+entries, and `viv install` on an Altis site runs with no
+`--no-plugins`, 201 of 201 packages placed as Composer placed them.
+The `viv isolate` run on that site's AWS SDK plugin then reached the
+boot check and failed on `untrailingslashit`, a WordPress function the
+hand-written stub set lacks; the stubs need to be the real thing.
