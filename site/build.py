@@ -343,6 +343,13 @@ def viv_help(cmd):
         result = subprocess.run(args, capture_output=True, text=True, check=True)
     except FileNotFoundError:
         raise SystemExit(f"site/build.py: $VIV points at a missing binary: {binary}")
+    except subprocess.CalledProcessError as err:
+        # The site renders help with the latest release's binary; a page for
+        # a command that landed after that release says so instead of
+        # failing the build.
+        if "unrecognized subcommand" in err.stderr:
+            return f"viv {cmd}: available from the next release; this page describes main."
+        raise
     return result.stdout.strip("\n")
 
 
