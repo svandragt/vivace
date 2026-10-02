@@ -1841,3 +1841,18 @@ the check; the hand list shrank to `ABSPATH`. Lint runs eight-wide and
 site whose AWS SDK plugin produced the incidents: php-scoper 4.6 s,
 lint 51 s, the plugin loads, 87 s cold. Candidate 3.2's target case
 is solved on a copy of the site that had it.
+
+## 2026-10-02: four parked items, one silent conflict
+
+The vcs.rs mirror got the per-URL lock source.rs gained with #349; a
+second mirror bucket had kept the same `could not lock config file`
+race. Three `self_version_root` tests failed under plain `cargo test`
+because one test set `COMPOSER_ROOT_VERSION` on the process while the
+others solved in-process; a shared lock, not nextest, is now what keeps
+them green. The site survey behind candidate 3.2 had dropped every
+`wordpress-plugin` Composer left in plain `vendor/`, which is where the
+xmlseclibs and php-saml clashes viv reports on two sites live: 226 to
+295 directories scanned, 35 to 41 clashes, no conclusion changed. And
+the one residual lock merge that ended in markers with an empty stderr
+was a `dev-*` record one side removed and the other moved; the merge
+now names the package and both sides before it falls back.
