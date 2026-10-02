@@ -252,6 +252,64 @@ fn split_dev_commits<T: Clone>(
     (still_divergent, dev_conflicts)
 }
 
+/// #297: [`split_dev_commits`] deciding `DevPick::Conflict` used to fall
+/// straight through to conflict markers with nothing on stderr — the
+/// resolve attempt below is skipped outright for a `dev_conflicts` name (it
+/// has nothing a registry lookup could add), so no code path ever named
+/// *why*. This is the message for that naming: the commit (or "removed")
+/// each side locked it to, and whether a missing or tied `time` is what
+/// forced the human into it — the two reasons [`pick_dev_commit`] itself
+/// distinguishes. A free function, not inlined into [`warn_dev_conflicts`],
+/// so a test can assert on the text without capturing stderr.
+fn dev_conflict_message<T>(
+    name: &str,
+    ours: Option<&Entry<T>>,
+    theirs: Option<&Entry<T>>,
+    time: impl Fn(&T) -> Option<&str>,
+) -> String {
+    let side = |entry: Option<&Entry<T>>| -> String {
+        match entry {
+            Some(e) => {
+                let commit = e.identity.source_ref.as_deref().unwrap_or("unknown commit");
+                match time(&e.payload) {
+                    Some(t) => format!("{commit} (time {t})"),
+                    None => format!("{commit} (no time)"),
+                }
+            }
+            None => "removed".to_string(),
+        }
+    };
+    let reason = match (ours, theirs) {
+        (Some(oe), Some(te)) => match (time(&oe.payload), time(&te.payload)) {
+            (Some(ot), Some(tt)) if ot == tt => "both sides carry the same time",
+            _ => "a time is missing on at least one side",
+        },
+        _ => "one side removed the record",
+    };
+    format!(
+        "viv lock merge: {name} is a dev-* record that diverged (ours: {}, theirs: {}) and \
+         {reason}; falling back to conflict markers",
+        side(ours),
+        side(theirs),
+    )
+}
+
+fn warn_dev_conflicts<T>(
+    dev_conflicts: &BTreeSet<String>,
+    ours: &BTreeMap<String, Entry<T>>,
+    theirs: &BTreeMap<String, Entry<T>>,
+    time: impl Fn(&T) -> Option<&str>,
+) {
+    for name in dev_conflicts {
+        warn_out(&dev_conflict_message(
+            name,
+            ours.get(name),
+            theirs.get(name),
+            &time,
+        ));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
     ComposerLock,
@@ -449,6 +507,12 @@ pub(crate) fn merge_composer_lock_bytes(
     let (divergent, dev_conflicts) = split_dev_commits(
         &mut merged,
         divergent,
+        &ours_entries,
+        &theirs_entries,
+        |raw: &Value| raw.get("time").and_then(Value::as_str),
+    );
+    warn_dev_conflicts(
+        &dev_conflicts,
         &ours_entries,
         &theirs_entries,
         |raw: &Value| raw.get("time").and_then(Value::as_str),
@@ -1487,6 +1551,9 @@ pub(crate) fn merge_viv_lock_bytes(
         &theirs_entries,
         |record: &native_lock::Record| record.time.as_deref(),
     );
+    warn_dev_conflicts(&dev_conflicts, &ours_entries, &theirs_entries, |record| {
+        record.time.as_deref()
+    });
 
     if divergent.is_empty() && dev_conflicts.is_empty() {
         let records: Vec<native_lock::Record> =
@@ -1828,6 +1895,38 @@ mod tests {
             pick_dev_commit(Some(&with_time), None, time_of),
             DevPick::Conflict
         ));
+    }
+
+    /// #297: the real-conflict case in chapter 1's corpus (bd845ad7cb05's
+    /// `unison-theme/unison`) left `pick_dev_commit`'s `DevPick::Conflict`
+    /// with nothing on stderr — `dev_conflicts` skipped the resolve
+    /// attempt, and the markers fallback never said why. Two `dev-*`
+    /// records with no `time` on either side names the package and both
+    /// commits instead.
+    #[test]
+    fn dev_conflict_message_names_the_package_and_both_commits_when_times_are_missing() {
+        let ours = dev_entry("aaa", None);
+        let theirs = dev_entry("bbb", None);
+
+        let message =
+            dev_conflict_message("unison-theme/unison", Some(&ours), Some(&theirs), time_of);
+
+        assert!(
+            message.contains("unison-theme/unison"),
+            "message should name the package: {message}"
+        );
+        assert!(
+            message.contains("aaa"),
+            "message should name ours' commit: {message}"
+        );
+        assert!(
+            message.contains("bbb"),
+            "message should name theirs' commit: {message}"
+        );
+        assert!(
+            message.contains("time is missing"),
+            "message should say why: {message}"
+        );
     }
 
     #[test]
