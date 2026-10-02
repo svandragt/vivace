@@ -614,7 +614,33 @@ pub(crate) fn scrubbed_command(program: &str) -> Command {
 /// directory isn't a git repo yet, otherwise `git remote update --prune`
 /// (a `HEAD` file at the top of the directory is `--mirror`'s own
 /// tell — a plain `git clone` never puts one there).
+///
+/// Same race as `source.rs`'s `sync_mirror` (#304): two `viv` processes
+/// hitting the same URL both run `remote set-url` + `remote update` on the
+/// same bare repo's `.git/config` and one loses with git's own "could not
+/// lock config file". A sibling `<dir>.lock` file, taken with
+/// [`std::fs::File::lock`], serialises two processes on the same url while
+/// leaving a different url's mirror free to run in parallel; released as
+/// soon as this function returns.
 fn sync_mirror(url: &str, dir: &Path) -> Result<()> {
+    // Not `dir.with_extension("lock")`: `slugify` keeps a URL's own dots
+    // (e.g. a `.git` suffix), so replacing "the" extension could strip
+    // that instead of appending; appending to the full file name avoids
+    // the ambiguity.
+    let lock_path = PathBuf::from(format!("{}.lock", dir.display()));
+    if let Some(parent) = lock_path.parent() {
+        fs_err::create_dir_all(parent)?;
+    }
+    let lock_file = fs_err::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("opening the git mirror lock {}", lock_path.display()))?;
+    lock_file
+        .file()
+        .lock()
+        .with_context(|| format!("locking the git mirror for {url}"))?;
+
     if dir.join("HEAD").is_file() {
         run_git(dir, &["remote", "set-url", "origin", url])?;
         run_git(dir, &["remote", "update", "--prune", "origin"])?;
@@ -1342,7 +1368,7 @@ mod tests {
     use super::{
         GitHubDriver, base64_decode, collapse_branch_wildcard, format_unix_utc, local_repo_path,
         parse_github_url, slugify, ssh_clone_url, strip_git_dir_suffix, strip_normalized_dev,
-        strip_trailing_dev,
+        strip_trailing_dev, sync_mirror,
     };
 
     fn driver(private: bool) -> GitHubDriver {
@@ -1415,6 +1441,66 @@ mod tests {
             slugify("https://github.com/a/b.git"),
             "https---github.com-a-b.git"
         );
+    }
+
+    fn git_available() -> bool {
+        crate::vcs::git_command().arg("--version").output().is_ok()
+    }
+
+    /// A local, hookless git repo: the global `core.hooksPath` a developer
+    /// machine may have configured (it rewrites commit messages here) must
+    /// not leak into a test fixture repo.
+    fn init_repo(dir: &std::path::Path) {
+        let run = |args: &[&str]| {
+            let status = crate::vcs::git_command()
+                .args(["-c", "core.hooksPath=/dev/null"])
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "vivace test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.test")
+                .env("GIT_COMMITTER_NAME", "vivace test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.test")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        fs_err::write(dir.join("Thing.php"), "<?php\nclass Thing {}\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "init"]);
+    }
+
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn sync_mirror_serialises_concurrent_first_clones_of_the_same_url() {
+        if !git_available() {
+            eprintln!(
+                "skipping sync_mirror_serialises_concurrent_first_clones_of_the_same_url: git \
+                 not on PATH"
+            );
+            return;
+        }
+        let upstream = tempfile::tempdir().unwrap();
+        init_repo(upstream.path());
+        let url = upstream.path().to_str().unwrap().to_string();
+
+        let cache = tempfile::tempdir().unwrap();
+        let mirror = cache.path().join(slugify(&url));
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let url = &url;
+                    let mirror = &mirror;
+                    scope.spawn(move || sync_mirror(url, mirror))
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+        });
+
+        assert!(mirror.join("HEAD").is_file());
     }
 
     #[test]
