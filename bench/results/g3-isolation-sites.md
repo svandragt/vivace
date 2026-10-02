@@ -25,11 +25,12 @@ How to reproduce: `make bench-g3-isolation-sites SITES="path path ..."` (read-on
 | Site-installed libraries (composer.lock) | 196 |
 | vendor/composer/installed.json present | yes |
 | ...agrees with the lock | yes |
-| Plugin/mu-plugin directories scanned | 56 |
-| ...with a bundled dependency tree | 7 |
+| Plugin/mu-plugin directories scanned | 86 |
+| ...with a bundled dependency tree | 11 |
 | &nbsp;&nbsp;installed via wpackagist | 5 |
+| &nbsp;&nbsp;installed via vendor | 4 |
 | &nbsp;&nbsp;installed via committed | 2 |
-| Runtime clashes (site lock vs. bundled, unprefixed) | 7 |
+| Runtime clashes (site lock vs. bundled, unprefixed) | 10 |
 | Solver-level clashes (composer.json history) | 0 |
 
 ## Site C
@@ -39,10 +40,11 @@ How to reproduce: `make bench-g3-isolation-sites SITES="path path ..."` (read-on
 | Site-installed libraries (composer.lock) | 65 |
 | vendor/composer/installed.json present | yes |
 | ...agrees with the lock | yes |
-| Plugin/mu-plugin directories scanned | 27 |
-| ...with a bundled dependency tree | 11 |
+| Plugin/mu-plugin directories scanned | 39 |
+| ...with a bundled dependency tree | 12 |
 | &nbsp;&nbsp;installed via wpackagist | 7 |
 | &nbsp;&nbsp;installed via composer | 1 |
+| &nbsp;&nbsp;installed via vendor | 1 |
 | &nbsp;&nbsp;installed via untracked | 3 |
 | Runtime clashes (site lock vs. bundled, unprefixed) | 1 |
 | Solver-level clashes (composer.json history) | 19 |
@@ -54,12 +56,13 @@ How to reproduce: `make bench-g3-isolation-sites SITES="path path ..."` (read-on
 | Site-installed libraries (composer.lock) | 201 |
 | vendor/composer/installed.json present | yes |
 | ...agrees with the lock | no (8 version mismatches) |
-| Plugin/mu-plugin directories scanned | 98 |
-| ...with a bundled dependency tree | 6 |
+| Plugin/mu-plugin directories scanned | 125 |
+| ...with a bundled dependency tree | 10 |
 | &nbsp;&nbsp;installed via wpackagist | 1 |
 | &nbsp;&nbsp;installed via composer | 3 |
+| &nbsp;&nbsp;installed via vendor | 4 |
 | &nbsp;&nbsp;installed via committed | 2 |
-| Runtime clashes (site lock vs. bundled, unprefixed) | 20 |
+| Runtime clashes (site lock vs. bundled, unprefixed) | 23 |
 | Solver-level clashes (composer.json history) | 15 |
 
 ## Site E
@@ -93,6 +96,9 @@ How to reproduce: `make bench-g3-isolation-sites SITES="path path ..."` (read-on
 | B | wordpress-seo | guzzlehttp/guzzle | 7.10.0 | unknown | no | wpackagist |
 | B | wordpress-seo | guzzlehttp/promises | 2.3.0 | unknown | no | wpackagist |
 | B | wordpress-seo | guzzlehttp/psr7 | 2.9.0 | unknown | no | wpackagist |
+| B | elasticpress | psr/container | 1.0.0 | unknown | no | vendor |
+| B | wp-simple-saml | robrichards/xmlseclibs | 3.1.5 | 3.0.2 | no | vendor |
+| B | wp-simple-saml | onelogin/php-saml | 3.8.2 | v3.0.0 | no | vendor |
 | C | restricted-site-access | composer/installers | v1.12.0 | dev-main | no | wpackagist |
 | D | multilingualpress | aws/aws-sdk-php | 3.351.7 | 3.369.0 | no | composer |
 | D | multilingualpress | composer/installers | v1.12.0 | v2.3.0 | no | composer |
@@ -114,6 +120,9 @@ How to reproduce: `make bench-g3-isolation-sites SITES="path path ..."` (read-on
 | D | wordpress-seo | guzzlehttp/promises | 2.5.1 | unknown | no | wpackagist |
 | D | wordpress-seo | guzzlehttp/psr7 | 2.13.0 | unknown | no | wpackagist |
 | D | wordpress-seo | symfony/service-contracts | v2.2.0 | unknown | no | wpackagist |
+| D | elasticpress | psr/container | 1.0.0 | unknown | no | vendor |
+| D | wp-simple-saml | robrichards/xmlseclibs | 3.1.5 | 3.0.2 | no | vendor |
+| D | wp-simple-saml | onelogin/php-saml | 3.8.2 | v3.0.0 | no | vendor |
 
 ## Solver-level clashes
 
@@ -156,4 +165,4 @@ How to reproduce: `make bench-g3-isolation-sites SITES="path path ..."` (read-on
 
 ## Reading
 
-Across the 5 sites, 226 plugin/mu-plugin directories were scanned and 49 of them carry a bundled dependency tree (a vendor/, vendor_prefixed/, vendor-prefixed/, lib/packages/ or dependencies/ directory somewhere inside). 5 of 5 sites also carry a vendor/composer/installed.json, of which 4 agree with composer.lock on every shared library's version. 35 of the bundled copies are a library the site's own lock also installs, at a different version, read as unprefixed -- the runtime collision candidates the WordPress.org sample in bench/results/g3-isolation.md could not show a rate for. Of those 35, 18 have a bundled version this script could not read (a directory-name fallback, not an installed.json) and 18 are psr/*, symfony/polyfill-* or composer/installers -- the same built-to-coexist or install-time-only families bench/results/g3-isolation.md classified out of its own conflict-candidate count. Walking each site's composer.json history the same way (WordPress asset pins excluded) turned up 34 commits that pinned a library to an exact or narrow version, added a conflict entry or a replace where the prior revision had neither.
+Across the 5 sites, 295 plugin/mu-plugin directories were scanned and 58 of them carry a bundled dependency tree (a vendor/, vendor_prefixed/, vendor-prefixed/, lib/packages/ or dependencies/ directory somewhere inside). 5 of 5 sites also carry a vendor/composer/installed.json, of which 4 agree with composer.lock on every shared library's version. 41 of the bundled copies are a library the site's own lock also installs, at a different version, read as unprefixed -- the runtime collision candidates the WordPress.org sample in bench/results/g3-isolation.md could not show a rate for. Of those 41, 20 have a bundled version this script could not read (a directory-name fallback, not an installed.json) and 20 are psr/*, symfony/polyfill-* or composer/installers -- the same built-to-coexist or install-time-only families bench/results/g3-isolation.md classified out of its own conflict-candidate count. Walking each site's composer.json history the same way (WordPress asset pins excluded) turned up 34 commits that pinned a library to an exact or narrow version, added a conflict entry or a replace where the prior revision had neither.

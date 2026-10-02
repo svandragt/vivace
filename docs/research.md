@@ -958,7 +958,7 @@ version. Nothing in the WordPress.org sample can show that.
 **Follow-up, 2026-09-30: holds on the plugin side.**
 `bench/results/g3-isolation-sites.md`, from `bench/g3-isolation/sites.py`
 over five Composer-managed WordPress sites to hand (A to E; Altis and
-Bedrock layouts; 226 plugin directories, 49 with a bundled dependency
+Bedrock layouts; 295 plugin directories, 58 with a bundled dependency
 tree). Three of the five carry a library at one version in the site's
 lock and at another, unprefixed, inside a plugin the site installs
 through Composer: on A `wp-migrate-db` from wpackagist bundles
