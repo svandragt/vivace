@@ -20,6 +20,7 @@ a whole project over from Composer.
 - [Scripts and running commands](scripts-and-run.html) — `viv run`, `viv exec`, and lifecycle scripts.
 - [Automatic normalisation](normalize.html) — a `composer.json` that never gets a reordering-only diff.
 - [Plugins](plugins.html) — which Composer plugins viv reimplements, ignores or refuses.
+- [Two plugins, one library](isolate.html) — prefixing a plugin's bundled dependencies, and why it stays opt-in.
 - [Speed](speed.html) — the benchmark numbers and how they're kept honest release to release.
 - [Reasons to use viv, and reasons not to](reasons.html) — the honest trade-offs.
 - [Scope](scope.html) — the commands, repositories and package types viv covers.
