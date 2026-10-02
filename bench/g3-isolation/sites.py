@@ -27,8 +27,10 @@ What is measured, per site:
      read the same way inventory.py reads a plugin zip (imported, not
      reimplemented). The install path -- wpackagist, composer (another
      vendor's name, installed by a Composer installer path into that
-     directory), committed (tracked by git, not in the lock) or untracked
-     (wp-admin or build output) -- comes from
+     directory), vendor (a wordpress-plugin/wordpress-muplugin package no
+     installer-paths entry routed into either directory, left at its
+     default vendor/<vendor>/<name>), committed (tracked by git, not in
+     the lock) or untracked (wp-admin or build output) -- comes from
      vendor/composer/installed.json's own "install-path" per package,
      cross-checked against composer.lock for the wpackagist/composer
      split.
@@ -156,9 +158,17 @@ def resolve_plugins(site: Path, plugins_dir: Path | None, mu_plugins_dir: Path |
     """One entry per active plugin/mu-plugin directory: {dir, name,
     category}. A directory that is only an installer-paths container
     (e.g. content/mu-plugins/vendor/, holding several plugins one level
-    deeper) is replaced by the plugins nested inside it."""
+    deeper) is replaced by the plugins nested inside it.
+
+    A wordpress-plugin/wordpress-muplugin package that no installer-paths
+    entry routed into either directory -- composer left it at its default
+    vendor/<vendor>/<name> -- is still reported, as category "vendor":
+    it's still WordPress' own bundled-dependency risk (the same test
+    src/isolate.rs's is_plugin_package applies), the gap #310 fell
+    through uncounted."""
     install_map = load_install_map(site)
     results = []
+    claimed: set[Path] = set()
     for base_dir in (plugins_dir, mu_plugins_dir):
         if base_dir is None or not base_dir.is_dir():
             continue
@@ -176,12 +186,16 @@ def resolve_plugins(site: Path, plugins_dir: Path | None, mu_plugins_dir: Path |
             else:
                 final[c] = None
         for d, name in sorted(final.items(), key=lambda kv: str(kv[0])):
+            claimed.add(d)
             if name is not None:
                 category = "wpackagist" if name.startswith(("wpackagist-plugin/", "wpackagist-muplugin/")) else "composer"
             else:
                 tracked = git_ls_files_nonempty(site, d.relative_to(site))
                 category = "committed" if tracked else "untracked"
             results.append({"dir": d, "name": name, "category": category})
+    for d, name in sorted(install_map.items(), key=lambda kv: str(kv[0])):
+        if d not in claimed:
+            results.append({"dir": d, "name": name, "category": "vendor"})
     return results
 
 
@@ -406,7 +420,7 @@ def render_markdown(reports: list[dict]) -> str:
             lines.append(f"| ...agrees with the lock | {agree} |")
         lines.append(f"| Plugin/mu-plugin directories scanned | {r['plugins_scanned']} |")
         lines.append(f"| ...with a bundled dependency tree | {len(r['bundling'])} |")
-        for cat in ("wpackagist", "composer", "committed", "untracked"):
+        for cat in ("wpackagist", "composer", "vendor", "committed", "untracked"):
             if by_category.get(cat):
                 lines.append(f"| &nbsp;&nbsp;installed via {cat} | {by_category[cat]} |")
         lines.append(f"| Runtime clashes (site lock vs. bundled, unprefixed) | {len(r['runtime_clashes'])} |")
