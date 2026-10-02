@@ -24,7 +24,7 @@
 //! right after linking and before the autoloader is (re)generated, since a
 //! patch can add or remove classes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
@@ -32,6 +32,9 @@ use anyhow::{Result, bail};
 use crate::lock::{Lock, Package, Root};
 use crate::store::Store;
 
+mod altis_cms_installer;
+mod altis_core;
+mod altis_dev_tools_command;
 mod c3;
 mod craft;
 pub(crate) mod data;
@@ -179,6 +182,9 @@ pub(crate) struct Ctx<'a> {
 /// (`tests::adapter_order_does_not_affect_the_wordpress_fixture` shuffles it).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AdapterId {
+    AltisCmsInstaller,
+    AltisCore,
+    AltisDevToolsCommand,
     Installers,
     WordpressCore,
     Phpcs,
@@ -196,6 +202,12 @@ enum AdapterId {
 }
 
 const NATIVE_ADAPTERS: &[AdapterId] = &[
+    AdapterId::AltisCmsInstaller,
+    // Before `Installers`: `altis/core`'s override must win over
+    // `composer/installers`' own type-template default for the same
+    // package (`altis_core.rs`'s own doc comment).
+    AdapterId::AltisCore,
+    AdapterId::AltisDevToolsCommand,
     AdapterId::Installers,
     AdapterId::WordpressCore,
     AdapterId::Phpcs,
@@ -215,12 +227,25 @@ const NATIVE_ADAPTERS: &[AdapterId] = &[
 /// Every registered adapter, in `NATIVE_ADAPTERS` order, regardless of what
 /// any one project's lock enables — `viv diagnose --adapters` (#127 part 3's
 /// drift workflow) reports on the whole registry, not a resolved `Plugins`.
+/// `altis/core`'s lock-wide override set is irrelevant here (diagnostics
+/// never call `install_dir`), so it gets an empty one.
 pub(crate) fn all_adapters() -> impl Iterator<Item = Box<dyn Adapter>> {
-    NATIVE_ADAPTERS.iter().map(|id| make_adapter(*id))
+    let overrides = HashSet::new();
+    NATIVE_ADAPTERS
+        .iter()
+        .map(move |id| make_adapter(*id, &overrides))
 }
 
-fn make_adapter(id: AdapterId) -> Box<dyn Adapter> {
+/// `altis_overrides`: the union of every lock package's own
+/// `extra.altis.install-overrides` (`altis_core.rs`), computed once by
+/// [`resolve`] and threaded through only because `AltisCore` is the one
+/// adapter here that needs data from packages other than the one it is
+/// deciding for.
+fn make_adapter(id: AdapterId, altis_overrides: &HashSet<String>) -> Box<dyn Adapter> {
     match id {
+        AdapterId::AltisCmsInstaller => Box::new(altis_cms_installer::AltisCmsInstaller),
+        AdapterId::AltisCore => Box::new(altis_core::AltisCore::new(altis_overrides.clone())),
+        AdapterId::AltisDevToolsCommand => Box::new(altis_dev_tools_command::AltisDevToolsCommand),
         AdapterId::Installers => Box::new(installers::Installers),
         AdapterId::WordpressCore => Box::new(wordpress_core::WordpressCore),
         AdapterId::Phpcs => Box::new(phpcs::Phpcs),
@@ -243,12 +268,19 @@ fn make_adapter(id: AdapterId) -> Box<dyn Adapter> {
 /// at all (`drupal/core-project-message` only prints a message on
 /// `create-project`/`install`, no filesystem effect; `drupal/core-recipe-unpack`
 /// only subscribes to `POST_UPDATE_CMD`/`POST_CREATE_PROJECT_CMD`, so a plain
-/// `install` never reaches it either); ignored silently, same as Composer
-/// ignores a plugin `allow-plugins` sets to `false`.
+/// `install` never reaches it either; `altis/local-server`'s `activate()`
+/// conditionally `require`s a PHP file in-process for its own later use but
+/// touches no disk, and subscribes to no events at all — only `Capable` for
+/// its own `composer server` commands, issue #355); ignored silently, same
+/// as Composer ignores a plugin `allow-plugins` sets to `false`.
 const KNOWN_INERT: &[&str] = &[
     "ergebnis/composer-normalize",
     "drupal/core-project-message",
     "drupal/core-recipe-unpack",
+    "altis/local-server",
+    // Command provider only (`CommandProvider` capability, no event
+    // subscription) — issue #355.
+    "ion-bazan/composer-diff",
 ];
 
 /// Refused plugins (rule 3) whose effect never applies to installing from an
@@ -296,6 +328,19 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
     let allow = &root.config.allow_plugins;
     let mut enabled = vec![false; NATIVE_ADAPTERS.len()];
     let mut warnings = Vec::new();
+    // `altis/core`'s override set (`altis_core.rs`): every package's own
+    // `extra.altis.install-overrides`, union'd once here since it's cheap
+    // (and empty, so free, on every non-Altis lock) rather than gated on
+    // `altis/core` itself being present.
+    let altis_overrides: HashSet<String> = lock
+        .packages
+        .iter()
+        .filter_map(|p| p.raw.pointer("/extra/altis/install-overrides"))
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .map(str::to_owned)
+        .collect();
     for package in &lock.packages {
         if package.r#type != "composer-plugin" || !allow.is_enabled(&package.name) {
             continue;
@@ -304,7 +349,7 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
             continue;
         }
         let native = NATIVE_ADAPTERS.iter().position(|id| {
-            make_adapter(*id)
+            make_adapter(*id, &altis_overrides)
                 .plugin_names()
                 .contains(&package.name.as_str())
         });
@@ -347,7 +392,7 @@ pub fn resolve(lock: &Lock, root: &Root, no_plugins: bool) -> Result<(Plugins, V
         .iter()
         .zip(enabled)
         .filter(|(_, on)| *on)
-        .map(|(id, _)| make_adapter(*id))
+        .map(|(id, _)| make_adapter(*id, &altis_overrides))
         .collect();
     Ok((Plugins { adapters }, warnings))
 }
@@ -599,6 +644,29 @@ mod tests {
         assert!(has(&plugins, "cweagans/composer-patches"));
     }
 
+    /// #355: a lock naming every Composer plugin an Altis site refused
+    /// before this issue — three native adapters plus two known-inert
+    /// entries — installs with no refusal and no warning.
+    #[test]
+    fn altis_site_plugins_resolve_without_refusal() {
+        let lock = lock_with(&[
+            plugin_package("altis/cms-installer"),
+            plugin_package("altis/core"),
+            plugin_package("altis/dev-tools-command"),
+            plugin_package("altis/local-server"),
+            plugin_package("ion-bazan/composer-diff"),
+        ]);
+        let root = root(json!({"config": {"allow-plugins": true}}));
+        let (plugins, warnings) = resolve(&lock, &root, false).unwrap();
+        assert!(warnings.is_empty());
+        assert!(has(&plugins, "altis/cms-installer"));
+        assert!(has(&plugins, "altis/core"));
+        assert!(has(&plugins, "altis/dev-tools-command"));
+        // `altis/local-server`/`ion-bazan/composer-diff` are known-inert, not
+        // adapters: nothing to find in `plugins.adapters` for them, and no
+        // refusal either — already proven above by `warnings.is_empty()`.
+    }
+
     #[test]
     fn resolve_registers_enabled_adapters_in_native_adapters_order_regardless_of_lock_order() {
         // `tbachert/spi` is after `cweagans/composer-patches` in
@@ -640,11 +708,12 @@ mod tests {
             2,
             "fixture should enable both adapters"
         );
+        let no_overrides = HashSet::new();
         let enabled_ids: Vec<AdapterId> = NATIVE_ADAPTERS
             .iter()
             .copied()
             .filter(|id| {
-                let names = make_adapter(*id).plugin_names();
+                let names = make_adapter(*id, &no_overrides).plugin_names();
                 default_order
                     .adapters
                     .iter()
@@ -655,7 +724,7 @@ mod tests {
             adapters: enabled_ids
                 .iter()
                 .rev()
-                .map(|id| make_adapter(*id))
+                .map(|id| make_adapter(*id, &no_overrides))
                 .collect(),
         };
 

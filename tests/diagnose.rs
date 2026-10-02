@@ -103,6 +103,9 @@ fn diagnose_adapters_prints_every_native_adapter_and_nothing_else() {
     assert_eq!(
         names,
         [
+            "altis/cms-installer",
+            "altis/core",
+            "altis/dev-tools-command",
             "composer/installers",
             "johnpbloch/wordpress-core-installer",
             "roots/wordpress-core-installer",
