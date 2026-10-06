@@ -406,6 +406,9 @@ fn main() -> ExitCode {
             "viv {} (composer shim)",
             env!("CARGO_PKG_VERSION")
         );
+        if real_composer().is_none() {
+            return ExitCode::SUCCESS;
+        }
         return exec_real_composer(&args);
     }
 

@@ -5,6 +5,8 @@
 
 install:
 	cargo install --path . --locked --bin viv
+	@# An installed shim would otherwise stay on the old version.
+	@if [ -x "$${CARGO_HOME:-$$HOME/.cargo}/bin/composer" ]; then $(MAKE) install-shim; fi
 
 # Puts a `composer` binary on PATH that shadows the real Composer.
 install-shim:

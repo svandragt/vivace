@@ -626,3 +626,19 @@ fn install_through_shim_adopts_a_composer_written_vendor_without_prompting() {
     );
     assert!(relinked.nlink() > 1, "adopt should hardlink, not copy");
 }
+
+#[test]
+fn version_without_real_composer_succeeds() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "viv");
+
+    shim_in(dir.path())
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("(composer shim)"))
+        .stderr(predicates::str::is_empty());
+}
