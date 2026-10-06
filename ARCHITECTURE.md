@@ -30,6 +30,9 @@ composer.json + composer.lock
         ▼
   link: hardlink every store file into vendor/<vendor>/<name>/ (copy fallback)
         ▼
+  isolate: clash check on every plugin's bundled vendor/; php-scoper prefix
+           for the plugins named in extra.viv.isolate
+        ▼
   autoload + bin: vendor/autoload.php, vendor/composer/*, vendor/bin/*
         ▼
   scripts: pre/post-install-cmd, pre/post-autoload-dump
@@ -50,8 +53,8 @@ chain into the lower half and install (`--no-install` opts out).
 | `require` | `viv add`/`viv rm`: constraint synthesis and a format-preserving `composer.json` edit, then a partial update of the touched package(s). |
 | `update` | Wires repositories, the solver and `lock_writer` together for `viv update`/`viv update --lock` (`viv update-lock`'s alias). |
 | `plan` | Diff the lock against `vendor/composer/installed.json` to decide what to keep, install, and remove. |
-| `plugins` | Native adapters for the Composer plugins vivace ports, one module per adapter behind a shared `Adapter` trait (install path, patch/scaffold, generator and dist-URL-rewrite phases, each a default no-op): `composer/installers` and `*-wordpress-core-installer` (install path mapping), `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`, `tbachert/spi` (post-install generators), `cweagans/composer-patches` (patch application), `yiisoft/yii2-composer`, `craftcms/plugin-installer`, `codeception/c3`, `ffraenz/private-composer-installer`, `drupal/core-composer-scaffold`, `symfony/runtime`. `Plugins::resolve` builds the enabled adapters once from the lock; `install.rs` calls one method per phase and never names an adapter module. Everything else of type `composer-plugin` is refused unless `--no-plugins`. `.github/workflows/adapter-drift.yml` checks each adapter's pinned `upstream_version()` against Packagist weekly and files an issue for any that have fallen behind. See `docs/plugin-strategy.md` for how to add one. |
-| `source` | Path-repository and dist-less git-source lock entries: symlink/mirror a path package, clone-and-checkout a git one, bypassing the store. |
+| `plugins` | Native adapters for the Composer plugins vivace ports, one module per adapter behind a shared `Adapter` trait (install path, patch/scaffold, generator and dist-URL-rewrite phases, each a default no-op): `composer/installers` and `*-wordpress-core-installer` (install path mapping), `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`, `tbachert/spi` (post-install generators), `cweagans/composer-patches` (patch application), `yiisoft/yii2-composer`, `craftcms/plugin-installer`, `codeception/c3`, `ffraenz/private-composer-installer`, `drupal/core-composer-scaffold`, `symfony/runtime`, `altis/cms-installer`, `altis/core`, `altis/dev-tools-command`. `Plugins::resolve` builds the enabled adapters once from the lock; `install.rs` calls one method per phase and never names an adapter module. Everything else of type `composer-plugin` is refused unless `--no-plugins`. `.github/workflows/adapter-drift.yml` checks each adapter's pinned `upstream_version()` against Packagist weekly and files an issue for any that have fallen behind. See `docs/plugin-strategy.md` for how to add one. |
+| `source` | Path-repository and dist-less git-source lock entries: symlink/mirror a path package, clone-and-checkout a git one, bypassing the store. Git mirrors take a per-URL file lock, so two `viv` processes sharing a cache dir don't race on one mirror's config (`vcs.rs` does the same for its own mirrors). |
 | `fetch` | Download `dist` archives. Zip only. Bounded concurrency, HTTP/2, follows GitHub API redirects to codeload. Verifies `dist.shasum` (sha1) when non-empty. |
 | `auth` | Composer-compatible credentials: `auth.json` (Composer home, then project), then `COMPOSER_AUTH`, ascending precedence. |
 | `store` | Global content-addressed store keyed by the archive's sha256, plus a `dists-v0/<vendor>/<name>/<ref>` symlink layer and a `.classmap-v0` sidecar caching the extracted tree's classmap scan. Extraction strips a single top-level directory the way Composer does, rejects zip-slip paths, preserves exec bits, writes read-only files. |
@@ -65,13 +68,14 @@ chain into the lower half and install (`--no-install` opts out).
 | `diagnose` | `viv diagnose`: a read-only, plain-text environment/config report (cache, auth sources by host name only, PHP/git/Composer, platform packages, plugin decisions) to paste into a bug report; not byte-compatible with `composer diagnose`. |
 | `validate` | `viv validate`: a native `ConfigValidator`/`ValidatingArrayLoader` port for `composer.json`, plus lock freshness/completeness checks. |
 | `normalize` | `viv normalize`: a native `ergebnis/composer-normalize` for `composer.json`'s key order and formatting. |
-| `tool` | `viv x`/`viv run`/`viv exec`: npx-style one-off tool execution, `scripts::Runner` entry points, and a bare `vendor/bin` exec. |
+| `tool` | `viv x`/`viv run`/`viv exec`: npx-style one-off tool execution, `scripts::Runner` entry points, and a bare `vendor/bin` exec. `viv x` resolves a tool against the current project's pinned PHP, which `isolate` reuses to run php-scoper. |
 | `version`, `semver` | Composer version normalisation and constraint parsing/matching, shared by the solver, `show`, and the autoloader's version dumps. |
 | `time` | Civil-date/epoch-day helpers shared by `show` (release-age math), `lock_writer` (normalising a package's `time` field) and `vcs` (VCS timestamp formatting). |
 | `native_lock` | Chapter 1's `viv.lock` writer and reader, and `viv lock convert`, which translates an existing `composer.lock` into it without re-solving. |
-| `lock_merge` | Record-level three-way merge and re-solve for `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver. `--offline-rung` (opt-in) tries one parent's own pinned record, checked against the two locks' own `require`/`conflict`/`replace`/`provide`/platform data with no registry fetch, once the registry escalation has already failed at every rung. |
+| `lock_merge` | Record-level three-way merge and re-solve for `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver. A `dev-*` record neither side can win by time keeps conflict markers, with a stderr line naming the package and both commits. `--offline-rung` (opt-in) tries one parent's own pinned record, checked against the two locks' own `require`/`conflict`/`replace`/`provide`/platform data with no registry fetch, once the registry escalation has already failed at every rung. |
+| `isolate` | `viv isolate`, and the clash check `install`/`update` run after linking. Prefixes a plugin's bundled `vendor/` with php-scoper (run through `tool`'s environment on the project's pinned PHP), checks the result with `php -l` and a load check, and caches it in the store's `isolated-v0` bucket. Only plugins named in `extra.viv.isolate` are prefixed; the prefix map lives in `vendor/composer/.vivace-state`. |
 | `workspace` | Chapter 3's `extra.viv.workspace` member discovery and `viv workspace list`; `viv workspace init`/`viv workspace add` write and grow a plain aggregate root, one `path` repository and `require` line per matched pattern, then resolve and install through `require::partial_update`. |
-| `main.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, `php`, `diagnose`, `lock` (convert, merge, export), `workspace`, plus `--offline` and `--cache-dir`. |
+| `main.rs` (crate root, `viv`) | The CLI: `install`, `update`/`update-lock`, `require`, `remove`, `dump-autoload`, `normalize`, `cache`, `audit`, `show`/`tree`/`why`/`outdated`, `validate`, `x`, `run`, `exec`, `php`, `isolate`, `diagnose`, `lock` (convert, merge, export), `workspace`, `completions` and the hidden `man` (roff pages for the release assets), plus `--offline` and `--cache-dir`. |
 
 ## Why a store and hardlinks
 
@@ -92,9 +96,10 @@ owner write bit back so the copied files can be edited directly.
 ## The no-op path
 
 `vendor/composer/.vivace-state` records the lock's `content-hash`, the
-`--no-dev` flag, and a hash of the root `composer.json`. When these match and
-`installed.json` has no orphans, `viv install` regenerates nothing and
-touches no network. Target: tens of milliseconds.
+`--no-dev` flag, a hash of the root `composer.json` and the isolate prefix
+map. When these match and `installed.json` has no orphans, `viv install`
+regenerates nothing and touches no network; the plugin clash check still
+runs, from its cached verdict. Target: tens of milliseconds.
 
 ## Compatibility rules
 

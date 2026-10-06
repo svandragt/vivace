@@ -1856,3 +1856,16 @@ xmlseclibs and php-saml clashes viv reports on two sites live: 226 to
 the one residual lock merge that ended in markers with an empty stderr
 was a `dev-*` record one side removed and the other moved; the merge
 now names the package and both sides before it falls back.
+
+## 2026-10-06: 0.21, packaging
+
+`viv completions` and man pages from the clap tree, shipped in every
+package; the release workflow generates them once on an x86_64 runner
+because the aarch64 build cannot run there. Dropping full DWARF from the
+dev profile took a clean test build's `target/debug/deps` from 11 GB to
+3.7 GB, and broke CI once: restored rust-cache entries kept libc's
+build-script fingerprint without the binary, `never executed` on three
+jobs and on a rerun; a new cache prefix fixed it. The local bench gate
+failed warm (ratio 0.036 against a 0.026 baseline) while bench-ab put
+v0.20.0 and the candidate within 2.4 ms on laravel, drupal and
+symfony/demo: the gate's committed baseline, not viv, moved.

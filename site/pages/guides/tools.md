@@ -15,3 +15,9 @@ viv x phpunit/phpunit:^11 tests      # 27 packages, 0.07 s on a warm cache
 viv x friendsofphp/php-cs-fixer fix src
 viv x --list                         # environments in the cache
 ```
+
+Run from a project whose `composer.json` pins a PHP with `viv php install`,
+`viv x` resolves the tool against that PHP, and installs the build on first
+use, instead of the `php` on your `PATH`. Changing the pin gives the tool a
+new environment. With no pin, or outside a project, it uses `php` from
+`PATH`, as before.

@@ -48,7 +48,12 @@ as they landed: the plugin adapters as data (#340) measured laravel warm
 294.7 ms, no-op within 0.4 ms; the scaffold and patch bindings (#341)
 and the root-version guess in the solve (#312) flat within noise.
 v0.20.0's `viv.lock`-only install path (#344): no-op within 0.4 ms on the
-same three projects.
+same three projects. v0.20.0 against the v0.21.0 candidate (median of each
+`make bench-ab` scenario, same machine, 2026-10-06): laravel warm 36.6 ms to
+37.1 ms and no-op 6.5 ms to 6.9 ms, drupal/recommended-project warm 286.8 ms to
+289.1 ms and no-op 6.3 ms to 5.9 ms, symfony/demo warm 45.5 ms to 47.9 ms and
+no-op 9.3 ms to 9.3 ms. All six are within the 15% tolerance, so v0.21.0
+adds no regression.
 
 A warm update still revalidates every package's metadata with the registry,
 one conditional request each, even when nothing changed. `--metadata-ttl

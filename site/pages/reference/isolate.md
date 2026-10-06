@@ -11,7 +11,10 @@ php-scoper, so a library the plugin bundles at one version stops clashing
 with the same library the site, or another plugin, ships at another.
 Reach for it once `viv install` names the clash: it prints the plugin,
 the library and both versions, and the exact `viv isolate <plugin>` to
-run.
+run. `install` and `update` then keep every plugin in `extra.viv.isolate`
+prefixed. `--no-plugins` and `--no-scripts` work as they do on `install`:
+a lock that names a plugin viv refuses stops `viv isolate` too, unless you
+pass `--no-plugins`.
 
 ## Usage
 
@@ -33,8 +36,9 @@ run.
 
 - `0` — isolated (or already isolated, or removed) and the load check
   passed.
-- `1` — `php -l` or the load check failed on the scoped tree; the
-  plugin's plain archive stays linked.
+- `1` — `php -l` or the load check failed on the scoped tree, and the
+  plugin's plain archive stays linked; or `--offline` found no cached
+  scoped tree for the plugin, and the error names it.
 
 ## See also
 

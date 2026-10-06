@@ -6,14 +6,14 @@ summary: The shim, Dockerfiles and CI flags for moving a whole project onto viv.
 
 # Migrating from Composer
 
-The migration story already lives in the README; this page pulls the three
-sections a team moving a project onto viv actually needs, kept in sync with
-the README at build time.
+This page covers the three things a team moving a project onto viv needs:
+the shim, a Dockerfile and the CI flags.
 
 ## The `composer` shim
 
-`make install-shim` installs a `composer` binary next to `viv` (plain
-`make install` leaves your real Composer untouched). Put it on `PATH`
+`make install-shim` installs a `composer` binary next to `viv`. Plain
+`make install` installs `viv` only, and refreshes the shim only if one is
+already there, so it never replaces your real Composer. Put it on `PATH`
 ahead of the real Composer, or symlink it as `composer` in CI: everyday
 `install`, `dump-autoload`, `normalize` and `create-project` run through
 viv; every other command falls through to your real Composer install.[^12]
@@ -28,7 +28,7 @@ In GitHub Actions, one step installs viv and puts the shim first on `PATH`, so a
 - run: composer install --no-dev
 ```
 
-The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.20.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim. Cache viv's store with `actions/cache` on `~/.cache/vivace`, keyed on `composer.lock`.
+The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.21.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim. Cache viv's store with `actions/cache` on `~/.cache/vivace`, keyed on `composer.lock`.
 
 A command or flag the shim doesn't understand falls back to the real
 Composer with a note on stderr naming what wasn't understood, so a migration
@@ -65,8 +65,9 @@ Two things differ from the `composer:2` stage it replaces:
 - The image carries no real Composer to fall back to, so a command or flag
   the shim doesn't understand hard-errors there instead of silently running
   Composer, the way it would on a machine that still has Composer installed.
+  `composer --version` still works: it prints the shim's own version.
 
-Tags are `:0.20`, `:0.20.0` and `:0`. There is no `:latest`: a moving tag
+Tags are `:0.21`, `:0.21.0` and `:0`. There is no `:latest`: a moving tag
 that silently resolves to nothing breaks scripted installs, which is the
 mistake that kept `releases/latest` returning 404 for ten releases.
 
@@ -90,4 +91,4 @@ See [Compatibility and scope](../reference/compatibility.html) for what
 viv's byte-identical promise covers, and [Reasons not to use
 viv](reasons.html) for the rest.
 
-[^12]: The shim maps `install`, `dump-autoload`, `normalize`, `create-project`, `update`, `require` and `remove` with their supported flags (`update`'s partial-update package arguments and `-w`/`-W` included) to `viv`; everything else, `search`, an unrecognised flag, it hands through to the real Composer binary unchanged. Point `VIV_COMPOSER_PATH` at the real binary if it isn't first on `PATH`. The shim only has something to hand through to if a real Composer is on `PATH` in the first place: if there isn't one, those commands fail rather than silently falling back to viv.
+[^12]: The shim maps `install`, `dump-autoload`, `normalize`, `create-project`, `update`, `require` and `remove` with their supported flags (`update`'s partial-update package arguments and `-w`/`-W` included) to `viv`; everything else, `search`, an unrecognised flag, it hands through to the real Composer binary unchanged. Point `VIV_COMPOSER_PATH` at the real binary if it isn't first on `PATH`. The shim only has something to hand through to if a real Composer is on `PATH` in the first place: if there isn't one, those commands fail rather than silently falling back to viv. `composer --version` is the exception: it prints `viv <version> (composer shim)`, then the real Composer's own version if one is on `PATH`, and exits `0` either way.

@@ -790,10 +790,10 @@ GitHub ignores `merge=union`, `dev-*` branch heads move, and old package
 downloads do not disappear. Generation 3 asks what a PHP package manager
 could be if it no longer had to produce Composer's output.
 
-Status, 2026-09-29: all five candidates measured. 3.1 (managed PHP) and
+Status, 2026-10-06: all five candidates measured. 3.1 (managed PHP) and
 3.4 (installs that run no code) hold and are built, released in 0.19.0.
 3.3 (a lock that pins commits) holds and is built (#343 to #345, #347): 46 of the 52 merges chapter 1 left to a person finish with the shipped driver. 3.2 (isolation per plugin) holds on the plugin side after a five-site
-follow-up and is being built opt-in (#350 to #352); 3.5 (simpler rules) measured, not built.
+follow-up and is built opt-in (#350 to #352, #354, #355, #357), in 0.21.0; 3.5 (simpler rules) measured, not built.
 
 ### Rules for generation 3
 
@@ -1013,8 +1013,7 @@ copies: on A, `wpackagist-plugin/wp-migrate-db`'s bundled
 exhausted the pinned PHP's default 128 MB `memory_limit` inside the
 scoper run itself, before the check ever got to run — a real ceiling on a
 bundle this large, reported as found rather than patched around; a
-`memory_limit` override for the scoper run is a follow-up, not built
-here.
+`memory_limit` override for the scoper run was a follow-up, built in #354.
 
 
 On the five measured sites: the migration plugin on site A isolates

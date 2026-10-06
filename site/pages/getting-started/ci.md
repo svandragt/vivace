@@ -15,7 +15,7 @@ In GitHub Actions, one step installs viv and puts the shim first on `PATH`, so a
 - run: composer install --no-dev
 ```
 
-The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.20.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim.
+The action downloads the release tarball for the runner's OS and architecture, checks it against the release's `SHA256SUMS`, and installs nothing else. Pin a release with `with: { version: v0.21.0 }`; set `shim: false` to get `viv` on `PATH` without the `composer` shim.
 
 See [Using viv as composer](shim.html) for what the shim does and does not map to viv, and `VIV_SHIM_STRICT` for turning a silent Composer fallback into a hard build failure.
 

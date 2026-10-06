@@ -41,6 +41,8 @@ here never drift from the binary.
 | [viv diagnose](diagnose.html) | Prints an environment and configuration report for a bug report. |
 | [viv lock](lock.html) | Converts, merges or exports a viv.lock/composer.lock pair. |
 | [viv workspace](workspace.html) | Discovers and manages a monorepo's member packages. |
+| [viv isolate](isolate.html) | Prefixes a plugin's bundled dependencies so they stop clashing with the site's own. |
+| [viv completions](../getting-started/install.html#man-pages-and-shell-completions) | Prints a bash, zsh or fish completion script. |
 
 ## Environment variables
 

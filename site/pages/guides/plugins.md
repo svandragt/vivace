@@ -10,7 +10,7 @@ Composer plugins are PHP code that hooks into Composer's own process; viv
 has no PHP runtime, so it can't run one as written. Instead:
 
 - A small set of common plugins — `composer/installers`, the WordPress core
-  installers, and native adapters for Yii2, Craft, Drupal scaffolding,
+  installers, and native adapters for Yii2, Craft, Altis, Drupal scaffolding,
   Symfony runtime, phpcs, PHPStan and more — are reimplemented in viv
   itself, so the outcome matches Composer's.
 - A few plugins are known to only affect Composer commands viv doesn't

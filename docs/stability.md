@@ -1,14 +1,15 @@
 # Stability
 
-This is the contract viv (0.11.0) offers scripts, CI pipelines and the
-`composer` shim that drive it instead of Composer.
+This is the contract viv offers scripts, CI pipelines and the `composer`
+shim that drive it instead of Composer.
 
 ## What viv promises
 
-For the commands listed in the README's [Scope](../README.md#scope)
-section, viv writes a `vendor/` directory — including `vendor/composer/*` —
-and, for `update`, `update-lock` and `require`/`remove`, a `composer.lock`
-that are byte-identical to what Composer 2.10 (the version pinned in
+For the commands on the
+[Scope](https://vivace.vandragt.com/guides/scope.html) page, viv writes a
+`vendor/` directory — including `vendor/composer/*` — and, for `update`,
+`update-lock` and `require`/`remove`, a `composer.lock` that are
+byte-identical to what Composer 2.10 (the version pinned in
 `devbox.json`) writes for the same `composer.json`, lock file and cache
 state. This is the contract, not an implementation detail: if viv's output
 differs from Composer's for a covered command, that's a bug.
@@ -27,13 +28,21 @@ against one produces Composer's lock byte for byte.
   plugin is out of scope; viv either skips it or the `composer` shim hands
   the invocation to the real Composer.
 - **Research-chapter surface.** `viv.lock` and `viv update --lock native`,
-  `viv lock convert`, `viv lock merge` and `viv workspace list` are outside
-  this contract. They sit behind explicit opt-in, their behaviour is judged
+  `viv lock convert`, `viv lock merge`, `viv workspace list` and
+  `viv isolate` (with the `extra.viv.isolate` key it writes) are outside this
+  contract. They sit behind explicit opt-in, their behaviour is judged
   against their chapter in `docs/research.md`, and they may change between
   minor releases.
-- **Commands Composer keeps.** `create-project`, `init`, `search`, `config`,
-  `global`, `self-update`, `diagnose`, `licenses`, `depends` and the rest of
-  the long tail stay with Composer and aren't part of viv's contract.
+- **Commands Composer keeps.** `search`, `config`, `global`, `self-update`,
+  `licenses`, `depends` and the rest of the long tail stay with Composer and
+  aren't part of viv's contract.
+- **viv's own `init`, `new` and `diagnose`.** `viv init` writes a
+  `composer.json` from defaults, without Composer's interactive questions.
+  `viv new` (also `create-project`) starts a project in a new directory, and
+  `viv diagnose` prints viv's own report. Their output isn't promised to
+  match Composer's `init`, `create-project` or `diagnose`; the `vendor/` and
+  `composer.lock` they go on to write follow the same contract as
+  `viv install`.
 - **Progress wording on stdout during a run.** Only the files viv writes and
   the plain-text output of commands such as `show`, `why` and `validate` are
   contractual. Spinner text, progress counters and similar in-flight

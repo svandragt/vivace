@@ -21,7 +21,9 @@ viv update --lock native  # resolves normally, also writes viv.lock beside compo
 `viv lock export` writes `composer.lock` from `viv.lock` through the same
 writer a solve feeds, byte-equal on every pinned compatibility project.
 `--check` reports whether the committed `composer.lock` matches without
-writing anything.
+writing anything. A project that isolates plugins (see [Two plugins, one
+library](isolate.html)) gets that list in `composer.lock` too, under a
+top-level `extra.viv.isolate` key that Composer ignores.
 
 ## Installing from viv.lock alone
 

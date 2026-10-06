@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-06
+### Added
+- `viv isolate <package>` and `extra.viv.isolate` prefix a plugin's bundled libraries with php-scoper on the pinned PHP, so a WordPress plugin that ships its own Guzzle or AWS SDK stops clashing with the site's copy. viv lints the scoped tree eight-wide, boots it against the real WordPress stubs, and writes `composer.json` only after that check passes; a failed check keeps the plain tree. `viv install` reports a bundled library that clashes with the site's own copy ([#350](https://github.com/svandragt/vivace/issues/350), [#351](https://github.com/svandragt/vivace/issues/351), [#352](https://github.com/svandragt/vivace/issues/352), [#354](https://github.com/svandragt/vivace/issues/354), [#357](https://github.com/svandragt/vivace/issues/357))
+- `viv completions <shell>` prints a completion script for bash, zsh or fish. The `.deb`, the release tarballs and the Homebrew formula now install the completions and man pages for `viv` and each subcommand ([#335](https://github.com/svandragt/vivace/issues/335), [#336](https://github.com/svandragt/vivace/issues/336))
+- Native adapters for the Altis plugins `altis/cms-installer`, `altis/core` and `altis/dev-tools-command`: `viv install` on an Altis site runs without `--no-plugins` ([#355](https://github.com/svandragt/vivace/issues/355))
+
+### Changed
+- `viv x` runs a tool on the project's pinned PHP, not the first `php` on `PATH` ([#353](https://github.com/svandragt/vivace/issues/353))
+- `composer --version` through the shim prints viv's version and exits 0 when no real Composer is installed. `make install` also refreshes an installed shim, so the two binaries stay on the same version
+
+### Fixed
+- Parallel viv processes no longer race on a git mirror's config (`could not lock config file`) ([#349](https://github.com/svandragt/vivace/issues/349))
+- `viv lock merge` remembers a pinned commit that is gone upstream instead of fetching it again on every run, and a `dev-*` record one side removed and the other moved now names the package and both sides ([#348](https://github.com/svandragt/vivace/issues/348), [#297](https://github.com/svandragt/vivace/issues/297))
+
+### Research
+- Candidate 3.2, per-plugin isolation: built opt-in. On the site whose AWS SDK plugin caused the clash, php-scoper takes 4.6 s, the lint 51 s, and the plugin loads; 87 s cold. A re-run of the five-site survey after counting plugins in plain `vendor/` finds 41 clashes in 295 directories, no conclusion changed ([#346](https://github.com/svandragt/vivace/issues/346), [#310](https://github.com/svandragt/vivace/issues/310))
+
 ## [0.20.0] - 2026-09-29
 ### Added
 - `viv lock export` writes `composer.lock` from `viv.lock` through the one existing writer, byte-equal on all ten pinned compat projects; `--check` reports whether the committed `composer.lock` matches. `viv install` in a project with `viv.lock` and no `composer.lock` generates it first and says so; with both present it writes nothing and refuses a divergence with a hint naming `viv lock export` and `viv lock convert`. `viv init --lock native` and `viv lock convert` mark `composer.lock` `linguist-generated`. A `viv.lock` record now keeps Composer's own package block (`raw`) and the commit `time`, which is what makes the export exact and the merge rule below decidable; re-run `viv lock convert` on a lock written before this release ([#344](https://github.com/svandragt/vivace/issues/344), [#347](https://github.com/svandragt/vivace/issues/347))

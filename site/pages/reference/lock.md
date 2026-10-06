@@ -29,8 +29,11 @@ instead of writing it.
 ### viv lock export
 
 Writes `DIR/composer.lock` from `DIR/viv.lock` and `DIR/composer.json`,
-through the same writer a solve feeds. `--check` writes nothing and
-reports whether the existing `composer.lock` already matches.
+through the same writer a solve feeds. When `composer.json` names
+isolated plugins in `extra.viv.isolate`, the export adds that map to
+`composer.lock` as a top-level `extra.viv.isolate` key, which Composer
+ignores. `--check` writes nothing and reports whether the existing
+`composer.lock` already matches.
 
 ```
 {{help:lock export}}

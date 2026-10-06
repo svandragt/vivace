@@ -22,7 +22,7 @@ PHP, Composer and hyperfine come from devbox, so run anything that needs them
 through `devbox run`. The `Makefile` wraps the common ones:
 
 ```sh
-make install                       # cargo install --path . --locked --bin viv, just the `viv` binary
+make install                       # cargo install --path . --locked --bin viv, just the `viv` binary; also runs install-shim if a composer shim is already installed
 make install-shim                  # adds a drop-in `composer` shim that shadows the real Composer
 make build                         # cargo build --release, binary at target/release/viv
 make test                          # cargo nextest run (PHP-dependent tests skip without php)
@@ -37,6 +37,9 @@ make coverage                      # cargo-llvm-cov via nextest, per-file report
 make compat                        # release build + compat/run.sh, byte-diffs vendor/ against Composer
 #   COMPAT_LOCKS=1 make compat       # ...and compares the lock viv resolves against Composer's (#180)
 make compat-refresh                # rewrite compat/corpus.toml's repo pins to their current heads
+make bench-g3-isolation            # g3 candidate 3.2: bundled-library inventory over the top WordPress.org plugins
+make bench-g3-isolation-sites SITES="<dir> ..."  # ...and the clash count against Composer-managed sites held outside the repo (#346)
+#   viv man <dir>                    # hidden: viv.1 plus one man page per subcommand; release.yml's assets job runs it and `viv completions <shell>` once for every target
 ```
 
 `make compat`'s behaviour (scratch dir, random sample, skip reasons) is
@@ -129,6 +132,7 @@ are planned.
 | `src/diagnose.rs` | `viv diagnose`, environment/config report |
 | `src/native_lock.rs` | `viv.lock` (chapter 1) writer/reader, `viv lock convert` |
 | `src/lock_merge.rs` | `viv lock merge`, the `composer.lock`/`viv.lock` git merge driver, and its opt-in `--offline-rung` last resort |
+| `src/isolate.rs` | `viv isolate` (php-scoper over a plugin's bundled `vendor/`, `extra.viv.isolate`) and the bundled-library clash check `install`/`update` run after linking; its tests are `tests/isolate.rs` |
 | `src/workspace.rs` | Chapter 3's `extra.viv.workspace` member discovery, `viv workspace list`, and `viv workspace init`/`add`, which write the aggregate root `composer.json` |
 | `tests/fixtures/composer/` | upstream Composer test corpora, do not edit |
 | `tests/fixtures/monolog/` | end-to-end fixture with Composer's expected output |

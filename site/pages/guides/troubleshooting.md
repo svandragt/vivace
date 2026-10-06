@@ -26,6 +26,15 @@ flag into a hard error instead of a silent fallback (this is separate from
 a refused plugin, which always stops the install unless you pass
 `--no-plugins`).
 
+## A plugin bundles a library the site also ships
+
+**Symptom:** `viv install` prints `<plugin> bundles <library> <version>
+unprefixed; the site has <version>. Run viv isolate <plugin> to keep both.`
+
+Two copies of one library, at different versions, are loaded into one PHP
+process. Run `viv isolate <plugin>` to prefix the plugin's bundled copy;
+[Two plugins, one library](isolate.html) says when to and when not to.
+
 ## The shim ran the real Composer
 
 **Symptom:** stderr says `composer (viv shim): running the real Composer`.

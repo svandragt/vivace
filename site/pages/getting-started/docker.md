@@ -28,7 +28,8 @@ Two things differ from the `composer:2` stage it replaces:
 - The image carries no real Composer to fall back to, so a command or flag
   the shim doesn't understand hard-errors there instead of silently running
   Composer, the way it would on a machine that still has Composer installed.
+  `composer --version` still works: it prints the shim's own version.
 
-Tags are `:0.20`, `:0.20.0` and `:0`. There is no `:latest`: a moving tag
+Tags are `:0.21`, `:0.21.0` and `:0`. There is no `:latest`: a moving tag
 that silently resolves to nothing breaks scripted installs, which is the
 mistake that kept `releases/latest` returning 404 for ten releases.

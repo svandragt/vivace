@@ -30,8 +30,13 @@ attribute, so every future `git merge` hands both branches' locks to viv,
 which merges them record by record and re-solves what diverged; a
 `dev-*` branch both sides moved keeps the later commit, and a pinned
 commit the registry no longer describes is fetched from the package's
-git source. You only see conflict markers when the merged `composer.json`
-cannot be satisfied. A clone that merges before anyone has run `install`
+git source. A commit that is gone from the source too is remembered in the
+store, so the next run reports it without fetching again. You only see
+conflict markers when the merged `composer.json` cannot be satisfied, or
+when both sides moved a `dev-*` branch and viv cannot pick a winner: the
+two commits have the same time, one has none, or one side removed the
+package. Then viv prints one line on stderr naming the package and both
+commits (or `removed`), and leaves conflict markers for that package. A clone that merges before anyone has run `install`
 there yet has no driver configured, so git leaves plain conflict markers
 instead — `install` notices, resolves the lock straight from git's own
 index stages the same way, and wires the clone so the next merge doesn't

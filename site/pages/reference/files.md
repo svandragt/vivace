@@ -20,6 +20,10 @@ summary: vendor/ contents, the store's bucket layout and the viv.lock format
   tooling read at runtime.
 - `composer/platform_check.php` — the PHP-version and extension check the
   autoloader runs first, when `platform-check` is enabled.
+- `composer/.vivace-state` — viv's own state file, which lets a no-op install
+  skip all work: the lock's content hash, the `--no-dev` flag, a hash of
+  `composer.json` and the prefix of each [isolated](isolate.html) plugin.
+  Composer ignores it.
 - one directory per installed package, `vendor/<vendor>/<name>/`.
 - `vendor/bin/` — proxy scripts for each package's declared `bin` entries.
 
@@ -41,7 +45,9 @@ default), or `--cache-dir`. It holds these buckets:
 | `root-classmap-v0` | One classmap-scan sidecar per project, for the root package's own directories. |
 | `platform-check-v0` | The last-verified-OK platform-check inputs, one file per project. |
 | `php-v0` | One static-php-cli build per `<version>-<os>-<arch>`. |
-| `commit-meta-v0` | A `dev-*` package's composer.json at one pinned commit, keyed by commit. |
+| `commit-meta-v0` | A `dev-*` package's composer.json at one pinned commit, keyed by commit, or a `missing` note for a commit that is gone upstream. |
+| `isolate-check-v0` | `viv install`'s cached verdict on whether a plugin's bundled libraries clash with the site's, keyed by the plugin archive and the site lock. |
+| `isolated-v0` | A plugin's prefixed `vendor/` tree from `viv isolate`, keyed by the archive, the prefix and the php-scoper version. |
 | `.lock` | The store's own file lock. |
 
 `viv cache prune` removes anything not in this list, plus stale entries

@@ -13,8 +13,9 @@ cargo binstall vivace          # or: brew install svandragt/tap/vivace
 viv install     # in a project with composer.json and composer.lock
 ```
 
-That also installs a `composer` shim next to `viv`; put it first on `PATH`
-and your existing scripts run through viv unedited (see [Using viv as
+`cargo binstall` and `cargo install` also install a `composer` shim next to
+`viv` (the Homebrew formula and the `.deb` install `viv` only); put the shim
+first on `PATH` and your existing scripts run through viv unedited (see [Using viv as
 composer](#using-viv-as-composer)).
 
 Prebuilt binaries are on the [releases
@@ -82,6 +83,19 @@ it](#try-it): the README lists the exact platforms and architectures
 (Linux x86_64 as glibc and static musl builds, aarch64 as static musl,
 also packaged as a `.deb`; macOS x86_64 and aarch64), all on the
 [releases page](https://github.com/svandragt/vivace/releases).
+
+## Man pages and shell completions
+
+The release tarballs, the `.deb` and the Homebrew formula install man pages
+(`man viv`, `man viv-install`) and completion scripts for bash, zsh and
+fish. `cargo binstall` and `cargo install` install the binaries only. In
+that case, print a script and save it where your shell loads completions:
+
+```sh
+viv completions bash > ~/.local/share/bash-completion/completions/viv
+viv completions zsh > ~/.zfunc/_viv     # a directory on your fpath
+viv completions fish > ~/.config/fish/completions/viv.fish
+```
 
 ## No PHP, no problem
 

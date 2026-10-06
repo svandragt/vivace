@@ -19,6 +19,9 @@ Commands viv runs itself, with the same output as Composer:
 - Run: `run`, `exec`, `php` (install, list), the lifecycle scripts, and the
   cache commands.
 - `diagnose` prints viv's own report, not Composer's.
+- `isolate` prefixes a plugin's bundled libraries with php-scoper, which
+  Composer has no command for, and `completions` prints a bash, zsh or
+  fish completion script.
 
 Commands that stay with Composer: `search`, `config`, `global`,
 `self-update`, `licenses`, `depends` and the rest.
