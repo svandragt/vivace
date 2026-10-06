@@ -4,7 +4,8 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory as _, Parser, Subcommand};
+use clap_complete::Shell;
 use tracing_subscriber::EnvFilter;
 
 use vivace::audit::{self, AuditArgs};
@@ -166,6 +167,11 @@ enum Command {
     /// `--rm <package>` removes it and relinks the plain archive, `--list`
     /// prints every isolated plugin and its prefix.
     Isolate(IsolateArgs),
+    /// Print a shell completion script
+    Completions {
+        /// Shell to generate the script for.
+        shell: Shell,
+    },
 }
 
 fn main() -> ExitCode {
@@ -323,6 +329,13 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(err) => resolver_error(&err),
             }
+        }
+        Command::Completions { shell } => {
+            // Buffered: clap_complete panics on a write error, such as `| head` closing the pipe.
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "viv", &mut script);
+            let _ = std::io::stdout().write_all(&script);
+            ExitCode::SUCCESS
         }
         Command::Php(args) => match php::run(&args, cli.cache_dir.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,
