@@ -30,6 +30,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: check
+          # v1: caches saved before the line-tables-only dev profile (#334) restore stale build scripts.
+          prefix-key: v1-rust
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
         with:
@@ -57,6 +59,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: plugins
+          # v1: caches saved before the line-tables-only dev profile (#334) restore stale build scripts.
+          prefix-key: v1-rust
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
         with:
@@ -133,6 +137,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: coverage
+          # v1: caches saved before the line-tables-only dev profile (#334) restore stale build scripts.
+          prefix-key: v1-rust
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
         with:
