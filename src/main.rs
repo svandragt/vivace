@@ -172,6 +172,12 @@ enum Command {
         /// Shell to generate the script for.
         shell: Shell,
     },
+    /// Write roff man pages (`viv.1` and one per subcommand) into a directory.
+    #[command(hide = true)]
+    Man {
+        /// Directory to write the pages into; created if missing.
+        dir: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -336,6 +342,17 @@ fn main() -> ExitCode {
             clap_complete::generate(shell, &mut Cli::command(), "viv", &mut script);
             let _ = std::io::stdout().write_all(&script);
             ExitCode::SUCCESS
+        }
+        Command::Man { dir } => {
+            match fs_err::create_dir_all(&dir)
+                .and_then(|()| clap_mangen::generate_to(Cli::command(), &dir))
+            {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    err_out(&format!("{err:#}"));
+                    ExitCode::from(1)
+                }
+            }
         }
         Command::Php(args) => match php::run(&args, cli.cache_dir.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,

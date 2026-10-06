@@ -44,6 +44,10 @@ class Vivace < Formula
 
   def install
     bin.install "viv"
+    man1.install Dir["man/*.1"]
+    bash_completion.install "completions/viv"
+    zsh_completion.install "completions/_viv"
+    fish_completion.install "completions/viv.fish"
   end
 
   test do

@@ -10,3 +10,4 @@ site/dist/
 /compat/results/*-logs/
 bench/results/*.log
 compat/results/lock-age-verify.md
+/stage/
