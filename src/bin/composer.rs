@@ -47,12 +47,12 @@ fn classify(arg: &str) -> Flag {
 }
 
 /// Flags whose value is a separate following argument rather than joined
-/// with `=` (`-d /tmp` as well as `-d=/tmp`; #228). Every `translate*` loop
-/// below checks this before classifying, so the value is consumed alongside
-/// its flag instead of being classified — or, in `translate_with_packages`/
-/// `translate_create_project`, mistaken for a package-name positional — on
-/// its own. Not every flag here is accepted by every subcommand; each
-/// `classify*` function's own match arms still gate that.
+/// with `=` (`-d /tmp` as well as `-d=/tmp`; #228). [`translate`] checks this
+/// before classifying, so the value is consumed alongside its flag instead of
+/// being classified — or, when positionals pass through, mistaken for a
+/// package-name positional — on its own. Not every flag here is accepted by
+/// every subcommand; each `classify*` function's own match arms still gate
+/// that.
 const VALUE_FLAGS: &[&str] = &[
     "-d",
     "--working-dir",
@@ -60,13 +60,32 @@ const VALUE_FLAGS: &[&str] = &[
     "--repository",
 ];
 
-/// Translate `install`/`dump-autoload` args, or `None` if any arg isn't understood.
-fn translate(args: &[String]) -> Option<Vec<String>> {
+/// Translate args through `classify`, or `None` if any flag isn't understood.
+/// With `positionals`, non-flag args (`create-project`'s `vendor/package [dir
+/// [constraint]]`, `update`/`add`/`rm`'s package lists) pass through
+/// unchanged; without, `install`/`dump-autoload` classify them like any other
+/// arg, so a stray one falls back to the real Composer. On `Flag::Keep`,
+/// `--working-dir` becomes `-d` and `-vv`/`-vvv` become `-v`;
+/// `classify_create_project` never keeps those, so the rewrite never fires
+/// there.
+fn translate(
+    args: &[String],
+    classify: fn(&str) -> Flag,
+    positionals: bool,
+) -> Option<Vec<String>> {
     let mut out = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
+        if positionals && !arg.starts_with('-') {
+            out.push(arg.clone());
+            continue;
+        }
         // `--working-dir=foo` / `--ignore-platform-req=foo`: match on the flag part only.
         let flag = arg.split('=').next().unwrap_or(arg);
+        // Consumed here, before the next loop iteration's own positional
+        // check, so a value flag's value (e.g. `--ignore-platform-req
+        // ext-foo`) can't fall through as if `ext-foo` were a package name,
+        // whether that flag ends up kept or dropped.
         let value = (!arg.contains('=') && VALUE_FLAGS.contains(&flag))
             .then(|| iter.next())
             .flatten();
@@ -112,45 +131,6 @@ fn classify_create_project(arg: &str) -> Flag {
         }
         _ => Flag::Unknown,
     }
-}
-
-/// Translate `create-project`'s positionals unchanged (`viv new` takes the
-/// same `vendor/package [dir [constraint]]` shape) and its flags via
-/// [`classify_create_project`], `--repository`'s value (either spelling,
-/// #228) consumed via [`VALUE_FLAGS`] rather than special-cased here.
-fn translate_create_project(args: &[String]) -> Option<Vec<String>> {
-    let mut out = Vec::new();
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if !arg.starts_with('-') {
-            out.push(arg.clone());
-            continue;
-        }
-        let flag = arg.split('=').next().unwrap_or(arg);
-        let value = (!arg.contains('=') && VALUE_FLAGS.contains(&flag))
-            .then(|| iter.next())
-            .flatten();
-        match classify_create_project(flag) {
-            Flag::Keep => {
-                out.push(arg.clone());
-                if let Some(value) = value {
-                    out.push(value.clone());
-                }
-            }
-            Flag::Drop => {}
-            Flag::DropNoted(msg) => {
-                err_out(&format!(
-                    "composer (viv shim): {}",
-                    msg.replace("{flag}", flag)
-                ));
-            }
-            Flag::Unknown => {
-                note_unknown_flag(flag);
-                return None;
-            }
-        }
-    }
-    Some(out)
 }
 
 /// Flags accepted for `update`, mapped onto `viv update`'s own set
@@ -243,56 +223,6 @@ fn classify_remove(arg: &str) -> Flag {
         }
         _ => Flag::Unknown,
     }
-}
-
-/// Translate `update`/`add`/`rm` args: package-name positionals (partial
-/// update's own package list, `add`/`rm`'s required list) pass through
-/// unchanged, same as `translate_create_project`'s positionals; flags go
-/// through the given `classify` and, on `Flag::Keep`, the same
-/// `--working-dir`-to-`-d`/`-vv`+`-vvv`-to-`-v` rewrite `translate` does.
-fn translate_with_packages(args: &[String], classify: fn(&str) -> Flag) -> Option<Vec<String>> {
-    let mut out = Vec::new();
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if !arg.starts_with('-') {
-            out.push(arg.clone());
-            continue;
-        }
-        let flag = arg.split('=').next().unwrap_or(arg);
-        // Consumed here, before the next loop iteration's own positional
-        // check, so a value flag's value (e.g. `--ignore-platform-req
-        // ext-foo`) can't fall through as if `ext-foo` were a package name,
-        // whether that flag ends up kept or dropped.
-        let value = (!arg.contains('=') && VALUE_FLAGS.contains(&flag))
-            .then(|| iter.next())
-            .flatten();
-        match classify(flag) {
-            Flag::Keep => {
-                out.push(if flag == "--working-dir" {
-                    arg.replacen("--working-dir", "-d", 1)
-                } else if flag == "-vv" || flag == "-vvv" {
-                    "-v".to_string()
-                } else {
-                    arg.clone()
-                });
-                if let Some(value) = value {
-                    out.push(value.clone());
-                }
-            }
-            Flag::Drop => {}
-            Flag::DropNoted(msg) => {
-                err_out(&format!(
-                    "composer (viv shim): {}",
-                    msg.replace("{flag}", flag)
-                ));
-            }
-            Flag::Unknown => {
-                note_unknown_flag(flag);
-                return None;
-            }
-        }
-    }
-    Some(out)
 }
 
 fn viv_path() -> PathBuf {
@@ -437,7 +367,7 @@ fn main() -> ExitCode {
         return exec_viv(&[vec!["normalize".to_string()], rest.to_vec()].concat());
     }
     if viv_command == "new" {
-        return match translate_create_project(rest) {
+        return match translate(rest, classify_create_project, true) {
             Some(translated) => exec_viv(&[vec!["new".to_string()], translated].concat()),
             None => fallback_to_real_composer(&args),
         };
@@ -449,13 +379,13 @@ fn main() -> ExitCode {
         _ => None,
     };
     if let Some(classify) = packages_classifier {
-        return match translate_with_packages(rest, classify) {
+        return match translate(rest, classify, true) {
             Some(translated) => exec_viv(&[vec![viv_command.to_string()], translated].concat()),
             None => fallback_to_real_composer(&args),
         };
     }
 
-    match translate(rest) {
+    match translate(rest, classify, false) {
         Some(translated) => exec_viv(&[vec![viv_command.to_string()], translated].concat()),
         None => fallback_to_real_composer(&args),
     }
