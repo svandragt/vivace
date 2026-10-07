@@ -45,8 +45,10 @@ fn update_without_a_composer_json_fails() {
     viv_snapshot!(ctx, cmd);
 }
 
+/// #362: with no `composer.lock` `install` runs `update`, so it is the
+/// missing `composer.json` that fails it.
 #[test]
-fn install_without_a_lock_fails() {
+fn install_without_a_lock_or_composer_json_fails() {
     let ctx = TestContext::new();
     let mut cmd = ctx.viv();
     cmd.arg("install");

@@ -7,4 +7,4 @@ exit_code: 1
 ----- stdout -----
 
 ----- stderr -----
-composer.lock not found; viv installs from an existing composer.lock, run `viv update` to create one
+Composer could not find a composer.json file in [PROJECT]

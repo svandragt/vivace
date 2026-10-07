@@ -10,6 +10,14 @@ Run this after cloning a project or pulling a `composer.lock` change: it
 installs the exact versions the lock file records, without resolving
 anything fresh.
 
+When the project has no `composer.lock`, `viv install` prints Composer's
+"No composer.lock file present" warning and runs [viv update](update.html)
+instead, which resolves `composer.json`, writes the lock and installs. Only
+the flags `update` shares with `install` carry over: `--no-dev`, `--dry-run`,
+`--no-scripts`, `--no-plugins`, `--ignore-platform-reqs`,
+`--ignore-platform-req` and `-d`. The others (`-o`, `-a`, `--apcu-autoloader`,
+`--link-mode`, `--adopt`) take their defaults.
+
 ## Usage
 
 ```
@@ -20,9 +28,9 @@ anything fresh.
 
 - Reads: `composer.json`, `composer.lock` (and `viv.lock`, when present, to
   reconcile against it), the store under `$XDG_CACHE_HOME/vivace`.
-- Writes: `vendor/` (packages, autoload files, `vendor/bin`), the store
-  (downloaded archives and their dist pointers, the platform-check and
-  root-classmap sidecars).
+- Writes: `composer.lock` (only when it was absent), `vendor/` (packages,
+  autoload files, `vendor/bin`), the store (downloaded archives and their dist
+  pointers, the platform-check and root-classmap sidecars).
 
 ## Exit codes
 

@@ -268,3 +268,40 @@ fn path_repository_install_links_by_default_and_copies_when_symlink_is_false() {
         "hello"
     );
 }
+
+/// #362: `viv install` with no `composer.lock` prints Composer's warning and
+/// runs `update`, which writes the lock and installs, instead of failing.
+#[test]
+fn install_without_a_lock_updates_instead() {
+    let ctx = common::TestContext::new();
+    let project = ctx.project.path();
+
+    write_json(
+        &project.join("packages/pkg/composer.json"),
+        &json!({"name": "acme/pkg", "version": "1.0.0", "type": "library"}),
+    );
+    write_json(
+        &project.join("composer.json"),
+        &json!({
+            "repositories": [
+                {"packagist.org": false},
+                {"type": "path", "url": "packages/pkg"},
+            ],
+            "require": {"acme/pkg": "1.0.0"},
+        }),
+    );
+
+    let output = ctx.viv().arg("install").output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "viv install failed: {stderr}");
+    assert!(
+        stderr.contains(
+            "No composer.lock file present. Updating dependencies to latest instead of \
+             installing from lock file. See https://getcomposer.org/install for more \
+             information."
+        ),
+        "missing Composer's warning in: {stderr}"
+    );
+    assert!(project.join("composer.lock").is_file());
+    assert!(project.join("vendor/acme/pkg").exists());
+}

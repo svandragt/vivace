@@ -650,6 +650,53 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Resul
     run_impl(args, cache_dir, offline, true, None)
 }
 
+/// `Installer::run` forces `update` when `composer.lock` is absent (#362):
+/// warn, then run `viv update`, which resolves, writes the lock and installs.
+/// Only the flags `update` shares with `install` carry over: `-o`/`-a`,
+/// `--apcu-autoloader*`, `--link-mode` and `--adopt` have no `update`
+/// equivalent, and `update`'s chained install uses their defaults.
+fn update_instead(
+    args: &InstallArgs,
+    project_dir: &Path,
+    cache_dir: Option<&Path>,
+    offline: bool,
+    php_override: Option<&Path>,
+) -> Result<()> {
+    if !project_dir.join("composer.json").is_file() {
+        bail!(
+            "Composer could not find a composer.json file in {}",
+            project_dir.display()
+        );
+    }
+    warn_out(
+        "No composer.lock file present. Updating dependencies to latest instead of installing \
+         from lock file. See https://getcomposer.org/install for more information.",
+    );
+    let update_args = crate::update::UpdateArgs {
+        packages: Vec::new(),
+        with_dependencies: false,
+        with_all_dependencies: false,
+        minimal_changes: false,
+        lock: None,
+        no_dev: args.no_dev,
+        prefer_lowest: false,
+        prefer_stable: false,
+        dry_run: args.dry_run,
+        no_normalize: args.no_normalize,
+        bump_after_update: None,
+        project_dir: project_dir.to_path_buf(),
+        no_scripts: args.no_scripts,
+        no_plugins: args.no_plugins,
+        no_install: false,
+        ignore_platform_reqs: args.ignore_platform_reqs,
+        ignore_platform_req: args.ignore_platform_req.clone(),
+        no_blocking: false,
+        no_security_blocking: false,
+        metadata_ttl: None,
+    };
+    crate::update::run_impl(&update_args, cache_dir, offline, php_override)
+}
+
 /// `update`/`require`/`remove` chaining into `install` once `composer.lock`
 /// (and, for `require`/`remove`, `composer.json`) is written, the way
 /// `composer update`/`require`/`remove` all chain into the same
@@ -695,10 +742,7 @@ pub(crate) fn run_impl(
         sync_composer_lock_from_viv_lock(&project_dir, &lock_path, &viv_lock_path)?;
     }
     if !lock_path.is_file() {
-        bail!(
-            "composer.lock not found; viv installs from an existing composer.lock, run \
-             `viv update` to create one"
-        );
+        return update_instead(args, &project_dir, cache_dir, offline, php_override);
     }
 
     // `install` never writes `composer.json` (#95): normalizing moved to

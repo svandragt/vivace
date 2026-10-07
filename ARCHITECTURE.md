@@ -38,9 +38,10 @@ composer.json + composer.lock
   scripts: pre/post-install-cmd, pre/post-autoload-dump
 ```
 
-`viv install` runs the lower half only, from an existing lock. `viv update`,
-`viv add` and `viv rm` run the solver first, write a new lock, then
-chain into the lower half and install (`--no-install` opts out).
+`viv install` runs the lower half only, from an existing lock; with no
+`composer.lock` it warns and runs `viv update` instead, as Composer does.
+`viv update`, `viv add` and `viv rm` run the solver first, write a new lock,
+then chain into the lower half and install (`--no-install` opts out).
 
 ## Modules
 
