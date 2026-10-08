@@ -28,6 +28,13 @@ list when `vendor/` does not exist yet, so the autoloader covers only your
 own `autoload` rules. In that case it leaves `installed.json` and
 `installed.php` as they are.
 
+## Dev packages
+
+Without `--no-dev`, the command uses the mode of the last install, like
+Composer: the `dev` value in `vendor/composer/installed.json`. A vendor
+installed with `viv install --no-dev` dumps without dev packages and
+`autoload-dev` rules, and so does a vendor with no `installed.json`.
+
 ## Exit codes
 
 - `0` — regenerated cleanly.

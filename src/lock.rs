@@ -249,6 +249,30 @@ pub fn read_installed(path: &Path) -> Result<Lock> {
     )
 }
 
+/// The dump mode Composer's `AutoloadGenerator` falls back to when neither
+/// `--dev` nor `--no-dev` is given: `installed.json`'s top-level `dev`,
+/// `false` when the file or the key is missing (a Composer 1 file is a bare
+/// array). Read whether or not a lock exists.
+pub fn read_installed_dev_mode(path: &Path) -> Result<bool> {
+    // A typed read of the one key skips building a `Value` for every package
+    // entry; Composer 1's bare array has no `dev` and is not an object.
+    #[derive(Deserialize)]
+    struct DevMode {
+        dev: Option<bool>,
+    }
+    let content = match fs_err::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err.into()),
+    };
+    if content.trim_start().starts_with('[') {
+        return Ok(false);
+    }
+    let parsed: DevMode = serde_json::from_str(&content)
+        .with_context(|| format!("parsing {} as JSON", path.display()))?;
+    Ok(parsed.dev.unwrap_or(false))
+}
+
 fn lock_from_value(raw: &Value, label: &Path) -> Result<Lock> {
     let content_hash = raw
         .get("content-hash")

@@ -371,38 +371,53 @@ fn dump_autoload_without_a_lock_writes_the_root_autoload() {
     );
 }
 
+/// `vendor/acme/{lib,dev-lib}` on disk plus their `installed.json` entries.
+fn write_demo_vendor(project: &Path) -> Vec<String> {
+    fs::write(
+        project.join("composer.json"),
+        r#"{"name": "acme/demo", "require": {"acme/lib": "*"}, "require-dev": {"acme/dev-lib": "*"},
+            "autoload": {"psr-4": {"Acme\\": "src/"}}}"#,
+    )
+    .unwrap();
+    [("acme/lib", "Lib"), ("acme/dev-lib", "DevLib")]
+        .map(|(name, namespace)| {
+            fs::create_dir_all(project.join("vendor").join(name).join("src")).unwrap();
+            format!(
+                r#"{{"name": "{name}", "version": "1.0.0", "type": "library",
+                    "dist": {{"type": "zip", "url": "https://example.com/{name}.zip", "reference": "abc"}},
+                    "autoload": {{"psr-4": {{"{namespace}\\": "src/"}}}}}}"#
+            )
+        })
+        .to_vec()
+}
+
+fn write_installed_json(project: &Path, packages: &[String], dev: bool, dev_names: &str) {
+    fs::create_dir_all(project.join("vendor/composer")).unwrap();
+    fs::write(
+        project.join("vendor/composer/installed.json"),
+        format!(
+            r#"{{"packages": [{}], "dev": {dev}, "dev-package-names": {dev_names}}}"#,
+            packages.join(",")
+        ),
+    )
+    .unwrap();
+}
+
+fn read_psr4(project: &Path) -> String {
+    fs::read_to_string(project.join("vendor/composer/autoload_psr4.php")).unwrap()
+}
+
 /// Without a lock the package list comes from `installed.json`, and its
 /// `dev-package-names` still decide what `--no-dev` leaves out.
 #[test]
 fn dump_autoload_without_a_lock_reads_installed_json() {
     let ctx = TestContext::new();
     let project = ctx.project.path();
-    fs::write(
-        project.join("composer.json"),
-        r#"{"name": "acme/demo", "require": {"acme/lib": "*"}, "autoload": {"psr-4": {"Acme\\": "src/"}}}"#,
-    )
-    .unwrap();
-    let packages = [("acme/lib", "Lib"), ("acme/dev-lib", "DevLib")].map(|(name, namespace)| {
-        fs::create_dir_all(project.join("vendor").join(name).join("src")).unwrap();
-        format!(
-            r#"{{"name": "{name}", "version": "1.0.0", "type": "library",
-                "dist": {{"type": "zip", "url": "https://example.com/{name}.zip", "reference": "abc"}},
-                "autoload": {{"psr-4": {{"{namespace}\\": "src/"}}}}}}"#
-        )
-    });
-    fs::create_dir_all(project.join("vendor/composer")).unwrap();
-    fs::write(
-        project.join("vendor/composer/installed.json"),
-        format!(
-            r#"{{"packages": [{}], "dev": true, "dev-package-names": ["acme/dev-lib"]}}"#,
-            packages.join(",")
-        ),
-    )
-    .unwrap();
-    let psr4 = || fs::read_to_string(project.join("vendor/composer/autoload_psr4.php")).unwrap();
+    let packages = write_demo_vendor(project);
+    write_installed_json(project, &packages, true, r#"["acme/dev-lib"]"#);
 
     ctx.viv().arg("dump-autoload").assert().success();
-    let with_dev = psr4();
+    let with_dev = read_psr4(project);
     assert!(with_dev.contains("'Lib\\\\'"), "{with_dev}");
     assert!(with_dev.contains("'DevLib\\\\'"), "{with_dev}");
 
@@ -410,9 +425,81 @@ fn dump_autoload_without_a_lock_reads_installed_json() {
         .args(["dump-autoload", "--no-dev"])
         .assert()
         .success();
-    let without_dev = psr4();
+    let without_dev = read_psr4(project);
     assert!(without_dev.contains("'Lib\\\\'"), "{without_dev}");
     assert!(!without_dev.contains("DevLib"), "{without_dev}");
+}
+
+/// Composer's `AutoloadGenerator` takes the dump mode from `installed.json`'s
+/// top-level `dev` when neither `--dev` nor `--no-dev` is given, so a vendor
+/// the last install made with `--no-dev` dumps without its dev packages;
+/// `--dev` overrides that, and a missing `dev` (or file) means no-dev.
+#[test]
+fn dump_autoload_defaults_to_the_mode_installed_json_records() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    let packages = write_demo_vendor(project);
+    write_installed_json(project, &packages, false, r#"["acme/dev-lib"]"#);
+
+    ctx.viv().arg("dump-autoload").assert().success();
+    let plain = read_psr4(project);
+    assert!(plain.contains("'Lib\\\\'"), "{plain}");
+    assert!(!plain.contains("DevLib"), "{plain}");
+
+    ctx.viv()
+        .args(["dump-autoload", "--dev"])
+        .assert()
+        .success();
+    assert!(read_psr4(project).contains("'DevLib\\\\'"));
+
+    ctx.viv()
+        .args(["dump-autoload", "--dev", "--no-dev"])
+        .assert()
+        .failure();
+
+    fs::write(
+        project.join("vendor/composer/installed.json"),
+        format!(
+            r#"{{"packages": [{}], "dev-package-names": ["acme/dev-lib"]}}"#,
+            packages.join(",")
+        ),
+    )
+    .unwrap();
+    ctx.viv().arg("dump-autoload").assert().success();
+    assert!(!read_psr4(project).contains("DevLib"));
+
+    // Composer 1 wrote a bare array, which has no `dev` either.
+    fs::write(
+        project.join("vendor/composer/installed.json"),
+        format!("[{}]", packages.join(",")),
+    )
+    .unwrap();
+    ctx.viv().arg("dump-autoload").assert().success();
+    assert!(!read_psr4(project).contains("DevLib"));
+}
+
+/// The same default with a lock present: after `install --no-dev` the dev
+/// package is not on disk and `dump-autoload` must leave it out, not fail on it.
+#[test]
+fn dump_autoload_with_a_lock_defaults_to_the_mode_installed_json_records() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    let packages = write_demo_vendor(project);
+    fs::remove_dir_all(project.join("vendor/acme/dev-lib")).unwrap();
+    write_installed_json(project, &packages[..1], false, "[]");
+    fs::write(
+        project.join("composer.lock"),
+        format!(
+            r#"{{"packages": [{}], "packages-dev": [{}]}}"#,
+            packages[0], packages[1]
+        ),
+    )
+    .unwrap();
+
+    ctx.viv().arg("dump-autoload").assert().success();
+    let psr4 = read_psr4(project);
+    assert!(psr4.contains("'Lib\\\\'"), "{psr4}");
+    assert!(!psr4.contains("DevLib"), "{psr4}");
 }
 
 /// #36: `viv cache prune` removes a stale bucket and reports what it freed.
@@ -606,7 +693,13 @@ fn dump_autoload_matches_composer() {
     copy_tree(&fixture().join("vendor"), &project.join("vendor"));
     // Wipe what the fixture's own `composer install` produced, so a pass
     // proves `dump-autoload` regenerated it, not that it was already there.
-    fs::remove_dir_all(project.join("vendor/composer")).unwrap();
+    // `installed.json` stays: its `dev` is the mode a plain `dump-autoload` uses.
+    for entry in fs::read_dir(project.join("vendor/composer")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().unwrap() != "installed.json" {
+            fs::remove_file(path).unwrap();
+        }
+    }
     fs::remove_file(project.join("vendor/autoload.php")).unwrap();
 
     let mut cmd = ctx.viv();

@@ -1156,6 +1156,7 @@ fn dump_scoped_autoload(output_dir: &Path) -> Result<()> {
 
     install::dump_autoload(&DumpAutoloadArgs {
         no_dev: false,
+        dev: true,
         project_dir: output_dir.to_path_buf(),
         optimize_autoloader: true,
         classmap_authoritative: true,

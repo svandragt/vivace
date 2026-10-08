@@ -141,6 +141,11 @@ pub struct InstallArgs {
 )]
 #[derive(Args, Debug, Clone)]
 pub struct DumpAutoloadArgs {
+    /// Include `require-dev` packages and `autoload-dev` rules. Without
+    /// `--dev` or `--no-dev`, the mode of the last install
+    /// (`installed.json`'s `dev`) applies, as in Composer.
+    #[arg(long, conflicts_with = "no_dev")]
+    pub dev: bool,
     /// Skip `require-dev` packages.
     #[arg(long)]
     pub no_dev: bool,
@@ -1454,13 +1459,18 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
     // Composer reads the installed packages from its local repository, never
     // the lock, so without one `installed.json` (or nothing) stands in.
     let lock_path = project_dir.join("composer.lock");
+    let installed_path = vendor_dir.join("composer/installed.json");
     let has_lock = lock_path.is_file();
     let mut lock = if has_lock {
         read_lock(&lock_path)?
     } else {
-        lock::read_installed(&vendor_dir.join("composer/installed.json"))?
+        lock::read_installed(&installed_path)?
     };
-    let dev = !args.no_dev;
+    let dev = if args.dev || args.no_dev {
+        args.dev
+    } else {
+        lock::read_installed_dev_mode(&installed_path)?
+    };
 
     let (plugins, plugin_warnings) = plugins::resolve(&lock, &root, args.no_plugins)?;
     for warning in &plugin_warnings {

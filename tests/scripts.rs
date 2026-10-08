@@ -46,6 +46,12 @@ fn setup(project: &Path, fixture: &str) {
 /// this.
 fn setup_vendor(project: &Path) {
     fs::create_dir_all(project.join("vendor/composer")).unwrap();
+    // The mode `dump-autoload` falls back to is `installed.json`'s `dev`.
+    fs::write(
+        project.join("vendor/composer/installed.json"),
+        r#"{"packages": [], "dev": true, "dev-package-names": []}"#,
+    )
+    .unwrap();
     // Composer prepends bin-dir to PATH only when the directory exists.
     fs::create_dir_all(project.join("vendor/bin")).unwrap();
 }
