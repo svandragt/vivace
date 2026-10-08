@@ -348,12 +348,71 @@ fn install_composer_disable_network_env_behaves_like_offline() {
     viv_snapshot!(ctx, cmd);
 }
 
+/// Composer's `dump-autoload` reads the installed packages from
+/// `vendor/composer/installed.json`, not the lock, so with neither a lock nor
+/// a `vendor/` it still writes the root package's autoloader.
 #[test]
-fn dump_autoload_without_a_lock_fails() {
+fn dump_autoload_without_a_lock_writes_the_root_autoload() {
     let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs::write(
+        project.join("composer.json"),
+        r#"{"name": "acme/demo", "autoload": {"psr-4": {"Acme\\": "src/"}}}"#,
+    )
+    .unwrap();
     let mut cmd = ctx.viv();
     cmd.arg("dump-autoload");
     viv_snapshot!(ctx, cmd);
+    assert!(project.join("vendor/autoload.php").is_file());
+    let psr4 = fs::read_to_string(project.join("vendor/composer/autoload_psr4.php")).unwrap();
+    assert!(
+        psr4.contains(r"'Acme\\' => array($baseDir . '/src')"),
+        "{psr4}"
+    );
+}
+
+/// Without a lock the package list comes from `installed.json`, and its
+/// `dev-package-names` still decide what `--no-dev` leaves out.
+#[test]
+fn dump_autoload_without_a_lock_reads_installed_json() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs::write(
+        project.join("composer.json"),
+        r#"{"name": "acme/demo", "require": {"acme/lib": "*"}, "autoload": {"psr-4": {"Acme\\": "src/"}}}"#,
+    )
+    .unwrap();
+    let packages = [("acme/lib", "Lib"), ("acme/dev-lib", "DevLib")].map(|(name, namespace)| {
+        fs::create_dir_all(project.join("vendor").join(name).join("src")).unwrap();
+        format!(
+            r#"{{"name": "{name}", "version": "1.0.0", "type": "library",
+                "dist": {{"type": "zip", "url": "https://example.com/{name}.zip", "reference": "abc"}},
+                "autoload": {{"psr-4": {{"{namespace}\\": "src/"}}}}}}"#
+        )
+    });
+    fs::create_dir_all(project.join("vendor/composer")).unwrap();
+    fs::write(
+        project.join("vendor/composer/installed.json"),
+        format!(
+            r#"{{"packages": [{}], "dev": true, "dev-package-names": ["acme/dev-lib"]}}"#,
+            packages.join(",")
+        ),
+    )
+    .unwrap();
+    let psr4 = || fs::read_to_string(project.join("vendor/composer/autoload_psr4.php")).unwrap();
+
+    ctx.viv().arg("dump-autoload").assert().success();
+    let with_dev = psr4();
+    assert!(with_dev.contains("'Lib\\\\'"), "{with_dev}");
+    assert!(with_dev.contains("'DevLib\\\\'"), "{with_dev}");
+
+    ctx.viv()
+        .args(["dump-autoload", "--no-dev"])
+        .assert()
+        .success();
+    let without_dev = psr4();
+    assert!(without_dev.contains("'Lib\\\\'"), "{without_dev}");
+    assert!(!without_dev.contains("DevLib"), "{without_dev}");
 }
 
 /// #36: `viv cache prune` removes a stale bucket and reports what it freed.

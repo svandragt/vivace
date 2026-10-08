@@ -208,7 +208,48 @@ pub fn read_lock(path: &Path) -> Result<Lock> {
 pub(crate) fn parse_lock(content: &str, label: &Path) -> Result<Lock> {
     let raw: Value = serde_json::from_str(content)
         .with_context(|| format!("parsing {} as JSON", label.display()))?;
+    lock_from_value(&raw, label)
+}
 
+/// `vendor/composer/installed.json` as a [`Lock`] with no `content-hash`:
+/// the package list Composer's `dump-autoload` reads when there is no lock
+/// (its local repository), split into `packages`/`packages-dev` by
+/// `dev-package-names`. A missing file is an empty package set.
+pub fn read_installed(path: &Path) -> Result<Lock> {
+    let content = match fs_err::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::from("{}"),
+        Err(err) => return Err(err.into()),
+    };
+    let raw: Value = serde_json::from_str(&content)
+        .with_context(|| format!("parsing {} as JSON", path.display()))?;
+    // Composer 1 wrote a bare array, Composer 2 an object around it.
+    let entries = raw.get("packages").unwrap_or(&raw);
+    let dev_names: Vec<String> = raw
+        .get("dev-package-names")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|name| Some(name.as_str()?.to_lowercase()))
+        .collect();
+    let (dev, prod): (Vec<Value>, Vec<Value>) = entries
+        .as_array()
+        .into_iter()
+        .flatten()
+        .cloned()
+        .partition(|entry| {
+            entry
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| dev_names.contains(&name.to_lowercase()))
+        });
+    lock_from_value(
+        &serde_json::json!({"packages": prod, "packages-dev": dev}),
+        path,
+    )
+}
+
+fn lock_from_value(raw: &Value, label: &Path) -> Result<Lock> {
     let content_hash = raw
         .get("content-hash")
         .and_then(Value::as_str)

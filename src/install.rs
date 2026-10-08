@@ -1247,6 +1247,7 @@ pub(crate) fn run_impl(
         Some(&archive_dirs),
         &plugins,
         true,
+        true,
         Some(&snapshot.root_fingerprint),
     )?;
 
@@ -1342,6 +1343,10 @@ fn regenerate_vendor_metadata(
     archive_dirs: Option<&HashMap<String, PathBuf>>,
     plugins: &plugins::Plugins,
     is_install: bool,
+    // `false` for a `dump-autoload` that read its packages from
+    // `installed.json` (no lock): Composer never rewrites it there, and
+    // `--no-dev` would drop the dev packages from the only record of them.
+    write_installed: bool,
     // #311: `Snapshot::root_fingerprint`, `None` for `dump_autoload`'s own
     // call (no `Snapshot` there, out of this ticket's scope) — `generate`
     // falls back to deriving the same string from `base_dir` itself.
@@ -1395,6 +1400,9 @@ fn regenerate_vendor_metadata(
         plugins.post_install(&plugin_ctx, &bin_packages)?;
     }
 
+    if !write_installed {
+        return Ok(());
+    }
     let installed_started = Instant::now();
     write_atomic(
         &vendor_dir.join("composer/installed.json"),
@@ -1423,17 +1431,12 @@ fn regenerate_vendor_metadata(
 /// `viv dump-autoload`: reread `composer.json`/`composer.lock` and regenerate
 /// `vendor/autoload.php`, `vendor/composer/*` and `vendor/bin` from the
 /// packages already linked into `vendor/` — no fetch, no link, no remove.
+/// With no `composer.lock` the package list is `vendor/composer/installed.json`'s,
+/// as in Composer.
 pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
     let project_dir = fs_err::canonicalize(&args.project_dir)
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
 
-    let lock_path = project_dir.join("composer.lock");
-    if !lock_path.is_file() {
-        bail!(
-            "composer.lock not found; viv installs from an existing composer.lock, run \
-             `viv update` to create one"
-        );
-    }
     // Composer's `DumpAutoloadCommand` never checks lock freshness or
     // missing requirements (unlike `InstallCommand`), so neither does this.
     // `dump-autoload` never writes `composer.json` either (#95): see
@@ -1447,7 +1450,16 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
     let root = lock::parse_root(&composer_json).context("parsing composer.json")?;
-    let mut lock = read_lock(&lock_path)?;
+    let vendor_dir = project_dir.join(&root.config.vendor_dir);
+    // Composer reads the installed packages from its local repository, never
+    // the lock, so without one `installed.json` (or nothing) stands in.
+    let lock_path = project_dir.join("composer.lock");
+    let has_lock = lock_path.is_file();
+    let mut lock = if has_lock {
+        read_lock(&lock_path)?
+    } else {
+        lock::read_installed(&vendor_dir.join("composer/installed.json"))?
+    };
     let dev = !args.no_dev;
 
     let (plugins, plugin_warnings) = plugins::resolve(&lock, &root, args.no_plugins)?;
@@ -1456,14 +1468,6 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
     }
     for package in &mut lock.packages {
         package.install_dir = plugins.install_dir(&root, package);
-    }
-
-    let vendor_dir = project_dir.join(&root.config.vendor_dir);
-    if !vendor_dir.is_dir() {
-        bail!(
-            "{} not found; run `viv install` first",
-            vendor_dir.display()
-        );
     }
 
     let selected: Vec<&Package> = lock.packages(dev).collect();
@@ -1517,6 +1521,7 @@ pub fn dump_autoload(args: &DumpAutoloadArgs) -> Result<()> {
         None,
         &plugins,
         false,
+        has_lock,
         // No `Snapshot` here (#311 scopes it to `install`/`update`); `generate`
         // derives the same identity from `base_dir` itself, same as before.
         None,
