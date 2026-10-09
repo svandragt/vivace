@@ -52,7 +52,7 @@ use crate::solver::platform::cached_platform_packages;
 use crate::solver::policy::DefaultPolicy;
 use crate::solver::pool::{self, Link, Package, Pool};
 use crate::solver::pool_optimizer;
-use crate::solver::request::{Request, RootRequire};
+use crate::solver::request::{LockedVersion, Request, RootRequire};
 use crate::solver::{ConstraintCache, parse_constraint_cached};
 
 /// `BasePackage::STABILITIES` order, least to most stable... actually most
@@ -724,10 +724,19 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     )?);
     let fixed: Vec<usize> = (0..packages.len()).collect();
 
+    let mut locked: HashMap<String, LockedVersion> = HashMap::new();
     for name in &skip {
         if let Some(entry) = locked_by_name.get(name) {
             let base_index = packages.len();
             packages.push(package_from_lock_entry(entry, &mut constraint_cache)?);
+            let held = &packages[base_index];
+            locked.insert(
+                name.clone(),
+                LockedVersion {
+                    version: held.version.clone(),
+                    pretty_version: held.pretty_version.clone(),
+                },
+            );
             // #267: a held `dev-*` entry's `extra.branch-alias` names a
             // second package (`ArrayLoader`'s `AliasPackage`) that never has
             // its own lock entry, only ever a derivation of this one — the
@@ -790,7 +799,12 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
     let mut requires = root_requires(&require, &require_dev)?;
     strip_ignored_platform_links(&mut packages, &mut requires, ignore);
     let pool = Pool::new(packages).with_removed(removed);
-    let request = Request { requires, fixed };
+    let request = Request {
+        requires,
+        fixed,
+        locked,
+        ..Request::default()
+    };
     let policy = if preferred.is_empty() {
         DefaultPolicy::new(prefer_stable, prefer_lowest)
     } else {
@@ -803,13 +817,17 @@ pub async fn build_partial_seeded<T: Transport, A: AdvisoriesTransport>(
         pool_packages = optimized.pool.len(),
         "pruned the pool before rule generation"
     );
-    let Request { requires, .. } = request;
+    let Request {
+        requires, locked, ..
+    } = request;
 
     Ok(BuildResult {
         pool: optimized.pool,
         request: Request {
             requires,
             fixed: optimized.fixed,
+            locked,
+            ..Request::default()
         },
         minimum_stability,
         stability_flags: stability_flags
@@ -1063,6 +1081,7 @@ pub(crate) fn require_only_request(
     Ok(Request {
         requires,
         fixed: (0..fixed_count).collect(),
+        ..Request::default()
     })
 }
 

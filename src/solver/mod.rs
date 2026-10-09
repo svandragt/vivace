@@ -398,7 +398,7 @@ async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>
     let allow_names =
         pool_builder::expand_allow_list(&allow_list, &locked_requires, &root_require_names, mode);
 
-    let built = pool_builder::build_partial_seeded(
+    let mut built = pool_builder::build_partial_seeded(
         repo,
         root,
         project_dir,
@@ -415,6 +415,8 @@ async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>
         ignore,
     )
     .await?;
+    built.request.allow_transitive_root_dependencies =
+        mode == pool_builder::UpdateAllowMode::WithTransitiveDeps;
     resolve(built, root, prefer_stable, prefer_lowest, preferred)
 }
 

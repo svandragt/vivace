@@ -414,10 +414,7 @@ fn verify_platform_requirements(
     // read `request.requires`/`pool.removed()` only when `pool.removed()`
     // is non-empty, which it never is for this ad hoc pool, so an empty
     // stand-in is exactly as good as a real `Request` here.
-    let no_request = Request {
-        requires: Vec::new(),
-        fixed: Vec::new(),
-    };
+    let no_request = Request::default();
 
     let mut problems: Vec<String> = Vec::new();
 

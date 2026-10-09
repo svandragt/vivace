@@ -1028,6 +1028,67 @@ async fn partial_update_keeps_the_unlisted_package_locked() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// #363: the lock holds `psr/log` at 1.1.4, outside the `^2.0 || ^3.0` every
+/// monolog 3.x requires, so `viv update monolog/monolog` can't proceed
+/// without also listing `psr/log`. Composer words that as "fixed to ... by a
+/// partial update" plus the `-W` hint; viv used to say the package "could
+/// not be found in any version" because the pool optimizer drops a held
+/// package no remaining require matches.
+#[tokio::test]
+async fn partial_update_names_a_locked_dependency_as_fixed() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/partial-update");
+    let cache = tempfile::tempdir().unwrap();
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let root = serde_json::json!({
+        "name": "vivace/fixture-partial-fixed",
+        "require": { "monolog/monolog": "^3.0" }
+    });
+    let mut locked_by_name = common::locked_by_name(&fixture.join("lock-before.json"));
+    locked_by_name.get_mut("psr/log").unwrap()["version"] = Value::from("1.1.4");
+
+    let Err(err) = vivace::solver::solve_partial_update(
+        &repo,
+        &root,
+        &fixture,
+        false,
+        false,
+        &locked_by_name,
+        &["monolog/monolog".to_string()],
+        vivace::solver::pool_builder::UpdateAllowMode::OnlyListed,
+    )
+    .await
+    else {
+        panic!("expected a partial update held to psr/log 1.1.4 to fail")
+    };
+    let message = format!(
+        "{}",
+        err.downcast_ref::<vivace::solver::problem::SolverError>()
+            .expect("an unsatisfiable partial update's error is a SolverError")
+    );
+
+    assert!(
+        message.contains(
+            "requires psr/log ^2.0 || ^3.0 -> the package is fixed to 1.1.4 (lock file version) \
+             by a partial update and that version does not match. Make sure you list it as an \
+             argument for the update command."
+        ),
+        "{message}"
+    );
+    assert!(
+        message.ends_with(
+            "\n\nUse the option --with-all-dependencies (-W) to allow upgrades, downgrades and \
+             removals for packages currently locked to specific versions.\n"
+        ),
+        "{message}"
+    );
+}
+
 /// #267: `acme/installers` is held at `dev-main` (`extra.branch-alias`
 /// names `2.x-dev`, the shape Composer's `ArrayLoader` turns into a real
 /// `dev-main` package plus an `AliasPackage` at `2.x-dev`) and the held

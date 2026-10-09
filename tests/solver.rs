@@ -15,7 +15,7 @@ use vivace::repository::Repository;
 use vivace::semver;
 use vivace::solver::policy::DefaultPolicy;
 use vivace::solver::pool::{Link, Package, Pool};
-use vivace::solver::request::Request;
+use vivace::solver::request::{LockedVersion, Request};
 use vivace::solver::solver;
 
 #[tokio::test]
@@ -141,6 +141,7 @@ fn require(name: &str) -> Request {
             pretty_constraint: "*".to_string(),
         }],
         fixed: Vec::new(),
+        ..Request::default()
     }
 }
 
@@ -253,4 +254,51 @@ fn a_conflict_forces_a_backjump_to_the_non_conflicting_alternative() {
     );
     assert!(got.contains_key("vendor/root"));
     assert_eq!(got.len(), 3, "{got:?}");
+}
+
+/// #363: `-W` already lets every locked package move, so
+/// `SolverProblemsException`'s "Use the option --with-all-dependencies"
+/// hint is only for a request that didn't pass it.
+#[test]
+fn locked_dependency_hint_is_left_out_under_with_all_dependencies() {
+    let mut root = package("vendor/root", "1.0.0");
+    root.requires = vec![Link {
+        target: "vendor/dep".to_string(),
+        constraint: Some(std::sync::Arc::new(
+            semver::parse_constraint("^2.0").unwrap(),
+        )),
+        pretty_constraint: Some("^2.0".to_string()),
+    }];
+    let pool = Pool::new(vec![root]);
+    let mut request = require("vendor/root");
+    request.locked.insert(
+        "vendor/dep".to_string(),
+        LockedVersion {
+            version: version("1.0.0"),
+            pretty_version: "1.0.0".to_string(),
+        },
+    );
+    let policy = DefaultPolicy::new(false, false);
+
+    let message = solver::solve(&policy, &pool, &request)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("fixed to 1.0.0 (lock file version) by a partial update"),
+        "{message}"
+    );
+    assert!(
+        message.contains("--with-all-dependencies (-W)"),
+        "{message}"
+    );
+
+    request.allow_transitive_root_dependencies = true;
+    let message = solver::solve(&policy, &pool, &request)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("fixed to 1.0.0 (lock file version) by a partial update"),
+        "{message}"
+    );
+    assert!(!message.contains("--with-all-dependencies"), "{message}");
 }

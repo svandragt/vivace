@@ -53,6 +53,30 @@ impl Problem {
         self.reasons.push(reason);
     }
 
+    /// `Problem::isCausedByLock` (`Rule::isCausedByLock`'s
+    /// `RULE_ROOT_REQUIRE`/`RULE_PACKAGE_REQUIRES` arms): a require whose
+    /// target a partial update holds at a version the constraint rejects.
+    /// Not ported: the third arm (a package the update allowed to move
+    /// that "still matches"), since only held packages are in
+    /// [`Request::locked`].
+    fn is_caused_by_lock(&self, request: &Request) -> bool {
+        self.reasons.iter().any(|reason| match reason {
+            Reason::RootRequire {
+                package_name: name,
+                pretty_constraint,
+            }
+            | Reason::PackageRequires {
+                target: name,
+                pretty_constraint,
+                ..
+            } => request.locked.get(name).is_some_and(|locked| {
+                pretty_constraint_as_constraint(pretty_constraint)
+                    .is_some_and(|constraint| !constraint.matches(&locked.version))
+            }),
+            _ => false,
+        })
+    }
+
     /// `Problem::getPrettyString`. Composer builds this bottom-up from
     /// `array_merge(...array_reverse($this->reasons))` (sections in
     /// reverse, each section's own order preserved); `add_reason` never
@@ -438,6 +462,20 @@ pub(crate) fn missing_package_suffix(
         };
     }
 
+    // `getMissingPackageReason`'s "fixed to ... by a partial update" branch.
+    // Composer lists the repository's matching versions first ("found
+    // roots/x[6.9.10] but ..."); viv doesn't fetch a held name at all (the
+    // closure walk skips it), so those candidates aren't known and the
+    // sentence starts at "the package".
+    if let Some(locked) = request.locked.get(package_name) {
+        return format!(
+            "the package is fixed to {} (lock file version) by a partial update and that \
+             version does not match. Make sure you list it as an argument for the update \
+             command.",
+            locked.pretty_version
+        );
+    }
+
     // #238/#152: a name whose only matching candidates were filtered out
     // before the pool was built (a security advisory, or — root-conflict's
     // own extra check below — filtered *and* disjoint from a separate root
@@ -787,6 +825,9 @@ impl Header {
 pub struct SolverError {
     header: Header,
     pub problems: Vec<String>,
+    /// `SolverProblemsException::getPrettyString`'s `$isCausedByLock` and
+    /// no `-W`: whether to close with the `--with-all-dependencies` hint.
+    suggest_with_all_dependencies: bool,
 }
 
 impl SolverError {
@@ -797,6 +838,8 @@ impl SolverError {
                 .iter()
                 .map(|p| p.pretty_string(pool, request))
                 .collect(),
+            suggest_with_all_dependencies: !request.allow_transitive_root_dependencies
+                && problems.iter().any(|p| p.is_caused_by_lock(request)),
         }
     }
 
@@ -807,6 +850,7 @@ impl SolverError {
         SolverError {
             header: Header::Install,
             problems,
+            suggest_with_all_dependencies: false,
         }
     }
 }
@@ -815,15 +859,19 @@ impl SolverError {
 /// appended verbatim whenever any problem's text contains either phrase
 /// (`str_contains($text, 'could not be found') ||
 /// str_contains($text, 'no matching package found')`). The other hints
-/// there (missing PHP extensions, `--with-all-dependencies`, two
-/// ocramius/package-versions special cases) all depend on data this port
-/// doesn't track (`isCausedByLock`, extension detection) and are not
-/// reached by this stage's fixtures.
+/// there (missing PHP extensions, two ocramius/package-versions special
+/// cases) all depend on data this port doesn't track (extension
+/// detection) and are not reached by this stage's fixtures.
 const TYPO_HINT: &str = "Potential causes:\n - A typo in the package name\n - The package is not \
      available in a stable-enough version according to your minimum-stability setting\n   see \
      <https://getcomposer.org/doc/04-schema.md#minimum-stability> for more details.\n - It's a \
      private package and you forgot to add a custom repository to find it\n\nRead \
      <https://getcomposer.org/doc/articles/troubleshooting.md> for further common problems.";
+
+/// `SolverProblemsException::getPrettyString`'s `--with-all-dependencies`
+/// hint; see [`SolverError::suggest_with_all_dependencies`].
+const WITH_ALL_DEPENDENCIES_HINT: &str = "Use the option --with-all-dependencies (-W) to allow \
+     upgrades, downgrades and removals for packages currently locked to specific versions.";
 
 impl fmt::Display for SolverError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -844,6 +892,9 @@ impl fmt::Display for SolverError {
         }
         if any_not_found {
             writeln!(f, "\n{TYPO_HINT}")?;
+        }
+        if self.suggest_with_all_dependencies {
+            writeln!(f, "\n{WITH_ALL_DEPENDENCIES_HINT}")?;
         }
         Ok(())
     }
@@ -930,6 +981,7 @@ mod tests {
         let request = Request {
             requires: vec![root_require("acme/a", "^1.0")],
             fixed: Vec::new(),
+            ..Request::default()
         };
 
         assert_eq!(
@@ -951,6 +1003,7 @@ mod tests {
         let request = Request {
             requires: Vec::new(),
             fixed: Vec::new(),
+            ..Request::default()
         };
 
         assert_eq!(

@@ -20,14 +20,13 @@
 //! `optimizeImpossiblePackagesAway` (Composer's second pass, dropping
 //! versions no *locked* package's exact require could ever pick) is not
 //! ported: it only ever acts on `Request::getLockedPackages()`, and
-//! `Request` (this port's cut-down
-//! `request.rs`) has no locked-package field at all — a full update never
-//! locks anything, and a partial update expresses its locked-out packages
-//! as `fixed`/irremovable pool entries instead (`pool_builder.rs`'s
-//! `build_partial_seeded` pushes them via `package_from_lock_entry` and
-//! marks their indices `fixed`, never a separate locked set), so there is
-//! no path that could ever call this pass with a non-empty locked list.
-//! Revisit if `Request` ever grows a real locked-package concept (#144).
+//! `Request`'s own `locked` map (this port's cut-down `request.rs`) holds
+//! versions for `problem.rs`'s messages only, not pool entries — a full
+//! update never locks anything, and a partial update's locked-out packages
+//! are plain pool entries (`pool_builder.rs`'s `build_partial_seeded`
+//! pushes them via `package_from_lock_entry`), so there is no path that
+//! could ever call this pass with pool-backed locked packages. Revisit if
+//! `Request` ever grows a real locked-package concept (#144).
 //!
 //! An alias and the package it aliases are always kept or removed together
 //! (`markPackageIrremovable`/`keepPackageInGroup`'s own recursion through
@@ -502,6 +501,7 @@ mod tests {
                 pretty_constraint: constraint.to_string(),
             }],
             fixed: Vec::new(),
+            ..Request::default()
         }
     }
 
@@ -577,6 +577,7 @@ mod tests {
         let request = Request {
             requires: Vec::new(),
             fixed: vec![0],
+            ..Request::default()
         };
         let policy = DefaultPolicy::new(false, false);
 
