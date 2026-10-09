@@ -744,6 +744,40 @@ async fn viv_add_restores_composer_json_and_lock_when_resolution_fails() {
     );
 }
 
+/// #288: Composer's `RemoveCommand` also writes the original `composer.json`
+/// back when the update fails, saying so, but leaves `composer.lock` alone.
+#[tokio::test]
+async fn viv_remove_restores_composer_json_when_resolution_fails() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+
+    // `psr/log ^99.0` has no match, so the update that follows the removal
+    // fails. Compact and out of order, so a restore through the normalize
+    // step would differ from these bytes.
+    let original = br#"{"type":"project","name":"vivace/fixture-monolog","license":"proprietary","require":{"psr/log":"^99.0"},"require-dev":{"psr/container":"^2.0"}}"#;
+    fs_err::write(project.join("composer.json"), original).unwrap();
+
+    let output = ctx
+        .viv()
+        .args(["remove", "psr/container", "--dev", "--offline"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "resolution should fail: {stderr}");
+    assert!(
+        stderr.contains("Removal failed, reverting ./composer.json to its original content."),
+        "viv should say it restored the file: {stderr}"
+    );
+    assert_eq!(
+        fs_err::read(project.join("composer.json")).unwrap(),
+        original,
+        "composer.json must be byte-identical after a failed remove"
+    );
+}
+
 /// Composer reverts only while the resolution is pending: once the lock is
 /// written, a failing install leaves the new requirement and the lock that
 /// satisfies it in place. Only the metadata cache is warm here, so the

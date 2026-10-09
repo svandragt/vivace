@@ -256,6 +256,7 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
     if result.is_err()
         && !resolution_completed.get()
         && let Err(err) = revert_composer_files(
+            "Installation failed",
             &composer_json_path,
             &original,
             &lock_path,
@@ -267,9 +268,11 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
     result
 }
 
-/// `RequireCommand::revertComposerFile`: puts back the bytes `composer.json`
-/// (and `composer.lock`, when there was one) had before the command ran.
+/// `RequireCommand::revertComposerFile`/`RemoveCommand`'s own revert: puts
+/// back the bytes `composer.json` (and `composer.lock`, when the caller kept
+/// one) had before the command ran.
 fn revert_composer_files(
+    failure: &str,
     composer_json_path: &Path,
     composer_json: &str,
     lock_path: &Path,
@@ -280,9 +283,7 @@ fn revert_composer_files(
     } else {
         "./composer.json to its"
     };
-    warn_out(&format!(
-        "\nInstallation failed, reverting {files} original content."
-    ));
+    warn_out(&format!("\n{failure}, reverting {files} original content."));
     fs_err::write(composer_json_path, composer_json)?;
     if let Some(lock) = lock {
         fs_err::write(lock_path, lock)?;
@@ -342,7 +343,8 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
     // `RemoveCommand`'s own default: the removed package's dependents may
     // update too, but a dependency also directly required by root stays put
     // (`Request::UPDATE_LISTED_WITH_TRANSITIVE_DEPS_NO_ROOT_REQUIRE`).
-    partial_update(
+    let resolution_completed = Cell::new(false);
+    let result = partial_update(
         &project_dir,
         cache_dir,
         offline,
@@ -357,8 +359,22 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
         &args.ignore_platform_req,
         args.no_blocking || args.no_security_blocking,
         crate::update::metadata_ttl(args.metadata_ttl, offline),
-        &Cell::new(false),
-    )
+        &resolution_completed,
+    );
+    // Same boundary as `run_require`; `RemoveCommand` never restores the lock.
+    if result.is_err()
+        && !resolution_completed.get()
+        && let Err(err) = revert_composer_files(
+            "Removal failed",
+            &composer_json_path,
+            &original,
+            &project_dir.join("composer.lock"),
+            None,
+        )
+    {
+        warn_out(&format!("Reverting failed: {err:#}"));
+    }
+    result
 }
 
 /// Shared tail of both commands: reload the (just-edited) `composer.json`,
