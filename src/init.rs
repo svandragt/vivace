@@ -213,6 +213,7 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
             &[],
             false,
             std::time::Duration::ZERO,
+            &std::cell::Cell::new(false),
         )?;
         out(&format!("Wrote {}", composer_json_path.display()));
         if !added_attributes.is_empty() {

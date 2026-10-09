@@ -700,6 +700,93 @@ async fn viv_add_offline_synthesizes_a_constraint_from_a_composer_type_repositor
     );
 }
 
+/// #288: a `viv require` whose resolution fails used to leave `composer.json`
+/// holding the new requirement, reindented and with its keys reordered by the
+/// normalize step. Composer restores `composer.json` and `composer.lock` byte
+/// for byte and says so (`RequireCommand::revertComposerFile`).
+#[tokio::test]
+async fn viv_add_restores_composer_json_and_lock_when_resolution_fails() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+
+    // Compact and out of order, so a restore that went through the normalize
+    // step would differ from these bytes.
+    let original = br#"{"type":"project","license":"proprietary","name":"vivace/fixture-monolog","require":{"psr/log":"^3.0","monolog/monolog":"^3.0"},"require-dev":{"psr/container":"^2.0"}}"#;
+    fs_err::write(project.join("composer.json"), original).unwrap();
+    fs_err::copy(fixture.join("composer.lock"), project.join("composer.lock")).unwrap();
+    let original_lock = fs_err::read(project.join("composer.lock")).unwrap();
+
+    let output = ctx
+        .viv()
+        .args(["require", "psr/container:^99.0", "--offline"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "resolution should fail: {stderr}");
+    assert!(
+        stderr.contains(
+            "Installation failed, reverting ./composer.json and ./composer.lock to their original content."
+        ),
+        "viv should say it restored the files: {stderr}"
+    );
+    assert_eq!(
+        fs_err::read(project.join("composer.json")).unwrap(),
+        original,
+        "composer.json must be byte-identical after a failed require"
+    );
+    assert_eq!(
+        fs_err::read(project.join("composer.lock")).unwrap(),
+        original_lock,
+        "composer.lock must be byte-identical after a failed require"
+    );
+}
+
+/// Composer reverts only while the resolution is pending: once the lock is
+/// written, a failing install leaves the new requirement and the lock that
+/// satisfies it in place. Only the metadata cache is warm here, so the
+/// chained install has no archive for `psr/container` and fails offline.
+#[tokio::test]
+async fn viv_add_keeps_the_edit_when_the_install_fails_after_resolution() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::load("https://repo.packagist.org", ctx.cache.path(), &transport)
+        .await
+        .unwrap();
+    let root: Value =
+        serde_json::from_slice(&fs_err::read(fixture.join("composer.json")).unwrap()).unwrap();
+    solver::solve_update(&repo, &root, &fixture, false, false)
+        .await
+        .unwrap();
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    fs_err::copy(fixture.join("composer.lock"), project.join("composer.lock")).unwrap();
+
+    let output = ctx
+        .viv()
+        .args(["require", "psr/container:^2.0", "--offline"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "the install should fail: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Installation failed, reverting"),
+        "nothing should be reverted after the resolution: {stderr}"
+    );
+    let composer_json: Value =
+        serde_json::from_slice(&fs_err::read(project.join("composer.json")).unwrap()).unwrap();
+    assert_eq!(composer_json["require"]["psr/container"], "^2.0");
+}
+
 /// #231: `--ignore-platform-reqs` now reaches `add`'s chained install, same
 /// as `install`'s own flag (#214) — monolog/monolog's real `require: php
 /// >=8.1` (`tests/fixtures/packagist`) would otherwise land in

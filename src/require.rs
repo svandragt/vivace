@@ -13,6 +13,7 @@
 //! Now that normalizing is unconditional, the intermediate formatting never
 //! survives to disk, so the edit is a plain parse-map-serialize instead.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -226,7 +227,13 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
         return Ok(());
     }
 
-    partial_update(
+    let lock_path = project_dir.join("composer.lock");
+    let lock_backup = lock_path
+        .exists()
+        .then(|| fs_err::read(&lock_path))
+        .transpose()?;
+    let resolution_completed = Cell::new(false);
+    let result = partial_update(
         &project_dir,
         cache_dir,
         offline,
@@ -241,7 +248,46 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
         &args.ignore_platform_req,
         args.no_blocking || args.no_security_blocking,
         metadata_ttl,
-    )
+        &resolution_completed,
+    );
+    // `RequireCommand::execute` reverts only while the resolution is still
+    // pending: once the lock is written, an install failure keeps both files,
+    // which agree with each other.
+    if result.is_err()
+        && !resolution_completed.get()
+        && let Err(err) = revert_composer_files(
+            &composer_json_path,
+            &original,
+            &lock_path,
+            lock_backup.as_deref(),
+        )
+    {
+        warn_out(&format!("Reverting failed: {err:#}"));
+    }
+    result
+}
+
+/// `RequireCommand::revertComposerFile`: puts back the bytes `composer.json`
+/// (and `composer.lock`, when there was one) had before the command ran.
+fn revert_composer_files(
+    composer_json_path: &Path,
+    composer_json: &str,
+    lock_path: &Path,
+    lock: Option<&[u8]>,
+) -> Result<()> {
+    let files = if lock.is_some() {
+        "./composer.json and ./composer.lock to their"
+    } else {
+        "./composer.json to its"
+    };
+    warn_out(&format!(
+        "\nInstallation failed, reverting {files} original content."
+    ));
+    fs_err::write(composer_json_path, composer_json)?;
+    if let Some(lock) = lock {
+        fs_err::write(lock_path, lock)?;
+    }
+    Ok(())
 }
 
 pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -311,6 +357,7 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
         &args.ignore_platform_req,
         args.no_blocking || args.no_security_blocking,
         crate::update::metadata_ttl(args.metadata_ttl, offline),
+        &Cell::new(false),
     )
 }
 
@@ -319,6 +366,8 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
 /// write the lock, chain into `install` (`--no-install` opts out), and
 /// dispatch `post-update-cmd` — matching `composer require`/`composer
 /// remove`'s own chain into `Installer::run()` with `update` set.
+/// `resolution_completed` is set once the lock is written, so a caller that
+/// reverts its edit on failure knows when to stop (`PRE_OPERATIONS_EXEC`).
 #[expect(
     clippy::too_many_arguments,
     clippy::fn_params_excessive_bools,
@@ -339,6 +388,7 @@ pub(crate) fn partial_update(
     ignore_platform_req: &[String],
     no_blocking: bool,
     metadata_ttl: std::time::Duration,
+    resolution_completed: &Cell<bool>,
 ) -> Result<()> {
     let composer_json_path = project_dir.join("composer.json");
     let composer_json = fs_err::read(&composer_json_path).context("reading composer.json")?;
@@ -456,6 +506,7 @@ pub(crate) fn partial_update(
     // since this function (unlike `update::run`) has no `--dry-run`.
     crate::update::print_lock_operations(&lock_path, &result.non_dev, &result.dev, true)?;
     fs_err::write(&lock_path, lock)?;
+    resolution_completed.set(true);
 
     if !no_install {
         let install_args = InstallArgs {

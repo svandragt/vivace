@@ -229,6 +229,7 @@ fn run_init(args: &WorkspaceInitArgs, cache_dir: Option<&Path>, offline: bool) -
         &[],
         false,
         std::time::Duration::ZERO,
+        &std::cell::Cell::new(false),
     )
 }
 
@@ -278,6 +279,7 @@ fn run_add(args: &WorkspaceAddArgs, cache_dir: Option<&Path>, offline: bool) -> 
         &[],
         false,
         std::time::Duration::ZERO,
+        &std::cell::Cell::new(false),
     )
 }
 
