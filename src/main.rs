@@ -29,7 +29,7 @@ use vivace::workspace::{self, WorkspaceArgs};
 #[command(
     name = "viv",
     version,
-    about = "Fast composer install from composer.lock"
+    about = "Fast Composer-compatible PHP package manager"
 )]
 struct Cli {
     /// Raise logging to debug.
@@ -96,12 +96,12 @@ enum Command {
     /// three-positional shape (prefer `vendor/package:constraint` instead).
     #[command(name = "new", visible_alias = "create-project")]
     New(NewArgs),
-    /// Install packages from composer.lock.
+    /// Install packages from composer.lock, resolving and writing it first if it is missing.
     Install(InstallArgs),
     /// Resolve composer.json, write a composer.lock (full or partial
     /// update) and install (`--no-install` opts out).
     Update(UpdateArgs),
-    /// `update --lock`'s own first-class subcommand (#86): re-derive
+    /// `update --lock`'s own first-class subcommand: re-derive
     /// `composer.lock` from itself without solving or installing.
     UpdateLock(UpdateArgs),
     /// Add a dependency to composer.json, resolve it and install

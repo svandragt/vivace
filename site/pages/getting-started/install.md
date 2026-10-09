@@ -97,6 +97,13 @@ viv completions zsh > ~/.zfunc/_viv     # a directory on your fpath
 viv completions fish > ~/.config/fish/completions/viv.fish
 ```
 
+## Man pages for cargo installs
+
+`cargo install` and `cargo binstall` install only the binary. To get
+`man viv`, download the release tarball for your platform from the
+[releases page](https://github.com/svandragt/vivace/releases) and copy its
+`man/*.1` files into `~/.local/share/man/man1/`.
+
 ## No PHP, no problem
 
 Every install method above needs nothing but the `viv` binary itself: no
