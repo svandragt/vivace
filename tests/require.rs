@@ -1,7 +1,7 @@
 //! Resolver stage 5 (`docs/resolver-design.md`, composer/composer#42):
 //! `viv require`'s constraint synthesis and `composer.json` edit,
-//! byte-diffed against a real Composer run (through `viv normalize`, since
-//! #145: `add`/`rm` always normalize now).
+//! byte-diffed against a real Composer run (#288: `add`/`rm` edit in place
+//! like Composer, so the file is compared as written).
 //!
 //! `tests/fixtures/require-psr-container/composer.lock` and
 //! `composer.json.after` were recorded by running real Composer 2.10.2
@@ -53,18 +53,19 @@ const RECORDED_MANIFEST_DIR: &str = "/home/sander/dev/rust/vivace";
 /// checkout's own path, so the fixture resolves on whatever machine CI runs
 /// on rather than only the one it was recorded on.
 fn copy_fixture_composer_json(src: &Path, dest: &Path) {
+    fs_err::write(dest, fixture_composer_json(src)).unwrap();
+}
+
+fn fixture_composer_json(src: &Path) -> String {
     let contents = fs_err::read_to_string(src).unwrap();
-    let rewritten = contents.replace(RECORDED_MANIFEST_DIR, env!("CARGO_MANIFEST_DIR"));
-    fs_err::write(dest, rewritten).unwrap();
+    contents.replace(RECORDED_MANIFEST_DIR, env!("CARGO_MANIFEST_DIR"))
 }
 
 /// `composer.lock`'s `content-hash` is `content_hash` of `composer.json`
-/// (`src/lock.rs`), which includes the `require`/`require-dev` objects'
-/// *own* key order. #145: `add`/`rm` now always normalize `composer.json`
-/// (sorting those sections), so the on-disk file — and its content-hash —
-/// no longer matches Composer's own unnormalized `JsonManipulator` edit
-/// that `composer.lock` fixtures here were recorded against. Every other
-/// field is still expected to match byte for byte.
+/// (`src/lock.rs`), which includes the `repositories` URL that
+/// [`copy_fixture_composer_json`] rewrites to this checkout's path, so it
+/// differs from the recorded lock when the checkout lives elsewhere. Every
+/// other field is still expected to match byte for byte.
 fn lock_without_content_hash(path: &Path) -> Value {
     let mut lock: Value = serde_json::from_slice(&fs_err::read(path).unwrap()).unwrap();
     if let Some(obj) = lock.as_object_mut() {
@@ -225,15 +226,9 @@ fn viv_require_matches_composer_and_validates() {
     )
     .unwrap();
 
-    // #145: `require`/`add` always normalize `composer.json` now
-    // (`--no-normalize` is a deprecated no-op, same shape as
-    // `install`/`dump-autoload`'s), so the written file is compared against
-    // `viv normalize`'s own output of Composer's recorded edit
-    // (`composer.json.after`), not Composer's own unnormalized
-    // `JsonManipulator` formatting. `--no-install` matches the recorded
-    // command itself (see the module doc) and keeps this test scoped to the
-    // `composer.json`/lock edit, not a real dist fetch (#104: `viv require`
-    // installs by default now).
+    // `--no-install` matches the recorded command itself (see the module
+    // doc) and keeps this test scoped to the `composer.json`/lock edit, not
+    // a real dist fetch (#104: `viv require` installs by default now).
     ctx.viv()
         .args(["require", "psr/container", "--no-install"])
         .assert()
@@ -241,17 +236,9 @@ fn viv_require_matches_composer_and_validates() {
 
     let got_json = fs_err::read_to_string(project.join("composer.json")).unwrap();
 
-    let want_normalized_ctx = TestContext::new();
-    let want_normalized_path = want_normalized_ctx.project.path().join("composer.json");
-    copy_fixture_composer_json(&fixture.join("composer.json.after"), &want_normalized_path);
-    want_normalized_ctx
-        .viv()
-        .arg("normalize")
-        .assert()
-        .success();
-    let want_normalized = fs_err::read_to_string(&want_normalized_path).unwrap();
     assert_eq!(
-        got_json, want_normalized,
+        got_json,
+        fixture_composer_json(&fixture.join("composer.json.after")),
         "viv require's composer.json edit differs"
     );
 
@@ -306,11 +293,8 @@ fn viv_remove_matches_composer_and_validates() {
     )
     .unwrap();
 
-    // See `viv_require_matches_composer_and_validates`'s comment: #145
-    // means `remove`/`rm` always normalize now, so the written file is
-    // compared against `viv normalize`'s own output of Composer's recorded
-    // edit. `--no-install` keeps this scoped to the edit rather than a real
-    // dist fetch (#104: `viv remove` installs by default now).
+    // `--no-install` keeps this scoped to the edit rather than a real dist
+    // fetch (#104: `viv remove` installs by default now).
     ctx.viv()
         .args(["remove", "psr/container", "--dev", "--no-install"])
         .assert()
@@ -318,17 +302,9 @@ fn viv_remove_matches_composer_and_validates() {
 
     let got_json = fs_err::read_to_string(project.join("composer.json")).unwrap();
 
-    let want_normalized_ctx = TestContext::new();
-    let want_normalized_path = want_normalized_ctx.project.path().join("composer.json");
-    copy_fixture_composer_json(&fixture.join("composer.json.after"), &want_normalized_path);
-    want_normalized_ctx
-        .viv()
-        .arg("normalize")
-        .assert()
-        .success();
-    let want_normalized = fs_err::read_to_string(&want_normalized_path).unwrap();
     assert_eq!(
-        got_json, want_normalized,
+        got_json,
+        fixture_composer_json(&fixture.join("composer.json.after")),
         "viv remove's composer.json edit differs"
     );
 
@@ -413,11 +389,9 @@ async fn warm_monolog_cache_and_store(ctx: &TestContext, fixture: &Path) {
 
 /// #155/#158: `viv add`'s written `composer.lock` must have a `content-hash`
 /// describing the `composer.json` bytes actually left on disk, not the
-/// unnormalised bytes read before `write_composer_json`/`maybe_normalize`
-/// ran. A deliberately unnormalised `require` (reverse key order, so the
-/// normaliser's platform-first sort actually moves something) must still
-/// leave a fresh lock behind, so the chained install prints no stale-lock
-/// warning. Runs entirely offline now that `require::partial_update` builds
+/// bytes read before the edit. A deliberately unsorted `require` (reverse
+/// key order) must still leave a fresh lock behind, so the chained install
+/// prints no stale-lock warning. Runs entirely offline now that `require::partial_update` builds
 /// its repository set the same way `update::solve` does and honours
 /// `--offline` (`#158`): a warm cache (`warm_monolog_cache_and_store`)
 /// stands in for live Packagist, the same recorded-fixture pattern
@@ -426,7 +400,7 @@ async fn warm_monolog_cache_and_store(ctx: &TestContext, fixture: &Path) {
 /// resolves against a hard-coded Packagist URL and ignores `--offline`
 /// (out of `#158`'s scope; tracked separately).
 #[tokio::test]
-async fn viv_add_normalizes_composer_json_before_computing_the_content_hash() {
+async fn viv_add_writes_a_content_hash_for_the_composer_json_left_on_disk() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
     let ctx = TestContext::new();
     let project = ctx.project.path();
@@ -477,7 +451,7 @@ async fn viv_add_normalizes_composer_json_before_computing_the_content_hash() {
     let on_disk_composer_json = fs_err::read(project.join("composer.json")).unwrap();
     assert!(
         vivace::lock::is_fresh(&lock, &on_disk_composer_json).unwrap(),
-        "content-hash should describe the normalized composer.json actually on disk"
+        "content-hash should describe the composer.json actually on disk"
     );
 }
 
@@ -741,6 +715,92 @@ async fn viv_add_restores_composer_json_and_lock_when_resolution_fails() {
         fs_err::read(project.join("composer.lock")).unwrap(),
         original_lock,
         "composer.lock must be byte-identical after a failed require"
+    );
+}
+
+/// #288: `viv require` used to rewrite the whole manifest (reindented, keys
+/// resorted) for a one-requirement change. Composer's `JsonManipulator`
+/// edits in place, so only the requirement lines may differ: here the new
+/// entry lands at the end of `require`, the now-empty `require-dev` goes, and
+/// the out-of-order keys and the compact objects stay as written.
+#[tokio::test]
+async fn viv_add_changes_only_the_requirement_lines() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+
+    let original = r#"{
+    "type": "project",
+    "name": "vivace/fixture-monolog",
+    "license": "proprietary",
+    "require": {
+        "psr/log": "^3.0",
+        "monolog/monolog": "^3.0"
+    },
+    "autoload": {"psr-4": {"App\\": "src/"}, "classmap": ["lib/"]},
+    "config": {"autoloader-suffix": "VivaceFixture"},
+    "require-dev": {"psr/container": "^2.0"}
+}
+"#;
+    let expected = r#"{
+    "type": "project",
+    "name": "vivace/fixture-monolog",
+    "license": "proprietary",
+    "require": {
+        "psr/log": "^3.0",
+        "monolog/monolog": "^3.0",
+        "psr/container": "^2.0"
+    },
+    "autoload": {"psr-4": {"App\\": "src/"}, "classmap": ["lib/"]},
+    "config": {"autoloader-suffix": "VivaceFixture"}
+}
+"#;
+    fs_err::write(project.join("composer.json"), original).unwrap();
+
+    ctx.viv()
+        .args(["require", "psr/container:^2.0", "--offline", "--no-install"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs_err::read_to_string(project.join("composer.json")).unwrap(),
+        expected
+    );
+}
+
+/// #288: Composer's `RemoveCommand` also writes the original `composer.json`
+/// back when the update fails, saying so, but leaves `composer.lock` alone.
+#[tokio::test]
+async fn viv_remove_restores_composer_json_when_resolution_fails() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+
+    // `psr/log ^99.0` has no match, so the update that follows the removal
+    // fails. Compact and out of order, so a restore through any rewrite
+    // would differ from these bytes.
+    let original = br#"{"type":"project","name":"vivace/fixture-monolog","license":"proprietary","require":{"psr/log":"^99.0"},"require-dev":{"psr/container":"^2.0"}}"#;
+    fs_err::write(project.join("composer.json"), original).unwrap();
+
+    let output = ctx
+        .viv()
+        .args(["remove", "psr/container", "--dev", "--offline"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "resolution should fail: {stderr}");
+    assert!(
+        stderr.contains("Removal failed, reverting ./composer.json to its original content."),
+        "viv should say it restored the file: {stderr}"
+    );
+    assert_eq!(
+        fs_err::read(project.join("composer.json")).unwrap(),
+        original,
+        "composer.json must be byte-identical after a failed remove"
     );
 }
 

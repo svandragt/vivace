@@ -18,7 +18,7 @@ a whole project over from Composer.
 - [Running tools without installing them](tools.html) — `viv x`, npx-style.
 - [Workspaces](workspaces.html) — one resolve and one `vendor/` across several `composer.json` files.
 - [Scripts and running commands](scripts-and-run.html) — `viv run`, `viv exec`, and lifecycle scripts.
-- [Automatic normalisation](normalize.html) — a `composer.json` that never gets a reordering-only diff.
+- [Automatic normalisation](normalize.html) — stable key order and whitespace for `composer.json`, on demand.
 - [Plugins](plugins.html) — which Composer plugins viv reimplements, ignores or refuses.
 - [Two plugins, one library](isolate.html) — prefixing a plugin's bundled dependencies, and why it stays opt-in.
 - [Speed](speed.html) — the benchmark numbers and how they're kept honest release to release.

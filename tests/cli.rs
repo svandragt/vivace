@@ -805,7 +805,7 @@ fn rm_names_a_package_that_is_not_required() {
 }
 
 /// The ordinary case #241 contrasts with: a package that *is* required
-/// still gets removed and normalized, with no "not required" message.
+/// still gets removed, with no "not required" message.
 #[test]
 fn rm_removes_a_required_package() {
     let ctx = TestContext::new();

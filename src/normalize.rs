@@ -275,7 +275,7 @@ fn reorder_top_level(mut root: Map<String, Value>) -> Map<String, Value> {
 /// `mergeDuplicateExtensions` (folding `ext-FOO` case/space variants
 /// together) is not ported: no fixture needs it, and duplicate keys are rare
 /// in a hand-maintained `composer.json`.
-fn sort_package_links(links: &mut Map<String, Value>) {
+pub(crate) fn sort_package_links(links: &mut Map<String, Value>) {
     let mut entries: Vec<(String, Value)> = std::mem::take(links).into_iter().collect();
     entries.sort_by(|a, b| {
         platform_rank(&a.0)

@@ -119,9 +119,10 @@ this list from 0.8: it stops normalizing `composer.json` itself (only
 composer.json`.
 
 As of 0.8, `add`/`rm` (and their `require`/`remove` aliases) join that list
-under a different reason (#145): both always normalize `composer.json`
-after editing it now, so `--no-normalize` prints `--no-normalize is a no-op
-on add since 0.8; add always normalizes composer.json now` (or the `rm`
+under a different reason (#145, #288): both edit `composer.json` in place
+like Composer, changing only the requirement they add or remove, so
+`--no-normalize` prints `--no-normalize is a no-op on add since 0.8; add
+edits composer.json in place and does not normalize it` (or the `rm`
 equivalent) once and otherwise does nothing.
 
 ## How to report a contract break

@@ -1,17 +1,17 @@
 //! `viv add`/`viv rm`: constraint synthesis (a `VersionSelector`
-//! port), a `composer.json` edit (add/remove a `require`/`require-dev`
-//! entry), an unconditional normalize of that edit (#145: `add`/`rm`
-//! always normalize now, so `--no-normalize` is a deprecated no-op, same
-//! shape as `install`/`dump-autoload`'s own, `docs/stability.md`), a
-//! partial update of the touched package(s) (`docs/resolver-design.md`
-//! stage 5, composer/composer#42), and a chained `install` (`--no-install`
-//! opts out), matching `composer require`/`composer remove`'s own chain into
+//! port), an in-place `composer.json` edit (add/remove a `require`/
+//! `require-dev` entry, #288: no normalize, so every other byte stays and
+//! `--no-normalize` is a deprecated no-op, same shape as `install`/
+//! `dump-autoload`'s own, `docs/stability.md`), a partial update of the
+//! touched package(s) (`docs/resolver-design.md` stage 5,
+//! composer/composer#42), and a chained `install` (`--no-install` opts
+//! out), matching `composer require`/`composer remove`'s own chain into
 //! `Installer::run()` with `update` set.
 //!
-//! Before #145, the edit was a format-preserving `JsonManipulator` port so
-//! that `--no-normalize` could skip reindenting/resorting `composer.json`.
-//! Now that normalizing is unconditional, the intermediate formatting never
-//! survives to disk, so the edit is a plain parse-map-serialize instead.
+//! #145 replaced the format-preserving `JsonManipulator` port with a parse,
+//! edit, serialize and normalize pass; #288 brought back a smaller
+//! `manipulator` that finds each value's byte range with `RawValue` instead
+//! of a hand-written scanner.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -30,6 +30,7 @@ use crate::solver::{
     pool_builder::{AdvisoryFilter, UpdateAllowMode},
 };
 use crate::update::audit_config_and_no_blocking;
+use manipulator::Manipulator;
 
 /// `viv add` flags.
 #[expect(
@@ -60,8 +61,8 @@ pub struct RequireArgs {
     /// partial update alike.
     #[arg(long)]
     pub prefer_stable: bool,
-    /// Deprecated, no-op (#145): `add` always normalizes `composer.json`
-    /// now, same as `install`/`dump-autoload` since 0.6.
+    /// Deprecated, no-op (#145, #288): `add` edits `composer.json` in place
+    /// without normalizing it, so there is nothing to skip.
     #[arg(long)]
     pub no_normalize: bool,
     /// Project directory holding `composer.json`.
@@ -126,8 +127,8 @@ pub struct RemoveArgs {
     /// install (implies `--no-install`, matching `composer remove`).
     #[arg(long = "no-update")]
     pub no_update: bool,
-    /// Deprecated, no-op (#145): `rm` always normalizes `composer.json`
-    /// now, same as `install`/`dump-autoload` since 0.6.
+    /// Deprecated, no-op (#145, #288): `rm` edits `composer.json` in place
+    /// without normalizing it, so there is nothing to skip.
     #[arg(long)]
     pub no_normalize: bool,
     /// Project directory holding `composer.json`.
@@ -180,14 +181,22 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
     if !root.is_object() {
         bail!("composer.json must be a JSON object");
     }
+    let mut manifest = Manipulator::new(&original)?;
     append_repositories(
         root.as_object_mut()
             .context("composer.json must be a JSON object")?,
         &args.repository,
     )?;
+    if !args.repository.is_empty() {
+        manifest.set_main_key("repositories", &root["repositories"])?;
+    }
 
     let link_type = if args.dev { "require-dev" } else { "require" };
     let remove_key = if args.dev { "require" } else { "require-dev" };
+    let sort_packages = args.sort_packages
+        || root["config"]["sort-packages"]
+            .as_bool()
+            .unwrap_or_default();
 
     let mut requested = Vec::with_capacity(args.packages.len());
     for spec in &args.packages {
@@ -203,22 +212,18 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
         } else {
             synthesize_constraint(name, &root, &project_dir, cache_dir, offline, metadata_ttl)?
         };
-        add_link(&mut root, link_type, name, &constraint)?;
+        manifest.add_link(link_type, name, &constraint, sort_packages)?;
         // `RequireCommand::updateFileCleanly` always removes the same
         // package from the *other* require section too, moving it rather
         // than leaving a stale duplicate (no interactive confirmation
         // gate: that only decides which section a *warning* suggests,
         // never whether the move itself happens).
-        remove_sub_node(&mut root, remove_key, name);
+        manifest.remove_sub_node(remove_key, name)?;
         allow_list.push(name.clone());
     }
-    remove_main_key_if_empty(&mut root, remove_key);
+    manifest.remove_main_key_if_empty(remove_key)?;
 
-    let indent = normalize::detect_indent(&original);
-    write_composer_json(&composer_json_path, &root)?;
-    if normalize::maybe_normalize(&composer_json_path, &indent)? {
-        warn_out(&format!("Normalized {}", composer_json_path.display()));
-    }
+    fs_err::write(&composer_json_path, manifest.contents())?;
     if args.no_normalize {
         warn_no_normalize_is_a_noop("add");
     }
@@ -256,6 +261,7 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
     if result.is_err()
         && !resolution_completed.get()
         && let Err(err) = revert_composer_files(
+            "Installation failed",
             &composer_json_path,
             &original,
             &lock_path,
@@ -267,9 +273,11 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
     result
 }
 
-/// `RequireCommand::revertComposerFile`: puts back the bytes `composer.json`
-/// (and `composer.lock`, when there was one) had before the command ran.
+/// `RequireCommand::revertComposerFile`/`RemoveCommand`'s own revert: puts
+/// back the bytes `composer.json` (and `composer.lock`, when the caller kept
+/// one) had before the command ran.
 fn revert_composer_files(
+    failure: &str,
     composer_json_path: &Path,
     composer_json: &str,
     lock_path: &Path,
@@ -280,9 +288,7 @@ fn revert_composer_files(
     } else {
         "./composer.json to its"
     };
-    warn_out(&format!(
-        "\nInstallation failed, reverting {files} original content."
-    ));
+    warn_out(&format!("\n{failure}, reverting {files} original content."));
     fs_err::write(composer_json_path, composer_json)?;
     if let Some(lock) = lock {
         fs_err::write(lock_path, lock)?;
@@ -295,16 +301,13 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
         .with_context(|| format!("{}: project directory", args.project_dir.display()))?;
     let composer_json_path = project_dir.join("composer.json");
     let original = fs_err::read_to_string(&composer_json_path).context("reading composer.json")?;
-    let mut root: Value = serde_json::from_str(&original).context("parsing composer.json")?;
-    if !root.is_object() {
-        bail!("composer.json must be a JSON object");
-    }
+    let mut manifest = Manipulator::new(&original)?;
 
     let link_type = if args.dev { "require-dev" } else { "require" };
     let mut allow_list = Vec::with_capacity(args.packages.len());
     for name in &args.packages {
         let name = name.to_ascii_lowercase();
-        if remove_sub_node(&mut root, link_type, &name) {
+        if manifest.remove_sub_node(link_type, &name)? {
             allow_list.push(name);
         } else {
             // Composer's own wording (`RemoveCommand::execute`), naming the
@@ -316,21 +319,17 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
         }
     }
     if allow_list.is_empty() {
-        // Nothing was actually removed: leave composer.json untouched
-        // rather than rewrite it into its own normalised form, so a no-op
-        // stays a no-op in git too (#241).
+        // Nothing was actually removed: leave composer.json untouched and
+        // skip the update, so a no-op stays a no-op in the working tree
+        // too (#241).
         return Ok(());
     }
     // `JsonConfigSource::removeLink` always follows `removeSubNode` with
     // this, dropping `require`/`require-dev` entirely once its last
     // package is gone.
-    remove_main_key_if_empty(&mut root, link_type);
+    manifest.remove_main_key_if_empty(link_type)?;
 
-    let indent = normalize::detect_indent(&original);
-    write_composer_json(&composer_json_path, &root)?;
-    if normalize::maybe_normalize(&composer_json_path, &indent)? {
-        warn_out(&format!("Normalized {}", composer_json_path.display()));
-    }
+    fs_err::write(&composer_json_path, manifest.contents())?;
     if args.no_normalize {
         warn_no_normalize_is_a_noop("rm");
     }
@@ -342,7 +341,8 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
     // `RemoveCommand`'s own default: the removed package's dependents may
     // update too, but a dependency also directly required by root stays put
     // (`Request::UPDATE_LISTED_WITH_TRANSITIVE_DEPS_NO_ROOT_REQUIRE`).
-    partial_update(
+    let resolution_completed = Cell::new(false);
+    let result = partial_update(
         &project_dir,
         cache_dir,
         offline,
@@ -357,8 +357,22 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
         &args.ignore_platform_req,
         args.no_blocking || args.no_security_blocking,
         crate::update::metadata_ttl(args.metadata_ttl, offline),
-        &Cell::new(false),
-    )
+        &resolution_completed,
+    );
+    // Same boundary as `run_require`; `RemoveCommand` never restores the lock.
+    if result.is_err()
+        && !resolution_completed.get()
+        && let Err(err) = revert_composer_files(
+            "Removal failed",
+            &composer_json_path,
+            &original,
+            &project_dir.join("composer.lock"),
+            None,
+        )
+    {
+        warn_out(&format!("Reverting failed: {err:#}"));
+    }
+    result
 }
 
 /// Shared tail of both commands: reload the (just-edited) `composer.json`,
@@ -543,14 +557,14 @@ fn warn_out(message: &str) {
     let _ = writeln!(std::io::stderr().lock(), "{message}");
 }
 
-/// `--no-normalize`'s deprecation notice on `add`/`rm` (#145): now that
-/// both always normalize, same shape as `install.rs`'s own
+/// `--no-normalize`'s deprecation notice on `add`/`rm` (#145, #288): neither
+/// normalizes `composer.json` any more, same shape as `install.rs`'s own
 /// `warn_no_normalize_is_a_noop` for `install`/`dump-autoload` (#95).
 fn warn_no_normalize_is_a_noop(command: &str) {
     warn_out(&normalize::no_normalize_is_a_noop_message(
         command,
         "0.8",
-        &format!("{command} always normalizes composer.json now"),
+        &format!("{command} edits composer.json in place and does not normalize it"),
     ));
 }
 
@@ -749,12 +763,12 @@ mod version_selector {
     }
 }
 
-/// `JsonConfigSource::addLink`/`RequireCommand::updateFileCleanly`, cut down
-/// to what `add`/`rm` need now that `maybe_normalize` always runs
-/// afterwards (#145): no format-preserving edit, just parse into a
-/// [`Value`], edit the map, and let `normalize` reindent and resort
+/// `JsonConfigSource::addLink` for the callers that run `maybe_normalize`
+/// afterwards (`workspace add`): no format-preserving edit, just parse into
+/// a [`Value`], edit the map, and let `normalize` reindent and resort
 /// (including the require/require-dev section itself, so there is no
-/// `sort-packages` handling to port either).
+/// `sort-packages` handling to port either). `add`/`rm` edit the text in
+/// place instead ([`manipulator`], #288).
 pub(crate) fn add_link(
     root: &mut Value,
     link_type: &str,
@@ -851,10 +865,261 @@ pub(crate) fn write_composer_json(path: &Path, root: &Value) -> Result<()> {
     Ok(())
 }
 
+/// `Composer\Json\JsonManipulator`, cut down to what `add`/`rm` edit (#288):
+/// the entries of a `require`/`require-dev` section and one top-level key.
+/// It edits the file's own text, so every byte it does not touch stays. Each
+/// value's byte range comes from a `RawValue`, which borrows its slice from
+/// the text, in place of Composer's recursive regex.
+mod manipulator {
+    use std::collections::HashMap;
+    use std::ops::Range;
+
+    use anyhow::{Context, Result};
+    use serde_json::value::RawValue;
+    use serde_json::{Map, Value, json};
+
+    pub(super) struct Manipulator {
+        text: String,
+        newline: &'static str,
+        indent: String,
+    }
+
+    impl Manipulator {
+        pub(super) fn new(text: &str) -> Result<Manipulator> {
+            let manipulator = Manipulator {
+                text: text.to_string(),
+                newline: if text.contains("\r\n") { "\r\n" } else { "\n" },
+                indent: crate::normalize::detect_indent(text),
+            };
+            manipulator
+                .pairs(&manipulator.top())
+                .context("parsing composer.json")?;
+            Ok(manipulator)
+        }
+
+        pub(super) fn contents(&self) -> &str {
+            &self.text
+        }
+
+        /// `JsonManipulator::addLink`: set `package`'s constraint in
+        /// `link_type`, keeping its place if it is there and appending it
+        /// otherwise; `sort_packages` then sorts the whole section.
+        pub(super) fn add_link(
+            &mut self,
+            link_type: &str,
+            package: &str,
+            constraint: &str,
+            sort_packages: bool,
+        ) -> Result<()> {
+            let new_section = self.render(&json!({ package: constraint }), 1)?;
+            let section = match self.value_span(link_type)? {
+                None => {
+                    let top = self.top();
+                    return self.append_pair(&top, 0, link_type, &new_section);
+                }
+                // PHP writes an empty section as `[]`.
+                Some(span) if self.text[span.clone()].starts_with('[') => {
+                    self.text.replace_range(span, &new_section);
+                    return Ok(());
+                }
+                Some(span) => span,
+            };
+            let existing = self
+                .pairs(&section)?
+                .into_iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(package));
+            if let Some((_, value)) = existing {
+                self.text.replace_range(value, &quote(constraint));
+            } else {
+                self.append_pair(&section, 1, package, &quote(constraint))?;
+            }
+            if sort_packages && let Some(section) = self.value_span(link_type)? {
+                let mut links: Map<String, Value> =
+                    serde_json::from_str(&self.text[section.clone()])?;
+                crate::normalize::sort_package_links(&mut links);
+                let sorted = self.render(&Value::Object(links), 1)?;
+                self.text.replace_range(section, &sorted);
+            }
+            Ok(())
+        }
+
+        /// `JsonManipulator::removeSubNode`: drop `package` from
+        /// `main_node`, whether it was there or not.
+        pub(super) fn remove_sub_node(&mut self, main_node: &str, package: &str) -> Result<bool> {
+            let Some(section) = self.value_span(main_node)? else {
+                return Ok(false);
+            };
+            if self.text[section.clone()].starts_with('[') {
+                return Ok(false);
+            }
+            let Some(index) = self
+                .pairs(&section)?
+                .iter()
+                .position(|(key, _)| key.eq_ignore_ascii_case(package))
+            else {
+                return Ok(false);
+            };
+            self.remove_pair(&section, 1, index)?;
+            Ok(true)
+        }
+
+        /// `JsonManipulator::removeMainKeyIfEmpty`.
+        pub(super) fn remove_main_key_if_empty(&mut self, key: &str) -> Result<()> {
+            let top = self.top();
+            let pairs = self.pairs(&top)?;
+            let Some(index) = pairs.iter().position(|(k, _)| k == key) else {
+                return Ok(());
+            };
+            let is_empty = match serde_json::from_str(&self.text[pairs[index].1.clone()])? {
+                Value::Object(object) => object.is_empty(),
+                Value::Array(array) => array.is_empty(),
+                _ => false,
+            };
+            if is_empty {
+                self.remove_pair(&top, 0, index)?;
+            }
+            Ok(())
+        }
+
+        /// `JsonManipulator::addMainKey`: replace the value of a top-level
+        /// key, or append the key if it is absent.
+        pub(super) fn set_main_key(&mut self, key: &str, value: &Value) -> Result<()> {
+            let rendered = self.render(value, 1)?;
+            if let Some(span) = self.value_span(key)? {
+                self.text.replace_range(span, &rendered);
+            } else {
+                let top = self.top();
+                self.append_pair(&top, 0, key, &rendered)?;
+            }
+            Ok(())
+        }
+
+        fn top(&self) -> Range<usize> {
+            0..self.text.len()
+        }
+
+        /// The byte range of a top-level key's value. `HashMap` keeps the
+        /// last of two equal keys, as `json_decode` does.
+        fn value_span(&self, key: &str) -> Result<Option<Range<usize>>> {
+            Ok(self
+                .pairs(&self.top())?
+                .into_iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, span)| span))
+        }
+
+        /// Every pair of the object at `object`, as its key and the byte
+        /// range of its value, in source order.
+        fn pairs(&self, object: &Range<usize>) -> Result<Vec<(String, Range<usize>)>> {
+            let slice = &self.text[object.clone()];
+            let map: HashMap<String, &RawValue> = serde_json::from_str(slice)?;
+            let mut pairs: Vec<_> = map
+                .into_iter()
+                .map(|(key, raw)| {
+                    let start = object.start + raw.get().as_ptr().addr() - slice.as_ptr().addr();
+                    (key, start..start + raw.get().len())
+                })
+                .collect();
+            pairs.sort_by_key(|(_, span)| span.start);
+            Ok(pairs)
+        }
+
+        /// The byte offsets of the `{` and `}` around the object at `object`.
+        fn braces(&self, object: &Range<usize>) -> (usize, usize) {
+            let slice = &self.text[object.clone()];
+            (
+                object.start + slice.len() - slice.trim_start().len(),
+                object.start + slice.trim_end().len() - 1,
+            )
+        }
+
+        /// `JsonManipulator::format`: `value` pretty-printed with the file's
+        /// indent and line ending, for a key `depth` levels down.
+        fn render(&self, value: &Value, depth: usize) -> Result<String> {
+            let mut buf = Vec::new();
+            let formatter = serde_json::ser::PrettyFormatter::with_indent(self.indent.as_bytes());
+            let mut serializer = serde_json::Serializer::with_formatter(&mut buf, formatter);
+            serde::Serialize::serialize(value, &mut serializer)?;
+            let line_break = format!("{}{}", self.newline, self.indent.repeat(depth));
+            Ok(String::from_utf8(buf)?.replace('\n', &line_break))
+        }
+
+        /// Add a last pair to the object at `object`, whose own key sits
+        /// `depth` levels down: after the last value, or inside an empty
+        /// object.
+        fn append_pair(
+            &mut self,
+            object: &Range<usize>,
+            depth: usize,
+            key: &str,
+            value: &str,
+        ) -> Result<()> {
+            let pair = format!("{}{}: {value}", self.indent.repeat(depth + 1), quote(key));
+            if let Some((_, last)) = self.pairs(object)?.pop() {
+                self.text
+                    .insert_str(last.end, &format!(",{}{pair}", self.newline));
+            } else {
+                let (open, close) = self.braces(object);
+                let object = format!(
+                    "{{{}{pair}{}{}}}",
+                    self.newline,
+                    self.newline,
+                    self.indent.repeat(depth)
+                );
+                self.text.replace_range(open..=close, &object);
+            }
+            Ok(())
+        }
+
+        /// Remove pair `index` of the object at `object` along with the
+        /// comma that joined it to its neighbour. The only pair leaves a
+        /// line break and the closing brace's indent.
+        fn remove_pair(&mut self, object: &Range<usize>, depth: usize, index: usize) -> Result<()> {
+            let pairs = self.pairs(object)?;
+            let (open, close) = self.braces(object);
+            if pairs.len() == 1 {
+                let empty = format!("{}{}", self.newline, self.indent.repeat(depth));
+                self.text.replace_range(open + 1..close, &empty);
+                return Ok(());
+            }
+            let before = if index == 0 {
+                open + 1
+            } else {
+                pairs[index - 1].1.end
+            };
+            let span = if index + 1 < pairs.len() {
+                self.next_key(before)..self.next_key(pairs[index].1.end)
+            } else {
+                before..pairs[index].1.end
+            };
+            self.text.replace_range(span, "");
+            Ok(())
+        }
+
+        /// Where the next key starts after byte `from`: past the whitespace
+        /// and the comma, if there is one, and the whitespace after that.
+        fn next_key(&self, from: usize) -> usize {
+            let skip_whitespace =
+                |at: usize| at + self.text[at..].len() - self.text[at..].trim_start().len();
+            let at = skip_whitespace(from);
+            if self.text[at..].starts_with(',') {
+                skip_whitespace(at + 1)
+            } else {
+                at
+            }
+        }
+    }
+
+    fn quote(string: &str) -> String {
+        Value::from(string).to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
+    use super::manipulator::Manipulator;
     use super::version_selector;
     use super::{add_link, remove_main_key_if_empty, remove_sub_node, run_require};
 
@@ -908,6 +1173,159 @@ mod tests {
             root,
             json!({"require": {"psr/log": "^2.0", "monolog/monolog": "^3.0"}})
         );
+    }
+
+    const MANIFEST: &str = r#"{
+    "type": "project",
+    "require": {
+        "psr/log": "^3.0",
+        "ext-json": "*"
+    },
+    "config": {"a": 1}
+}
+"#;
+
+    fn edited(json: &str, edit: impl FnOnce(&mut Manipulator)) -> String {
+        let mut manifest = Manipulator::new(json).unwrap();
+        edit(&mut manifest);
+        manifest.contents().to_string()
+    }
+
+    #[test]
+    fn manipulator_appends_a_link_and_changes_nothing_else() {
+        let got = edited(MANIFEST, |m| {
+            m.add_link("require", "monolog/monolog", "^3.0", false)
+                .unwrap();
+        });
+        assert_eq!(
+            got,
+            MANIFEST.replace(
+                "\"ext-json\": \"*\"",
+                "\"ext-json\": \"*\",\n        \"monolog/monolog\": \"^3.0\""
+            )
+        );
+    }
+
+    #[test]
+    fn manipulator_replaces_a_constraint_in_place_keeping_the_key_as_written() {
+        let got = edited(MANIFEST, |m| {
+            m.add_link("require", "PSR/Log", "^2.0", false).unwrap();
+        });
+        assert_eq!(got, MANIFEST.replace("^3.0", "^2.0"));
+    }
+
+    /// `config.sort-packages`/`--sort-packages`: Composer re-sorts the whole
+    /// section, platform packages first.
+    #[test]
+    fn manipulator_sorts_the_section_when_asked() {
+        let got = edited(MANIFEST, |m| {
+            m.add_link("require", "monolog/monolog", "^3.0", true)
+                .unwrap();
+        });
+        assert_eq!(
+            got,
+            MANIFEST.replace(
+                "\"psr/log\": \"^3.0\",\n        \"ext-json\": \"*\"",
+                "\"ext-json\": \"*\",\n        \"monolog/monolog\": \"^3.0\",\n        \"psr/log\": \"^3.0\""
+            )
+        );
+    }
+
+    #[test]
+    fn manipulator_adds_a_missing_section_at_the_end() {
+        let got = edited(MANIFEST, |m| {
+            m.add_link("require-dev", "phpunit/phpunit", "^11.0", false)
+                .unwrap();
+        });
+        assert_eq!(
+            got,
+            MANIFEST.replace(
+                "\"config\": {\"a\": 1}\n",
+                "\"config\": {\"a\": 1},\n    \"require-dev\": {\n        \"phpunit/phpunit\": \"^11.0\"\n    }\n"
+            )
+        );
+        let got = edited("{}", |m| {
+            m.add_link("require", "psr/log", "^3.0", false).unwrap();
+        });
+        assert_eq!(
+            got,
+            "{\n    \"require\": {\n        \"psr/log\": \"^3.0\"\n    }\n}"
+        );
+    }
+
+    /// PHP writes an empty `require` as `[]`; Composer turns it into an object.
+    #[test]
+    fn manipulator_fills_an_empty_array_section() {
+        let got = edited("{\n    \"require\": []\n}\n", |m| {
+            m.add_link("require", "psr/log", "^3.0", false).unwrap();
+        });
+        assert_eq!(
+            got,
+            "{\n    \"require\": {\n        \"psr/log\": \"^3.0\"\n    }\n}\n"
+        );
+    }
+
+    #[test]
+    fn manipulator_removes_a_first_middle_last_and_only_entry() {
+        let three = "{\n    \"require\": {\n        \"a/a\": \"1\",\n        \"b/b\": \"2\",\n        \"c/c\": \"3\"\n    },\n    \"name\": \"x/y\"\n}\n";
+        for (name, kept) in [
+            ("a/a", "\"b/b\": \"2\",\n        \"c/c\": \"3\""),
+            ("b/b", "\"a/a\": \"1\",\n        \"c/c\": \"3\""),
+            ("c/c", "\"a/a\": \"1\",\n        \"b/b\": \"2\""),
+        ] {
+            let got = edited(three, |m| {
+                assert!(m.remove_sub_node("require", name).unwrap());
+            });
+            assert_eq!(
+                got,
+                format!(
+                    "{{\n    \"require\": {{\n        {kept}\n    }},\n    \"name\": \"x/y\"\n}}\n"
+                )
+            );
+        }
+
+        let only =
+            "{\n    \"name\": \"x/y\",\n    \"require-dev\": {\n        \"a/a\": \"1\"\n    }\n}\n";
+        let got = edited(only, |m| {
+            assert!(m.remove_sub_node("require-dev", "a/a").unwrap());
+            assert!(!m.remove_sub_node("require-dev", "b/b").unwrap());
+            m.remove_main_key_if_empty("require-dev").unwrap();
+        });
+        assert_eq!(got, "{\n    \"name\": \"x/y\"\n}\n");
+    }
+
+    #[test]
+    fn manipulator_keeps_the_files_line_endings() {
+        let crlf = MANIFEST.replace('\n', "\r\n");
+        let got = edited(&crlf, |m| {
+            m.add_link("require", "monolog/monolog", "^3.0", false)
+                .unwrap();
+            m.add_link("require-dev", "phpunit/phpunit", "^11.0", false)
+                .unwrap();
+        });
+        assert!(!got.replace("\r\n", "").contains('\n'), "{got:?}");
+    }
+
+    #[test]
+    fn manipulator_sets_a_main_key_in_place_or_at_the_end() {
+        let repositories = json!([{"type": "path", "url": "pkg"}]);
+        let got = edited(MANIFEST, |m| {
+            m.set_main_key("repositories", &repositories).unwrap();
+        });
+        assert_eq!(
+            got,
+            MANIFEST.replace(
+                "\"config\": {\"a\": 1}\n",
+                "\"config\": {\"a\": 1},\n    \"repositories\": [\n        {\n            \"type\": \"path\",\n            \"url\": \"pkg\"\n        }\n    ]\n"
+            )
+        );
+        let again = edited(&got, |m| {
+            m.set_main_key("repositories", &json!([])).unwrap();
+        });
+        assert_eq!(again, got.replace(
+            "[\n        {\n            \"type\": \"path\",\n            \"url\": \"pkg\"\n        }\n    ]",
+            "[]"
+        ));
     }
 
     /// Non-UTF-8 bytes in `composer.json` fail at the same
