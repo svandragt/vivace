@@ -20,10 +20,39 @@ use std::path::{Path, PathBuf};
 
 use common::TestContext;
 use serde_json::json;
+use tokio::sync::Mutex;
 use vivace::auth::Auth;
 use vivace::fetch::Fetcher;
 use vivace::lock::{Package, Root};
 use vivace::plugins::private_installer::Env;
+
+/// Serialises tests that set a process env var. A `tokio` mutex, since the
+/// guard is held across `.await` points.
+static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// Removes the var on drop, so a panic while it is set still restores it.
+struct EnvVarGuard(&'static str);
+
+impl EnvVarGuard {
+    #[allow(unsafe_code, reason = "callers hold ENV_LOCK for the guard's life")]
+    fn set(name: &'static str, value: &str) -> Self {
+        // SAFETY: callers hold ENV_LOCK, and the guard removes the var on drop.
+        unsafe {
+            std::env::set_var(name, value);
+        }
+        Self(name)
+    }
+}
+
+impl Drop for EnvVarGuard {
+    #[allow(unsafe_code, reason = "matches the set_var in `set`")]
+    fn drop(&mut self) {
+        // SAFETY: ENV_LOCK is still held by the caller.
+        unsafe {
+            std::env::remove_var(self.0);
+        }
+    }
+}
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -161,16 +190,13 @@ fn spawn_dist_server(
 /// `Package::dist.url` is untouched by `fetch`, only the URL actually
 /// requested carries it.
 #[tokio::test]
-#[allow(unsafe_code, reason = "a var name unique to this test, restored below")]
 async fn fetch_substitutes_from_process_env() {
+    let _lock = ENV_LOCK.lock().await;
     let (addr, requests) = spawn_dist_server(b"PK\x03\x04zip-bytes");
     let url = format!("http://{addr}/dist-{{%VIV_TEST_ACME_KEY}}.zip");
     let pkg = dist_package("acme/pro-plugin", "1.0.0", &url);
 
-    // SAFETY: name unique to this test, restored before it returns.
-    unsafe {
-        std::env::set_var("VIV_TEST_ACME_KEY", "secret-from-process");
-    }
+    let _var = EnvVarGuard::set("VIV_TEST_ACME_KEY", "secret-from-process");
     let env = Env::load(&root(&json!({})), Path::new("/nonexistent"));
     let fetcher = Fetcher::new(Auth::default())
         .unwrap()
@@ -178,10 +204,6 @@ async fn fetch_substitutes_from_process_env() {
         .private_installer(env);
     let temp = tempfile::tempdir().unwrap();
     let result = fetcher.fetch(&pkg, temp.path()).await;
-    // SAFETY: matches the set_var above.
-    unsafe {
-        std::env::remove_var("VIV_TEST_ACME_KEY");
-    }
     result.unwrap();
 
     let requested_path = requests.recv().unwrap();

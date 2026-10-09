@@ -5,11 +5,15 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde_json::{Value, json};
 use vivace::autoload::generator::{Input, Package, RootPackage, generate};
 
 const DEFAULT_VENDOR: &str = "composer-test-autoload";
+
+/// Serialises tests that set a process env var.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct Pkg {
     name: &'static str,
@@ -1838,20 +1842,29 @@ fn classmap_keeps_non_utf8_class_name_byte() {
 /// Composer's own recorded golden, so a mismatch at either worker count
 /// fails here.
 #[test]
-#[allow(
-    unsafe_code,
-    reason = "nextest gives this test its own process; no other thread touches env vars"
-)]
+#[allow(unsafe_code, reason = "ENV_LOCK is held while the var is set")]
 fn classmap_fold_is_invariant_to_scan_worker_count() {
+    /// Removes the var on drop, so a panic in `run` still restores it.
+    struct ScanWorkersGuard;
+    impl Drop for ScanWorkersGuard {
+        fn drop(&mut self) {
+            // SAFETY: ENV_LOCK is still held by the test.
+            unsafe {
+                std::env::remove_var("VIV_TEST_SCAN_WORKERS");
+            }
+        }
+    }
+
+    // A poisoned lock only means another test panicked; the guard restored the var.
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = ScanWorkersGuard;
     for workers in ["1", "8"] {
-        // SAFETY: single-threaded within this test process at this point.
+        // SAFETY: ENV_LOCK is held for as long as the var is set.
         unsafe {
             std::env::set_var("VIV_TEST_SCAN_WORKERS", workers);
         }
         run(&override_vendors_autoloading_case());
-    }
-    // SAFETY: see above.
-    unsafe {
-        std::env::remove_var("VIV_TEST_SCAN_WORKERS");
     }
 }
