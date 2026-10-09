@@ -14,7 +14,7 @@ use sha1::Digest as _;
 
 use crate::autoload::generator::find_shortest_path;
 use crate::lock::Package;
-use crate::store::hex;
+use crate::store::{GIT_MIRROR_BUCKET, hex};
 
 /// Materialise a `dist.type: path` package into `dest`: a symlink to
 /// `dist.url` (resolved against `project_dir`) by default — relative unless
@@ -125,10 +125,11 @@ pub(crate) fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
 /// Ports just the shape of `GitDownloader::doInstall`, not its from-cache
 /// dance: a bare mirror lives under `<cache_dir>/git-v0/<sha1 of the source
 /// url>/`, cloned once and `fetch`ed again only when `reference` isn't
-/// already in it (an unbounded mirror never pruned by `viv cache prune`,
+/// already in it (an unbounded mirror that `viv cache prune` keeps whole,
 /// unlike the archive store — this is a global git object cache, not a
-/// per-reference pointer bucket; add its own prune sweep if that
-/// unboundedness ever bites). A full clone from that mirror then checks out
+/// per-reference pointer bucket, so nothing says which mirrors are
+/// unreferenced; add its own prune sweep if that unboundedness ever bites).
+/// A full clone from that mirror then checks out
 /// `reference`, leaving a real `.git` history in `vendor/`, matching
 /// Composer's `installation-source: source` — including its `.git/config`
 /// shape (#59): an `origin` remote and a second `composer` remote, both
@@ -146,7 +147,7 @@ pub fn checkout_git(cache_dir: &Path, package: &Package, dest: &Path) -> Result<
         .with_context(|| format!("{}: git source has no reference", package.name))?;
 
     let mirror = cache_dir
-        .join("git-v0")
+        .join(GIT_MIRROR_BUCKET)
         .join(hex(sha1::Sha1::digest(source.url.as_bytes())));
     sync_mirror(&source.url, &mirror, reference)
         .with_context(|| format!("{}: syncing git mirror for {}", package.name, source.url))?;

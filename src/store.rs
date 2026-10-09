@@ -12,8 +12,8 @@
 //! - `.lock` carries a process-lifetime shared advisory lock so `prune` (which
 //!   takes it exclusively) never deletes under a running install.
 //!
-//! `tools-v0`, `platform-v0`, `repo-v0` and `vcs-v0` are other modules' buckets
-//! under the same root; `KNOWN_BUCKETS` is the full, single list `prune` and
+//! `tools-v0`, `platform-v0`, `repo-v0`, `vcs-v0` and `git-v0` are other modules'
+//! buckets under the same root; `KNOWN_BUCKETS` is the full, single list `prune` and
 //! the foreign-cache guard both read.
 //!
 //! Bump a bucket suffix when its format changes; `prune` removes everything
@@ -46,6 +46,9 @@ pub(crate) const REPO_BUCKET: &str = "repo-v0";
 /// Mirrored git checkouts for a VCS-sourced package, under
 /// `vcs-v0/<slugified url>/`; see `vcs::GitDriver::load`.
 pub(crate) const VCS_BUCKET: &str = "vcs-v0";
+/// Bare mirrors of `source.type: git` packages, under
+/// `git-v0/<sha1 of the source url>/`; see `source::checkout_git`.
+pub(crate) const GIT_MIRROR_BUCKET: &str = "git-v0";
 /// #269: one classmap-scan sidecar per project for the root package's own
 /// directories, which have no store archive to sit beside —
 /// `root-classmap-v0/<sha256 of the project's canonicalized base dir>.json`,
@@ -99,6 +102,7 @@ const KNOWN_BUCKETS: &[&str] = &[
     PLATFORM_BUCKET,
     REPO_BUCKET,
     VCS_BUCKET,
+    GIT_MIRROR_BUCKET,
     ROOT_CLASSMAP_BUCKET,
     PLATFORM_CHECK_BUCKET,
     PHP_BUCKET,
@@ -1943,6 +1947,23 @@ mod tests {
                 .is_file()
         );
         assert!(root.path().join("vcs-v0/some-repo").is_dir());
+    }
+
+    /// #360: `git-v0` (bare mirrors of `source.type: git` packages,
+    /// `source::checkout_git`) is a bucket viv writes itself; `prune` must
+    /// keep it, and the foreign-cache guard behind `cache clean` must accept
+    /// a cache holding only that bucket.
+    #[test]
+    fn prune_leaves_git_mirror_bucket_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let mirror = root.path().join("git-v0/0123456789abcdef");
+        fs_err::create_dir_all(&mirror).unwrap();
+        fs_err::write(mirror.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let report = store.prune(None).unwrap();
+        assert_eq!(report.entries, 0);
+        assert!(mirror.join("HEAD").is_file());
+        assert!(Store::looks_like_cache(root.path()).unwrap());
     }
 
     #[test]
