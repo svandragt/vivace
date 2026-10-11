@@ -42,7 +42,7 @@ jobs:
       # libraries: libstdc++.so.6" (exit 127) — every nightly run did, from
       # the day this workflow landed. Off devbox the runner's own libstdc++
       # is found, and both jobs then build the same runnable binary.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-fuzz
       # `--target` is explicit because cargo-fuzz defaults to the triple it
@@ -80,7 +80,7 @@ jobs:
       # directly rather than devbox.json.
       - run: rustup toolchain install nightly --profile minimal
       # Off devbox for the libstdc++ reason in fuzz-build above (#194).
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-fuzz
       # Only `seeds/` is passed: it's tracked, whereas `corpus/` is
@@ -94,7 +94,7 @@ jobs:
             -max_total_time=120 \
             "seeds/${{ matrix.target }}"
         working-directory: fuzz
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: fuzz-crash-${{ matrix.target }}
