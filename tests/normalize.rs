@@ -111,6 +111,25 @@ fn check_fails_with_a_diff_on_a_messy_file_and_does_not_write() {
     assert_eq!(before, after, "--check must not write");
 }
 
+/// #375: the rewritten `composer.json` carries the umask mode, not the `0600`
+/// of the temp file it is renamed from.
+#[test]
+fn rewritten_composer_json_carries_the_umask_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let Some(want) = common::umask_file_mode() else {
+        return;
+    };
+    let ctx = TestContext::new();
+    let path = ctx.project.path().join("composer.json");
+    fs::copy(fixtures().join("one.json"), &path).unwrap();
+
+    ctx.viv().arg("normalize").assert().success();
+
+    let got = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(got, want, "composer.json: {got:o} vs umask {want:o}");
+}
+
 #[test]
 fn indent_size_is_configurable() {
     let ctx = TestContext::new();

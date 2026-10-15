@@ -8,7 +8,7 @@
 //! uses to write `__DIR__`-relative paths.
 
 use std::collections::HashSet;
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -20,6 +20,7 @@ use serde::Deserialize;
 use crate::autoload::generator::{
     find_shortest_path, find_shortest_path_code, normalize_path, path_str,
 };
+use crate::install::write_atomic_mode;
 use crate::lock::Package;
 
 /// `config.bin-compat`. Composer's `full` also writes a `.bat` proxy for
@@ -175,7 +176,7 @@ fn install_one(
     }
 
     let content = unixy_proxy_code(&canonical_target, &link, vendor_dir_real)?;
-    write_proxy(&link, content.as_bytes(), mode)?;
+    write_atomic_mode(&link, content.as_bytes(), mode)?;
     Ok(Some(name))
 }
 
@@ -301,20 +302,6 @@ fn basename(path: &str) -> &str {
 fn proxy_mode() -> Result<u32> {
     let probe = tempfile::tempdir().context("probing the process umask")?;
     Ok(fs_err::metadata(probe.path())?.permissions().mode() & 0o777)
-}
-
-/// Write `content` to `path` (a proxy, so it needs `mode`) via a temp file
-/// in the same directory renamed over the target, same as `install::write_atomic`.
-fn write_proxy(path: &Path, content: &[u8], mode: u32) -> Result<()> {
-    let parent = path
-        .parent()
-        .with_context(|| format!("{} has no parent directory", path.display()))?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("creating a temp file next to {}", path.display()))?;
-    temp.write_all(content)?;
-    fs_err::set_permissions(temp.path(), PermissionsExt::from_mode(mode))?;
-    temp.persist(path).map_err(|err| err.error)?;
-    Ok(())
 }
 
 /// `BinaryInstaller::removeBinaries`, run for every package at once instead

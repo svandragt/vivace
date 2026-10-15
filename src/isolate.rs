@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::install::{self, DumpAutoloadArgs, package_dir};
+use crate::install::{self, DumpAutoloadArgs, package_dir, write_atomic};
 use crate::link::{self, LinkMode};
 use crate::lock::{self, Lock, Package, Root};
 use crate::normalize;
@@ -501,21 +501,6 @@ fn format_message(plugin_name: &str, clashes: &[Clash]) -> Option<String> {
 
 fn read_verdict(sidecar: &Path) -> Option<Verdict> {
     serde_json::from_slice(&fs_err::read(sidecar).ok()?).ok()
-}
-
-/// Write `content` to `path` via a temp file in the same directory renamed
-/// into place, same crash-safety shape as every other sidecar cache here
-/// (`install.rs`'s own `write_atomic`, not shared across modules).
-fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .with_context(|| format!("{} has no parent directory", path.display()))?;
-    fs_err::create_dir_all(parent)?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("creating a temp file next to {}", path.display()))?;
-    temp.write_all(content)?;
-    temp.persist(path).map_err(|err| err.error)?;
-    Ok(())
 }
 
 /// stderr via `writeln!`, not `eprintln!`, to satisfy the `print_stderr`

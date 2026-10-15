@@ -22,6 +22,7 @@ use clap::Args;
 use serde_json::{Map, Value};
 
 use crate::autoload::sort::natcmp;
+use crate::install::write_atomic;
 
 /// The indent `viv init` writes for a brand new `composer.json`, which has
 /// no existing file to detect an indent from.
@@ -191,21 +192,6 @@ fn out(message: &str) {
 /// has no progress display to clear).
 pub(crate) fn no_normalize_is_a_noop_message(command: &str, since: &str, reason: &str) -> String {
     format!("--no-normalize is a no-op on {command} since {since}; {reason}")
-}
-
-/// Write `content` to `path` via a temp file in the same directory renamed
-/// over the target, so a reader never sees a partial write. Mirrors
-/// `install::write_atomic`, kept local so this module doesn't need that
-/// function made `pub(crate)`.
-fn write_atomic(path: &std::path::Path, content: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .with_context(|| format!("{} has no parent directory", path.display()))?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("creating a temp file next to {}", path.display()))?;
-    temp.write_all(content)?;
-    temp.persist(path).map_err(|err| err.error)?;
-    Ok(())
 }
 
 /// Apply every normalizer and re-serialize with `indent`, unescaped slashes

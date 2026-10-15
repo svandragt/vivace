@@ -13,6 +13,30 @@ use vivace::repository::Transport;
 
 pub(crate) const FIXED_LAST_MODIFIED: &str = "Mon, 01 Jan 2024 00:00:00 GMT";
 
+/// The mode a file `fs::write` creates gets under this process's umask
+/// (`0666 & !umask`), which is the mode viv's written files must carry (#375).
+/// A test cannot set the umask itself, because tests share the process, so it
+/// reads the umask this way. Returns `None`, with a message, when that mode is
+/// `0600` (a `077` runner): `0600` is what the bug produced, so an assertion
+/// on it could not tell fixed from broken.
+#[allow(
+    clippy::print_stderr,
+    reason = "the skip message is the point of this helper, not a lint violation"
+)]
+pub(crate) fn umask_file_mode() -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let probe = dir.path().join("probe");
+    std::fs::write(&probe, b"").unwrap();
+    let mode = std::fs::metadata(&probe).unwrap().permissions().mode() & 0o777;
+    if mode == 0o600 {
+        eprintln!("skipping: the umask makes new files 0600, the mode a temp file has");
+        return None;
+    }
+    Some(mode)
+}
+
 pub(crate) fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packagist/repo.packagist.org")
 }

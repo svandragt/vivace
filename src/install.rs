@@ -2184,8 +2184,8 @@ fn patches_fingerprint(
 
 /// Write `content` to `path` only when it differs, via a temp file in the
 /// same directory renamed over the target, so a reader never sees a partial
-/// write.
-fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
+/// write. The file gets the umask mode, like Composer's `file_put_contents`.
+pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     if fs_err::read(path).is_ok_and(|existing| existing == content) {
         return Ok(());
     }
@@ -2193,10 +2193,18 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
         .parent()
         .with_context(|| format!("{} has no parent directory", path.display()))?;
     fs_err::create_dir_all(parent)?;
-    // `NamedTempFile::new_in` creates 0600; asking for 0666 lets the kernel
-    // apply the umask, as it does for Composer's own `file_put_contents` (#375).
+    write_atomic_mode(path, content, 0o666)
+}
+
+/// `write_atomic`'s temp-file-and-rename, with `mode` as the file's mode
+/// before the kernel applies the umask (`bin.rs`'s proxies want `0777`).
+/// `NamedTempFile::new_in` would create it `0600` instead (#375).
+pub(crate) fn write_atomic_mode(path: &Path, content: &[u8], mode: u32) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
     let mut temp = tempfile::Builder::new()
-        .permissions(std::fs::Permissions::from_mode(0o666))
+        .permissions(std::fs::Permissions::from_mode(mode))
         .tempfile_in(parent)
         .with_context(|| format!("creating a temp file next to {}", path.display()))?;
     temp.write_all(content)?;
