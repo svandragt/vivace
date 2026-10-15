@@ -37,6 +37,8 @@ check:
 	devbox run -- cargo deny check
 	devbox run -- cargo machete
 	devbox run -- env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+	@# Each lib change relinks all 50 test binaries and leaves the old ones behind; target/ reached 89 GB.
+	@if command -v cargo-sweep >/dev/null; then cargo sweep --maxsize 20GB . >/dev/null; fi
 
 bench:
 	scripts/keep-awake.sh "bench: laravel" devbox run -- bench/run.sh bench/laravel composer riff viv vivacity
