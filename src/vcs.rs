@@ -12,8 +12,8 @@
 //! Skipped: every other Composer VCS driver (GitLab, Bitbucket, Forgejo,
 //! Mercurial, Perforce, Fossil, SVN — `"vcs"` only ever autodetects GitHub
 //! or falls back to the generic git driver here), GitHub Enterprise (a
-//! custom `github-domains` host), `funding`/`abandoned`/`support.issues`
-//! (`support.source` is filled in, matching the design brief), the GitHub
+//! custom `github-domains` host), `funding`/`abandoned` (`support.source`
+//! and `support.issues` are filled in, matching the design brief), the GitHub
 //! API's `Link`-header pagination (a single `per_page=100` page;
 //! [`crate::repository::Transport`]/[`crate::fetch::Conditional`] don't
 //! expose response headers), and `VersionParser::parseConstraints`'s extra
@@ -396,6 +396,23 @@ async fn finish_version<T: Transport>(
         .is_none_or(str::is_empty)
     {
         data.insert("type".to_string(), Value::String("library".to_string()));
+    }
+
+    // `ArrayLoader::configureObject`: `license` is wrapped in an array and
+    // each `scripts` listener list is cast with `(array)`, so a hand-written
+    // string dumps back out as a one-item array. Packagist's provider files
+    // already carry arrays; a VCS repository's `composer.json` often doesn't.
+    if let Some(license) = data.get_mut("license")
+        && license.as_str().is_some_and(|s| !s.is_empty() && s != "0")
+    {
+        *license = Value::Array(vec![license.take()]);
+    }
+    if let Some(Value::Object(scripts)) = data.get_mut("scripts") {
+        // ponytail: wraps strings only; PHP's `(array)` also wraps other
+        // scalars, which no valid script listener is.
+        for listeners in scripts.values_mut().filter(|l| l.is_string()) {
+            *listeners = Value::Array(vec![listeners.take()]);
+        }
     }
 
     if !data.contains_key("source") {
@@ -1083,6 +1100,7 @@ struct GitHubDriver {
     branches: Vec<RefEntry>,
     root_identifier: String,
     private: bool,
+    has_issues: bool,
 }
 
 const GITHUB_API: &str = "https://api.github.com";
@@ -1108,6 +1126,10 @@ impl GitHubDriver {
             .to_string();
         let private = repo_data
             .get("private")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let has_issues = repo_data
+            .get("has_issues")
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
@@ -1165,12 +1187,14 @@ impl GitHubDriver {
             branches,
             root_identifier,
             private,
+            has_issues,
         }))
     }
 
     /// `Vcs\GitHubDriver::getComposerInformation`'s GitHub-specific
-    /// addition: `support.source`, when the file doesn't already declare
-    /// one.
+    /// additions: `support.source`, and `support.issues` when the
+    /// repository has issues enabled, each only when the file doesn't
+    /// already declare one.
     async fn composer_json<T: Transport>(
         &self,
         transport: &T,
@@ -1197,22 +1221,28 @@ impl GitHubDriver {
         let Some(obj) = parsed.as_object_mut() else {
             return Ok(None);
         };
-        let has_source = obj
-            .get("support")
-            .and_then(Value::as_object)
-            .is_some_and(|s| s.contains_key("source"));
-        if !has_source {
+        if !obj.get("support").is_some_and(Value::is_object) {
+            obj.insert("support".to_string(), Value::Object(Map::new()));
+        }
+        let support = obj
+            .get_mut("support")
+            .and_then(Value::as_object_mut)
+            .expect("support was just made an object");
+        if !support.contains_key("source") {
             let label = self.label_for(identifier);
-            let support = obj
-                .entry("support")
-                .or_insert_with(|| Value::Object(Map::new()));
-            if !support.is_object() {
-                *support = Value::Object(Map::new());
-            }
-            support.as_object_mut().unwrap().insert(
+            support.insert(
                 "source".to_string(),
                 Value::String(format!(
                     "https://github.com/{}/{}/tree/{label}",
+                    self.owner, self.repo
+                )),
+            );
+        }
+        if self.has_issues && !support.contains_key("issues") {
+            support.insert(
+                "issues".to_string(),
+                Value::String(format!(
+                    "https://github.com/{}/{}/issues",
                     self.owner, self.repo
                 )),
             );
@@ -1379,6 +1409,7 @@ mod tests {
             branches: Vec::new(),
             root_identifier: "main".to_string(),
             private,
+            has_issues: false,
         }
     }
 

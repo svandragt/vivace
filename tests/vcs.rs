@@ -377,6 +377,45 @@ async fn github_repository_lists_tags_and_the_default_branch() {
     );
 }
 
+/// #374: the lock entry of a GitHub package must match `ArrayLoader` then
+/// `ArrayDumper` — a hand-written string `license` and `scripts` listener
+/// come out as one-item arrays, and `GitHubDriver` adds `support.issues`
+/// when the repository has issues enabled.
+#[tokio::test]
+async fn github_package_entry_matches_composers_loader_and_driver() {
+    let root = json!({
+        "name": "root/pkg",
+        "require": {"acme/widget-gh": "dev-main"},
+        "repositories": {
+            "packagist.org": false,
+            "gh": {"type": "github", "url": "https://github.com/acme/widget-gh"},
+        },
+    });
+    let cache = tempfile::tempdir().unwrap();
+    let transport = github_fixture_transport();
+    let repo = Repository::from_composer_json(Path::new("."), &root, cache.path(), &transport)
+        .await
+        .unwrap();
+
+    let versions = repo
+        .load_package("acme/widget-gh", DevAcceptance::Both)
+        .await
+        .unwrap();
+    let main = versions.iter().find(|v| v.version == "dev-main").unwrap();
+    assert_eq!(main.raw()["license"], json!(["GPL-2.0-or-later"]));
+    assert_eq!(
+        main.raw()["scripts"],
+        json!({"lint": ["phpcs --extensions=php plugin.php inc"]})
+    );
+    assert_eq!(
+        main.raw()["support"],
+        json!({
+            "source": "https://github.com/acme/widget-gh/tree/main",
+            "issues": "https://github.com/acme/widget-gh/issues",
+        })
+    );
+}
+
 #[tokio::test]
 async fn github_repository_never_matches_an_unrelated_package_name() {
     let root = json!({

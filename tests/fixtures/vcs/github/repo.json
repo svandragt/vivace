@@ -1,4 +1,5 @@
 {
   "default_branch": "main",
-  "private": false
+  "private": false,
+  "has_issues": true
 }
