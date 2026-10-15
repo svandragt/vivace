@@ -106,3 +106,39 @@ fn ignore_platform_req_suppresses_only_the_named_requirement() {
     assert_file_matches(&expected, &vendor, "platform_check.php");
     assert_file_matches(&expected, &vendor, "autoload_real.php");
 }
+
+/// #375: the files `viv install` writes next to Composer's own must carry the
+/// umask mode (`0666 & !umask`), not the `0600` a temp file is created with.
+/// The reference is a file this process creates with `fs::write`, so the test
+/// needs no umask call and follows whatever umask the runner has.
+#[cfg(unix)]
+#[test]
+fn generated_files_carry_the_umask_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    copy_sources(project);
+    let reference = project.join("reference");
+    fs::write(&reference, b"").unwrap();
+    let want = fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
+
+    ctx.viv().arg("install").assert().success();
+
+    for name in [
+        "installed.json",
+        "installed.php",
+        "platform_check.php",
+        ".vivace-state",
+    ] {
+        let got = fs::metadata(project.join("vendor/composer").join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            got, want,
+            "vendor/composer/{name}: {got:o} vs umask {want:o}"
+        );
+    }
+}

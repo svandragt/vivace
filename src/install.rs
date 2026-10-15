@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::{IsTerminal as _, Write as _};
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -2192,7 +2193,11 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
         .parent()
         .with_context(|| format!("{} has no parent directory", path.display()))?;
     fs_err::create_dir_all(parent)?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)
+    // `NamedTempFile::new_in` creates 0600; asking for 0666 lets the kernel
+    // apply the umask, as it does for Composer's own `file_put_contents` (#375).
+    let mut temp = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o666))
+        .tempfile_in(parent)
         .with_context(|| format!("creating a temp file next to {}", path.display()))?;
     temp.write_all(content)?;
     temp.persist(path).map_err(|err| err.error)?;
