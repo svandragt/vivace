@@ -1163,11 +1163,11 @@ struct ComposerSource {
     /// treated as not providing advisories here.
     security_advisories_api_url: Option<String>,
     cache_dir: PathBuf,
-    /// #191's opt-in freshness window for a `/p2/` provider file: `0`
-    /// (`Duration::ZERO`, the default) means always revalidate, matching
-    /// today's behaviour; otherwise [`ComposerSource::fetch_lazy`] passes it
-    /// as `get_cached_json`'s `max_age`, the same short-circuit
-    /// `packages.json` already gets via `PACKAGES_JSON_MAX_AGE`.
+    /// #191's opt-in freshness window for a `/p2/` provider file, and (#377)
+    /// for a root `packages.json` that lists versions itself: `0`
+    /// (`Duration::ZERO`, the default) means always revalidate; otherwise
+    /// [`ComposerSource::fetch_lazy`] and [`ComposerSource::load`] pass it as
+    /// `get_cached_json`'s `max_age`.
     metadata_ttl: Duration,
     /// Count of provider files [`ComposerSource::fetch_lazy`] served inside
     /// `metadata_ttl` without a request (`CacheOutcome::Fresh`), so
@@ -1223,17 +1223,39 @@ impl ComposerSource {
         // the profile shows fetch time separately from everything else that
         // span used to lump in.
         let fetch_started = Instant::now();
-        let (root, outcome) = match get_cached_json::<Value, T>(
-            transport,
-            &packages_url,
-            &packages_cache_path,
-            Some(PACKAGES_JSON_MAX_AGE),
-        )
-        .await?
-        {
+        let root_data = |fetched: (CachedJson<Value>, CacheOutcome)| match fetched {
             (CachedJson::NotFound, _) => bail!("{packages_url}: not found"),
-            (CachedJson::Data(data), outcome) => (data, outcome),
+            (CachedJson::Data(data), outcome) => Ok((data, outcome)),
         };
+        let (mut root, mut outcome) = root_data(
+            get_cached_json::<Value, T>(
+                transport,
+                &packages_url,
+                &packages_cache_path,
+                Some(PACKAGES_JSON_MAX_AGE),
+            )
+            .await?,
+        )?;
+        // #377: a root that holds versions itself (a Satis/SatisPress
+        // `packages.json` with no `/p2/` endpoints) would hide a version
+        // published inside the window, so it only gets the opt-in
+        // `metadata_ttl` one, as `ComposerRepository::loadPackages` does
+        // (`loadRootServerFile()`, no `$rootMaxAge`). The content decides, so
+        // the window is judged after the cache read.
+        // ponytail: this re-reads and re-parses the cached root once, only
+        // when it was served from disk and holds versions; peek at the file
+        // first if a multi-megabyte root ever makes that visible.
+        if matches!(outcome, CacheOutcome::Fresh) && root_lists_versions(&root) {
+            (root, outcome) = root_data(
+                get_cached_json::<Value, T>(
+                    transport,
+                    &packages_url,
+                    &packages_cache_path,
+                    (!metadata_ttl.is_zero()).then_some(metadata_ttl),
+                )
+                .await?,
+            )?;
+        }
         tracing::debug!(
             elapsed_ms = fetch_started.elapsed().as_millis(),
             outcome = ?outcome,
@@ -3222,10 +3244,25 @@ enum CacheOutcome {
 }
 
 /// `ComposerRepository::loadRootServerFile`'s `$rootMaxAge` (`600` at every
-/// call site but two, `ComposerRepository.php:627` etc.): `packages.json` is
-/// served straight off disk, no request at all, for this long after it was
-/// last written.
+/// call site but two, `ComposerRepository.php:627` etc.): a `packages.json`
+/// that only points at per-package files is served straight off disk, no
+/// request at all, for this long after it was last written.
 const PACKAGES_JSON_MAX_AGE: Duration = Duration::from_secs(600);
+
+/// #377: whether a root `packages.json` carries versions itself (`packages`
+/// or `includes`, the full-file Satis/SatisPress shape) rather than only
+/// naming where they live (`metadata-url`, `providers-url`,
+/// `providers-lazy-url`), so a stale copy would hide a version.
+fn root_lists_versions(root: &Value) -> bool {
+    let inline = root
+        .get("packages")
+        .and_then(Value::as_object)
+        .is_some_and(|packages| !packages.is_empty());
+    let points_elsewhere = ["metadata-url", "providers-url", "providers-lazy-url"]
+        .iter()
+        .any(|key| root.get(key).is_some());
+    inline || !points_elsewhere
+}
 
 /// The conditional-GET-against-a-disk-cache dance `packages.json` and every
 /// v2/lazy provider file share: read a cached body and its `Last-Modified`,

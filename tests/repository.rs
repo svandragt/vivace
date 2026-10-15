@@ -365,6 +365,26 @@ async fn a_304_response_keeps_the_cached_body() {
     assert_eq!(first_versions, second_versions);
 }
 
+/// #377 must not cost the common case a request: a root that only names
+/// endpoints (`metadata-url`, as on packagist.org) is still served straight
+/// off disk inside #190's 10-minute window. Only a root that lists versions
+/// itself is revalidated, see the `update_finds_a_version_published_*` test.
+#[tokio::test]
+async fn a_metadata_url_root_is_served_from_disk_inside_its_window() {
+    let cache = tempfile::tempdir().unwrap();
+    let transport1 = FixtureTransport::new();
+    Repository::load("https://repo.packagist.org", cache.path(), &transport1)
+        .await
+        .unwrap();
+    assert_eq!(transport1.calls().len(), 1, "{:?}", transport1.calls());
+
+    let transport2 = FixtureTransport::new();
+    Repository::load("https://repo.packagist.org", cache.path(), &transport2)
+        .await
+        .unwrap();
+    assert_eq!(transport2.call_count(), 0, "{:?}", transport2.calls());
+}
+
 /// #191: `metadata_ttl` is opt-in (`0`, the default, always revalidates,
 /// same as [`a_304_response_keeps_the_cached_body`] above), but a positive
 /// window against an already-warm cache skips the conditional GET
@@ -933,6 +953,112 @@ async fn metadata_request_carries_the_configured_authorization_header() {
         .expect("server never received a request");
     // echo -n user:pass | base64
     assert_eq!(authorization, "Basic dXNlcjpwYXNz");
+}
+
+/// Serves the shared `(body, Last-Modified)` as every response, forever, and
+/// answers 304 while the request's `If-Modified-Since` equals the current
+/// `Last-Modified` -- a Satis/Satispress that publishes by rewriting one
+/// full `packages.json`.
+fn spawn_packages_json_server(
+    state: std::sync::Arc<Mutex<(String, String)>>,
+) -> std::net::SocketAddr {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stream.read(&mut buf) {
+                request.extend_from_slice(&buf[..n]);
+                if n == 0 || request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let text = String::from_utf8_lossy(&request).to_string();
+            let since = text
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("if-modified-since:"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().to_string());
+            let (body, last_modified) = state.lock().unwrap().clone();
+            let response = if since.as_deref() == Some(last_modified.as_str()) {
+                format!(
+                    "HTTP/1.1 304 Not Modified\r\nLast-Modified: {last_modified}\r\nConnection: close\r\n\r\n"
+                )
+            } else {
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nLast-Modified: {last_modified}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            };
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    addr
+}
+
+/// #377: a `composer`-type repository with one full `packages.json` and no
+/// `/p2/` endpoints keeps its versions in the root file itself, so an
+/// `update` that serves a cached root off disk misses a version published
+/// since. Same cache dir for both runs, no `--metadata-ttl`: the second run
+/// must revalidate the root and resolve the new version.
+#[tokio::test]
+async fn update_finds_a_version_published_to_a_full_packages_json_after_the_cache_warmed() {
+    let packages_json = |versions: &[&str]| {
+        let entries: Map<String, Value> = versions
+            .iter()
+            .map(|v| {
+                (
+                    (*v).to_string(),
+                    json!({
+                        "name": "acme/private",
+                        "version": v,
+                        "dist": {"type": "zip", "url": "http://127.0.0.1/private.zip"},
+                    }),
+                )
+            })
+            .collect();
+        json!({"packages": {"acme/private": entries}}).to_string()
+    };
+    let state = std::sync::Arc::new(Mutex::new((
+        packages_json(&["3.8.7"]),
+        "Mon, 01 Jan 2024 00:00:00 GMT".to_string(),
+    )));
+    let addr = spawn_packages_json_server(std::sync::Arc::clone(&state));
+
+    let fetcher = vivace::fetch::Fetcher::new(vivace::auth::Auth::default())
+        .unwrap()
+        .secure_http(false);
+    let cache = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let root = json!({
+        "require": {"acme/private": "^3.7"},
+        "repositories": [
+            {"type": "composer", "url": format!("http://{addr}")},
+            {"packagist.org": false},
+        ],
+    });
+    let resolved_version = || async {
+        let transport = vivace::repository::HttpTransport { fetcher: &fetcher };
+        let repo = Repository::from_composer_json(project.path(), &root, cache.path(), transport)
+            .await
+            .unwrap();
+        let result = solver::solve_update(&repo, &root, project.path(), false, false)
+            .await
+            .unwrap();
+        result.non_dev[0].pretty_version.clone()
+    };
+
+    assert_eq!(resolved_version().await, "3.8.7");
+
+    *state.lock().unwrap() = (
+        packages_json(&["3.8.7", "3.8.11"]),
+        "Tue, 02 Jan 2024 00:00:00 GMT".to_string(),
+    );
+    assert_eq!(resolved_version().await, "3.8.11");
 }
 
 // --- Byte-diff acceptance: `viv update` against a real `composer/satis`

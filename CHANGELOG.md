@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+- `viv update` finds a version newly published to a `composer` repository that serves one full `packages.json` and no `/p2/` endpoints, as Satis and SatisPress do. viv used to keep that file for ten minutes without a request, so an update inside the window kept the old list. It now revalidates the file on every update with a conditional request, or downloads it again when the server sends no `Last-Modified`. Repositories with `/p2/` or provider endpoints, such as packagist.org and wpackagist, keep the ten-minute window, and `--metadata-ttl` still sets a window for the full file ([#377](https://github.com/svandragt/vivace/issues/377))
 
 ## [0.21.0] - 2026-10-06
 ### Added
@@ -192,7 +194,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `--metadata-ttl <seconds>` on `update`, `add` and `rm`, or `VIV_METADATA_TTL`: skip revalidating cached package metadata younger than the window, so a second update shortly after the first makes no metadata requests. Off by default ([#191](https://github.com/svandragt/vivace/issues/191))
 
 ### Performance
-- `viv update` serves each repository's `packages.json` from the cache for ten minutes without a request, as Composer does, loads several repositories concurrently, and reads the lock while the repositories load; the setup step before the metadata closure drops from 117 ms to 5 ms ([#190](https://github.com/svandragt/vivace/issues/190))
+- `viv update` serves each repository's `packages.json` from the cache for ten minutes without a request (except a full `packages.json` with no `/p2/` endpoints, which [#377](https://github.com/svandragt/vivace/issues/377) revalidates on every update), as Composer does, loads several repositories concurrently, and reads the lock while the repositories load; the setup step before the metadata closure drops from 117 ms to 5 ms ([#190](https://github.com/svandragt/vivace/issues/190))
 - `viv update` asks for security advisories while the metadata closure is still loading, instead of after it; Laravel's warm update drops from 0.75 s to 0.65 s ([#189](https://github.com/svandragt/vivace/issues/189))
 - Cold install extracts an archive with more than 2,000 entries across up to eight threads, and creates each directory once instead of per file; drupal/recommended-project's cold install from a local mirror falls from 1263 ms to 728 ms, ahead of riff's 744 ms ([#193](https://github.com/svandragt/vivace/issues/193))
 
