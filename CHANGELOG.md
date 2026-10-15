@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 - `viv update` finds a version newly published to a `composer` repository that serves one full `packages.json` and no `/p2/` endpoints, as Satis and SatisPress do. viv used to keep that file for ten minutes without a request, so an update inside the window kept the old list. It now revalidates the file on every update with a conditional request, or downloads it again when the server sends no `Last-Modified`. Repositories with `/p2/` or provider endpoints, such as packagist.org and wpackagist, keep the ten-minute window, and `--metadata-ttl` still sets a window for the full file ([#377](https://github.com/svandragt/vivace/issues/377))
+- `viv update` keeps one metadata cache per `composer` repository URL, as Composer does. Two repositories on the same host, with another path, port or scheme, used to share one `packages.json` and its provider files, so one repository could read the other's cached package list and send the other's `Last-Modified` in its conditional request. The first run after upgrading downloads each repository's metadata once, because the cache moves from `repo-v0/` to `repo-v1/`; `viv cache prune` removes the old directory ([#378](https://github.com/svandragt/vivace/issues/378))
 
 ## [0.21.0] - 2026-10-06
 ### Added

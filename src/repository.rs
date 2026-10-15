@@ -39,7 +39,7 @@ use serde_json::{Map, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-use crate::fetch::{Conditional, Fetcher};
+use crate::fetch::{Conditional, Fetcher, redact};
 use crate::semver::{self, Constraint};
 use crate::solver::pool_builder::link_constraint_text;
 use crate::solver::{ConstraintCache, parse_constraint_cached};
@@ -1133,6 +1133,23 @@ enum Provider {
     },
 }
 
+/// #378: the directory name for one repository's cache, as
+/// `ComposerRepository.php:220` builds it:
+/// `preg_replace('{[^a-z0-9.]}i', '-', Url::sanitize($this->url))`. The whole
+/// URL as configured is the key, so two repositories on one host (another
+/// path, port or scheme) never share a `packages.json`.
+/// ponytail: `Url::sanitize` masks only a password (and a token-shaped user);
+/// this masks the whole userinfo of a credentialed URL, so none of it lands in
+/// a directory name. A URL that slugs past 255 bytes cannot name a directory;
+/// hash the tail if one is ever reported.
+fn repo_cache_name(url: &str, configured: &Url) -> String {
+    if configured.username().is_empty() && configured.password().is_none() {
+        vcs::slugify(url)
+    } else {
+        vcs::slugify(&redact(configured))
+    }
+}
+
 /// One loaded `composer`-type repository: `packages.json`, its provider
 /// mechanism, and the on-disk cache directory Composer itself would use
 /// for this host.
@@ -1178,9 +1195,9 @@ struct ComposerSource {
 
 impl ComposerSource {
     /// Fetch `packages.json` from `url` and set up this source's provider
-    /// mechanism, caching under `<cache_root>/repo-v0/<repo-host>/`
-    /// (`ComposerRepository::getCache`'s per-repo directory, keyed the same
-    /// way this crate already keyed a single Packagist repo).
+    /// mechanism, caching under `<cache_root>/repo-v1/<repo-cache-name>/`
+    /// (`ComposerRepository`'s per-repo cache directory, see
+    /// [`repo_cache_name`]).
     async fn load<T: Transport>(
         url: &str,
         cache_root: &Path,
@@ -1190,19 +1207,13 @@ impl ComposerSource {
         let configured =
             Url::parse(url).with_context(|| format!("invalid repository URL {url:?}"))?;
         // A `file://` mirror (a local Satis build or a recorded Packagist
-        // mirror, #161) has no host to key the cache directory by; its path
-        // is already a unique filesystem location, so slugify that instead,
-        // the same way `vcs::GitDriver` keys a bare/`git@` remote that has
-        // no host either.
-        let host = if configured.scheme() == "file" {
-            vcs::slugify(configured.path())
-        } else {
-            configured
-                .host_str()
-                .with_context(|| format!("repository URL {configured} has no host"))?
-                .to_string()
-        };
-        let cache_dir = cache_root.join(REPO_BUCKET).join(&host);
+        // mirror, #161) has no host and is keyed by its path like any other URL.
+        if configured.scheme() != "file" && configured.host_str().is_none() {
+            bail!("repository URL {configured} has no host");
+        }
+        let cache_dir = cache_root
+            .join(REPO_BUCKET)
+            .join(repo_cache_name(url, &configured));
 
         // `ComposerRepository::getPackagesJsonUrl`: a URL that already
         // names a `.json` file is used as-is; otherwise `/packages.json` is
@@ -1557,7 +1568,7 @@ enum SourceKind {
 /// lowercased name the same way [`Provider::Eager`]'s inline `packages` map
 /// is: a `"package"` repository is exactly a one-off Satis file with the
 /// metadata inlined in `composer.json` instead of fetched. No network, no
-/// cache, nothing under `repo-v0` — the metadata is already in hand.
+/// cache, nothing under `repo-v1` — the metadata is already in hand.
 struct PackageSource {
     packages: HashMap<String, Vec<PackageVersion>>,
 }
@@ -3351,6 +3362,27 @@ mod tests {
             .iter()
             .map(|v| serde_json::value::to_raw_value(v).unwrap())
             .collect()
+    }
+
+    /// #378: Composer's own directory names for the same URLs
+    /// (`ComposerRepository.php:220`), and no credentials in the name.
+    #[test]
+    fn repo_cache_name_slugs_the_whole_url() {
+        let name = |url: &str| repo_cache_name(url, &Url::parse(url).unwrap());
+        assert_eq!(
+            name("https://repo.packagist.org"),
+            "https---repo.packagist.org"
+        );
+        assert_eq!(
+            name("https://example.com/satispress/"),
+            "https---example.com-satispress-"
+        );
+        assert_eq!(
+            name("http://127.0.0.1:8080/other"),
+            "http---127.0.0.1-8080-other"
+        );
+        assert_eq!(name("file:///srv/satis"), "file----srv-satis");
+        assert!(!name("https://user:secret@example.com/repo").contains("secret"));
     }
 
     #[test]

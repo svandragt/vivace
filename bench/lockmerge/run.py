@@ -1294,10 +1294,10 @@ def dev_ref_cached(cache_root: Path, name: str, ref: str | None) -> bool:
     if not ref:
         return False
     encoded = name.replace("/", "$")
-    repo_v0 = cache_root / "repo-v0"
-    if not repo_v0.is_dir():
+    repo_v1 = cache_root / "repo-v1"
+    if not repo_v1.is_dir():
         return False
-    for host_dir in repo_v0.iterdir():
+    for host_dir in repo_v1.iterdir():
         f = host_dir / f"provider-{encoded}~dev.json"
         if not f.is_file():
             continue
@@ -3143,7 +3143,7 @@ def self_test() -> int:
         )
 
         cache_root = Path(tmp) / "dev-cache"
-        provider_dir = cache_root / "repo-v0" / "repo.packagist.org"
+        provider_dir = cache_root / "repo-v1" / "https---repo.packagist.org"
         provider_dir.mkdir(parents=True)
         (provider_dir / "provider-vendor$dev-pkg~dev.json").write_text(json.dumps({
             "packages": {"vendor/dev-pkg": [{"version": "dev-master", "source": {"reference": "bbb"}}]}

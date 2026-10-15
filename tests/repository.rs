@@ -479,8 +479,8 @@ async fn a_304_response_refreshes_the_cached_provider_files_mtime() {
 
     let cache_path = cache
         .path()
-        .join("repo-v0")
-        .join("repo.packagist.org")
+        .join("repo-v1")
+        .join("https---repo.packagist.org")
         .join("provider-monolog$monolog.json");
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
     filetime::set_file_mtime(&cache_path, filetime::FileTime::from_system_time(old)).unwrap();
@@ -645,7 +645,7 @@ async fn v1_provider_hash_rotation_forces_a_root_reload() {
     // is within `PACKAGES_JSON_MAX_AGE`, so it's served straight off disk --
     // no request at all -- still naming the now-gone `hash_before`.
     let cache = tempfile::tempdir().unwrap();
-    let repo_cache_dir = cache.path().join("repo-v0").join("v1-rotation");
+    let repo_cache_dir = cache.path().join("repo-v1").join("https---v1-rotation");
     fs_err::create_dir_all(&repo_cache_dir).unwrap();
     let cached_root = format!(
         r#"{{"providers-url":"/p/%package%$%hash%.json","provider-includes":{{"p/providers$%hash%.json":{{"sha256":"{hash_before}"}}}},"last-modified":"{FIXED_LAST_MODIFIED}"}}"#
@@ -1000,6 +1000,24 @@ fn spawn_packages_json_server(
     addr
 }
 
+/// A full `packages.json` listing `acme/private` at each of `versions`.
+fn acme_private_root(versions: &[&str]) -> String {
+    let entries: Map<String, Value> = versions
+        .iter()
+        .map(|v| {
+            (
+                (*v).to_string(),
+                json!({
+                    "name": "acme/private",
+                    "version": v,
+                    "dist": {"type": "zip", "url": "http://127.0.0.1/private.zip"},
+                }),
+            )
+        })
+        .collect();
+    json!({"packages": {"acme/private": entries}}).to_string()
+}
+
 /// #377: a `composer`-type repository with one full `packages.json` and no
 /// `/p2/` endpoints keeps its versions in the root file itself, so an
 /// `update` that serves a cached root off disk misses a version published
@@ -1007,24 +1025,8 @@ fn spawn_packages_json_server(
 /// must revalidate the root and resolve the new version.
 #[tokio::test]
 async fn update_finds_a_version_published_to_a_full_packages_json_after_the_cache_warmed() {
-    let packages_json = |versions: &[&str]| {
-        let entries: Map<String, Value> = versions
-            .iter()
-            .map(|v| {
-                (
-                    (*v).to_string(),
-                    json!({
-                        "name": "acme/private",
-                        "version": v,
-                        "dist": {"type": "zip", "url": "http://127.0.0.1/private.zip"},
-                    }),
-                )
-            })
-            .collect();
-        json!({"packages": {"acme/private": entries}}).to_string()
-    };
     let state = std::sync::Arc::new(Mutex::new((
-        packages_json(&["3.8.7"]),
+        acme_private_root(&["3.8.7"]),
         "Mon, 01 Jan 2024 00:00:00 GMT".to_string(),
     )));
     let addr = spawn_packages_json_server(std::sync::Arc::clone(&state));
@@ -1055,10 +1057,51 @@ async fn update_finds_a_version_published_to_a_full_packages_json_after_the_cach
     assert_eq!(resolved_version().await, "3.8.7");
 
     *state.lock().unwrap() = (
-        packages_json(&["3.8.7", "3.8.11"]),
+        acme_private_root(&["3.8.7", "3.8.11"]),
         "Tue, 02 Jan 2024 00:00:00 GMT".to_string(),
     );
     assert_eq!(resolved_version().await, "3.8.11");
+}
+
+/// #378: two `composer` repositories on one host (here, two ports) keep their
+/// own metadata under one cache directory. Both servers send the same
+/// `Last-Modified`, so a `packages.json` entry shared between them turns the
+/// second repository's conditional request into a 304 for the first
+/// repository's versions.
+#[tokio::test]
+async fn composer_repositories_on_one_host_resolve_their_own_versions() {
+    let last_modified = "Mon, 01 Jan 2024 00:00:00 GMT";
+    let serving = |versions: &[&str]| {
+        spawn_packages_json_server(std::sync::Arc::new(Mutex::new((
+            acme_private_root(versions),
+            last_modified.to_string(),
+        ))))
+    };
+    let first = serving(&["1.0.0"]);
+    let second = serving(&["2.0.0"]);
+
+    let fetcher = vivace::fetch::Fetcher::new(vivace::auth::Auth::default())
+        .unwrap()
+        .secure_http(false);
+    let cache = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    for (addr, want) in [(first, "1.0.0"), (second, "2.0.0")] {
+        let root = json!({
+            "require": {"acme/private": "*"},
+            "repositories": [
+                {"type": "composer", "url": format!("http://{addr}")},
+                {"packagist.org": false},
+            ],
+        });
+        let transport = vivace::repository::HttpTransport { fetcher: &fetcher };
+        let repo = Repository::from_composer_json(project.path(), &root, cache.path(), transport)
+            .await
+            .unwrap();
+        let result = solver::solve_update(&repo, &root, project.path(), false, false)
+            .await
+            .unwrap();
+        assert_eq!(result.non_dev[0].pretty_version, want, "repository {addr}");
+    }
 }
 
 // --- Byte-diff acceptance: `viv update` against a real `composer/satis`

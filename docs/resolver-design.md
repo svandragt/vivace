@@ -125,7 +125,7 @@ Packagist v2 protocol, `Repository/ComposerRepository.php`:
   entry's fields, and a field set to `"__unset"` is removed.
 - Re-normalise `version_normalized` when it equals `DEFAULT_BRANCH_ALIAS`
   (`:1360-1362`).
-- HTTP cache under `$XDG_CACHE_HOME/vivace/repo/<repo-host>/`, key
+- HTTP cache under `$XDG_CACHE_HOME/vivace/repo-v1/<repo-url-slug>/`, key
   `provider-<name with / replaced by $>.json` (`:1160`), revalidated with
   `If-Modified-Since` (`:1889`, `:1968`). Reuse `src/fetch.rs`'s client.
 - Concurrency: batch 100 names per wave, matching

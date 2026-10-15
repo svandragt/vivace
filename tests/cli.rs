@@ -549,15 +549,17 @@ fn cache_clean_removes_a_platform_bucket() {
     assert!(!ctx.cache.path().exists());
 }
 
-/// #240: `viv cache clean` also removes a cache holding only the `repo-v0`
+/// #240: `viv cache clean` also removes a cache holding only the `repo-v1`
 /// metadata bucket (`viv update --no-install` writes that and nothing
 /// else) — the update-then-clean path the allow-list previously refused.
 #[test]
 fn cache_clean_removes_a_repo_bucket() {
     let ctx = TestContext::new();
-    fs::create_dir_all(ctx.cache.path().join("repo-v0/packagist.org")).unwrap();
+    fs::create_dir_all(ctx.cache.path().join("repo-v1/https---repo.packagist.org")).unwrap();
     fs::write(
-        ctx.cache.path().join("repo-v0/packagist.org/packages.json"),
+        ctx.cache
+            .path()
+            .join("repo-v1/https---repo.packagist.org/packages.json"),
         "{}",
     )
     .unwrap();
@@ -568,15 +570,17 @@ fn cache_clean_removes_a_repo_bucket() {
     assert!(!ctx.cache.path().exists());
 }
 
-/// #240: `viv cache prune` must not treat `repo-v0` as a stale bucket —
+/// #240: `viv cache prune` must not treat `repo-v1` as a stale bucket —
 /// it's the repository metadata cache that makes a warm `update` fast, not
 /// leftovers from an older viv.
 #[test]
 fn cache_prune_leaves_the_repo_bucket_alone() {
     let ctx = TestContext::new();
-    fs::create_dir_all(ctx.cache.path().join("repo-v0/packagist.org")).unwrap();
+    fs::create_dir_all(ctx.cache.path().join("repo-v1/https---repo.packagist.org")).unwrap();
     fs::write(
-        ctx.cache.path().join("repo-v0/packagist.org/packages.json"),
+        ctx.cache
+            .path()
+            .join("repo-v1/https---repo.packagist.org/packages.json"),
         "{}",
     )
     .unwrap();
@@ -587,7 +591,7 @@ fn cache_prune_leaves_the_repo_bucket_alone() {
     assert!(
         ctx.cache
             .path()
-            .join("repo-v0/packagist.org/packages.json")
+            .join("repo-v1/https---repo.packagist.org/packages.json")
             .exists()
     );
 }

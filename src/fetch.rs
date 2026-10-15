@@ -764,7 +764,7 @@ fn require_https(pkg_name: &str, url: &Url, secure_http: bool) -> Result<()> {
 /// and log lines: a dist URL or a redirect target can carry
 /// `https://user:pass@host/...`, and this must never reach a log or an error
 /// unredacted.
-fn redact(url: &Url) -> String {
+pub(crate) fn redact(url: &Url) -> String {
     let mut redacted = url.clone();
     if !redacted.username().is_empty() {
         let _ = redacted.set_username("***");

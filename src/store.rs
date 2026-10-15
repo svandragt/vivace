@@ -12,7 +12,7 @@
 //! - `.lock` carries a process-lifetime shared advisory lock so `prune` (which
 //!   takes it exclusively) never deletes under a running install.
 //!
-//! `tools-v0`, `platform-v0`, `repo-v0`, `vcs-v0` and `git-v0` are other modules'
+//! `tools-v0`, `platform-v0`, `repo-v1`, `vcs-v0` and `git-v0` are other modules'
 //! buckets under the same root; `KNOWN_BUCKETS` is the full, single list `prune` and
 //! the foreign-cache guard both read.
 //!
@@ -41,8 +41,10 @@ pub(crate) const TOOLS_BUCKET: &str = "tools-v0";
 /// `solver::platform`.
 pub(crate) const PLATFORM_BUCKET: &str = "platform-v0";
 /// Repository metadata (`packages.json` and its includes), cached under
-/// `repo-v0/<repo-host>/`; see `repository::ComposerSource::load`.
-pub(crate) const REPO_BUCKET: &str = "repo-v0";
+/// `repo-v1/<slug of the repository URL>/`; see `repository::repo_cache_name`.
+/// `repo-v0` keyed it by host alone (#378), so two repositories on one host
+/// shared a directory; `prune` removes it as a stale bucket.
+pub(crate) const REPO_BUCKET: &str = "repo-v1";
 /// Mirrored git checkouts for a VCS-sourced package, under
 /// `vcs-v0/<slugified url>/`; see `vcs::GitDriver::load`.
 pub(crate) const VCS_BUCKET: &str = "vcs-v0";
@@ -1924,7 +1926,7 @@ mod tests {
         assert!(root.path().join(".lock").is_file());
     }
 
-    /// #240: `repo-v0` (repository metadata, `repository::ComposerSource`)
+    /// #240: `repo-v1` (repository metadata, `repository::ComposerSource`)
     /// and `vcs-v0` (mirrored git checkouts, `vcs::GitDriver`) are buckets
     /// viv writes itself, not leftovers from an older viv — `prune` must
     /// not collect either as a stale bucket.
@@ -1932,9 +1934,10 @@ mod tests {
     fn prune_leaves_repo_and_vcs_buckets_alone() {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path()).unwrap();
-        fs_err::create_dir_all(root.path().join("repo-v0/packagist.org")).unwrap();
+        fs_err::create_dir_all(root.path().join("repo-v1/https---repo.packagist.org")).unwrap();
         fs_err::write(
-            root.path().join("repo-v0/packagist.org/packages.json"),
+            root.path()
+                .join("repo-v1/https---repo.packagist.org/packages.json"),
             "{}",
         )
         .unwrap();
@@ -1943,10 +1946,28 @@ mod tests {
         assert_eq!(report.entries, 0);
         assert!(
             root.path()
-                .join("repo-v0/packagist.org/packages.json")
+                .join("repo-v1/https---repo.packagist.org/packages.json")
                 .is_file()
         );
         assert!(root.path().join("vcs-v0/some-repo").is_dir());
+    }
+
+    /// #378: `repo-v0` keyed repository metadata by host alone, so two
+    /// repositories on one host shared a directory. `repo-v1` keys it by URL;
+    /// the old directories are never read again and `prune` collects them.
+    #[test]
+    fn prune_removes_the_host_keyed_repo_v0_bucket() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        fs_err::create_dir_all(root.path().join("repo-v0/packagist.org")).unwrap();
+        fs_err::write(
+            root.path().join("repo-v0/packagist.org/packages.json"),
+            "{}",
+        )
+        .unwrap();
+        let report = store.prune(None).unwrap();
+        assert_eq!(report.entries, 1);
+        assert!(!root.path().join("repo-v0").exists());
     }
 
     /// #360: `git-v0` (bare mirrors of `source.type: git` packages,

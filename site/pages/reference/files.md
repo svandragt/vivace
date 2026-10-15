@@ -40,7 +40,7 @@ default), or `--cache-dir`. It holds these buckets:
 | `dists-v0` | Pointers from a package/version to its `archive-v0` entry. |
 | `tools-v0` | `viv x`'s per-tool synthetic-root envs, one per content-hashed key. |
 | `platform-v0` | The cached `php` platform-detection probe, keyed by interpreter identity. |
-| `repo-v0` | Repository metadata (`packages.json` and its includes), one directory per repo host. |
+| `repo-v1` | Repository metadata (`packages.json` and its includes), one directory per repository URL. |
 | `vcs-v0` | Mirrored git checkouts for a VCS-sourced package. |
 | `root-classmap-v0` | One classmap-scan sidecar per project, for the root package's own directories. |
 | `platform-check-v0` | The last-verified-OK platform-check inputs, one file per project. |
