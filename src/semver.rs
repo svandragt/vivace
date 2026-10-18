@@ -180,18 +180,9 @@ pub fn parse_numeric_alias_prefix(branch: &str) -> Option<String> {
 /// One `Part` per dot/dash/underscore-separated version segment
 /// (`version_compare`'s own `split_version`), classified once
 /// (`classify_part`) instead of re-parsed on every comparison.
-/// `stability_order_for_empty_check` exists only for [`compare_slice`]'s
-/// "one side ran out of segments" branch: `version_compare` resolves that
-/// case with a *different* stability test (`stability_order` on the whole,
-/// unsplit segment — an exact keyword match) than the "both sides present"
-/// case (`stability_order` on the segment's own already-split prefix), so a
-/// segment like `"beta2"` needs both answers cached (prefix match: a
-/// beta-numbered prerelease; exact match: not a bare keyword, since
-/// `"beta2" != "beta"`) to reproduce `version_compare` bit for bit.
 #[derive(Debug, Clone)]
 struct Part {
     kind: PartKind,
-    stability_order_for_empty_check: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -224,7 +215,6 @@ const STABILITY_PREFIXES: [(&str, &str); 9] = [
 
 fn classify_part(token: &str) -> Part {
     let lower = token.to_ascii_lowercase();
-    let stability_order_for_empty_check = semver_php::stability_order(&lower);
     for (prefix, canonical) in STABILITY_PREFIXES {
         if lower.starts_with(prefix) {
             // `version.rs` slices the *original* token by the ASCII
@@ -235,17 +225,13 @@ fn classify_part(token: &str) -> Part {
             let num = rest.parse::<i64>().ok();
             return Part {
                 kind: PartKind::Stability(semver_php::stability_order(canonical), num),
-                stability_order_for_empty_check,
             };
         }
     }
     let kind = token
         .parse::<i64>()
         .map_or_else(|_| PartKind::Str(lower), PartKind::Num);
-    Part {
-        kind,
-        stability_order_for_empty_check,
-    }
+    Part { kind }
 }
 
 /// `version.rs`'s private `split_version`: dot/dash/underscore-separated,
@@ -296,21 +282,20 @@ fn compare_parts(a: &Part, b: &Part) -> Ordering {
 }
 
 /// `version.rs`'s `version_compare`'s "one side ran out of segments" branch:
-/// treats the missing side as `""`, which the *other* side's own
-/// `stability_order` (an exact keyword match, not the prefix match
-/// `compare_parts` uses) breaks the tie against.
+/// treats the missing side as `""`, which ranks above a pre-release part
+/// (`RC1`, `beta`) and below a number or `patch` part (#386).
 fn compare_part_opt(a: Option<&Part>, b: Option<&Part>) -> Ordering {
     match (a, b) {
         (None, None) => Ordering::Equal,
         (None, Some(p)) => {
-            if p.stability_order_for_empty_check != 0 {
+            if order_num(p).0 < 0 {
                 Ordering::Greater
             } else {
                 Ordering::Less
             }
         }
         (Some(p), None) => {
-            if p.stability_order_for_empty_check != 0 {
+            if order_num(p).0 < 0 {
                 Ordering::Less
             } else {
                 Ordering::Greater

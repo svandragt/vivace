@@ -105,3 +105,8 @@ debug = "line-tables-only"
 # artifacts once.
 [profile.dev.package."*"]
 opt-level = 2
+
+# shortcut: semver-php 0.1.0 ranks 4.4.0.0-RC1 above 4.4.0.0 (#386); drop
+# this once upstream releases the fix (m1guelpf/semver-php PR).
+[patch.crates-io]
+semver-php = { git = "https://github.com/svandragt/semver-php", rev = "36723084f1980bc8d46bd762a6d3bbf197a97540" }

@@ -497,3 +497,27 @@ fn version_key_ord_agrees_with_compare_on_recorded_packagist_versions() {
         "too few pairs checked: {pairs_checked}"
     );
 }
+
+// issue#386: `minimum-stability: dev` let viv rank a pre-release above the
+// stable release of the same version (`altis/altis` 28.0.0-beta.1 over 28.0.0).
+#[test]
+fn pre_release_sorts_below_its_stable_release() {
+    for (pre, stable) in [
+        ("v4.4.0-rc.1", "v4.4.0"),
+        ("28.0.0-beta.1", "28.0.0"),
+        ("1.0.0-RC1", "1.0.0"),
+        ("1.0.0-alpha2", "1.0.0"),
+    ] {
+        let (np, ns) = (normalize(pre).unwrap(), normalize(stable).unwrap());
+        assert_eq!(
+            compare(&np, &ns),
+            Ordering::Less,
+            "compare: {pre} vs {stable}"
+        );
+        assert_eq!(
+            parse_version_key(&np).cmp(&parse_version_key(&ns)),
+            Ordering::Less,
+            "VersionKey: {pre} vs {stable}"
+        );
+    }
+}
