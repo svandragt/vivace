@@ -437,6 +437,8 @@ pub(crate) fn partial_update(
         Some(dir) => dir.to_path_buf(),
         None => crate::update::default_cache_dir()?,
     };
+    // #385: the solve reads the pinned php `viv run` uses, not `PATH`'s.
+    let php_override = crate::php::platform_php(None, project_dir, Some(&cache_dir));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -489,7 +491,7 @@ pub(crate) fn partial_update(
             HashMap::new(),
             advisories,
             Some(&cache_dir),
-            None,
+            php_override.as_deref(),
             &ignore,
         ))?
     } else {
@@ -504,7 +506,7 @@ pub(crate) fn partial_update(
             &HashMap::new(),
             advisories,
             Some(&cache_dir),
-            None,
+            php_override.as_deref(),
             &ignore,
         ))?
     };

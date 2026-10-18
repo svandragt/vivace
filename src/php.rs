@@ -265,6 +265,27 @@ pub fn project_php_dir(
     Ok(Some(dest))
 }
 
+/// The `php` binary the solver's platform probe (`ext-*` detection) reads
+/// for `project_dir` (#385): `explicit` when the caller already resolved one
+/// (`viv x`), else the project's pinned build when [`project_php_dir`] finds
+/// it installed (the same pick `viv run` makes), else `None`, the `php` on
+/// `PATH`. Never installs a build (`offline: true` is `project_php_dir`'s
+/// no-install switch): `config.platform.php` is also Composer's way to
+/// simulate a version no static build exists for (`7.0.0`), so a pin that is
+/// missing or does not parse falls back to `PATH` like a project with no pin.
+pub(crate) fn platform_php(
+    explicit: Option<&Path>,
+    project_dir: &Path,
+    cache_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    explicit.map(Path::to_path_buf).or_else(|| {
+        project_php_dir(project_dir, cache_dir, true)
+            .ok()
+            .flatten()
+            .map(|dir| dir.join("php"))
+    })
+}
+
 /// The newest installed `<minor>.x` for `os`/`arch`, from the same cache
 /// scan [`run_list`] does (no network) — the minor-pin half of
 /// [`project_php_dir`]'s lookup.

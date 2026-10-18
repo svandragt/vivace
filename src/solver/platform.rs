@@ -1270,9 +1270,17 @@ fn php_entries(probe: &Probe) -> Vec<Entry> {
 /// `overrides` is `config.platform` verbatim (`Installer::doUpdate`'s
 /// `$this->config->get('platform')`); see the module doc comment for its
 /// semantics. Always probes fresh; [`cached_platform_packages`] is the
-/// cache-aware entry point pool building wants (#178).
-pub(crate) fn platform_packages(overrides: &Map<String, Value>) -> Result<Vec<Package>> {
-    let probe = resolve_php_path().and_then(|php_path| run_probe(&php_path));
+/// cache-aware entry point pool building wants (#178). `php_override` is
+/// [`cached_platform_packages`]'s own: the binary to probe instead of
+/// [`resolve_php_path`]'s.
+pub(crate) fn platform_packages(
+    overrides: &Map<String, Value>,
+    php_override: Option<&Path>,
+) -> Result<Vec<Package>> {
+    let php_path = php_override
+        .map(Path::to_path_buf)
+        .or_else(resolve_php_path);
+    let probe = php_path.and_then(|php_path| run_probe(&php_path));
     packages_from_probe(probe.as_ref(), overrides)
 }
 

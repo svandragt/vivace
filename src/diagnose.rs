@@ -48,8 +48,10 @@ pub fn run(args: &DiagnoseArgs, cache_dir: Option<&Path>) -> Result<()> {
     ));
     diagnose_cache(cache_dir)?;
     diagnose_composer_home_and_auth(&project_dir);
-    diagnose_tools();
-    diagnose_project(&project_dir)?;
+    // #385: the php `viv run` uses, when the project's pin is installed.
+    let php = crate::php::platform_php(None, &project_dir, cache_dir);
+    diagnose_tools(php.as_deref());
+    diagnose_project(&project_dir, php.as_deref())?;
     Ok(())
 }
 
@@ -145,10 +147,13 @@ fn auth_hosts(value: &Value) -> Vec<String> {
     hosts
 }
 
-fn diagnose_tools() {
+fn diagnose_tools(php: Option<&Path>) {
     out(&format!(
         "php: {}",
-        tool_version("php", &["-r", "echo PHP_VERSION;"])
+        tool_version(
+            php.unwrap_or_else(|| Path::new("php")),
+            &["-r", "echo PHP_VERSION;"]
+        )
     ));
     out(&format!("git: {}", tool_version("git", &["--version"])));
     out(&format!(
@@ -161,7 +166,7 @@ fn diagnose_tools() {
 /// the command can't be run or exits non-zero (no PHP/git/Composer on
 /// `PATH`, same as the rest of vivace's own detection probes in
 /// `solver::pool_builder`/`tool.rs`).
-fn tool_version(command: &str, args: &[&str]) -> String {
+fn tool_version(command: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> String {
     Command::new(command)
         .args(args)
         .output()
@@ -173,7 +178,7 @@ fn tool_version(command: &str, args: &[&str]) -> String {
         .unwrap_or_else(|| "not found".to_string())
 }
 
-fn diagnose_project(project_dir: &Path) -> Result<()> {
+fn diagnose_project(project_dir: &Path, php: Option<&Path>) -> Result<()> {
     let composer_json_path = project_dir.join("composer.json");
     let lock_path = project_dir.join("composer.lock");
     if !composer_json_path.is_file() || !lock_path.is_file() {
@@ -188,7 +193,7 @@ fn diagnose_project(project_dir: &Path) -> Result<()> {
         serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let lock = lock::read_lock(&lock_path)?;
 
-    diagnose_platform(&root_json)?;
+    diagnose_platform(&root_json, php)?;
     diagnose_plugins(&lock, &root);
     Ok(())
 }
@@ -197,13 +202,13 @@ fn diagnose_project(project_dir: &Path) -> Result<()> {
 /// [`crate::solver::platform::cached_platform_packages`]: this module's own
 /// doc comment promises nothing on disk is written, and caching would write
 /// a `platform-v0` entry.
-fn diagnose_platform(root_json: &Value) -> Result<()> {
+fn diagnose_platform(root_json: &Value, php: Option<&Path>) -> Result<()> {
     let overrides = root_json
         .pointer("/config/platform")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    for package in platform_packages(&overrides)? {
+    for package in platform_packages(&overrides, php)? {
         out(&format!(
             "platform: {} {}",
             package.name, package.pretty_version

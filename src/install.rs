@@ -894,13 +894,15 @@ pub(crate) fn run_impl(
         Some(dir) => dir.to_path_buf(),
         None => crate::update::default_cache_dir()?,
     };
+    // #385: the check reads the pinned php `viv run` uses, not `PATH`'s.
+    let pinned_php = crate::php::platform_php(php_override, &project_dir, Some(&cache_dir));
     verify_platform_requirements(
         &root,
         &lock,
         dev,
         &ignore_platform_reqs,
         Some(&cache_dir),
-        php_override,
+        pinned_php.as_deref(),
         &snapshot,
     )?;
 

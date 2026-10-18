@@ -206,3 +206,155 @@ fn install_with_no_version_and_no_pin_errors() {
         ),
     );
 }
+
+/// A `php` stand-in (#385): `-r` prints `version` (what `viv diagnose` asks),
+/// anything else reads the solver's probe script from stdin and prints a
+/// probe JSON with `extensions` (a `{"name":"version"}` object body).
+fn write_fake_php(path: &std::path::Path, version: &str, extensions: &str) {
+    fs_err::create_dir_all(path.parent().unwrap()).unwrap();
+    fs_err::write(
+        path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"-r\" ]; then\n  printf '%s' '{version}'\n  exit 0\nfi\n\
+             cat > /dev/null\nprintf '{{\"php_version\":\"{version}\",\"int_size\":8,\
+             \"extensions\":{extensions}}}'\n"
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs_err::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// #385's setup: a pinned 8.4 build in the cache whose probe reports `dom`,
+/// plus a different `php` first on `PATH` that does not. The returned value
+/// is the `PATH` to run `viv` with.
+fn pinned_php_with_dom_and_a_path_php_without(ctx: &TestContext) -> std::ffi::OsString {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let pinned = ctx
+        .cache
+        .path()
+        .join("php-v0")
+        .join(format!("8.4.7-{os}-{arch}"));
+    write_fake_php(&pinned.join("php"), "8.4.7", r#"{"dom":"8.4.7"}"#);
+    fs_err::write(pinned.join(".ok"), b"").unwrap();
+
+    let path_bin = ctx.cache.path().join("path-bin");
+    write_fake_php(&path_bin.join("php"), "8.3.1", "{}");
+    let mut paths = vec![path_bin];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(paths).unwrap()
+}
+
+/// `ext-dom` required at the root, `php` pinned to 8.4 and no packages, so
+/// no network is needed.
+fn write_ext_dom_project(project: &std::path::Path) {
+    fs_err::write(
+        project.join("composer.json"),
+        "{\n    \"require\": { \"ext-dom\": \"*\" },\n    \"config\": { \"platform\": { \"php\": \
+         \"8.4\" } },\n    \"repositories\": [{ \"packagist.org\": false }]\n}\n",
+    )
+    .unwrap();
+}
+
+/// The `ext-*` check of `viv update` reads the extensions of the pinned php
+/// `viv run` would use, not the `php` on `PATH` (#385).
+#[test]
+fn update_checks_extensions_against_the_pinned_php() {
+    let ctx = TestContext::new();
+    let path = pinned_php_with_dom_and_a_path_php_without(&ctx);
+    write_ext_dom_project(ctx.project.path());
+
+    ctx.viv().env("PATH", path).arg("update").assert().success();
+    assert!(ctx.project.path().join("composer.lock").is_file());
+}
+
+/// Same for the lock-verify step of `viv install` (#385).
+#[test]
+fn install_checks_extensions_against_the_pinned_php() {
+    let ctx = TestContext::new();
+    let path = pinned_php_with_dom_and_a_path_php_without(&ctx);
+    write_ext_dom_project(ctx.project.path());
+    ctx.viv()
+        .env("PATH", &path)
+        .args(["update", "--ignore-platform-reqs"])
+        .assert()
+        .success();
+
+    ctx.viv()
+        .env("PATH", path)
+        .arg("install")
+        .assert()
+        .success();
+}
+
+/// With no pin, the check keeps reading the `PATH` php: the same project
+/// minus the pin still refuses `ext-dom` (#385 must not change that).
+#[test]
+fn update_without_a_pin_still_checks_the_path_php() {
+    let ctx = TestContext::new();
+    let path = pinned_php_with_dom_and_a_path_php_without(&ctx);
+    fs_err::write(
+        ctx.project.path().join("composer.json"),
+        "{\n    \"require\": { \"ext-dom\": \"*\" },\n    \"repositories\": [{ \"packagist.org\": \
+         false }]\n}\n",
+    )
+    .unwrap();
+
+    ctx.viv()
+        .env("PATH", path)
+        .arg("update")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("ext-dom"));
+}
+
+/// A pin with no installed build (here 8.5; only 8.4 is cached) neither
+/// installs anything nor fails: the check reads the `PATH` php, as without a
+/// pin. `config.platform.php` can also simulate a version no build exists for.
+#[test]
+fn update_with_an_uninstalled_pin_uses_the_path_php_and_installs_nothing() {
+    let ctx = TestContext::new();
+    let path = pinned_php_with_dom_and_a_path_php_without(&ctx);
+    write_ext_dom_project(ctx.project.path());
+    let composer_json = fs_err::read_to_string(ctx.project.path().join("composer.json")).unwrap();
+    fs_err::write(
+        ctx.project.path().join("composer.json"),
+        composer_json.replace("\"8.4\"", "\"8.5\""),
+    )
+    .unwrap();
+
+    let output = ctx
+        .viv()
+        .env("PATH", path)
+        .env("VIV_PHP_DIST_URL", "http://127.0.0.1:9")
+        .arg("update")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("ext-dom"), "{stderr}");
+    assert!(!stderr.contains("installing php"), "{stderr}");
+}
+
+/// `viv diagnose` names the pinned php `viv run` would use, not the one on
+/// `PATH` (#385).
+#[test]
+fn diagnose_reports_the_pinned_php() {
+    let ctx = TestContext::new();
+    let path = pinned_php_with_dom_and_a_path_php_without(&ctx);
+    write_ext_dom_project(ctx.project.path());
+
+    ctx.viv()
+        .env("PATH", path)
+        .arg("diagnose")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("php: 8.4.7"));
+}

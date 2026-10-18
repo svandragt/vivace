@@ -272,6 +272,8 @@ pub(crate) fn run_impl(
         scripts.dispatch("pre-update-cmd")?;
     }
 
+    // #385: the solve reads the pinned php `viv run` uses, not `PATH`'s.
+    let php_override = crate::php::platform_php(php_override, &project_dir, cache_dir);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -283,7 +285,7 @@ pub(crate) fn run_impl(
         &lock_path,
         cache_dir,
         offline,
-        php_override,
+        php_override.as_deref(),
     ))?;
     tracing::debug!(
         elapsed_ms = solve_started.elapsed().as_millis(),
@@ -395,7 +397,13 @@ pub(crate) fn run_impl(
             prefer_dist: false,
             no_suggest: false,
         };
-        install::run_impl(&install_args, cache_dir, offline, false, php_override)?;
+        install::run_impl(
+            &install_args,
+            cache_dir,
+            offline,
+            false,
+            php_override.as_deref(),
+        )?;
     }
 
     scripts.dispatch("post-update-cmd")?;
