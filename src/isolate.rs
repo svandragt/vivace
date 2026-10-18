@@ -558,6 +558,8 @@ pub struct IsolateArgs {
     /// never runs scripts itself, so this is already true and only logged.
     #[arg(long)]
     pub no_scripts: bool,
+    #[command(flatten)]
+    pub link: link::LinkArgs,
 }
 
 pub fn run_isolate(args: &IsolateArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -579,6 +581,7 @@ pub fn run_isolate(args: &IsolateArgs, cache_dir: Option<&Path>, offline: bool) 
             &package.to_ascii_lowercase(),
             &cache_dir,
             args.no_plugins,
+            args.link.link_mode,
         );
     }
     let package = args
@@ -586,7 +589,14 @@ pub fn run_isolate(args: &IsolateArgs, cache_dir: Option<&Path>, offline: bool) 
         .as_deref()
         .expect("clap requires `package` without --list/--rm")
         .to_ascii_lowercase();
-    add_isolate(&project_dir, &package, &cache_dir, offline, args.no_plugins)
+    add_isolate(
+        &project_dir,
+        &package,
+        &cache_dir,
+        offline,
+        args.no_plugins,
+        args.link.link_mode,
+    )
 }
 
 fn list_isolated(project_dir: &Path) -> Result<()> {
@@ -639,6 +649,7 @@ fn add_isolate(
     cache_dir: &Path,
     offline: bool,
     no_plugins: bool,
+    link_mode: LinkMode,
 ) -> Result<()> {
     let (original, mut root_value, _root, lock, vendor_dir) =
         load_project(project_dir, no_plugins)?;
@@ -671,7 +682,7 @@ fn add_isolate(
         &store,
         cache_dir,
         php_dir.as_deref(),
-        LinkMode::default(),
+        link_mode,
         offline,
     )?;
 
@@ -693,6 +704,7 @@ fn remove_isolate(
     package: &str,
     cache_dir: &Path,
     no_plugins: bool,
+    link_mode: LinkMode,
 ) -> Result<()> {
     let (original, mut root_value, _root, lock, vendor_dir) =
         load_project(project_dir, no_plugins)?;
@@ -712,7 +724,7 @@ fn remove_isolate(
         if plugin_dir.is_dir() {
             let store = Store::open(cache_dir)?;
             if let Some(plain) = store.lookup(&locked) {
-                link::link_tree(&plain, &plugin_dir, LinkMode::default())?;
+                link::link_tree(&plain, &plugin_dir, link_mode)?;
             }
         }
     }

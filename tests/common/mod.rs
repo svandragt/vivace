@@ -74,6 +74,17 @@ pub(crate) fn scrubbed_command(program: &str) -> std::process::Command {
     command
 }
 
+/// Asserts `path` is a file `--link-mode copy` made (#387): it owns its inode
+/// and is writable, where a hardlink from the store shares the inode with the
+/// read-only store file.
+pub(crate) fn assert_is_independent_copy(path: &Path) {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let meta = std::fs::metadata(path).unwrap();
+    assert_eq!(meta.nlink(), 1, "{} is hardlinked", path.display());
+    assert_ne!(meta.mode() & 0o200, 0, "{} is read-only", path.display());
+}
+
 /// Reads `lock`'s `packages`/`packages-dev` entries into a lowercased
 /// name -> entry map, the shape `solve_partial_update` wants for its
 /// already-locked packages, shared by `tests/require.rs`/`tests/update.rs`.

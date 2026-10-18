@@ -55,6 +55,32 @@ fn install_without_a_lock_or_composer_json_fails() {
     viv_snapshot!(ctx, cmd);
 }
 
+/// #387: the hardlink warning tells the user to pass `--link-mode copy`, so
+/// every command that installs into `vendor/` must accept it.
+#[test]
+fn every_installing_command_accepts_link_mode() {
+    let ctx = TestContext::new();
+    for command in [
+        &["install"][..],
+        &["update"],
+        &["add"],
+        &["rm"],
+        &["new"],
+        &["init"],
+        &["isolate"],
+        &["workspace", "init"],
+        &["workspace", "add"],
+    ] {
+        let assert = ctx.viv().args(command).arg("--help").assert().success();
+        let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+        assert!(
+            stdout.contains("--link-mode <LINK_MODE>"),
+            "`viv {}` takes no --link-mode:\n{stdout}",
+            command.join(" ")
+        );
+    }
+}
+
 /// #236: a clap usage error (a bad flag, here) must not exit `2`, which
 /// `docs/stability.md` reserves for a genuine resolver failure.
 #[test]

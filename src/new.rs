@@ -68,6 +68,8 @@ pub struct NewArgs {
     /// `repositories`.
     #[arg(long)]
     pub repository: Option<String>,
+    #[command(flatten)]
+    pub link: link::LinkArgs,
 }
 
 pub fn run(args: &NewArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -213,6 +215,7 @@ fn run_from_package(
                 no_blocking: false,
                 no_security_blocking: false,
                 metadata_ttl: None,
+                link: args.link,
             },
             Some(&cache_dir),
             offline,
@@ -222,7 +225,7 @@ fn run_from_package(
             &InstallArgs {
                 no_dev: args.no_dev,
                 dry_run: false,
-                link_mode: LinkMode::default(),
+                link: args.link,
                 adopt: false,
                 project_dir: dir.clone(),
                 optimize_autoloader: false,

@@ -1902,6 +1902,42 @@ async fn update_chains_into_install() {
     );
 }
 
+/// #387: `--link-mode` reaches `update`'s chained install, as it does
+/// `install`: `copy` leaves independent writable files in `vendor/`, where the
+/// default hardlinks the store's read-only ones.
+#[tokio::test]
+async fn update_link_mode_copy_installs_independent_files() {
+    let ctx = offline_partial_update_context().await;
+
+    ctx.viv()
+        .args(["update", "psr/log", "--offline", "--link-mode", "copy"])
+        .assert()
+        .success();
+
+    common::assert_is_independent_copy(&ctx.project.path().join("vendor/psr/log/marker.txt"));
+}
+
+/// #387: `install` with no lock runs `update` (#362), which must keep the
+/// `--link-mode` the user passed to `install`.
+#[tokio::test]
+async fn install_without_a_lock_keeps_link_mode_through_update() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &project.join(dir));
+    }
+
+    ctx.viv()
+        .args(["install", "--offline", "--link-mode", "copy"])
+        .assert()
+        .success();
+
+    common::assert_is_independent_copy(&project.join("vendor/monolog/monolog/marker.txt"));
+}
+
 /// #231: `--ignore-platform-reqs` now reaches `update`'s chained install,
 /// same as `install`'s own flag (#214) — monolog/monolog's real `require:
 /// php >=8.1` (`tests/fixtures/packagist`) would otherwise land in

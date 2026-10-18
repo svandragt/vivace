@@ -886,3 +886,60 @@ async fn viv_remove_ignore_platform_reqs_writes_no_platform_check() {
         "platform_check.php should not be written when every platform requirement is ignored"
     );
 }
+
+/// #387: `--link-mode copy` reaches `viv add`'s chained install.
+#[tokio::test]
+async fn viv_add_link_mode_copy_installs_independent_files() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    fs_err::copy(fixture.join("composer.lock"), project.join("composer.lock")).unwrap();
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &project.join(dir));
+    }
+
+    ctx.viv()
+        .args([
+            "require",
+            "psr/container:^2.0",
+            "--offline",
+            "--link-mode",
+            "copy",
+        ])
+        .assert()
+        .success();
+
+    common::assert_is_independent_copy(&project.join("vendor/monolog/monolog/marker.txt"));
+}
+
+/// Same as above, for `viv rm`.
+#[tokio::test]
+async fn viv_remove_link_mode_copy_installs_independent_files() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    fs_err::copy(fixture.join("composer.lock"), project.join("composer.lock")).unwrap();
+    for dir in ["src", "lib"] {
+        copy_tree(&fixture.join(dir), &project.join(dir));
+    }
+
+    ctx.viv()
+        .args([
+            "remove",
+            "psr/container",
+            "--dev",
+            "--offline",
+            "--link-mode",
+            "copy",
+        ])
+        .assert()
+        .success();
+
+    common::assert_is_independent_copy(&project.join("vendor/monolog/monolog/marker.txt"));
+}

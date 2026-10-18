@@ -30,6 +30,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use serde_json::{Map, Value};
 
+use crate::link::LinkArgs;
 use crate::lock::{self, Root, glob_match};
 use crate::require;
 use crate::show::pad;
@@ -77,6 +78,8 @@ pub struct WorkspaceInitArgs {
     /// Write composer.json and composer.lock but don't install.
     #[arg(long = "no-install")]
     pub no_install: bool,
+    #[command(flatten)]
+    pub link: LinkArgs,
 }
 
 /// `viv workspace add` flags.
@@ -90,6 +93,8 @@ pub struct WorkspaceAddArgs {
     /// Write composer.json and composer.lock but don't install.
     #[arg(long = "no-install")]
     pub no_install: bool,
+    #[command(flatten)]
+    pub link: LinkArgs,
 }
 
 /// One discovered workspace member.
@@ -229,6 +234,7 @@ fn run_init(args: &WorkspaceInitArgs, cache_dir: Option<&Path>, offline: bool) -
         &[],
         false,
         std::time::Duration::ZERO,
+        args.link,
         &std::cell::Cell::new(false),
     )
 }
@@ -279,6 +285,7 @@ fn run_add(args: &WorkspaceAddArgs, cache_dir: Option<&Path>, offline: bool) -> 
         &[],
         false,
         std::time::Duration::ZERO,
+        args.link,
         &std::cell::Cell::new(false),
     )
 }

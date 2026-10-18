@@ -28,7 +28,7 @@ use crate::autoload::installed::{installed_json, installed_php};
 use crate::autoload::platform::{IgnorePlatform, PlatformInput, platform_check};
 use crate::bin;
 use crate::fetch;
-use crate::link::{LinkMode, link_tree};
+use crate::link::{LinkArgs, LinkMode, link_tree};
 use crate::lock::{
     self, Lock, MISSING_REQUIREMENTS_HINT, Package, Root, STALE_LOCK_WARNING, read_lock,
 };
@@ -65,9 +65,8 @@ pub struct InstallArgs {
     /// Print the plan and stop: no network, no filesystem writes.
     #[arg(long)]
     pub dry_run: bool,
-    /// How store files reach `vendor/`.
-    #[arg(long, value_enum, default_value = "hardlink")]
-    pub link_mode: LinkMode,
+    #[command(flatten)]
+    pub link: LinkArgs,
     /// Reinstall every locked package from the store even if `installed.json`
     /// already matches it, e.g. to relink a `vendor/` Composer (or an older
     /// viv) wrote as plain copies. Prompts for confirmation when stdin is a
@@ -656,8 +655,8 @@ pub fn run(args: &InstallArgs, cache_dir: Option<&Path>, offline: bool) -> Resul
 /// `Installer::run` forces `update` when `composer.lock` is absent (#362):
 /// warn, then run `viv update`, which resolves, writes the lock and installs.
 /// Only the flags `update` shares with `install` carry over: `-o`/`-a`,
-/// `--apcu-autoloader*`, `--link-mode` and `--adopt` have no `update`
-/// equivalent, and `update`'s chained install uses their defaults.
+/// `--apcu-autoloader*` and `--adopt` have no `update` equivalent, and
+/// `update`'s chained install uses their defaults.
 fn update_instead(
     args: &InstallArgs,
     project_dir: &Path,
@@ -696,6 +695,7 @@ fn update_instead(
         no_blocking: false,
         no_security_blocking: false,
         metadata_ttl: None,
+        link: args.link,
     };
     crate::update::run_impl(&update_args, cache_dir, offline, php_override)
 }
@@ -1145,7 +1145,7 @@ pub(crate) fn run_impl(
         &vendor_dir,
         &project_dir,
         &archive_dirs,
-        args.link_mode,
+        args.link.link_mode,
         !args.no_progress && std::io::stderr().is_terminal(),
     )?;
     for entry in &plan.remove {
@@ -1202,7 +1202,7 @@ pub(crate) fn run_impl(
                 &store,
                 &cache_dir,
                 php_dir.as_deref(),
-                args.link_mode,
+                args.link.link_mode,
                 offline,
             )?;
             state.isolate_checked.insert(name.clone(), scoper_version);

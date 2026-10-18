@@ -132,6 +132,29 @@ fn create_project_accepts_the_positional_constraint_form() {
     assert!(stderr.contains("Network disabled"), "{stderr}");
 }
 
+/// #387: `new` accepts `--link-mode`, as the install half it runs does: the
+/// flag must get past clap and reach the first network call, which `--offline`
+/// turns into a clean error.
+#[test]
+fn new_accepts_link_mode() {
+    let ctx = TestContext::new();
+    let assert = ctx
+        .viv()
+        .args([
+            "new",
+            "acme/skeleton",
+            "demo",
+            "--offline",
+            "--link-mode",
+            "copy",
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(!stderr.contains("Usage:"), "a clap usage error: {stderr}");
+    assert!(stderr.contains("Network disabled"), "{stderr}");
+}
+
 /// End-to-end: `viv new laravel/laravel demo --no-scripts` must match what
 /// `composer create-project` writes for the same skeleton (#139's "done
 /// when"). Gated on `VIVACE_TEST_NETWORK=1` so a bare `cargo nextest run`

@@ -15,8 +15,8 @@ When the project has no `composer.lock`, `viv install` prints Composer's
 instead, which resolves `composer.json`, writes the lock and installs. Only
 the flags `update` shares with `install` carry over: `--no-dev`, `--dry-run`,
 `--no-scripts`, `--no-plugins`, `--ignore-platform-reqs`,
-`--ignore-platform-req` and `-d`. The others (`-o`, `-a`, `--apcu-autoloader`,
-`--link-mode`, `--adopt`) take their defaults.
+`--ignore-platform-req`, `--link-mode` and `-d`. The others (`-o`, `-a`,
+`--apcu-autoloader`, `--adopt`) take their defaults.
 
 ## Usage
 

@@ -42,6 +42,15 @@ pub enum LinkMode {
     Clone,
 }
 
+/// `--link-mode`, flattened into every command that links store files into
+/// `vendor/`, so the flag the hardlink warning names works on each of them.
+#[derive(Debug, Clone, Copy, Default, clap::Args)]
+pub struct LinkArgs {
+    /// How store files reach `vendor/`.
+    #[arg(long, value_enum, default_value = "hardlink")]
+    pub link_mode: LinkMode,
+}
+
 /// Best-effort reflink of a whole file: `Ok` only if the destination now
 /// shares the source's extents, `Err` (any reason — unsupported filesystem,
 /// cross-device, anything else) leaves no partial file behind and tells the

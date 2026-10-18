@@ -19,7 +19,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::install::{self, InstallArgs};
-use crate::link::LinkMode;
+use crate::link::LinkArgs;
 use crate::lock;
 use crate::php;
 use crate::scripts;
@@ -213,13 +213,14 @@ pub fn ensure_tool_env(
             no_blocking: false,
             no_security_blocking: false,
             metadata_ttl: None,
+            link: LinkArgs::default(),
         };
         update::run_impl(&update_args, Some(&cache_dir), offline, php_override)
             .with_context(|| format!("resolving {spec}"))?;
         let install_args = InstallArgs {
             no_dev: false,
             dry_run: false,
-            link_mode: LinkMode::default(),
+            link: LinkArgs::default(),
             adopt: false,
             project_dir: env_dir.clone(),
             optimize_autoloader: false,

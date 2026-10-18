@@ -23,6 +23,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use serde_json::{Map, Value, json};
 
+use crate::link::LinkArgs;
 use crate::normalize;
 use crate::require::{self, split_spec};
 use crate::solver::pool_builder::UpdateAllowMode;
@@ -71,6 +72,8 @@ pub struct InitArgs {
     /// Project directory to write composer.json into.
     #[arg(short = 'd', long = "project-dir", default_value = ".")]
     pub project_dir: PathBuf,
+    #[command(flatten)]
+    pub link: LinkArgs,
 }
 
 pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) -> Result<()> {
@@ -213,6 +216,7 @@ pub fn run(args: &InitArgs, cache_dir: Option<&std::path::Path>, offline: bool) 
             &[],
             false,
             std::time::Duration::ZERO,
+            args.link,
             &std::cell::Cell::new(false),
         )?;
         out(&format!("Wrote {}", composer_json_path.display()));
@@ -331,6 +335,7 @@ pub(crate) fn write_defaults(
             no_install: false,
             force: false,
             project_dir: project_dir.to_path_buf(),
+            link: LinkArgs::default(),
         },
         cache_dir,
         offline,

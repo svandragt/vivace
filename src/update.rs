@@ -33,7 +33,7 @@ use serde_json::Value;
 use crate::auth::Auth;
 use crate::fetch::Fetcher;
 use crate::install::{self, InstallArgs};
-use crate::link::LinkMode;
+use crate::link::LinkArgs;
 use crate::normalize;
 use crate::repository::{HttpTransport, Repository};
 use crate::scripts;
@@ -155,6 +155,8 @@ pub struct UpdateArgs {
     /// either.
     #[arg(long)]
     pub metadata_ttl: Option<u64>,
+    #[command(flatten)]
+    pub link: LinkArgs,
 }
 
 /// `Platform::getBoolEnv('COMPOSER_NO_SECURITY_BLOCKING')`: non-empty and not
@@ -376,7 +378,7 @@ pub(crate) fn run_impl(
         let install_args = InstallArgs {
             no_dev: args.no_dev,
             dry_run: false,
-            link_mode: LinkMode::default(),
+            link: args.link,
             adopt: false,
             project_dir: project_dir.clone(),
             optimize_autoloader: false,

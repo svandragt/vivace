@@ -22,7 +22,7 @@ use clap::Args;
 use serde_json::{Map, Value, json};
 
 use crate::install::{self, InstallArgs};
-use crate::link::LinkMode;
+use crate::link::LinkArgs;
 use crate::normalize;
 use crate::scripts;
 use crate::solver::{
@@ -107,6 +107,8 @@ pub struct RequireArgs {
     /// `--repository path:packages/*`.
     #[arg(long = "repository", value_name = "TYPE:URL")]
     pub repository: Vec<String>,
+    #[command(flatten)]
+    pub link: LinkArgs,
 }
 
 /// `viv rm` flags.
@@ -169,6 +171,8 @@ pub struct RemoveArgs {
     /// (this flag wins); `--offline` always wins over either.
     #[arg(long)]
     pub metadata_ttl: Option<u64>,
+    #[command(flatten)]
+    pub link: LinkArgs,
 }
 
 pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()> {
@@ -248,6 +252,7 @@ pub fn run_require(args: &RequireArgs, cache_dir: Option<&Path>, offline: bool) 
         &args.ignore_platform_req,
         args.no_blocking || args.no_security_blocking,
         metadata_ttl,
+        args.link,
         &resolution_completed,
     );
     // `RequireCommand::execute` reverts only while the resolution is still
@@ -359,6 +364,7 @@ pub fn run_remove(args: &RemoveArgs, cache_dir: Option<&Path>, offline: bool) ->
         &args.ignore_platform_req,
         args.no_blocking || args.no_security_blocking,
         crate::update::metadata_ttl(args.metadata_ttl, offline),
+        args.link,
         &resolution_completed,
     );
     // Same boundary as `run_require`; `RemoveCommand` never restores the lock.
@@ -404,6 +410,7 @@ pub(crate) fn partial_update(
     ignore_platform_req: &[String],
     no_blocking: bool,
     metadata_ttl: std::time::Duration,
+    link: LinkArgs,
     resolution_completed: &Cell<bool>,
 ) -> Result<()> {
     let composer_json_path = project_dir.join("composer.json");
@@ -528,7 +535,7 @@ pub(crate) fn partial_update(
         let install_args = InstallArgs {
             no_dev: false,
             dry_run: false,
-            link_mode: LinkMode::default(),
+            link,
             adopt: false,
             project_dir: project_dir.to_path_buf(),
             optimize_autoloader: false,
@@ -951,6 +958,7 @@ mod tests {
             no_security_blocking: false,
             metadata_ttl: None,
             repository: Vec::new(),
+            link: crate::link::LinkArgs::default(),
         };
         let err = run_require(&args, None, true).unwrap_err();
         assert!(err.to_string().contains("composer.json"), "{err:#}");
