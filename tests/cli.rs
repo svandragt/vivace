@@ -81,6 +81,18 @@ fn every_installing_command_accepts_link_mode() {
     }
 }
 
+/// update-lock ignores `--link-mode`, so its help hides the flag.
+#[test]
+fn update_lock_hides_link_mode_but_update_shows_it() {
+    let ctx = TestContext::new();
+    let help = |cmd: &str| {
+        let assert = ctx.viv().arg(cmd).arg("--help").assert().success();
+        String::from_utf8_lossy(&assert.get_output().stdout).to_string()
+    };
+    assert!(!help("update-lock").contains("--link-mode"));
+    assert!(help("update").contains("--link-mode"));
+}
+
 /// #236: a clap usage error (a bad flag, here) must not exit `2`, which
 /// `docs/stability.md` reserves for a genuine resolver failure.
 #[test]

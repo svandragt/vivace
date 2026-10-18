@@ -213,6 +213,23 @@ fn prefer_stable_picks_the_stable_version_over_a_higher_unstable_one() {
     assert_eq!(got.get("vendor/pkg").map(String::as_str), Some("1.0.0"));
 }
 
+// issue#386: with minimum-stability dev and no prefer-stable, viv locked the pre-release.
+#[test]
+fn without_prefer_stable_a_stable_release_beats_its_own_pre_release() {
+    for (stable, pre) in [
+        ("1.0.0", "1.0.0-RC1"),
+        ("28.0.0", "28.0.0-beta1"),
+        ("4.4.0", "4.4.0-alpha2"),
+    ] {
+        let pool = Pool::new(vec![
+            package("vendor/pkg", pre),
+            package("vendor/pkg", stable),
+        ]);
+        let got = solve(&pool, &require("vendor/pkg"), false, false);
+        assert_eq!(got.get("vendor/pkg").map(String::as_str), Some(stable));
+    }
+}
+
 #[test]
 fn prefer_lowest_picks_the_lowest_version() {
     let low = package("vendor/pkg", "1.0.0");

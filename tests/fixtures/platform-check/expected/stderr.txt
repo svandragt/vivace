@@ -6,5 +6,3 @@ Your lock file does not contain a compatible set of packages. Please run compose
     - acme/hello is locked to version 1.0.0 and an update of this package was not requested.
     - acme/hello 1.0.0 requires ext-viv-nonexistent-two * -> it is missing from your system. Install or enable PHP's viv-nonexistent-two extension.
 
-Platform packages were read from the php on PATH.
-

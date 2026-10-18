@@ -13,8 +13,8 @@
 //! (`SolverProblemsException::createExtensionHint`, never ported —
 //! `src/solver/problem.rs`'s own module doc names what stage 5 covers), same
 //! scoping `tests/support/mod.rs`'s own doc comment already applies to
-//! `--EXPECT-OUTPUT--`. The closing "Platform packages were read from ..."
-//! line is viv's own (#385) and not part of that capture.
+//! `--EXPECT-OUTPUT--`. The file is a verbatim capture; the test checks viv's
+//! trailing #385 note ("Platform packages were read from ...") separately.
 
 mod common;
 
@@ -67,12 +67,15 @@ fn install_refuses_a_missing_extension_root_and_locked_package() {
     copy_sources(&fixture(), project);
 
     let expected = fs::read(fixture().join("expected/stderr.txt")).unwrap();
-    ctx.viv()
-        .arg("install")
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(expected);
+    let assert = ctx.viv().arg("install").assert().failure().code(2);
+    let stderr = assert.get_output().stderr.clone();
+    assert!(
+        stderr.starts_with(&expected),
+        "stderr does not start with the Composer capture:\n{}",
+        String::from_utf8_lossy(&stderr)
+    );
+    let rest = String::from_utf8_lossy(&stderr[expected.len()..]);
+    assert!(rest.contains("Platform packages were read from"), "{rest}");
 
     assert!(
         !project.join("vendor").exists(),

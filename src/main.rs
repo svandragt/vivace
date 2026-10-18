@@ -103,6 +103,7 @@ enum Command {
     Update(UpdateArgs),
     /// `update --lock`'s own first-class subcommand: re-derive
     /// `composer.lock` from itself without solving or installing.
+    #[command(mut_arg("link_mode", |arg| arg.hide(true)))]
     UpdateLock(UpdateArgs),
     /// Add a dependency to composer.json, resolve it and install
     /// (`--no-install`/`--no-update` opt out).
