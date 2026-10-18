@@ -2184,7 +2184,8 @@ fn patches_fingerprint(
 
 /// Write `content` to `path` only when it differs, via a temp file in the
 /// same directory renamed over the target, so a reader never sees a partial
-/// write. The file gets the umask mode, like Composer's `file_put_contents`.
+/// write. Like Composer's `file_put_contents`, a new file gets the umask mode
+/// and an existing one keeps its mode (park#405).
 pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     if fs_err::read(path).is_ok_and(|existing| existing == content) {
         return Ok(());
@@ -2193,7 +2194,12 @@ pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
         .parent()
         .with_context(|| format!("{} has no parent directory", path.display()))?;
     fs_err::create_dir_all(parent)?;
-    write_atomic_mode(path, content, 0o666)
+    let existing = std::fs::metadata(path).ok().map(|meta| meta.permissions());
+    write_atomic_mode(path, content, 0o666)?;
+    if let Some(permissions) = existing {
+        fs_err::set_permissions(path, permissions)?;
+    }
+    Ok(())
 }
 
 /// `write_atomic`'s temp-file-and-rename, with `mode` as the file's mode

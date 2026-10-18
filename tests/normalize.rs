@@ -130,6 +130,23 @@ fn rewritten_composer_json_carries_the_umask_mode() {
     assert_eq!(got, want, "composer.json: {got:o} vs umask {want:o}");
 }
 
+/// park#405: like Composer's `file_put_contents`, a rewrite keeps the mode
+/// of the `composer.json` it replaces.
+#[test]
+fn rewritten_composer_json_keeps_its_existing_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let ctx = TestContext::new();
+    let path = ctx.project.path().join("composer.json");
+    fs::copy(fixtures().join("one.json"), &path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+
+    ctx.viv().arg("normalize").assert().success();
+
+    let got = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(got, 0o640, "composer.json: {got:o}");
+}
+
 #[test]
 fn indent_size_is_configurable() {
     let ctx = TestContext::new();
