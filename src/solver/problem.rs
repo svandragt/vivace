@@ -828,6 +828,9 @@ pub struct SolverError {
     /// `SolverProblemsException::getPrettyString`'s `$isCausedByLock` and
     /// no `-W`: whether to close with the `--with-all-dependencies` hint.
     suggest_with_all_dependencies: bool,
+    /// Which `php` the platform packages came from (#385), printed after the
+    /// problem list when one of them is a platform problem.
+    platform_note: Option<String>,
 }
 
 impl SolverError {
@@ -840,6 +843,7 @@ impl SolverError {
                 .collect(),
             suggest_with_all_dependencies: !request.allow_transitive_root_dependencies
                 && problems.iter().any(|p| p.is_caused_by_lock(request)),
+            platform_note: None,
         }
     }
 
@@ -851,9 +855,36 @@ impl SolverError {
             header: Header::Install,
             problems,
             suggest_with_all_dependencies: false,
+            platform_note: None,
+        }
+    }
+
+    /// #385: names the `php` the platform packages were read from. Only
+    /// printed when a problem is about a platform package.
+    pub(crate) fn with_platform_note(mut self, note: String) -> SolverError {
+        self.platform_note = Some(note);
+        self
+    }
+
+    /// [`SolverError::with_platform_note`] for an error that may or may not
+    /// be a `SolverError`, built lazily: `note` only runs for one.
+    pub(crate) fn annotate(err: anyhow::Error, note: impl FnOnce() -> String) -> anyhow::Error {
+        match err.downcast::<SolverError>() {
+            Ok(solver_error) => solver_error.with_platform_note(note()).into(),
+            Err(err) => err,
         }
     }
 }
+
+/// Substrings of the wordings [`missing_package_suffix`] gives a platform
+/// package, for [`SolverError::platform_note`]; the same text scan
+/// `TYPO_HINT` below does, since a problem is already rendered by then.
+const PLATFORM_PROBLEM_MARKERS: [&str; 4] = [
+    "missing from your system",
+    "wrong version installed",
+    "does not satisfy that requirement",
+    "disabled by your platform config",
+];
 
 /// `SolverProblemsException::getPrettyString`'s "Potential causes" hint,
 /// appended verbatim whenever any problem's text contains either phrase
@@ -889,6 +920,15 @@ impl fmt::Display for SolverError {
             writeln!(f, "  Problem {}{problem}", i + 1)?;
             any_not_found |= problem.contains("could not be found")
                 || problem.contains("no matching package found");
+        }
+        if let Some(note) = &self.platform_note
+            && self.problems.iter().any(|problem| {
+                PLATFORM_PROBLEM_MARKERS
+                    .iter()
+                    .any(|marker| problem.contains(marker))
+            })
+        {
+            writeln!(f, "\n{note}")?;
         }
         if any_not_found {
             writeln!(f, "\n{TYPO_HINT}")?;

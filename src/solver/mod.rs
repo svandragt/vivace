@@ -307,7 +307,8 @@ pub async fn solve_partial_update_seeded<T: Transport, A: AdvisoriesTransport>(
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "mirrors solve_partial_update plus lock_merge's --as-of cutoff"
+    reason = "mirrors solve_partial_update plus lock_merge's --as-of cutoff and the platform-probe \
+              php override (#385)"
 )]
 pub async fn solve_partial_update_as_of<T: Transport>(
     repo: &Repository<T>,
@@ -319,6 +320,7 @@ pub async fn solve_partial_update_as_of<T: Transport>(
     allow_list: &[String],
     mode: pool_builder::UpdateAllowMode,
     as_of: Option<i64>,
+    php_override: Option<&Path>,
 ) -> Result<UpdateResult> {
     solve_partial_update_seeded_inner::<T, crate::audit::NoAdvisories>(
         repo,
@@ -333,7 +335,7 @@ pub async fn solve_partial_update_as_of<T: Transport>(
         HashMap::new(),
         None,
         None,
-        None,
+        php_override,
         as_of,
         &IgnorePlatform::None,
     )

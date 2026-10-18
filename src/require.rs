@@ -478,37 +478,41 @@ pub(crate) fn partial_update(
         let lock_bytes = fs_err::read(&lock_path)?;
         let lock: Value = serde_json::from_slice(&lock_bytes).context("parsing composer.lock")?;
         let locked_by_name = locked_packages_by_name(&lock);
-        runtime.block_on(solver::solve_partial_update_seeded(
-            &repo,
-            &root,
-            project_dir,
-            prefer_stable,
-            prefer_lowest,
-            &locked_by_name,
-            names,
-            mode,
-            &[],
-            HashMap::new(),
-            advisories,
-            Some(&cache_dir),
-            php_override.as_deref(),
-            &ignore,
-        ))?
+        runtime
+            .block_on(solver::solve_partial_update_seeded(
+                &repo,
+                &root,
+                project_dir,
+                prefer_stable,
+                prefer_lowest,
+                &locked_by_name,
+                names,
+                mode,
+                &[],
+                HashMap::new(),
+                advisories,
+                Some(&cache_dir),
+                php_override.as_deref(),
+                &ignore,
+            ))
+            .map_err(|err| crate::php::annotate_solver_error(err, php_override.as_deref(), &root))?
     } else {
-        runtime.block_on(solver::solve_update_seeded(
-            &repo,
-            &root,
-            project_dir,
-            prefer_stable,
-            prefer_lowest,
-            &[],
-            HashMap::new(),
-            &HashMap::new(),
-            advisories,
-            Some(&cache_dir),
-            php_override.as_deref(),
-            &ignore,
-        ))?
+        runtime
+            .block_on(solver::solve_update_seeded(
+                &repo,
+                &root,
+                project_dir,
+                prefer_stable,
+                prefer_lowest,
+                &[],
+                HashMap::new(),
+                &HashMap::new(),
+                advisories,
+                Some(&cache_dir),
+                php_override.as_deref(),
+                &ignore,
+            ))
+            .map_err(|err| crate::php::annotate_solver_error(err, php_override.as_deref(), &root))?
     };
     // #177: `repo` is never read again below (see `update::forget_repo`'s
     // own doc for why forgetting it here is safe and worth it).

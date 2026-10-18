@@ -278,15 +278,17 @@ pub(crate) fn run_impl(
         .enable_all()
         .build()?;
     let solve_started = Instant::now();
-    let result = runtime.block_on(solve(
-        args,
-        &project_dir,
-        &root,
-        &lock_path,
-        cache_dir,
-        offline,
-        php_override.as_deref(),
-    ))?;
+    let result = runtime
+        .block_on(solve(
+            args,
+            &project_dir,
+            &root,
+            &lock_path,
+            cache_dir,
+            offline,
+            php_override.as_deref(),
+        ))
+        .map_err(|err| crate::php::annotate_solver_error(err, php_override.as_deref(), &root))?;
     tracing::debug!(
         elapsed_ms = solve_started.elapsed().as_millis(),
         "resolved metadata and solved (merged solve, plus the dev-split \

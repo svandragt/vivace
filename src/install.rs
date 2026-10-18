@@ -480,7 +480,13 @@ fn verify_platform_requirements(
         }
         return Ok(());
     }
-    Err(SolverError::for_install(problems).into())
+    let note = crate::php::platform_php_note(
+        php_override,
+        root.config.platform.get("php").and_then(Value::as_str),
+    );
+    Err(SolverError::for_install(problems)
+        .with_platform_note(note)
+        .into())
 }
 
 /// [`verify_platform_requirements`]'s verdict-cache key: every input that

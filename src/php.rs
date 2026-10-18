@@ -286,6 +286,47 @@ pub(crate) fn platform_php(
     })
 }
 
+/// The line a refused platform requirement prints (#385) saying which `php`
+/// its platform packages came from: `php` is what [`platform_php`] returned
+/// and `pin` is `config.platform.php`. With no build, a set pin adds how to
+/// install it (`viv run` installs it on a miss, as does `viv php install`).
+pub(crate) fn platform_php_note(php: Option<&Path>, pin: Option<&str>) -> String {
+    if let Some(path) = php {
+        return format!(
+            "Platform packages were read from {}, the php build pinned by config.platform.php.",
+            path.display()
+        );
+    }
+    let source = if crate::solver::platform::resolve_php_path().is_some() {
+        "Platform packages were read from the php on PATH."
+    } else {
+        "No php binary was found on PATH, so viv assumed php 8.3.0 with no extensions."
+    };
+    match pin {
+        Some(pin) => format!(
+            "{source}\nconfig.platform.php pins php {pin}, which is not installed. Run `viv php \
+             install {pin}` or `viv run php -v` to install it."
+        ),
+        None => source.to_string(),
+    }
+}
+
+/// Adds [`platform_php_note`] to `err` when it is a refused solve (#385):
+/// `update`/`require`/`remove` call this on their solve's error, `root` being
+/// their parsed `composer.json`.
+pub(crate) fn annotate_solver_error(
+    err: anyhow::Error,
+    php: Option<&Path>,
+    root: &Value,
+) -> anyhow::Error {
+    crate::solver::problem::SolverError::annotate(err, || {
+        platform_php_note(
+            php,
+            root.pointer("/config/platform/php").and_then(Value::as_str),
+        )
+    })
+}
+
 /// The newest installed `<minor>.x` for `os`/`arch`, from the same cache
 /// scan [`run_list`] does (no network) — the minor-pin half of
 /// [`project_php_dir`]'s lookup.

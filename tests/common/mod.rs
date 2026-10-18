@@ -166,6 +166,45 @@ impl Transport for &CountingTransport {
     }
 }
 
+/// A `php` stand-in (#385): `-r` prints `version` (what `viv diagnose` asks),
+/// anything else reads the solver's probe script from stdin and prints a
+/// probe JSON with `extensions` (a `{"name":"version"}` object body).
+pub(crate) fn write_fake_php(path: &Path, version: &str, extensions: &str) {
+    fs_err::create_dir_all(path.parent().unwrap()).unwrap();
+    fs_err::write(
+        path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"-r\" ]; then\n  printf '%s' '{version}'\n  exit 0\nfi\n\
+             cat > /dev/null\nprintf '{{\"php_version\":\"{version}\",\"int_size\":8,\
+             \"extensions\":{extensions}}}'\n"
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs_err::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// Installs `write_fake_php`'s stand-in as the pinned build `version` in
+/// `cache_dir` (`<cache>/php-v0/<version>-<os>-<arch>/{php,.ok}`) and
+/// returns the path of its `php`.
+pub(crate) fn install_fake_pinned_php(
+    cache_dir: &Path,
+    version: &str,
+    extensions: &str,
+) -> PathBuf {
+    let dir = cache_dir.join("php-v0").join(format!(
+        "{version}-{}-{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ));
+    write_fake_php(&dir.join("php"), version, extensions);
+    fs_err::write(dir.join(".ok"), b"").unwrap();
+    dir.join("php")
+}
+
 pub(crate) struct TestContext {
     pub(crate) project: TempDir,
     pub(crate) cache: TempDir,

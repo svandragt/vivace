@@ -341,6 +341,7 @@ async fn lock_merge_resolves_the_divergent_closure_against_a_fixture_transport()
         &locked_by_name,
         &allow_list,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -417,6 +418,7 @@ async fn resolve_divergent_closure_declines_a_version_released_after_as_of() {
         &locked_by_name,
         &allow_list,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -443,6 +445,7 @@ async fn resolve_divergent_closure_declines_a_version_released_after_as_of() {
         &locked_by_name,
         &allow_list,
         Some(as_of),
+        None,
     )
     .await
     .unwrap();
@@ -616,6 +619,64 @@ async fn rung_2_resolves_when_a_pinned_direct_dependent_blocks_the_closure() {
         }],
         "e/dependent, a direct dependent of the divergent closure, must be reported as moved"
     );
+}
+
+/// #385: the re-solve probes the pinned php `viv run` uses, as `viv install`
+/// does, so the merge driver does not refuse what install accepts. Only the
+/// pinned build's probe reports `ext-viv-pinned-only`.
+#[tokio::test]
+async fn escalate_resolve_reads_the_extensions_of_the_pinned_php() {
+    let project = tempfile::tempdir().unwrap();
+    let root = json!({
+        "require": {"psr/log": "^3.0", "ext-viv-pinned-only": "*"},
+        "config": {"platform": {"php": "8.4"}},
+    });
+    fs::write(project.path().join("composer.json"), root.to_string()).unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    common::install_fake_pinned_php(cache.path(), "8.4.7", r#"{"viv-pinned-only":"1.0"}"#);
+    let transport = FixtureTransport {
+        root: fixtures_root(),
+    };
+    let repo = Repository::from_composer_json_with_ttl(
+        Path::new("."),
+        &root,
+        cache.path(),
+        &transport,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+
+    let mut divergent = BTreeSet::new();
+    divergent.insert("psr/log".to_string());
+    let mut ours = BTreeMap::new();
+    ours.insert(
+        "psr/log".to_string(),
+        pinned("psr/log", "3.0.1", &json!({"php": ">=8.0.0"})),
+    );
+    let mut theirs = BTreeMap::new();
+    theirs.insert(
+        "psr/log".to_string(),
+        pinned("psr/log", "3.0.2", &json!({"php": ">=8.0.0"})),
+    );
+
+    let resolved = escalate_resolve(
+        &repo,
+        &root,
+        project.path(),
+        false,
+        &BTreeMap::new(),
+        &divergent,
+        &ours,
+        &theirs,
+        None,
+        Some(cache.path()),
+        Scope::Closure,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resolved.scope, Scope::Closure);
 }
 
 /// `--max-scope closure` on the same case as above: rung 1 fails and the
@@ -874,6 +935,7 @@ async fn offline_pin_accepts_ours_after_escalation_fails_with_no_further_fetch()
         &divergent,
         &ours,
         &theirs,
+        None,
     )
     .await
     .expect("ours' pin satisfies the merged set; the offline pin must accept it");
@@ -989,6 +1051,7 @@ async fn offline_pin_falls_back_to_theirs_when_ours_violates_a_siblings_require(
         &divergent,
         &ours,
         &theirs,
+        None,
     )
     .await
     .expect("theirs' pin satisfies e/dependent's own require; the offline pin must accept it");
@@ -1068,6 +1131,7 @@ async fn offline_pin_falls_through_when_neither_pin_satisfies_a_siblings_require
         &divergent,
         &ours,
         &theirs,
+        None,
     )
     .await;
     assert!(
@@ -1137,6 +1201,7 @@ async fn offline_pin_falls_through_when_the_root_requirement_excludes_both_pins(
         &divergent,
         &ours,
         &theirs,
+        None,
     )
     .await;
     assert!(

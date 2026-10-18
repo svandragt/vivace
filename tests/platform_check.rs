@@ -13,7 +13,8 @@
 //! (`SolverProblemsException::createExtensionHint`, never ported —
 //! `src/solver/problem.rs`'s own module doc names what stage 5 covers), same
 //! scoping `tests/support/mod.rs`'s own doc comment already applies to
-//! `--EXPECT-OUTPUT--`.
+//! `--EXPECT-OUTPUT--`. The closing "Platform packages were read from ..."
+//! line is viv's own (#385) and not part of that capture.
 
 mod common;
 

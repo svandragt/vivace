@@ -9,7 +9,8 @@ use std::io::{Read, Write as _};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::{Arc, Mutex};
 
-use common::TestContext;
+use common::{TestContext, install_fake_pinned_php, write_fake_php};
+use predicates::prelude::PredicateBooleanExt as _;
 use sha2::{Digest, Sha256};
 
 /// A single-entry (`php`) tar.gz, gzip-compressed the same way
@@ -207,40 +208,11 @@ fn install_with_no_version_and_no_pin_errors() {
     );
 }
 
-/// A `php` stand-in (#385): `-r` prints `version` (what `viv diagnose` asks),
-/// anything else reads the solver's probe script from stdin and prints a
-/// probe JSON with `extensions` (a `{"name":"version"}` object body).
-fn write_fake_php(path: &std::path::Path, version: &str, extensions: &str) {
-    fs_err::create_dir_all(path.parent().unwrap()).unwrap();
-    fs_err::write(
-        path,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = \"-r\" ]; then\n  printf '%s' '{version}'\n  exit 0\nfi\n\
-             cat > /dev/null\nprintf '{{\"php_version\":\"{version}\",\"int_size\":8,\
-             \"extensions\":{extensions}}}'\n"
-        ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs_err::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-}
-
 /// #385's setup: a pinned 8.4 build in the cache whose probe reports `dom`,
 /// plus a different `php` first on `PATH` that does not. The returned value
 /// is the `PATH` to run `viv` with.
 fn pinned_php_with_dom_and_a_path_php_without(ctx: &TestContext) -> std::ffi::OsString {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    let pinned = ctx
-        .cache
-        .path()
-        .join("php-v0")
-        .join(format!("8.4.7-{os}-{arch}"));
-    write_fake_php(&pinned.join("php"), "8.4.7", r#"{"dom":"8.4.7"}"#);
-    fs_err::write(pinned.join(".ok"), b"").unwrap();
+    install_fake_pinned_php(ctx.cache.path(), "8.4.7", r#"{"dom":"8.4.7"}"#);
 
     let path_bin = ctx.cache.path().join("path-bin");
     write_fake_php(&path_bin.join("php"), "8.3.1", "{}");
@@ -311,7 +283,11 @@ fn update_without_a_pin_still_checks_the_path_php() {
         .arg("update")
         .assert()
         .failure()
-        .stderr(predicates::str::contains("ext-dom"));
+        .stderr(predicates::str::contains("ext-dom"))
+        .stderr(predicates::str::contains(
+            "Platform packages were read from the php on PATH.",
+        ))
+        .stderr(predicates::str::contains("pins php").not());
 }
 
 /// A pin with no installed build (here 8.5; only 8.4 is cached) neither
@@ -341,6 +317,68 @@ fn update_with_an_uninstalled_pin_uses_the_path_php_and_installs_nothing() {
     assert!(!output.status.success(), "{stderr}");
     assert!(stderr.contains("ext-dom"), "{stderr}");
     assert!(!stderr.contains("installing php"), "{stderr}");
+    // The refusal names the binary it probed and how to get the pinned one.
+    assert!(
+        stderr.contains("Platform packages were read from the php on PATH."),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "config.platform.php pins php 8.5, which is not installed. Run `viv php install \
+             8.5` or `viv run php -v` to install it."
+        ),
+        "{stderr}"
+    );
+}
+
+/// A refused requirement names the pinned php binary the check probed
+/// (#385), both for `viv update` and for the lock-verify step of `viv install`.
+#[test]
+fn a_refusal_names_the_pinned_php_it_probed() {
+    let ctx = TestContext::new();
+    let path = pinned_php_with_dom_and_a_path_php_without(&ctx);
+    write_ext_dom_project(ctx.project.path());
+    let composer_json = fs_err::read_to_string(ctx.project.path().join("composer.json")).unwrap();
+    fs_err::write(
+        ctx.project.path().join("composer.json"),
+        composer_json.replace("ext-dom", "ext-viv-absent"),
+    )
+    .unwrap();
+    let pinned_php = ctx
+        .cache
+        .path()
+        .join("php-v0")
+        .join(format!(
+            "8.4.7-{}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ))
+        .join("php");
+    let note = format!(
+        "Platform packages were read from {}, the php build pinned by config.platform.php.",
+        pinned_php.display()
+    );
+
+    let update = ctx.viv().env("PATH", &path).arg("update").output().unwrap();
+    let stderr = String::from_utf8_lossy(&update.stderr);
+    assert!(!update.status.success(), "{stderr}");
+    assert!(stderr.contains("ext-viv-absent"), "{stderr}");
+    assert!(stderr.contains(&note), "{stderr}");
+
+    ctx.viv()
+        .env("PATH", &path)
+        .args(["update", "--ignore-platform-reqs"])
+        .assert()
+        .success();
+    let install = ctx
+        .viv()
+        .env("PATH", &path)
+        .arg("install")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&install.stderr);
+    assert!(!install.status.success(), "{stderr}");
+    assert!(stderr.contains(&note), "{stderr}");
 }
 
 /// `viv diagnose` names the pinned php `viv run` would use, not the one on

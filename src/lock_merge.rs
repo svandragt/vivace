@@ -664,6 +664,10 @@ fn locked_by_name_from_merge(merged: &BTreeMap<String, Entry<Value>>) -> HashMap
     reason = "internal API, only ever called with the default hasher (mirrors \
               solver::solve_partial_update's own allowance)"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the resolve inputs, --as-of, and the platform-probe php override (#385)"
+)]
 pub async fn resolve_divergent_closure<T: Transport>(
     repo: &Repository<T>,
     root: &Value,
@@ -672,6 +676,7 @@ pub async fn resolve_divergent_closure<T: Transport>(
     locked_by_name: &HashMap<String, Value>,
     allow_list: &[String],
     as_of: Option<i64>,
+    php_override: Option<&Path>,
 ) -> Result<solver::UpdateResult> {
     solver::solve_partial_update_as_of(
         repo,
@@ -683,6 +688,7 @@ pub async fn resolve_divergent_closure<T: Transport>(
         allow_list,
         UpdateAllowMode::WithTransitiveDeps,
         as_of,
+        php_override,
     )
     .await
 }
@@ -832,6 +838,8 @@ pub async fn escalate_resolve<T: Transport>(
 ) -> Result<EscalatedResolve> {
     let locked_by_name = locked_by_name_from_merge(merged);
     let divergent_list: Vec<String> = divergent.iter().cloned().collect();
+    // #385: the same php `viv install` checks the lock against.
+    let php_override = crate::php::platform_php(None, project_dir, cache_dir);
 
     let (result, scope) = match resolve_divergent_closure(
         repo,
@@ -841,6 +849,7 @@ pub async fn escalate_resolve<T: Transport>(
         &locked_by_name,
         &divergent_list,
         as_of,
+        php_override.as_deref(),
     )
     .await
     {
@@ -862,6 +871,7 @@ pub async fn escalate_resolve<T: Transport>(
                 &locked_by_name,
                 &allow_list,
                 as_of,
+                php_override.as_deref(),
             )
             .await
             {
@@ -886,7 +896,7 @@ pub async fn escalate_resolve<T: Transport>(
                         &locked_by_name,
                         None,
                         cache_dir,
-                        None,
+                        php_override.as_deref(),
                         &crate::autoload::platform::IgnorePlatform::None,
                     )
                     .await
@@ -1059,7 +1069,8 @@ fn print_resolution(divergent: &BTreeSet<String>, rung: u8, name: &str, moved: &
 /// prove, by counting calls, that this step adds none.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the merge's own pinned/ours/theirs maps plus root/project_dir/prefer_stable"
+    reason = "the merge's own pinned/ours/theirs maps plus root/project_dir/prefer_stable and \
+              the platform-probe php override (#385)"
 )]
 pub async fn try_offline_rung<T: Transport>(
     repo: &Repository<T>,
@@ -1070,6 +1081,7 @@ pub async fn try_offline_rung<T: Transport>(
     divergent: &BTreeSet<String>,
     ours: &BTreeMap<String, Entry<Value>>,
     theirs: &BTreeMap<String, Entry<Value>>,
+    php_override: Option<&Path>,
 ) -> Option<solver::UpdateResult> {
     for (primary, fallback) in [(ours, theirs), (theirs, ours)] {
         let mut locked_by_name = locked_by_name_from_merge(merged);
@@ -1084,7 +1096,7 @@ pub async fn try_offline_rung<T: Transport>(
         if !complete {
             continue;
         }
-        if let Ok(result) = solver::solve_partial_update(
+        if let Ok(result) = solver::solve_partial_update_as_of(
             repo,
             root,
             project_dir,
@@ -1093,6 +1105,8 @@ pub async fn try_offline_rung<T: Transport>(
             &locked_by_name,
             &[],
             UpdateAllowMode::OnlyListed,
+            None,
+            php_override,
         )
         .await
         {
@@ -1175,6 +1189,7 @@ pub async fn escalate_then_offline_pin<T: Transport>(
             if !offline_rung {
                 return Err(escalate_err);
             }
+            let php_override = crate::php::platform_php(None, project_dir, cache_dir);
             match try_offline_rung(
                 repo,
                 root,
@@ -1184,6 +1199,7 @@ pub async fn escalate_then_offline_pin<T: Transport>(
                 divergent,
                 ours,
                 theirs,
+                php_override.as_deref(),
             )
             .await
             {
