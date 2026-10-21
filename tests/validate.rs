@@ -279,3 +279,28 @@ fn fix_applies_every_fixable_finding() {
          - description : The property description is required\n"
     );
 }
+
+/// #390: `--fix` rewrites a stale lock's stability keys from `composer.json`,
+/// but `validate` has no `--prefer-lowest` flag to say what the lock was
+/// resolved with, so the lock's own `prefer-lowest` stays.
+#[test]
+fn fix_keeps_the_locks_prefer_lowest() {
+    let dir = tempfile::tempdir().unwrap();
+    copy_fixture_project("fixable", dir.path());
+    let lock_path = dir.path().join("composer.lock");
+    let lock = fs_err::read_to_string(&lock_path).unwrap();
+    fs_err::write(
+        &lock_path,
+        lock.replace("\"prefer-lowest\": false", "\"prefer-lowest\": true"),
+    )
+    .unwrap();
+
+    Command::new(cargo_bin("viv"))
+        .current_dir(dir.path())
+        .args(["validate", "--fix"])
+        .output()
+        .expect("failed to run viv");
+
+    let fixed = fs_err::read_to_string(&lock_path).unwrap();
+    assert!(fixed.contains("\"prefer-lowest\": true"), "{fixed}");
+}

@@ -1640,6 +1640,85 @@ fn update_lock_only_refreshes_the_platform_sections() {
     );
 }
 
+/// #390: `update --lock` copied `minimum-stability`, `stability-flags` and
+/// `prefer-stable` from the old lock, so a changed `minimum-stability`, a
+/// new `prefer-stable` or a new `@beta` require left them stale.
+/// `Locker::setLockData` writes all of them from the root package, and
+/// `prefer-lowest` from the invocation, so the lock's old `true` resets to
+/// `false`. The expected tail is `composer update --lock`'s own output
+/// (Composer 2.10.2) for this `composer.json`.
+#[test]
+fn update_lock_only_refreshes_the_stability_sections() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs_err::write(
+        project.join("composer.json"),
+        r#"{
+    "require": {
+        "monolog/monolog": "^3.0",
+        "psr/log": "^3.0@beta"
+    },
+    "require-dev": {
+        "psr/container": "^2.0"
+    },
+    "minimum-stability": "beta",
+    "prefer-stable": true
+}
+"#,
+    )
+    .unwrap();
+    let old_lock = fs_err::read_to_string(fixture.join("composer.lock")).unwrap();
+    fs_err::write(
+        project.join("composer.lock"),
+        old_lock.replace("\"prefer-lowest\": false", "\"prefer-lowest\": true"),
+    )
+    .unwrap();
+
+    ctx.viv().args(["update", "--lock"]).assert().success();
+
+    let got = fs_err::read_to_string(project.join("composer.lock")).unwrap();
+    let tail = &got[got.find("    \"minimum-stability\"").unwrap()..];
+    assert_eq!(
+        tail,
+        r#"    "minimum-stability": "beta",
+    "stability-flags": {
+        "psr/log": 10
+    },
+    "prefer-stable": true,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}
+"#
+    );
+}
+
+/// #390: `--prefer-stable` and `--prefer-lowest` reach the lock through
+/// `update --lock`, as they do through `composer update --lock`, even when
+/// `composer.json` sets neither.
+#[test]
+fn update_lock_only_records_the_prefer_flags() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs_err::copy(fixture.join("composer.json"), project.join("composer.json")).unwrap();
+    fs_err::copy(fixture.join("composer.lock"), project.join("composer.lock")).unwrap();
+
+    ctx.viv()
+        .args(["update", "--lock", "--prefer-stable", "--prefer-lowest"])
+        .assert()
+        .success();
+
+    let got = fs_err::read_to_string(project.join("composer.lock")).unwrap();
+    assert!(
+        got.contains("    \"prefer-stable\": true,\n    \"prefer-lowest\": true,\n"),
+        "prefer flags missing from the lock: {}",
+        &got[got.find("    \"minimum-stability\"").unwrap()..]
+    );
+}
+
 /// Resolver stage 5's `Problem`/`SolverProblemsException` port
 /// (`src/solver/problem.rs`): a root require for a package that plain does
 /// not exist matches Composer's exact wording (verified against a real,

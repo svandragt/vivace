@@ -223,7 +223,7 @@ fn run_fix(
     let mut rewrote_lock = false;
     if lock_was_stale && lock_path.exists() {
         let fixed_bytes = fs_err::read(read_path).context("reading composer.json")?;
-        let lock = crate::update::lock_only(&lock_path, &fixed_bytes)?;
+        let lock = crate::update::lock_only(&lock_path, &fixed_bytes, false, None)?;
         fs_err::write(&lock_path, lock)?;
         err_out("Updated composer.lock's content-hash");
         rewrote_lock = true;
