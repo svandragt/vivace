@@ -1763,8 +1763,8 @@ fn write_autoload(
     }
     scripts.dispatch("post-autoload-dump")?;
     // #93: `symfony/runtime` subscribes to this same script event to write
-    // `vendor/autoload_runtime.php`.
-    plugins.post_autoload_dump(&plugin_ctx)?;
+    // `vendor/autoload_runtime.php`; so does `automattic/jetpack-autoloader`.
+    plugins.post_autoload_dump(&plugin_ctx, packages, scan_psr)?;
     Ok(())
 }
 

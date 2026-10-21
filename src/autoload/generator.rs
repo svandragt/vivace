@@ -105,7 +105,7 @@ pub struct Generated {
 /// How a path is spelled in the generated PHP: relative to `$vendorDir`,
 /// to `$baseDir`, or absolute; `rest` is the literal tail (`/src`, `/../src`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PathCode {
+pub(crate) struct PathCode {
     prefix: Prefix,
     phar: bool,
     rest: String,
@@ -120,7 +120,7 @@ enum Prefix {
 
 impl PathCode {
     /// `$vendorDir . '/a/a/src'` as written in the plain map files.
-    fn plain(&self) -> String {
+    pub(crate) fn plain(&self) -> String {
         let var = match self.prefix {
             Prefix::Vendor => "$vendorDir . ",
             Prefix::Base => "$baseDir . ",
@@ -780,7 +780,7 @@ fn filter_package_map<'a>(packages: &[&'a Package], root: &RootPackage) -> Vec<&
 /// Composer's `array_merge_recursive` as far as autoload sections need it:
 /// nested maps merge, lists append, a scalar meeting another value becomes a
 /// list of both (`Main => src/` plus `Main => tests/`).
-fn merge_recursive(base: &mut Map<String, Value>, extra: &Map<String, Value>) {
+pub(crate) fn merge_recursive(base: &mut Map<String, Value>, extra: &Map<String, Value>) {
     for (key, value) in extra {
         match base.get_mut(key) {
             None => {
@@ -804,12 +804,12 @@ fn merge_recursive(base: &mut Map<String, Value>, extra: &Map<String, Value>) {
     }
 }
 
-fn object(value: &Value) -> Map<String, Value> {
+pub(crate) fn object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
 }
 
 /// PHP's `(array) $paths`: a string or a list of strings.
-fn strings(value: &Value) -> Vec<String> {
+pub(crate) fn strings(value: &Value) -> Vec<String> {
     match value {
         Value::String(s) => vec![s.clone()],
         Value::Array(items) => items
@@ -1767,18 +1767,21 @@ fn move_plugins_to_front<'a, P: Requires>(operations: Vec<&'a P>) -> Vec<&'a P> 
 /// `PackageSorter::sortPackages` with no weight overrides, over borrowed
 /// packages: dependency weight ascending (leaves first, ties broken
 /// alphabetically), the order Composer's own dependency-first sorts use.
-fn sort_by_dependency_weight<'a>(packages: &[&'a Package]) -> Vec<&'a Package> {
+pub(crate) fn sort_by_dependency_weight<'a, P: Requires>(packages: &[&'a P]) -> Vec<&'a P> {
     // `sort_packages` wants borrowed slices, so the `&str` lists need a home.
     let requires_storage: Vec<Vec<&str>> = packages
         .iter()
-        .map(|p| p.requires.iter().map(String::as_str).collect())
+        .map(|p| p.install_order_requires().collect())
         .collect();
     let requires: Vec<(&str, &[&str])> = packages
         .iter()
         .zip(&requires_storage)
-        .map(|(package, reqs)| (package.name.as_str(), reqs.as_slice()))
+        .map(|(package, reqs)| (package.install_order_name(), reqs.as_slice()))
         .collect();
-    let by_name: HashMap<&str, &Package> = packages.iter().map(|p| (p.name.as_str(), *p)).collect();
+    let by_name: HashMap<&str, &P> = packages
+        .iter()
+        .map(|p| (p.install_order_name(), *p))
+        .collect();
     sort_packages(&requires, &[])
         .into_iter()
         .map(|name| by_name[name])
@@ -1819,7 +1822,7 @@ fn random_apcu_prefix() -> String {
 }
 
 /// `AutoloadGenerator::getPathCode`.
-fn path_code(base: &str, vendor: &str, path: &str) -> PathCode {
+pub(crate) fn path_code(base: &str, vendor: &str, path: &str) -> PathCode {
     let path = normalize_path(&if is_absolute(path) {
         path.to_string()
     } else {

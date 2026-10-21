@@ -1869,3 +1869,22 @@ jobs and on a rerun; a new cache prefix fixed it. The local bench gate
 failed warm (ratio 0.036 against a 0.026 baseline) while bench-ab put
 v0.20.0 and the candidate within 2.4 ms on laravel, drupal and
 symfony/demo: the gate's committed baseline, not viv, moved.
+
+## 2026-10-21: automattic/jetpack-autoloader (#389)
+
+A WordPress project that requires the plugin could not run `viv install`:
+the plugin had no adapter, so viv refused it, and `--no-plugins` would
+have left `vendor/jetpack-autoloader/` and `vendor/autoload_packages.php`
+unwritten. The plugin does one thing, on `post-autoload-dump`: it copies
+its own `src/*.php` with a namespace made from the autoloader suffix and
+its version, and writes three manifests from the whole package list. That
+fits no data file, so it is `src/plugins/jetpack_autoloader.rs`, about
+420 lines, run through `post_autoload_dump`, which now also receives the
+package list and the `-o` flag. Its manifests differ from Composer's own
+autoload files in ways a byte diff found: `autoload-dev` of the root is
+always included, a PSR-4 directory scanned under `-o` keeps classes of any
+namespace, and PSR-0 rules are dropped when no package has a `classmap`
+rule. The fixture is the real v6.0.2 source as a path repository; viv's
+output matches Composer 2.10.2's for `install`, `install -o`,
+`install --no-dev`, `dump-autoload -o` and a project with
+`composer/installers` placing a plugin outside `vendor/`.

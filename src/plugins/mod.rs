@@ -4,8 +4,10 @@
 //! `dealerdirect/phpcodesniffer-composer-installer`, `phpstan/extension-installer`,
 //! `tbachert/spi`, `php-http/discovery`, `yiisoft/yii2-composer`,
 //! `craftcms/plugin-installer` and `codeception/c3` generate a file or run a
-//! command after install; `cweagans/composer-patches` applies patches after
-//! each package lands; `ffraenz/private-composer-installer` resolves a
+//! command after install; `automattic/jetpack-autoloader` writes its own
+//! autoloader and manifests after the autoload dump;
+//! `cweagans/composer-patches` applies patches after each package lands;
+//! `ffraenz/private-composer-installer` resolves a
 //! dist URL's placeholders in `fetch::Fetcher` right before the download
 //! request, the one adapter here with no apply phase of its own), plus rule
 //! 3's refusal for every other `composer-plugin` in the lock.
@@ -41,6 +43,7 @@ pub(crate) mod data;
 mod discovery;
 mod drupal_scaffold;
 mod installers;
+mod jetpack_autoloader;
 mod patches;
 mod pest;
 mod phpcs;
@@ -154,8 +157,15 @@ pub(crate) trait Adapter {
     fn pre_autoload_dump(&self, _ctx: &Ctx<'_>, _packages: &[(&Package, PathBuf)]) -> Result<()> {
         Ok(())
     }
-    /// After the autoload dump (`symfony/runtime`).
-    fn post_autoload_dump(&self, _ctx: &Ctx<'_>) -> Result<()> {
+    /// After the autoload dump (`symfony/runtime`,
+    /// `automattic/jetpack-autoloader`). `scan_psr` is Composer's `optimize`
+    /// event flag: `-o`, `-a`, or either config key.
+    fn post_autoload_dump(
+        &self,
+        _ctx: &Ctx<'_>,
+        _packages: &[&Package],
+        _scan_psr: bool,
+    ) -> Result<()> {
         Ok(())
     }
     /// After install, once `vendor/bin` exists
@@ -199,6 +209,7 @@ enum AdapterId {
     DrupalScaffold,
     SymfonyRuntime,
     Pest,
+    JetpackAutoloader,
 }
 
 const NATIVE_ADAPTERS: &[AdapterId] = &[
@@ -222,6 +233,7 @@ const NATIVE_ADAPTERS: &[AdapterId] = &[
     AdapterId::DrupalScaffold,
     AdapterId::SymfonyRuntime,
     AdapterId::Pest,
+    AdapterId::JetpackAutoloader,
 ];
 
 /// Every registered adapter, in `NATIVE_ADAPTERS` order, regardless of what
@@ -260,6 +272,7 @@ fn make_adapter(id: AdapterId, altis_overrides: &HashSet<String>) -> Box<dyn Ada
         AdapterId::DrupalScaffold => Box::new(drupal_scaffold::DrupalScaffold),
         AdapterId::SymfonyRuntime => Box::new(symfony_runtime::SymfonyRuntime),
         AdapterId::Pest => Box::new(pest::Pest),
+        AdapterId::JetpackAutoloader => Box::new(jetpack_autoloader::JetpackAutoloader),
     }
 }
 
@@ -477,13 +490,19 @@ impl Plugins {
         Ok(())
     }
 
-    /// `symfony/runtime`'s `ComposerPlugin::updateAutoloadFile`
-    /// (`POST_AUTOLOAD_DUMP`): writes `vendor/autoload_runtime.php`, called
-    /// after `install::write_autoload` dispatches that script event, the
-    /// same phase the real plugin subscribes to.
-    pub(crate) fn post_autoload_dump(&self, ctx: &Ctx<'_>) -> Result<()> {
+    /// `symfony/runtime`'s `ComposerPlugin::updateAutoloadFile` and
+    /// `automattic/jetpack-autoloader`'s `postAutoloadDump`
+    /// (`POST_AUTOLOAD_DUMP`): called after `install::write_autoload`
+    /// dispatches that script event, the same phase the real plugins
+    /// subscribe to. `packages` are the ones the autoloader was dumped for.
+    pub(crate) fn post_autoload_dump(
+        &self,
+        ctx: &Ctx<'_>,
+        packages: &[&Package],
+        scan_psr: bool,
+    ) -> Result<()> {
         for adapter in &self.adapters {
-            adapter.post_autoload_dump(ctx)?;
+            adapter.post_autoload_dump(ctx, packages, scan_psr)?;
         }
         Ok(())
     }

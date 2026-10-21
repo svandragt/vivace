@@ -1,0 +1,201 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "33ddeccf49f27ff0dbcdc144dd91487f",
+    "packages": [
+        {
+            "name": "acme/classmap-lib",
+            "version": "1.2.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/classmap-lib",
+                "reference": "6fc3decdcb7b8768392fc39ba4f1b4c7fc40dda1"
+            },
+            "type": "library",
+            "autoload": {
+                "classmap": [
+                    "lib/"
+                ]
+            },
+            "license": [
+                "MIT"
+            ],
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        },
+        {
+            "name": "acme/files-lib",
+            "version": "2.0.1",
+            "dist": {
+                "type": "path",
+                "url": "packages/files-lib",
+                "reference": "0cc84e77d6e1d607e2607c09c47e84cdd387af27"
+            },
+            "require": {
+                "acme/psr4-lib": "^1.0"
+            },
+            "type": "library",
+            "autoload": {
+                "files": [
+                    "functions.php"
+                ]
+            },
+            "license": [
+                "MIT"
+            ],
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        },
+        {
+            "name": "acme/psr0-lib",
+            "version": "0.9.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/psr0-lib",
+                "reference": "143016cbadbcec21e6b71e622aa761c11089da2a"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-0": {
+                    "Legacy_": "src/"
+                }
+            },
+            "license": [
+                "MIT"
+            ],
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        },
+        {
+            "name": "acme/psr4-lib",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/psr4-lib",
+                "reference": "59616c166ab16ccb8226a68673b6e746296f92ee"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Psr4\\": "src/"
+                }
+            },
+            "license": [
+                "MIT"
+            ],
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        },
+        {
+            "name": "automattic/jetpack-autoloader",
+            "version": "6.0.2",
+            "dist": {
+                "type": "path",
+                "url": "packages/jetpack-autoloader",
+                "reference": "f8107293abe635bd17a9b0a811df3f8d3718849d"
+            },
+            "require": {
+                "composer-plugin-api": "^2.2",
+                "php": ">=7.4"
+            },
+            "require-dev": {
+                "automattic/phpunit-select-config": "^1.0.12",
+                "composer/composer": "^2.2",
+                "yoast/phpunit-polyfills": "^4.0.0"
+            },
+            "type": "composer-plugin",
+            "extra": {
+                "class": "Automattic\\Jetpack\\Autoloader\\CustomAutoloaderPlugin",
+                "mirror-repo": "Automattic/jetpack-autoloader",
+                "changelogger": {
+                    "link-template": "https://github.com/Automattic/jetpack-autoloader/compare/v${old}...v${new}"
+                },
+                "version-constants": {
+                    "::VERSION": "src/AutoloadGenerator.php"
+                },
+                "branch-alias": {
+                    "dev-trunk": "6.0.x-dev"
+                }
+            },
+            "autoload": {
+                "classmap": [
+                    "src/AutoloadGenerator.php"
+                ],
+                "psr-4": {
+                    "Automattic\\Jetpack\\Autoloader\\": "src"
+                }
+            },
+            "scripts": {
+                "phpunit": [
+                    "phpunit-select-config phpunit.#.xml.dist --colors=always"
+                ],
+                "test-php": [
+                    "@composer phpunit"
+                ],
+                "test-php-coverage": [
+                    "php -dpcov.directory=. ./vendor/bin/phpunit-select-config phpunit.#.xml.dist --coverage-php \"./tests/php/tmp/coverage-report.php\"",
+                    "php ./tests/php/bin/test-coverage.php \"$COVERAGE_DIR/php.cov\""
+                ]
+            },
+            "license": [
+                "GPL-2.0-or-later"
+            ],
+            "description": "Creates a custom autoloader for a plugin or theme.",
+            "keywords": [
+                "autoload",
+                "autoloader",
+                "composer",
+                "jetpack",
+                "plugin",
+                "wordpress"
+            ],
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "acme/dev-lib",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/dev-lib",
+                "reference": "d492b66f7bb8de0b75a54eac41fe24adddb4fbff"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Dev\\": "src/"
+                }
+            },
+            "license": [
+                "MIT"
+            ],
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        }
+    ],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}

@@ -121,6 +121,7 @@ fn diagnose_adapters_prints_every_native_adapter_and_nothing_else() {
             "drupal/core-composer-scaffold",
             "symfony/runtime",
             "pestphp/pest-plugin",
+            "automattic/jetpack-autoloader",
         ]
     );
 }
