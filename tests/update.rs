@@ -1579,6 +1579,67 @@ fn update_lock_only_reproduces_an_already_canonical_lock() {
     assert_matches_expected(&got, &fixture.join("composer.lock"));
 }
 
+/// #380: `update --lock` rewrote only `content-hash`, so editing `require`,
+/// `require-dev` or `config.platform` left the lock's `platform`,
+/// `platform-dev` and `platform-overrides` stale. Composer's
+/// `Locker::setLockData` writes all three from the root package; the
+/// expected tail is `composer update --lock`'s own output for this
+/// `composer.json`.
+#[test]
+fn update_lock_only_refreshes_the_platform_sections() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs_err::write(
+        project.join("composer.json"),
+        r#"{
+    "require": {
+        "php": ">=8.1",
+        "ext-json": "*",
+        "monolog/monolog": "^3.0",
+        "psr/log": "^3.0"
+    },
+    "require-dev": {
+        "psr/container": "^2.0",
+        "ext-mbstring": "*",
+        "lib-pcre": ">=8"
+    },
+    "config": {
+        "platform": {
+            "php": "8.2",
+            "ext-json": "1.0.0"
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+    fs_err::copy(fixture.join("composer.lock"), project.join("composer.lock")).unwrap();
+
+    ctx.viv().args(["update", "--lock"]).assert().success();
+
+    let got = fs_err::read_to_string(project.join("composer.lock")).unwrap();
+    let tail = &got[got.find("    \"platform\": {").unwrap()..];
+    assert_eq!(
+        tail,
+        r#"    "platform": {
+        "php": ">=8.1",
+        "ext-json": "*"
+    },
+    "platform-dev": {
+        "ext-mbstring": "*",
+        "lib-pcre": ">=8"
+    },
+    "platform-overrides": {
+        "php": "8.2",
+        "ext-json": "1.0.0"
+    },
+    "plugin-api-version": "2.9.0"
+}
+"#
+    );
+}
+
 /// Resolver stage 5's `Problem`/`SolverProblemsException` port
 /// (`src/solver/problem.rs`): a root require for a package that plain does
 /// not exist matches Composer's exact wording (verified against a real,
