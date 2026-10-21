@@ -493,6 +493,89 @@ fn install_with_unknown_flag_and_strict_env_fails_instead_of_falling_back() {
         .stderr(predicates::str::contains("running the real Composer").not());
 }
 
+/// A project directory whose `composer.json` declares `scripts`.
+fn project_with_scripts(scripts: &str) -> tempfile::TempDir {
+    let project = tempdir().unwrap();
+    fs::write(
+        project.path().join("composer.json"),
+        format!(r#"{{"name": "acme/app", "scripts": {scripts}}}"#),
+    )
+    .unwrap();
+    project
+}
+
+/// #379: Composer runs a root `scripts` entry when its name is the command.
+/// The shim used to treat the name as unknown and hand it to a real
+/// Composer; it now runs `viv run <name>`, arguments included.
+#[test]
+fn root_script_name_runs_through_viv_run() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+    let project = project_with_scripts(r#"{"lint": "phpcs ./"}"#);
+
+    shim_in(dir.path())
+        .current_dir(project.path())
+        .args(["lint", "--fix", "src"])
+        .assert()
+        .success()
+        .stdout("viv\nrun\nlint\n--fix\nsrc\n");
+}
+
+/// Composer's own commands, including the ones the shim hands to the real
+/// Composer and the short aliases of the ones it maps, win over a root
+/// script of the same name.
+#[test]
+fn composer_command_wins_over_a_root_script_of_the_same_name() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+    let project = project_with_scripts(r#"{"show": "echo", "u": "echo", "install": "echo"}"#);
+
+    for (name, stdout) in [
+        ("show", "composer\nshow\n"),
+        ("u", "composer\nu\n"),
+        ("install", "viv\ninstall\n"),
+    ] {
+        shim_in(dir.path())
+            .current_dir(project.path())
+            .arg(name)
+            .assert()
+            .success()
+            .stdout(stdout);
+    }
+}
+
+/// A name that is neither a Composer command nor a root script still goes to
+/// the real Composer, whether `composer.json` declares other scripts or does
+/// not exist.
+#[test]
+fn unknown_name_without_a_matching_root_script_delegates_to_real_composer() {
+    let _guard = SHIM_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempdir().unwrap();
+    fake_bin(dir.path(), "composer");
+    fake_bin(dir.path(), "viv");
+    let other_script = project_with_scripts(r#"{"lint": "phpcs ./"}"#);
+    let no_composer_json = tempdir().unwrap();
+
+    for project in [&other_script, &no_composer_json] {
+        shim_in(dir.path())
+            .current_dir(project.path())
+            .arg("nonesuch")
+            .assert()
+            .success()
+            .stdout("composer\nnonesuch\n");
+    }
+}
+
 #[test]
 fn missing_real_composer_exits_with_message() {
     let _guard = SHIM_LOCK

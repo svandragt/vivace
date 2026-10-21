@@ -1,5 +1,6 @@
 //! Drop-in `composer` shim: translates the subset of Composer's CLI that viv
-//! supports into `viv` invocations, execs the real Composer for the rest.
+//! supports into `viv` invocations, runs a root `composer.json` script named
+//! as the command through `viv run`, and execs the real Composer for the rest.
 use std::io::Write as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -225,6 +226,79 @@ fn classify_remove(arg: &str) -> Flag {
     }
 }
 
+/// Composer's commands (Symfony's `help`/`list`/`completion` included) and
+/// their aliases that the `match` in [`main`] does not map to `viv`. Composer
+/// registers a root script as a command only when no command of that name
+/// exists, so these win over a script of the same name. Copied from
+/// `Application::getDefaultCommands()` on Composer's main branch (2026-10-21);
+/// re-check it when Composer adds a command, or the shim runs a script where
+/// Composer runs the command.
+const COMPOSER_COMMANDS: &[&str] = &[
+    "about",
+    "archive",
+    "audit",
+    "browse",
+    "bump",
+    "cc",
+    "check-platform-reqs",
+    "clear-cache",
+    "clearcache",
+    "completion",
+    "config",
+    "depends",
+    "diagnose",
+    "exec",
+    "fund",
+    "global",
+    "help",
+    "home",
+    "i",
+    "info",
+    "init",
+    "licenses",
+    "list",
+    "outdated",
+    "policy",
+    "prohibits",
+    "r",
+    "reinstall",
+    "repo",
+    "repository",
+    "rm",
+    "run",
+    "run-script",
+    "search",
+    "self-update",
+    "selfupdate",
+    "show",
+    "status",
+    "suggests",
+    "u",
+    "uninstall",
+    "upgrade",
+    "validate",
+    "why",
+    "why-not",
+];
+
+/// Whether `name` is a script in the root `composer.json` of the current
+/// directory, by the same test `viv run` uses to pick a script over a
+/// `vendor/bin` binary.
+///
+/// ponytail: reads `./composer.json`, so `-d`/`--working-dir` after the
+/// command isn't honoured, and an event-named script (`post-install-cmd`) or a
+/// `scripts-aliases` entry isn't special-cased the way Composer does. Handle
+/// them if a user hits one.
+fn is_root_script(name: &str) -> bool {
+    std::fs::read("composer.json")
+        .ok()
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .is_some_and(|root| {
+            vivace::scripts::Runner::new(&root, Path::new("."), "vendor/bin", true, false)
+                .has_script(name)
+        })
+}
+
 fn viv_path() -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
@@ -358,6 +432,9 @@ fn main() -> ExitCode {
     };
 
     if viv_command.is_empty() {
+        if !COMPOSER_COMMANDS.contains(&command.as_str()) && is_root_script(command) {
+            return exec_viv(&[vec!["run".to_string()], args.clone()].concat());
+        }
         return exec_real_composer(&args);
     }
 

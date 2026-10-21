@@ -11,7 +11,9 @@ summary: Drop the composer shim into scripts and CI so they run through viv uned
 already there, so it never replaces your real Composer. Put it on `PATH`
 ahead of the real Composer, or symlink it as `composer` in CI: everyday
 `install`, `dump-autoload`, `normalize` and `create-project` run through
-viv; every other command falls through to your real Composer install.[^12]
+viv, and so does a script from your root `composer.json` that you run by
+name, such as `composer lint`; every other command falls through to your
+real Composer install.[^12]
 
 This is also the cheapest way to check whether a project migrates cleanly:
 alias `composer` to the shim and run your existing scripts unedited.
@@ -36,4 +38,4 @@ You can also point a script straight at `viv`. The CI idiom
 does, so `viv install` and `viv dump-autoload` accept those flags and
 ignore them instead of failing.
 
-[^12]: The shim maps `install`, `dump-autoload`, `normalize`, `create-project`, `update`, `require` and `remove` with their supported flags (`update`'s partial-update package arguments and `-w`/`-W` included) to `viv`; everything else, `search`, an unrecognised flag, it hands through to the real Composer binary unchanged. Point `VIV_COMPOSER_PATH` at the real binary if it isn't first on `PATH`. The shim only has something to hand through to if a real Composer is on `PATH` in the first place: if there isn't one, those commands fail rather than silently falling back to viv. `composer --version` is the exception: it prints `viv <version> (composer shim)`, then the real Composer's own version if one is on `PATH`, and exits `0` either way.
+[^12]: The shim maps `install`, `dump-autoload`, `normalize`, `create-project`, `update`, `require` and `remove` with their supported flags (`update`'s partial-update package arguments and `-w`/`-W` included) to `viv`; everything else, `search`, an unrecognised flag, it hands through to the real Composer binary unchanged. Point `VIV_COMPOSER_PATH` at the real binary if it isn't first on `PATH`. The shim only has something to hand through to if a real Composer is on `PATH` in the first place: if there isn't one, those commands fail rather than silently falling back to viv. A command name that is not one of Composer's own commands but is a script in the `composer.json` in the current directory runs through `viv run`, with the rest of the arguments passed to the script, the way Composer runs a root script; Composer's own commands win over a script of the same name. `composer --version` is the exception: it prints `viv <version> (composer shim)`, then the real Composer's own version if one is on `PATH`, and exits `0` either way.
