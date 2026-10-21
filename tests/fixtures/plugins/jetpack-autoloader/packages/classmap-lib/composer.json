@@ -1,0 +1,8 @@
+{
+    "name": "acme/classmap-lib",
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "classmap": ["lib/"]
+    }
+}

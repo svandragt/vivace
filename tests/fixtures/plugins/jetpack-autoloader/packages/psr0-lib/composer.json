@@ -1,0 +1,10 @@
+{
+    "name": "acme/psr0-lib",
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-0": {
+            "Legacy_": "src/"
+        }
+    }
+}

@@ -26,7 +26,7 @@ use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 
 use super::{Adapter, Ctx, php_string, phpstan::var_export};
-use crate::lock::Root;
+use crate::lock::{Package, Root};
 
 pub(super) struct SymfonyRuntime;
 
@@ -43,7 +43,7 @@ impl Adapter for SymfonyRuntime {
         "tests/fixtures/plugins/drupal"
     }
 
-    fn post_autoload_dump(&self, ctx: &Ctx<'_>) -> Result<()> {
+    fn post_autoload_dump(&self, ctx: &Ctx<'_>, _: &[&Package], _: bool) -> Result<()> {
         apply(ctx.root, ctx.project_dir, ctx.vendor_dir)
     }
 }
