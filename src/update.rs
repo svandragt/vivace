@@ -257,7 +257,7 @@ pub(crate) fn run_impl(
             &lock_path,
             &composer_json,
             args.prefer_stable,
-            args.prefer_lowest,
+            Some(args.prefer_lowest),
         )?;
         if args.dry_run {
             write!(std::io::stdout().lock(), "{lock}")?;
@@ -759,14 +759,15 @@ pub(crate) fn locked_packages_by_name(lock: &Value) -> HashMap<String, Value> {
 /// `platform-dev`, `platform-overrides`, `minimum-stability`,
 /// `stability-flags` and `prefer-stable` are refreshed from
 /// `composer_json`, as `Locker::setLockData` does, and `prefer-stable` /
-/// `prefer-lowest` also take the invocation's flags. `pub(crate)`:
+/// `prefer-lowest` also take the invocation's flags (`None`: no invocation,
+/// so `validate --fix` keeps the lock's own `prefer-lowest`). `pub(crate)`:
 /// `validate.rs`'s own `--fix` (#262) reuses this exact re-derivation to
 /// rewrite a stale lock's `content-hash` once it has fixed `composer.json`.
 pub(crate) fn lock_only(
     lock_path: &Path,
     composer_json: &[u8],
     prefer_stable: bool,
-    prefer_lowest: bool,
+    prefer_lowest: Option<bool>,
 ) -> Result<String> {
     let lock_bytes = fs_err::read(lock_path).context("reading composer.lock")?;
     let lock: Value = serde_json::from_slice(&lock_bytes).context("parsing composer.lock")?;
@@ -787,7 +788,7 @@ pub(crate) fn lock_only(
     aggregates.minimum_stability = from_root.minimum_stability;
     aggregates.stability_flags = from_root.stability_flags;
     aggregates.prefer_stable = prefer_stable || from_root.prefer_stable;
-    aggregates.prefer_lowest = prefer_lowest;
+    aggregates.prefer_lowest = prefer_lowest.unwrap_or(aggregates.prefer_lowest);
     aggregates.platform_reqs = from_root.platform_reqs;
     aggregates.platform_dev_reqs = from_root.platform_dev_reqs;
     aggregates.platform_overrides = from_root.platform_overrides;
