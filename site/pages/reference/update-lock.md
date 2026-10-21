@@ -8,8 +8,9 @@ summary: re-derives composer.lock from itself, without solving or installing
 
 `update --lock`'s own first-class subcommand: re-derive `composer.lock`
 from itself, without solving or installing. Reach for this after a manual
-edit to composer.lock, or to refresh its `content-hash` after a
-non-dependency composer.json change.
+edit to composer.lock, or to refresh its `content-hash`, `platform`,
+`platform-dev` and `platform-overrides` after a non-dependency
+composer.json change.
 
 ## Usage
 

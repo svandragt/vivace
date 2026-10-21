@@ -750,7 +750,9 @@ pub(crate) fn locked_packages_by_name(lock: &Value) -> HashMap<String, Value> {
 
 /// `composer update --lock`: re-run `Locker::setLockData`'s own
 /// normalisation (content-hash, key order, `fixupJsonDataType`) over the
-/// current lock's package lists, without solving anything. `pub(crate)`:
+/// current lock's package lists, without solving anything; `platform`,
+/// `platform-dev` and `platform-overrides` are refreshed from
+/// `composer_json`, as `Locker::setLockData` does. `pub(crate)`:
 /// `validate.rs`'s own `--fix` (#262) reuses this exact re-derivation to
 /// rewrite a stale lock's `content-hash` once it has fixed `composer.json`.
 pub(crate) fn lock_only(lock_path: &Path, composer_json: &[u8]) -> Result<String> {
@@ -765,7 +767,13 @@ pub(crate) fn lock_only(lock_path: &Path, composer_json: &[u8]) -> Result<String
         None
     };
 
-    let aggregates = crate::lock_writer::LockAggregates::from_lock_value(&lock);
+    let mut aggregates = crate::lock_writer::LockAggregates::from_lock_value(&lock);
+    // The platform keys come from the root package, not the old lock (#380).
+    let root: Value = serde_json::from_slice(composer_json).context("parsing composer.json")?;
+    let from_root = crate::solver::pool_builder::root_lock_aggregates(&root)?;
+    aggregates.platform_reqs = from_root.platform_reqs;
+    aggregates.platform_dev_reqs = from_root.platform_dev_reqs;
+    aggregates.platform_overrides = from_root.platform_overrides;
     crate::lock_writer::write(
         &non_dev,
         dev.as_deref(),
