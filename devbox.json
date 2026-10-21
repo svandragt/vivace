@@ -8,7 +8,7 @@
     "cargo-insta": "latest",
     "cargo-machete": "latest",
     "cargo-fuzz": "latest",
-    "cargo-llvm-cov": "latest",
+    "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#cargo-llvm-cov": "",
     "miniserve": "latest",
     "linuxPackages.perf": {
       "version": "latest",
