@@ -1,0 +1,11 @@
+{
+    "name": "acme/files-lib",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "acme/psr4-lib": "^1.0"
+    },
+    "autoload": {
+        "files": ["functions.php"]
+    }
+}

@@ -1,0 +1,10 @@
+{
+    "name": "acme/dev-lib",
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Acme\\Dev\\": "src/"
+        }
+    }
+}

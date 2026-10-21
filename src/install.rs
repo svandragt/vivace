@@ -1056,7 +1056,18 @@ pub(crate) fn run_impl(
     let mut archive_dirs: HashMap<String, PathBuf> = HashMap::new();
     let mut from_cache = 0usize;
     for package in &archive_targets {
-        if let Some(dir) = store.lookup(package) {
+        // #388: a zip on disk keeps its URL when its bytes change, so a
+        // store pointer keyed on that URL (or an empty `reference`) could
+        // serve a stale tree. Re-read it every time; the store dedupes by
+        // content hash, so an unchanged zip is not extracted again.
+        if let Some(path) = fetch::local_dist_path(package, &project_dir) {
+            let dir = fetch::verify_local_dist(package, &path)
+                .and_then(|()| store.add_archive_from_file(package, &path))
+                .with_context(|| {
+                    format!("{}: installing local dist {}", package.name, path.display())
+                })?;
+            archive_dirs.insert(package.name.clone(), dir);
+        } else if let Some(dir) = store.lookup(package) {
             archive_dirs.insert(package.name.clone(), dir);
             from_cache += 1;
         }
@@ -1752,8 +1763,8 @@ fn write_autoload(
     }
     scripts.dispatch("post-autoload-dump")?;
     // #93: `symfony/runtime` subscribes to this same script event to write
-    // `vendor/autoload_runtime.php`.
-    plugins.post_autoload_dump(&plugin_ctx)?;
+    // `vendor/autoload_runtime.php`; so does `automattic/jetpack-autoloader`.
+    plugins.post_autoload_dump(&plugin_ctx, packages, scan_psr)?;
     Ok(())
 }
 

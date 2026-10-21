@@ -33,6 +33,7 @@ WordPress project):
 | altis/dev-tools-command | Seeds `.travis.yml`/`.config/travis.yml` from `vendor/altis/dev-tools/travis/` if absent, then keeps `.travis.yml`'s pinned ref in sync with the installed `altis/dev-tools` version | Native (`src/plugins/altis_dev_tools_command.rs`) (#355) |
 | altis/local-server | `activate()` conditionally `require`s a PHP file in-process for its own later use; subscribes to no events, only adds a `composer server` `CommandProvider` | Known inert — no disk effect at install (#355) |
 | ion-bazan/composer-diff | Adds a `composer diff` `CommandProvider`, no event subscription | Known inert — command-only (#355) |
+| automattic/jetpack-autoloader | Copies its runtime files into `vendor/jetpack-autoloader/` and `vendor/autoload_packages.php`, then writes `vendor/composer/jetpack_autoload_{classmap,psr4,filemap}.php` (every autoload rule with its package's version), after autoload dump | Native (`src/plugins/jetpack_autoloader.rs`) (#389) |
 
 Plugins named in issue #12 but not seen in any lock yet: symfony/flex
 (rewrites composer.json and recipes, not portable), bamarni/composer-bin-plugin
@@ -93,6 +94,9 @@ A plugin that generates code or fetches something stays an adapter in
   code-generation (`altis/cms-installer`'s `vendor/modules.php`)
 - `altis_dev_tools_command.rs` — scaffolding plus a conditional rewrite
   (`altis/dev-tools-command`'s `.travis.yml`/`.config/travis.yml`)
+- `jetpack_autoloader.rs` — code-generation (`automattic/jetpack-autoloader`'s
+  runtime files and `jetpack_autoload_*.php` manifests, built from the whole
+  package list rather than one package's `extra`)
 - `altis_core.rs` — a path map in shape (`altis/core`'s `Override_Installer`),
   but not a `data/*.toml` rule: the override set is the union of every
   *other* installed package's `extra.altis.install-overrides`, not the root's
@@ -161,6 +165,19 @@ nor an adapter for is reported and never run. `viv install` refuses with:
     up against the plugin class at its pinned tag — see
     `src/plugins/altis_core.rs`'s and `altis_dev_tools_command.rs`'s own
     doc comments for what each actually does instead.
+
+11. automattic/jetpack-autoloader (#389): a WordPress project that requires it
+    refused every `viv install`, and `--no-plugins` left `vendor/jetpack-autoloader/`
+    and `vendor/autoload_packages.php` unwritten. The port copies the runtime
+    files from the installed package's own `src/` (so a newer plugin release
+    needs no change unless its generator classes change) and reproduces the
+    manifests, which differ from Composer's own: `autoload-dev` of the root is
+    always included, PSR-0 is always scanned into the class map (but only when
+    some package declares a `classmap` rule), and with `-o` a PSR-4 directory
+    is scanned without a namespace filter. Not ported: the progress lines the
+    plugin prints, `COMPOSER_ROOT_VERSION` and a root `branch-alias` for the
+    root package's version, and `install_order`'s plugin-first step for the
+    order of paths in a namespace two packages share.
 
 symfony/flex stays refused. Its value is in `composer require`, which is
 where Symfony users should keep using Composer.
