@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -852,6 +852,43 @@ fn verify_shasum(name: &str, expected: &str, actual: &str) -> Result<()> {
         bail!("{name}: sha1 mismatch, lock says {expected} but the download is {actual}");
     }
     Ok(())
+}
+
+/// The file a dist URL names when Composer reads it from disk instead of
+/// downloading it: a `file://` URL, or a string with no scheme, which is a
+/// path relative to `project_dir` (or absolute). A string check, so a
+/// remote URL costs nothing extra.
+pub fn local_dist_path(pkg: &Package, project_dir: &Path) -> Option<PathBuf> {
+    let url = pkg.dist.as_ref()?.url.as_str();
+    if url.starts_with("file://") {
+        return Url::parse(url).ok()?.to_file_path().ok();
+    }
+    (!url.contains("://")).then(|| project_dir.join(url))
+}
+
+/// The `dist.shasum` check [`Fetcher::fetch`] makes on a download, for a
+/// local dist read from `path`.
+pub fn verify_local_dist(pkg: &Package, path: &Path) -> Result<()> {
+    pkg.validate_dist()?;
+    let expected = pkg
+        .dist
+        .as_ref()
+        .and_then(|dist| dist.shasum.as_deref())
+        .unwrap_or("");
+    if expected.is_empty() {
+        return Ok(());
+    }
+    let mut file = fs_err::File::open(path)?;
+    let mut hasher = Sha1::new();
+    let mut buf = [0u8; 8 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    verify_shasum(&pkg.name, expected, &hex(hasher.finalize()))
 }
 
 #[cfg(test)]
