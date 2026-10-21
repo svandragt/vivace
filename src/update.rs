@@ -253,7 +253,12 @@ pub(crate) fn run_impl(
     // solve below, since chapter 1's `viv.lock` is a second serialisation
     // of that same resolution, not a replacement for it (#272).
     if args.lock.as_deref() == Some("self") {
-        let lock = lock_only(&lock_path, &composer_json)?;
+        let lock = lock_only(
+            &lock_path,
+            &composer_json,
+            args.prefer_stable,
+            args.prefer_lowest,
+        )?;
         if args.dry_run {
             write!(std::io::stdout().lock(), "{lock}")?;
             return Ok(());
@@ -751,11 +756,18 @@ pub(crate) fn locked_packages_by_name(lock: &Value) -> HashMap<String, Value> {
 /// `composer update --lock`: re-run `Locker::setLockData`'s own
 /// normalisation (content-hash, key order, `fixupJsonDataType`) over the
 /// current lock's package lists, without solving anything; `platform`,
-/// `platform-dev` and `platform-overrides` are refreshed from
-/// `composer_json`, as `Locker::setLockData` does. `pub(crate)`:
+/// `platform-dev`, `platform-overrides`, `minimum-stability`,
+/// `stability-flags` and `prefer-stable` are refreshed from
+/// `composer_json`, as `Locker::setLockData` does, and `prefer-stable` /
+/// `prefer-lowest` also take the invocation's flags. `pub(crate)`:
 /// `validate.rs`'s own `--fix` (#262) reuses this exact re-derivation to
 /// rewrite a stale lock's `content-hash` once it has fixed `composer.json`.
-pub(crate) fn lock_only(lock_path: &Path, composer_json: &[u8]) -> Result<String> {
+pub(crate) fn lock_only(
+    lock_path: &Path,
+    composer_json: &[u8],
+    prefer_stable: bool,
+    prefer_lowest: bool,
+) -> Result<String> {
     let lock_bytes = fs_err::read(lock_path).context("reading composer.lock")?;
     let lock: Value = serde_json::from_slice(&lock_bytes).context("parsing composer.lock")?;
 
@@ -768,9 +780,14 @@ pub(crate) fn lock_only(lock_path: &Path, composer_json: &[u8]) -> Result<String
     };
 
     let mut aggregates = crate::lock_writer::LockAggregates::from_lock_value(&lock);
-    // The platform keys come from the root package, not the old lock (#380).
+    // These come from the root package and the invocation, not the old lock
+    // (#380, #390).
     let root: Value = serde_json::from_slice(composer_json).context("parsing composer.json")?;
     let from_root = crate::solver::pool_builder::root_lock_aggregates(&root)?;
+    aggregates.minimum_stability = from_root.minimum_stability;
+    aggregates.stability_flags = from_root.stability_flags;
+    aggregates.prefer_stable = prefer_stable || from_root.prefer_stable;
+    aggregates.prefer_lowest = prefer_lowest;
     aggregates.platform_reqs = from_root.platform_reqs;
     aggregates.platform_dev_reqs = from_root.platform_dev_reqs;
     aggregates.platform_overrides = from_root.platform_overrides;
