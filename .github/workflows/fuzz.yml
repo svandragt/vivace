@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: fuzz -> target
           shared-key: fuzz-build
@@ -42,7 +42,7 @@ jobs:
       # libraries: libstdc++.so.6" (exit 127) — every nightly run did, from
       # the day this workflow landed. Off devbox the runner's own libstdc++
       # is found, and both jobs then build the same runnable binary.
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-fuzz
       # `--target` is explicit because cargo-fuzz defaults to the triple it
@@ -70,7 +70,7 @@ jobs:
           - semver_parse_constraint
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: fuzz -> target
           shared-key: fuzz
@@ -80,7 +80,7 @@ jobs:
       # directly rather than devbox.json.
       - run: rustup toolchain install nightly --profile minimal
       # Off devbox for the libstdc++ reason in fuzz-build above (#194).
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-fuzz
       # Only `seeds/` is passed: it's tracked, whereas `corpus/` is
