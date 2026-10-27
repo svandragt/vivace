@@ -1590,15 +1590,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
-name = "semver-php"
-version = "0.1.0"
-source = "git+https://github.com/svandragt/semver-php?rev=36723084f1980bc8d46bd762a6d3bbf197a97540#36723084f1980bc8d46bd762a6d3bbf197a97540"
-dependencies = [
- "regex",
- "thiserror",
-]
-
-[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2194,13 +2185,13 @@ dependencies = [
  "predicates",
  "regex",
  "reqwest",
- "semver-php",
  "serde",
  "serde_json",
  "sha1",
  "sha2",
  "tar",
  "tempfile",
+ "thiserror",
  "tokio",
  "toml",
  "tracing",

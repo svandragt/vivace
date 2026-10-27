@@ -23,7 +23,7 @@ use crate::semver::{self, Constraint, NormalizedVersion};
 /// `constraint` is `Arc`-shared rather than owned outright: the same
 /// constraint text (`"php": "^7.2.5 || ^8.0.0"`) recurs across thousands of
 /// package versions, and `Constraint` itself isn't `Clone` (it wraps a
-/// `Box<dyn semver_php::Constraint>`), so sharing one parse is the only way
+/// `Box<dyn semver::php::Constraint>`), so sharing one parse is the only way
 /// to cache it at all (`bench/results/profile.md` §2.8,
 /// `solver::ConstraintCache`).
 #[derive(Clone)]

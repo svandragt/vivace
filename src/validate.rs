@@ -772,12 +772,12 @@ fn check_suggest(manifest: &Value, result: &mut Validated) {
 const LINK_TYPES: [&str; 5] = ["require", "conflict", "provide", "replace", "require-dev"];
 
 /// `VersionParser::parseConstraints`'s own wrapping: `"Could not parse
-/// version constraint $constraint: " . $e->getMessage()`. `semver_php`'s own
+/// version constraint $constraint: " . $e->getMessage()`. `semver::php`'s own
 /// constraint-syntax errors (operators, whitespace) are coarser than PHP's
 /// (see `semver.rs`'s module doc), but a single malformed version token
 /// (the common case: `"not-a-constraint"`) fails inside `normalize()`, which
 /// `crate::version::normalize` already reproduces byte-for-byte — prefer
-/// that message when it also fails, and fall back to `semver_php`'s own
+/// that message when it also fails, and fall back to `semver::php`'s own
 /// otherwise.
 fn constraint_parse_error(spec: &str, err: &anyhow::Error) -> String {
     if let Err(normalize_err) = crate::version::normalize(spec) {

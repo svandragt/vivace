@@ -1,14 +1,17 @@
-//! Thin facade over `semver_php`, a port of `composer/semver`'s
-//! `VersionParser`, `Constraint`, `MultiConstraint`, `Interval` and
-//! `Intervals`. Gated on the corpus in `tests/fixtures/composer/semver/`
-//! (see `docs/resolver-design.md`'s "Constraints and versions" section)
-//! rather than trusted outright: it has one release and few downloads, so
-//! this module is the whole surface a fork or vendor would need to replace.
+//! Thin facade over [`php`], the vendored `semver-php`, a port of
+//! `composer/semver`'s `VersionParser`, `Constraint`, `MultiConstraint`,
+//! `Interval` and `Intervals`. Gated on the corpus in
+//! `tests/fixtures/composer/semver/` (see `docs/resolver-design.md`'s
+//! "Constraints and versions" section) rather than trusted outright: it has
+//! one release and few downloads, so this module is the whole surface a
+//! fork or vendor would need to replace.
+
+pub mod php;
 
 use std::cmp::Ordering;
 
 use anyhow::{Context, Result};
-use semver_php::{Operator, SingleConstraint, VersionParser};
+use php::{Operator, SingleConstraint, VersionParser};
 
 /// A Composer-normalised version string (`VersionParser::normalize`'s
 /// output), the shape `Constraint::matches` expects on the right.
@@ -21,7 +24,7 @@ impl NormalizedVersion {
     }
 }
 
-/// `semver-php` 0.1.0 indexes constraint/version strings by byte offset
+/// `semver::php` indexes constraint/version strings by byte offset
 /// without checking char-boundary alignment, so a non-ASCII byte (which
 /// only ever sits mid-char in UTF-8) can panic instead of erroring. Reject
 /// it up front with Composer's own `VersionParser` wording rather than
@@ -54,7 +57,7 @@ pub fn normalize(version: &str) -> Result<NormalizedVersion> {
 /// `solver::ConstraintCache`, so caching on `self` still compiles each one
 /// exactly once.
 pub struct Constraint {
-    inner: Box<dyn semver_php::Constraint>,
+    inner: Box<dyn php::Constraint>,
     compiled: std::sync::OnceLock<CompiledConstraint>,
 }
 
@@ -117,9 +120,9 @@ pub fn parse_constraint(spec: &str) -> Result<Constraint> {
 /// decision (which compares against `dev-master`-style aliases or numeric
 /// constraints). Widen this if a resolver stage needs the distinction.
 pub fn compare(a: &NormalizedVersion, b: &NormalizedVersion) -> Ordering {
-    if semver_php::greater_than(a.as_str(), b.as_str()).unwrap_or(false) {
+    if php::greater_than(a.as_str(), b.as_str()).unwrap_or(false) {
         Ordering::Greater
-    } else if semver_php::less_than(a.as_str(), b.as_str()).unwrap_or(false) {
+    } else if php::less_than(a.as_str(), b.as_str()).unwrap_or(false) {
         Ordering::Less
     } else {
         Ordering::Equal
@@ -134,12 +137,12 @@ pub fn stability(version: &str) -> &'static str {
 
 /// Whether `candidate` is a subset of `constraint` (`Intervals::isSubsetOf`).
 pub fn is_subset_of(candidate: &Constraint, constraint: &Constraint) -> bool {
-    semver_php::Intervals::new().is_subset_of(candidate.inner.as_ref(), constraint.inner.as_ref())
+    php::Intervals::new().is_subset_of(candidate.inner.as_ref(), constraint.inner.as_ref())
 }
 
 /// Whether two constraints overlap at all (`Intervals::haveIntersections`).
 pub fn have_intersections(a: &Constraint, b: &Constraint) -> bool {
-    semver_php::Intervals::new().have_intersections(a.inner.as_ref(), b.inner.as_ref())
+    php::Intervals::new().have_intersections(a.inner.as_ref(), b.inner.as_ref())
 }
 
 /// `VersionParser::normalizeBranch`: `v1.x` / `2.0.*` -> `9999999`-filled
@@ -224,7 +227,7 @@ fn classify_part(token: &str) -> Part {
             let rest = token[prefix.len()..].trim_start_matches(['.', '-']);
             let num = rest.parse::<i64>().ok();
             return Part {
-                kind: PartKind::Stability(semver_php::stability_order(canonical), num),
+                kind: PartKind::Stability(php::stability_order(canonical), num),
             };
         }
     }
@@ -435,7 +438,7 @@ impl CompiledConstraint {
     /// canonicalisation) into a flat set of non-overlapping numeric
     /// intervals, so this doesn't need its own AND/OR tree walker.
     pub fn compile(constraint: &Constraint) -> CompiledConstraint {
-        let result = semver_php::Intervals::new().get(constraint.inner.as_ref());
+        let result = php::Intervals::new().get(constraint.inner.as_ref());
         let numeric = result
             .numeric
             .into_iter()

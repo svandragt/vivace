@@ -54,13 +54,13 @@ futures = "0.3.34"
 md5 = "0.8.1"
 regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "stream", "gzip", "form"] }
-semver-php = "0.1.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order", "raw_value"] }
 sha1 = "0.11.0"
 sha2 = "0.11.0"
 tar = { version = "0.4.46", default-features = false }
 tempfile = "3.27.0"
+thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -105,8 +105,3 @@ debug = "line-tables-only"
 # artifacts once.
 [profile.dev.package."*"]
 opt-level = 2
-
-# shortcut: semver-php 0.1.0 ranks 4.4.0.0-RC1 above 4.4.0.0 (#386); drop
-# this once upstream releases the fix (m1guelpf/semver-php PR).
-[patch.crates-io]
-semver-php = { git = "https://github.com/svandragt/semver-php", rev = "36723084f1980bc8d46bd762a6d3bbf197a97540" }

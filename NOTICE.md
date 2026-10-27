@@ -50,6 +50,12 @@ MIT permits their use in a GPL-licensed work.
 | `src/autoload/templates/ClassLoader.php`, `InstalledVersions.php`, `LICENSE` | [composer/composer](https://github.com/composer/composer) | MIT |
 | `src/spdx-licenses.json` | [composer/spdx-licenses](https://github.com/composer/spdx-licenses) | MIT |
 | `tests/fixtures/composer/` | [composer/composer](https://github.com/composer/composer) | MIT |
+| `src/semver/php/`, `tests/semver_php/` | [m1guelpf/semver-php](https://github.com/m1guelpf/semver-php), the [svandragt fork](https://github.com/svandragt/semver-php) at `36723084` | MIT |
+
+The `src/semver/php/` files are not verbatim: their imports, formatting and
+a few lint fixes differ from upstream. `src/semver/LICENSE` is the standard
+MIT text, because upstream ships no licence file, only `license = "MIT"` and
+the author's name in its `Cargo.toml`.
 
 ## Why viv is GPL
 
