@@ -54,6 +54,11 @@ same three projects. v0.20.0 against the v0.21.0 candidate (median of each
 289.1 ms and no-op 6.3 ms to 5.9 ms, symfony/demo warm 45.5 ms to 47.9 ms and
 no-op 9.3 ms to 9.3 ms. All six are within the 15% tolerance, so v0.21.0
 adds no regression.
+v0.21.0 against v0.22.0 (same instrument and machine, 2026-10-27): laravel
+warm 37.2 ms to 37.9 ms and no-op 6.9 ms to 7.5 ms,
+drupal/recommended-project warm 292.7 ms to 290.2 ms and no-op 6.1 ms to
+5.9 ms, symfony/demo warm 45.0 ms to 46.9 ms and no-op 9.3 ms to 9.5 ms. All
+six are within the 15% tolerance, so v0.22.0 adds no regression.
 
 A warm update still revalidates every package's metadata with the registry,
 one conditional request each, even when nothing changed. `--metadata-ttl

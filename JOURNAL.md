@@ -1888,3 +1888,24 @@ rule. The fixture is the real v6.0.2 source as a path repository; viv's
 output matches Composer 2.10.2's for `install`, `install -o`,
 `install --no-dev`, `dump-autoload -o` and a project with
 `composer/installers` placing a plugin outside `vendor/`.
+
+## 2026-10-27: 0.22, user-hit fixes and packaging
+
+The sweep (`compat/results/v0.22.0.md`) installs all 20 pinned rows
+byte-identical to Composer's and exports all 10 locks, but resolves the
+same lock on 9 of 10: craftcms/craft differs on `symfony/var-dumper`
+(v7.4.21 in Composer's lock, v5.4.54 in viv's), the #316 flip 0.21 shipped
+with, so `compat/run.sh` exits 1 as it did then. The random sample (seed
+`20261027`) installs 8 of 10 projects identically; the other two are
+skipped, one for needing PHP 8.5 on an 8.4.24 host, one for having only
+`dev-master`. The local bench gate failed warm on its first run (0.107 s,
+ratio 0.040 against a 0.026 baseline, range 45 to 136 ms on a machine at
+load 4), then passed twice on a rebuilt binary at 37.7 and 39 ms (ratio
+0.014). That ratio flatters viv: Composer's warm install took 2.7 s here
+against 1.05 s in the 0.21 run. bench-ab is the honest comparison, and it
+puts v0.21.0 and this build within 1.9 ms on laravel, drupal and
+symfony/demo. `CHANGELOG.md` held the fixes from #377 to #390 but none of
+what landed between 7 and 21 October (`composer <script>` in the shim,
+`install` and `dump-autoload` without a lock, `require` and `rm` reverting
+`composer.json`, the umask mode of `vendor/composer/` files, the jetpack
+adapter), so the release added those entries from the commit log.

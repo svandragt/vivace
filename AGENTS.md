@@ -26,7 +26,7 @@ make install                       # cargo install --path . --locked --bin viv, 
 make install-shim                  # adds a drop-in `composer` shim that shadows the real Composer
 make build                         # cargo build --release, binary at target/release/viv
 make test                          # cargo nextest run (PHP-dependent tests skip without php)
-make check                         # fmt --check, clippy -D warnings, nextest, cargo deny
+make check                         # fmt --check, clippy -D warnings, nextest, cargo deny, cargo machete, cargo doc; then sweeps target/ down to 20 GB where cargo-sweep is installed
 make bench                         # hyperfine: composer vs riff vs viv vs vivacity on bench/laravel
 make bench-ab BEFORE=<bin> AFTER=<bin>  # pre-merge viv-against-viv A/B, no Composer denominator
 make bench-smoke                   # fast bench/compare.py check on the runner-sized monolog fixture, CI's own check
@@ -50,7 +50,7 @@ Fallback, or for anything not wrapped:
 
 ```sh
 cargo build --release              # binary at target/release/viv
-devbox run check                   # fmt, clippy -D warnings, nextest, cargo deny
+devbox run check                   # fmt, clippy -D warnings, nextest, cargo deny, cargo machete, cargo doc
 devbox run test                    # cargo nextest run (PHP-dependent tests skip without php)
 cargo nextest run -E 'test(classmap)'   # one test or filter
 cargo insta review                 # accept or reject snapshot changes

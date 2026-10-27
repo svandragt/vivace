@@ -12,7 +12,7 @@ from, kept in the repository rather than copied here so they can't drift.
 ## Compatibility
 
 - [`compat/README.md`](https://github.com/svandragt/vivace/blob/main/compat/README.md) — how the sweep works, and every environment variable it reads.
-- [`compat/results/v0.21.0.md`](https://github.com/svandragt/vivace/blob/main/compat/results/v0.21.0.md) and one file per earlier release — the sweep's install and lock-resolve comparison for that tag, pinned corpus and random sample both.
+- [`compat/results/v0.22.0.md`](https://github.com/svandragt/vivace/blob/main/compat/results/v0.21.0.md) and one file per earlier release — the sweep's install and lock-resolve comparison for that tag, pinned corpus and random sample both.
 - [`compat/hunted.md`](https://github.com/svandragt/vivace/blob/main/compat/hunted.md) — public projects swept once outside the pinned corpus, so a repeat hunt starts from what's already covered.
 - [`compat/results/lock-age.md`](https://github.com/svandragt/vivace/blob/main/compat/results/lock-age.md) — how often a lock 1, 2 or 4 years old still installs today (candidate B).
 - [`compat/results/platform-drift.md`](https://github.com/svandragt/vivace/blob/main/compat/results/platform-drift.md) — how often a locked package's own PHP floor drifts from the root's claimed support (candidate D).

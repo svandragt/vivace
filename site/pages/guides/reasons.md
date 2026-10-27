@@ -37,8 +37,9 @@ offline use](cache.html) for the shared store.
   `symfony/demo`, for symfony/flex, which viv refuses by design.
 - **The shim needs a real Composer for everything else.** It maps
   `install`, `dump-autoload`, `normalize`, `create-project`, `update`,
-  `require` and `remove` to viv; `search` and the rest go to the Composer on
-  your `PATH`, and with no real Composer installed they fail.
+  `require` and `remove` to viv, and runs a root `composer.json` script given
+  as the command (`composer lint`) with `viv run`; `search` and the rest go to
+  the Composer on your `PATH`, and with no real Composer installed they fail.
 - **`vendor/` files are read-only by default.** viv hardlinks them from a
   shared store, so an edit inside `vendor/` fails instead of changing every
   project on the machine. If you patch vendor files by hand, install with
