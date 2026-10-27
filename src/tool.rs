@@ -128,12 +128,12 @@ pub fn run_x(args: &XArgs, cache_dir: Option<&Path>, offline: bool) -> Result<()
 
 /// `viv x`'s own notion of "the project" (#353), which has no `-d`/
 /// `--project-dir` of its own: the current directory, the same place `viv
-/// php install` looks for `composer.json`. A `config.platform.php` pin
-/// there resolves the tool's own dependencies against that PHP
+/// php install` looks for `composer.json`. An `extra.viv.php` there
+/// resolves the tool's own dependencies against that PHP
 /// ([`php::project_php_dir`], installing it on a miss exactly like `viv run`
 /// does, honouring `--offline`) instead of whatever `php` happens to be on
 /// `PATH`. `Ok(None)` either way `project_php_dir` already means "use
-/// PATH" — no pin, or no `composer.json` here at all.
+/// PATH" — no `extra.viv.php`, or no `composer.json` here at all.
 fn current_project_php_override(cache_dir: &Path, offline: bool) -> Result<Option<PathBuf>> {
     let project_dir = std::env::current_dir().context("resolving the current directory")?;
     Ok(php::project_php_dir(&project_dir, Some(cache_dir), offline)?.map(|dir| dir.join("php")))
@@ -556,7 +556,7 @@ mod tests {
 
     /// #353: the tool-env cache key folds in `detect_php_version`'s result,
     /// so two different `php_override` binaries (standing in for two
-    /// different `config.platform.php` pins) must report two different
+    /// different `extra.viv.php` versions) must report two different
     /// versions — proving a pin change changes the key instead of reusing
     /// an env resolved for the other PHP.
     #[test]

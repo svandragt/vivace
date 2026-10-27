@@ -1,7 +1,9 @@
 //! `viv php install [VERSION]`/`viv php list` (#337): download a
 //! static-php-cli `cli` build for the running OS/arch into the store and
-//! pin `config.platform.php` to it, so a project's PHP no longer has to
-//! come from whatever happens to be on `PATH`.
+//! set `extra.viv.php` to it, so a project's PHP no longer has to come from
+//! whatever happens to be on `PATH`. Without `extra.viv.php` the `php` on
+//! `PATH` runs, as with Composer: `config.platform.php` only tells the
+//! solver which PHP to resolve for and never selects a build (#397).
 //!
 //! Composer has no such command; this is entirely vivace's own, kept out of
 //! `install.rs`/`solver::platform` (which only ever *detect* an existing
@@ -33,9 +35,9 @@ pub struct PhpArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum PhpCommand {
-    /// Download a static-php-cli build and pin `config.platform.php` in
+    /// Download a static-php-cli build and set `extra.viv.php` in
     /// composer.json to it. With no `VERSION`, installs whatever is
-    /// already pinned there.
+    /// already set there.
     Install {
         /// `8.4` (newest `8.4.x` upstream) or `8.4.17` (exact).
         version: Option<String>,
@@ -73,8 +75,8 @@ fn warn_out(message: &str) {
 /// A `VERSION` argument's shape: `8.4` resolves to the newest `8.4.x`
 /// upstream release; `8.4.17` names an exact one. Anything else (`8`,
 /// `8.4.x`, `latest`) is rejected before it ever reaches the listing regex.
-/// A `config.platform.php` pin read back (always `X.Y.Z`) parses the same
-/// way and lands on `Exact`.
+/// An `extra.viv.php` value read back parses the same way: `8.4` lands on
+/// `Minor`, `8.4.17` on `Exact`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum VersionSpec {
     Minor(String),
@@ -186,7 +188,7 @@ fn run_install(version_arg: Option<&str>, cache_dir: Option<&Path>) -> Result<()
 
     if version_arg.is_some() {
         if composer_json_exists {
-            write_platform_pin(&composer_json_path, &version_input)?;
+            write_viv_php(&composer_json_path, &version_input)?;
         } else {
             warn_out("composer.json not found; installed php only");
         }
@@ -195,45 +197,49 @@ fn run_install(version_arg: Option<&str>, cache_dir: Option<&Path>) -> Result<()
 }
 
 fn pinned_version(composer_json_path: &Path, exists: bool) -> Result<String> {
-    if exists && let Some(pin) = read_platform_php_pin(composer_json_path)? {
+    if exists && let Some(pin) = read_viv_php(composer_json_path)? {
         return Ok(pin);
     }
     bail!(
-        "no PHP pinned: set config.platform.php in composer.json or run viv php install <version>"
+        "no PHP version set: set extra.viv.php in composer.json or run viv php install <version>"
     );
 }
 
-/// `config.platform.php` from a composer.json, or `None` when the file is
-/// absent or names no pin — shared by `pinned_version` (`viv php install`'s
-/// own "no pin" is an error) and [`project_php_dir`] (`viv run`/`viv exec`'s
-/// own "no pin" is just "use whatever's on PATH").
-fn read_platform_php_pin(composer_json_path: &Path) -> Result<Option<String>> {
+/// `extra.viv.php` from a root's `extra` (#397): the version of the static
+/// build the project runs on, or `None` when it is unset or not a string.
+/// Shared by every reader so `config.platform.php` is never consulted for
+/// which `php` runs.
+pub(crate) fn viv_php(extra: &Value) -> Option<&str> {
+    extra.pointer("/viv/php").and_then(Value::as_str)
+}
+
+/// [`viv_php`] of a composer.json on disk, or `None` when the file is absent
+/// — shared by `pinned_version` (`viv php install`'s own "not set" is an
+/// error) and [`project_php_dir`] (`viv run`/`viv exec`'s own "not set" is
+/// just "use whatever's on PATH").
+fn read_viv_php(composer_json_path: &Path) -> Result<Option<String>> {
     if !composer_json_path.is_file() {
         return Ok(None);
     }
     let root = crate::lock::read_root(composer_json_path)?;
-    Ok(root
-        .config
-        .platform
-        .get("php")
-        .and_then(Value::as_str)
-        .map(str::to_string))
+    Ok(viv_php(&root.extra).map(str::to_string))
 }
 
-/// The directory holding the project's pinned PHP's `php` binary, or `None`
-/// when `composer.json` is absent or pins nothing — the "just use PATH"
-/// case `viv run`/`viv exec` fall back to. An exact pin (`8.4.17`) or a
-/// minor one (`8.4` -> its newest installed `8.4.x`) not yet installed is
-/// installed on the spot (`uv run`'s own "missing interpreter" behaviour),
-/// the same `ensure_installed` `viv php install` uses, unless `--offline`
-/// is set, in which case it's the same error as before, reworded.
+/// The directory holding the `php` binary `extra.viv.php` selects, or `None`
+/// when `composer.json` is absent or sets none — the "just use PATH" case
+/// `viv run`/`viv exec` fall back to, whatever `config.platform.php` says
+/// (#397). An exact version (`8.4.17`) or a minor one (`8.4` -> its newest
+/// installed `8.4.x`) not yet installed is installed on the spot (`uv run`'s
+/// own "missing interpreter" behaviour), the same `ensure_installed` `viv php
+/// install` uses, unless `--offline` is set, in which case it's the same
+/// error as before, reworded.
 pub fn project_php_dir(
     project_dir: &Path,
     cache_dir: Option<&Path>,
     offline: bool,
 ) -> Result<Option<PathBuf>> {
     let composer_json_path = project_dir.join("composer.json");
-    let Some(pin) = read_platform_php_pin(&composer_json_path)? else {
+    let Some(pin) = read_viv_php(&composer_json_path)? else {
         return Ok(None);
     };
     let cache_dir = resolve_cache_dir(cache_dir)?;
@@ -255,7 +261,7 @@ pub fn project_php_dir(
 
     if offline {
         bail!(
-            "php {pin} is pinned in composer.json but not installed, and --offline is set; run viv php install"
+            "extra.viv.php names php {pin}, which is not installed, and --offline is set; run viv php install"
         );
     }
 
@@ -267,12 +273,12 @@ pub fn project_php_dir(
 
 /// The `php` binary the solver's platform probe (`ext-*` detection) reads
 /// for `project_dir` (#385): `explicit` when the caller already resolved one
-/// (`viv x`), else the project's pinned build when [`project_php_dir`] finds
-/// it installed (the same pick `viv run` makes), else `None`, the `php` on
-/// `PATH`. Never installs a build (`offline: true` is `project_php_dir`'s
-/// no-install switch): `config.platform.php` is also Composer's way to
-/// simulate a version no static build exists for (`7.0.0`), so a pin that is
-/// missing or does not parse falls back to `PATH` like a project with no pin.
+/// (`viv x`), else the build `extra.viv.php` selects when [`project_php_dir`]
+/// finds it installed (the same pick `viv run` makes), else `None`, the `php`
+/// on `PATH`. Never installs a build (`offline: true` is `project_php_dir`'s
+/// no-install switch): a version that is not installed or does not parse
+/// falls back to `PATH` like a project with none set. `config.platform.php`
+/// plays no part (#397).
 pub(crate) fn platform_php(
     explicit: Option<&Path>,
     project_dir: &Path,
@@ -288,23 +294,27 @@ pub(crate) fn platform_php(
 
 /// The line a refused platform requirement prints (#385) saying which `php`
 /// its platform packages came from: `php` is what [`platform_php`] returned
-/// and `pin` is `config.platform.php`. With no build, a set pin adds how to
-/// install it (`viv run` installs it on a miss, as does `viv php install`).
+/// and `pin` is `extra.viv.php`. With no build, a set version adds how to
+/// install it (`viv run` installs it on a miss, as does `viv php install`),
+/// and with neither a build nor a `php` on `PATH` the note says how to get one.
 pub(crate) fn platform_php_note(php: Option<&Path>, pin: Option<&str>) -> String {
     if let Some(path) = php {
         return format!(
-            "Platform packages were read from {}, the php build pinned by config.platform.php.",
+            "Platform packages were read from {}, the php build set by extra.viv.php.",
             path.display()
         );
     }
     let source = if crate::solver::platform::resolve_php_path().is_some() {
         "Platform packages were read from the php on PATH."
-    } else {
+    } else if pin.is_some() {
         "No php binary was found on PATH, so viv assumed php 8.3.0 with no extensions."
+    } else {
+        "No php binary was found on PATH, so viv assumed php 8.3.0 with no extensions. Set \
+         extra.viv.php or run `viv php install <version>`."
     };
     match pin {
         Some(pin) => format!(
-            "{source}\nconfig.platform.php pins php {pin}, which is not installed. Run `viv php \
+            "{source}\nextra.viv.php names php {pin}, which is not installed. Run `viv php \
              install {pin}` or `viv run php -v` to install it."
         ),
         None => source.to_string(),
@@ -320,10 +330,7 @@ pub(crate) fn annotate_solver_error(
     root: &Value,
 ) -> anyhow::Error {
     crate::solver::problem::SolverError::annotate(err, || {
-        platform_php_note(
-            php,
-            root.pointer("/config/platform/php").and_then(Value::as_str),
-        )
+        platform_php_note(php, root.get("extra").and_then(viv_php))
     })
 }
 
@@ -533,27 +540,28 @@ fn extract_php_from_tar_gz(reader: impl std::io::Read, dest_dir: &Path) -> Resul
     bail!("static-php-cli tarball has no \"php\" entry");
 }
 
-/// `config.platform.php`'s own composer.json edit: the same parse-map-
+/// `extra.viv.php`'s own composer.json edit: the same parse-map-
 /// serialize-then-normalize seam `require.rs`'s `add_link`/
-/// `write_composer_json` use for `require`/`require-dev`, one level deeper
-/// (`config.platform` rather than the root object).
-fn write_platform_pin(path: &Path, version: &str) -> Result<()> {
+/// `write_composer_json` use for `require`/`require-dev`, two levels deeper
+/// (`extra.viv` rather than the root object). `config.platform.php` is left
+/// as it is (#397).
+fn write_viv_php(path: &Path, version: &str) -> Result<()> {
     let original = fs_err::read_to_string(path).context("reading composer.json")?;
     let mut root: Value = serde_json::from_str(&original).context("parsing composer.json")?;
     let obj = root
         .as_object_mut()
         .context("composer.json must be a JSON object")?;
-    let config = obj
-        .entry("config")
+    let extra = obj
+        .entry("extra")
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
-        .context("config must be a JSON object")?;
-    let platform = config
-        .entry("platform")
+        .context("extra must be a JSON object")?;
+    let viv = extra
+        .entry("viv")
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
-        .context("config.platform must be a JSON object")?;
-    platform.insert("php".to_string(), Value::String(version.to_string()));
+        .context("extra.viv must be a JSON object")?;
+    viv.insert("php".to_string(), Value::String(version.to_string()));
 
     let indent = normalize::detect_indent(&original);
     write_composer_json(path, &root)?;

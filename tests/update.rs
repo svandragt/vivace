@@ -1870,7 +1870,8 @@ async fn update_warns_once_when_no_php_binary_is_on_path() {
 
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
     let want = "Warning: no php binary found on PATH; assuming php 8.3.0 with no extensions. \
-                Set config.platform or install PHP.\n";
+                Set config.platform, set extra.viv.php or run viv php install <version>, or \
+                install PHP.\n";
     assert_eq!(
         stderr.matches(want).count(),
         1,

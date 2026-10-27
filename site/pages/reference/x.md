@@ -21,11 +21,12 @@ or `vendor/`.
 
 - Reads: the store under `$XDG_CACHE_HOME/vivace` for an already-built env
   matching the same content hash, and the current directory's
-  `composer.json` for a `config.platform.php` pin. With a pin, the tool
-  resolves against that PHP instead of the one on `PATH`.
+  `composer.json` for `extra.viv.php`. With it set, the tool resolves
+  against that PHP build instead of the `php` on `PATH`;
+  `config.platform.php` has no effect here.
 - Writes: the store's `tools-v0` bucket (a fresh synthetic-root env, when
-  none matches yet), and its `php-v0` bucket when the pinned PHP isn't
-  installed yet (not with `--offline`).
+  none matches yet), and its `php-v0` bucket when the `extra.viv.php`
+  build isn't installed yet (not with `--offline`).
 
 ## Exit codes
 

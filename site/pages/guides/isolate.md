@@ -31,7 +31,8 @@ fix:
 ## What isolate does
 
 `viv isolate <plugin>` copies the plugin's bundled `vendor/`, then runs
-php-scoper over the copy on the project's own pinned PHP, with a prefix
+php-scoper over the copy on the project's own PHP (the `extra.viv.php`
+build when it is set, else the `php` on `PATH`), with a prefix
 derived from the plugin's slug. It then runs `php -l` on every file the
 scoper wrote and a load check — a generated bootstrap that loads the
 scoped `vendor/autoload.php` against the real `php-stubs/wordpress-stubs`

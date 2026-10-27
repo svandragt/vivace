@@ -480,10 +480,7 @@ fn verify_platform_requirements(
         }
         return Ok(());
     }
-    let note = crate::php::platform_php_note(
-        php_override,
-        root.config.platform.get("php").and_then(Value::as_str),
-    );
+    let note = crate::php::platform_php_note(php_override, crate::php::viv_php(&root.extra));
     Err(SolverError::for_install(problems)
         .with_platform_note(note)
         .into())
