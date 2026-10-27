@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+- The `x86_64-unknown-linux-gnu` release binary, and the `.deb` built from it, runs on x86_64 CPUs without AVX. The 0.22.0 build died with SIGILL (exit 132) on `viv --version` on such a CPU, such as an Intel Pentium J5005, because the release runner's newer GCC compiled the C code of `aws-lc-sys` with AVX instructions. The release workflow now compiles that C code for baseline x86-64, builds on Ubuntu 24.04, and runs each x86_64 Linux binary under `qemu-x86_64 -cpu Nehalem` (SSE4.2, no AVX) before packaging it. The musl binary was not affected ([#396](https://github.com/svandragt/vivace/issues/396))
 
 ## [0.22.0] - 2026-10-27
 ### Added

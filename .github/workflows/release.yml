@@ -42,8 +42,10 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             musl: true
+          # #396: pinned, not ubuntu-latest, so the binary needs no newer
+          # glibc than Ubuntu 24.04 has (2.39).
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             deb: true
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
@@ -56,6 +58,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
+      # #396: the gnu build compiles aws-lc-sys's C with the runner's GCC,
+      # and ubuntu-26.04's GCC emitted AVX, which SIGILLs on CPUs without it.
+      # No other target reads this variable.
+      CFLAGS_x86_64_unknown_linux_gnu: -march=x86-64 -mtune=generic
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,6 +86,12 @@ jobs:
           else
             cargo build --release --target ${{ matrix.target }}
           fi
+      # #396: Nehalem has SSE4.2 and no AVX, like the Pentium that hit SIGILL.
+      - name: Check the binary runs on a CPU without AVX
+        if: startsWith(matrix.target, 'x86_64-unknown-linux')
+        run: |
+          sudo apt-get install -y qemu-user
+          qemu-x86_64 -cpu Nehalem target/${{ matrix.target }}/release/viv --version
       - name: Package
         run: |
           name="vivace-${TAG}-${{ matrix.target }}"
