@@ -31,18 +31,19 @@
 //! comment has the exact list and the trade-off it accepts) — a cache hit
 //! costs one `stat` on the resolved `php` binary instead of running it.
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Once};
-use std::time::UNIX_EPOCH;
+use std::sync::{Arc, Once, mpsc};
+use std::time::{Duration, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::lock_merge::parse_timeout;
 use crate::semver;
 use crate::solver::pool::{Link, Package};
 use crate::store::{PLATFORM_BUCKET, hex};
@@ -394,30 +395,71 @@ if (extension_loaded('zlib')) {
 echo json_encode($out);
 "#;
 
+/// #368: `VIV_PHP_PROBE_TIMEOUT` is how long the probe waits for `php`, in
+/// seconds; `0` waits without limit. A `php` stuck on a slow ini or a broken
+/// extension otherwise blocks every command that probes.
+const PROBE_TIMEOUT_ENV: &str = "VIV_PHP_PROBE_TIMEOUT";
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// `php_path` is run directly (no PATH search of its own): #353's own
 /// override seam, so a project's pinned PHP (resolved by the caller) probes
 /// exactly that binary rather than whatever `resolve_php_path` would find.
-fn run_probe(php_path: &Path) -> Option<Probe> {
+///
+/// `Ok(None)` is a `php` that could not be run or gave no usable answer; the
+/// callers then assume a platform. `Err` is a `php` that did not answer in
+/// time: it is killed, reaped and not retried, because assuming a platform for
+/// a `php` that exists would hide a broken installation, and a retry would
+/// wait the limit again.
+fn run_probe(php_path: &Path) -> Result<Option<Probe>> {
+    let env_value = std::env::var_os(PROBE_TIMEOUT_ENV).map(|v| v.to_string_lossy().into_owned());
+    let limit = parse_timeout(PROBE_TIMEOUT_ENV, env_value.as_deref(), PROBE_TIMEOUT)?;
     // No `-r`/`-f -` argument: this build's CLI SAPI treats a literal `-`
     // as a filename ("Could not open input file: -") rather than "read the
     // script from stdin", but bare `php` with redirected stdin and no
     // arguments does read the script from there.
-    let mut child = Command::new(php_path)
+    let Ok(mut child) = Command::new(php_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
-    child
-        .stdin
-        .take()?
-        .write_all(PROBE_SCRIPT.as_bytes())
-        .ok()?;
-    let output = child.wait_with_output().ok()?;
-    if !output.status.success() {
-        return None;
+    else {
+        return Ok(None);
+    };
+    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return Ok(None);
+    };
+    // A thread does the pipe I/O so the wait below can time out, and so a
+    // `php` that never reads its script cannot block the write either.
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let read = stdin
+            .write_all(PROBE_SCRIPT.as_bytes())
+            .and_then(|()| {
+                drop(stdin);
+                stdout.read_to_end(&mut out)
+            })
+            .map(|_| out);
+        let _ = sender.send(read);
+    });
+    // `Duration::MAX` (no limit) never elapses: `recv_timeout` waits unbounded.
+    let wait = limit.unwrap_or(Duration::MAX);
+    let answer = receiver.recv_timeout(wait);
+    if !matches!(answer, Ok(Ok(_))) {
+        let _ = child.kill();
     }
-    serde_json::from_slice(&output.stdout).ok()
+    let exited_ok = child.wait().is_ok_and(|status| status.success());
+    match answer {
+        Err(mpsc::RecvTimeoutError::Timeout) => bail!(
+            "{} did not answer within {}s while reading its version and extensions \
+             ({PROBE_TIMEOUT_ENV}), so it was killed; check its php.ini and extensions, or set \
+             {PROBE_TIMEOUT_ENV} to a number of seconds to change the limit, or to 0 to turn it off",
+            php_path.display(),
+            wait.as_secs()
+        ),
+        Ok(Ok(stdout)) if exited_ok => Ok(serde_json::from_slice(&stdout).ok()),
+        _ => Ok(None),
+    }
 }
 
 /// The `php` a bare `Command::new("php")` would run: a manual `PATH` scan
@@ -489,21 +531,26 @@ pub(crate) fn cache_key(php_path: &Path) -> Option<String> {
 /// Cache hit: read and parse `<cache_dir>/platform-v0/<key>.json`. Cache
 /// miss (or unparseable, e.g. an older/newer `viv`'s `Probe` shape): run the
 /// real probe and write it back, best-effort (a write failure just means
-/// the next `update` probes again, same as today).
-fn cached_probe(cache_dir: &Path, php_path: &Path) -> Option<Probe> {
-    let key = cache_key(php_path)?;
+/// the next `update` probes again, same as today). `Err` is [`run_probe`]'s
+/// timeout.
+fn cached_probe(cache_dir: &Path, php_path: &Path) -> Result<Option<Probe>> {
+    let Some(key) = cache_key(php_path) else {
+        return Ok(None);
+    };
     let cache_path = cache_dir.join(PLATFORM_BUCKET).join(format!("{key}.json"));
     if let Ok(bytes) = fs_err::read(&cache_path)
         && let Ok(probe) = serde_json::from_slice(&bytes)
     {
-        return Some(probe);
+        return Ok(Some(probe));
     }
-    let probe = run_probe(php_path)?;
+    let Some(probe) = run_probe(php_path)? else {
+        return Ok(None);
+    };
     if let Ok(bytes) = serde_json::to_vec(&probe) {
         let _ = cache_path.parent().map(fs_err::create_dir_all);
         let _ = fs_err::write(&cache_path, bytes);
     }
-    Some(probe)
+    Ok(Some(probe))
 }
 
 /// "" => 0, "a" => 1, "zg" => 33 (`Version::convertAlphaVersionToIntVersion`).
@@ -1280,7 +1327,10 @@ pub(crate) fn platform_packages(
     let php_path = php_override
         .map(Path::to_path_buf)
         .or_else(resolve_php_path);
-    let probe = php_path.and_then(|php_path| run_probe(&php_path));
+    let probe = php_path
+        .map(|php_path| run_probe(&php_path))
+        .transpose()?
+        .flatten();
     packages_from_probe(probe.as_ref(), overrides)
 }
 
@@ -1308,10 +1358,11 @@ pub(crate) fn cached_platform_packages(
         resolved_path.as_deref()
     };
     let probe = match (cache_dir, php_path) {
-        (Some(cache_dir), Some(php_path)) => {
-            cached_probe(cache_dir, php_path).or_else(|| run_probe(php_path))
-        }
-        (None, Some(php_path)) => run_probe(php_path),
+        (Some(cache_dir), Some(php_path)) => match cached_probe(cache_dir, php_path)? {
+            Some(probe) => Some(probe),
+            None => run_probe(php_path)?,
+        },
+        (None, Some(php_path)) => run_probe(php_path)?,
         (_, None) => None,
     };
     if probe.is_none() && !overrides.contains_key("php") {
@@ -1599,12 +1650,12 @@ mod tests {
         // (`PathGuard`'s own doc comment).
         let _guard = PathGuard::prepend(bin_dir.path());
 
-        let first = cached_probe(cache_dir.path(), &php_path).unwrap();
+        let first = cached_probe(cache_dir.path(), &php_path).unwrap().unwrap();
         assert_eq!(first.php_version, "8.4.1");
         assert_eq!(fs_err::read_to_string(&counter).unwrap().lines().count(), 1);
 
         // Same binary, same mtime: cache hit, `php` is not run again.
-        let second = cached_probe(cache_dir.path(), &php_path).unwrap();
+        let second = cached_probe(cache_dir.path(), &php_path).unwrap().unwrap();
         assert_eq!(second.php_version, "8.4.1");
         assert_eq!(fs_err::read_to_string(&counter).unwrap().lines().count(), 1);
 
@@ -1618,7 +1669,7 @@ mod tests {
         );
         filetime::set_file_mtime(&php_path, bumped).unwrap();
 
-        let third = cached_probe(cache_dir.path(), &php_path).unwrap();
+        let third = cached_probe(cache_dir.path(), &php_path).unwrap().unwrap();
         assert_eq!(third.php_version, "8.4.2");
         assert_eq!(fs_err::read_to_string(&counter).unwrap().lines().count(), 2);
     }

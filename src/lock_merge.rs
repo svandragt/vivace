@@ -349,28 +349,32 @@ fn detect_format(path: &Path) -> Result<Format> {
 const DEADLINE_ENV: &str = "VIV_LOCK_MERGE_TIMEOUT";
 const DEFAULT_DEADLINE: Duration = Duration::from_mins(10);
 
-/// `value` is [`DEADLINE_ENV`]'s content, `None` when unset; `Ok(None)` means
-/// no deadline. A value that is not a whole number of seconds is an error,
-/// never a silent fall back to the default.
-fn parse_deadline(value: Option<&str>) -> Result<Option<Duration>> {
+/// `value` is the content of the seconds variable `var`, `None` when unset;
+/// `Ok(None)` means no limit. A value that is not a whole number of seconds is
+/// an error, never a silent fall back to `default`. Also reads the platform
+/// probe's `VIV_PHP_PROBE_TIMEOUT`.
+pub(crate) fn parse_timeout(
+    var: &str,
+    value: Option<&str>,
+    default: Duration,
+) -> Result<Option<Duration>> {
     let Some(value) = value else {
-        return Ok(Some(DEFAULT_DEADLINE));
+        return Ok(Some(default));
     };
     let secs: u64 = value.parse().with_context(|| {
-        format!(
-            "{DEADLINE_ENV}={value:?} is not a whole number of seconds (0 disables the deadline)"
-        )
+        format!("{var}={value:?} is not a whole number of seconds (0 turns the limit off)")
     })?;
     Ok((secs > 0).then(|| Duration::from_secs(secs)))
 }
 
 /// A watchdog thread, not a `tokio::time::timeout`: the stall can sit in a
-/// synchronous wait (the platform probe's `wait_with_output` on `php`) that
-/// no async timeout interrupts. On expiry it exits 1 without touching any
-/// file, which is what the error path does too: git reads a non-zero exit as
-/// "conflicted" and keeps `ours` (`%A`) as it handed it over. It does not
-/// kill child processes: viv keeps no handle on them (shortcut: a hung `php`
-/// probe is orphaned, upgrade by recording child pids where they are spawned).
+/// synchronous wait that no async timeout interrupts. On expiry it exits 1
+/// without touching any file, which is what the error path does too: git
+/// reads a non-zero exit as "conflicted" and keeps `ours` (`%A`) as it handed
+/// it over. It does not kill child processes: viv keeps no handle on them.
+/// The platform probe kills its own hung `php` after `VIV_PHP_PROBE_TIMEOUT`
+/// (30 seconds by default), so only a deadline set below that leaves one
+/// running.
 struct Deadline(Arc<(Mutex<bool>, Condvar)>);
 
 impl Deadline {
@@ -431,7 +435,11 @@ pub fn run(
     offline_rung: bool,
 ) -> Result<u8> {
     let env_value = std::env::var_os(DEADLINE_ENV).map(|v| v.to_string_lossy().into_owned());
-    let deadline = Deadline::start(parse_deadline(env_value.as_deref())?);
+    let deadline = Deadline::start(parse_timeout(
+        DEADLINE_ENV,
+        env_value.as_deref(),
+        DEFAULT_DEADLINE,
+    )?);
 
     let as_of = as_of
         .map(|value| {
@@ -1766,21 +1774,19 @@ mod tests {
 
     #[test]
     fn deadline_defaults_to_ten_minutes_and_zero_disables_it() {
-        assert_eq!(
-            parse_deadline(None).unwrap(),
-            Some(Duration::from_secs(600))
-        );
-        assert_eq!(
-            parse_deadline(Some("30")).unwrap(),
-            Some(Duration::from_secs(30))
-        );
-        assert_eq!(parse_deadline(Some("0")).unwrap(), None);
+        let parse = |value| parse_timeout(DEADLINE_ENV, value, DEFAULT_DEADLINE);
+        assert_eq!(parse(None).unwrap(), Some(Duration::from_secs(600)));
+        assert_eq!(parse(Some("30")).unwrap(), Some(Duration::from_secs(30)));
+        assert_eq!(parse(Some("0")).unwrap(), None);
     }
 
     #[test]
     fn a_deadline_that_is_not_whole_seconds_is_an_error_naming_the_variable() {
         for bad in ["soon", "", "1.5", "-1", "10m"] {
-            let err = format!("{:#}", parse_deadline(Some(bad)).unwrap_err());
+            let err = format!(
+                "{:#}",
+                parse_timeout(DEADLINE_ENV, Some(bad), DEFAULT_DEADLINE).unwrap_err()
+            );
             assert!(
                 err.contains("VIV_LOCK_MERGE_TIMEOUT") && err.contains(&format!("{bad:?}")),
                 "{bad:?}: {err}"
