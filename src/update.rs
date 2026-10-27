@@ -213,7 +213,7 @@ pub fn run(args: &UpdateArgs, cache_dir: Option<&Path>, offline: bool) -> Result
 /// [`run`]'s own body, plus `php_override` (#353): `tool::ensure_tool_env`'s
 /// own call resolves the *real* project's pinned PHP itself (its own
 /// `UpdateArgs::project_dir` is a synthetic per-tool cache dir, which never
-/// carries a `config.platform.php` pin of its own) and passes the resolved
+/// carries an `extra.viv.php` of its own) and passes the resolved
 /// binary straight through here, past `solve`'s own project-agnostic
 /// `cache_dir`/`offline`. `None` for every other caller, unchanged.
 /// `pub(crate)`: `tool::ensure_tool_env` calls this directly (same crate)

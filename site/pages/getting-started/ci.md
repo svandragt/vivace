@@ -28,5 +28,5 @@ Cache viv's store with `actions/cache` on `~/.cache/vivace`, keyed on `composer.
 A runner image with no PHP installed can still run PHP tooling: `viv php
 install 8.4` downloads a self-contained PHP build into the store, with no
 system package manager involved, and `viv run phpunit`, `viv run phpcs` and
-similar then run that tool on the pinned build. See [A PHP per
+similar then run that tool on that build. See [A PHP per
 project](../guides/php.html) for the full command set.

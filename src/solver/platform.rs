@@ -1332,7 +1332,8 @@ fn warn_no_php_once() {
     WARN_NO_PHP.call_once(|| {
         warn_out(
             "Warning: no php binary found on PATH; assuming php 8.3.0 with no extensions. \
-             Set config.platform or install PHP.",
+             Set config.platform, set extra.viv.php or run viv php install <version>, or \
+             install PHP.",
         );
     });
 }

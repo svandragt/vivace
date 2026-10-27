@@ -37,7 +37,7 @@ here never drift from the binary.
 | [viv x](x.html) | Installs and runs a package's binary in an isolated, cached environment. |
 | [viv run](run.html) | Runs a scripts entry from the root composer.json. |
 | [viv exec](exec.html) | Runs a vendor/bin binary with vendor/bin prepended to PATH. |
-| [viv php](php.html) | Downloads a static-php-cli build and pins config.platform.php to it. |
+| [viv php](php.html) | Downloads a static-php-cli build and sets extra.viv.php to it. |
 | [viv diagnose](diagnose.html) | Prints an environment and configuration report for a bug report. |
 | [viv lock](lock.html) | Converts, merges or exports a viv.lock/composer.lock pair. |
 | [viv workspace](workspace.html) | Discovers and manages a monorepo's member packages. |

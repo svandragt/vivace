@@ -16,8 +16,9 @@ viv x friendsofphp/php-cs-fixer fix src
 viv x --list                         # environments in the cache
 ```
 
-Run from a project whose `composer.json` pins a PHP with `viv php install`,
-`viv x` resolves the tool against that PHP, and installs the build on first
-use, instead of the `php` on your `PATH`. Changing the pin gives the tool a
-new environment. With no pin, or outside a project, it uses `php` from
-`PATH`, as before.
+Run from a project whose `composer.json` sets `extra.viv.php` (`viv php
+install` writes it), `viv x` resolves the tool against that PHP build, and
+installs the build on first use, instead of the `php` on your `PATH`.
+Changing the version gives the tool a new environment. Without
+`extra.viv.php`, or outside a project, it uses `php` from `PATH`;
+`config.platform.php` does not change that.

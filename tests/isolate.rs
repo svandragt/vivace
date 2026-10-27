@@ -374,7 +374,7 @@ fn write_isolate_project(project: &Path) {
         json!({
             "name": "acme/site",
             "require": {"acme/isolate-plugin": "^1.0"},
-            "config": {"platform": {"php": PHP_PIN}},
+            "extra": {"viv": {"php": PHP_PIN}},
         })
         .to_string(),
     )
@@ -714,7 +714,8 @@ fn isolate_add_list_and_a_second_install_use_the_cache_with_no_scoper_run() {
         .success();
     let composer_json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(project.join("composer.json")).unwrap()).unwrap();
-    assert!(composer_json.get("extra").is_none());
+    assert!(composer_json.pointer("/extra/viv/isolate").is_none());
+    assert_eq!(composer_json["extra"]["viv"]["php"], PHP_PIN);
     assert!(
         fs::read_to_string(&scoped_file)
             .unwrap()
@@ -956,10 +957,8 @@ fn write_isolate_project_with_unknown_plugin(project: &Path) {
         json!({
             "name": "acme/site",
             "require": {"acme/isolate-plugin": "^1.0"},
-            "config": {
-                "allow-plugins": {"acme/mystery-plugin": true},
-                "platform": {"php": PHP_PIN},
-            },
+            "config": {"allow-plugins": {"acme/mystery-plugin": true}},
+            "extra": {"viv": {"php": PHP_PIN}},
         })
         .to_string(),
     )
@@ -1064,7 +1063,7 @@ fn write_single_plugin_project(project: &Path, name: &str) {
         json!({
             "name": "acme/site",
             "require": {name: "^1.0"},
-            "config": {"platform": {"php": PHP_PIN}},
+            "extra": {"viv": {"php": PHP_PIN}},
         })
         .to_string(),
     )

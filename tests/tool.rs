@@ -229,10 +229,23 @@ fn write_executable(path: &Path, script: &str) {
     }
 }
 
-/// A `config.platform.php`-pinned project's `composer.json`: `pin` is
-/// either a minor (`"8.4"`) or an exact (`"8.5.0"`) version, matching
-/// `config.platform.php`'s own two accepted shapes.
+/// A project that sets its PHP through `extra.viv.php` (#397): `pin` is either
+/// a minor (`"8.4"`) or an exact (`"8.5.0"`) version, matching the two shapes
+/// `viv php install` accepts.
 fn write_pinned_composer_json(project: &Path, pin: &str) {
+    std::fs::write(
+        project.join("composer.json"),
+        format!(
+            "{{\n    \"extra\": {{ \"viv\": {{ \"php\": \"{pin}\" }} }},\n    \
+             \"scripts\": {{ \"v\": \"php -v\" }}\n}}\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// A project that only sets `config.platform.php`, which tells the solver
+/// which PHP to resolve for and never picks the `php` that runs (#397).
+fn write_platform_php_composer_json(project: &Path, pin: &str) {
     std::fs::write(
         project.join("composer.json"),
         format!(
@@ -243,17 +256,116 @@ fn write_pinned_composer_json(project: &Path, pin: &str) {
     .unwrap();
 }
 
+/// `PATH` with a `php` first that prints `PATH-PHP` (#397), then the
+/// inherited `PATH`.
+fn path_with_fake_php(ctx: &TestContext) -> std::ffi::OsString {
+    let bin = ctx.cache.path().join("path-bin");
+    write_executable(&bin.join("php"), "#!/bin/sh\necho \"PATH-PHP $@\"\n");
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(paths).unwrap()
+}
+
+/// A `PATH` holding only `sh`, so no `php` is found on it (#397).
+fn path_without_php(ctx: &TestContext) -> PathBuf {
+    let bin = ctx.cache.path().join("no-php-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink("/bin/sh", bin.join("sh")).unwrap();
+    bin
+}
+
+/// #397, the Lamb case: `config.platform.php` only feeds the solver, so
+/// `viv run` runs the `php` on `PATH` even when a build for that version is
+/// installed.
 #[test]
-fn run_uses_the_pinned_php_for_a_script() {
+fn run_uses_the_path_php_when_only_config_platform_php_is_set() {
     let ctx = TestContext::new();
     fake_php_install(ctx.cache.path(), "8.4.17");
-    write_pinned_composer_json(ctx.project.path(), "8.4");
+    write_platform_php_composer_json(ctx.project.path(), "8.4");
+    let path = path_with_fake_php(&ctx);
 
     ctx.viv()
+        .env("PATH", path)
         .args(["run", "v"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("FAKE-PHP"));
+        .stdout(predicates::str::contains("PATH-PHP"))
+        .stdout(predicates::str::contains("FAKE-PHP").not());
+}
+
+/// #397: with a `php` on `PATH`, `config.platform.php` downloads nothing (the
+/// dist URL is a closed port, so a download fails).
+#[test]
+fn run_installs_nothing_for_config_platform_php_when_a_php_is_on_path() {
+    let ctx = TestContext::new();
+    write_platform_php_composer_json(ctx.project.path(), "8.4");
+    let path = path_with_fake_php(&ctx);
+
+    ctx.viv()
+        .env("PATH", path)
+        .env("VIV_PHP_DIST_URL", "http://127.0.0.1:9")
+        .args(["run", "v"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("PATH-PHP"))
+        .stderr(predicates::str::contains("installing php").not());
+}
+
+/// #397: `config.platform.php` never selects a static build, not even with no
+/// `php` on `PATH`; `php` is simply not found.
+#[test]
+fn run_does_not_fall_back_to_a_build_for_config_platform_php() {
+    let ctx = TestContext::new();
+    fake_php_install(ctx.cache.path(), "8.4.17");
+    write_platform_php_composer_json(ctx.project.path(), "8.4");
+    let path = path_without_php(&ctx);
+
+    ctx.viv()
+        .env("PATH", path)
+        .args(["run", "v"])
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("FAKE-PHP").not());
+}
+
+/// #397: `viv exec` shares `run`'s choice.
+#[test]
+fn exec_uses_the_path_php_when_only_config_platform_php_is_set() {
+    let ctx = TestContext::new();
+    fake_php_install(ctx.cache.path(), "8.4.17");
+    write_platform_php_composer_json(ctx.project.path(), "8.4");
+    write_executable(
+        &ctx.project.path().join("vendor/bin/tool"),
+        "#!/bin/sh\nphp -v\n",
+    );
+    let path = path_with_fake_php(&ctx);
+
+    ctx.viv()
+        .env("PATH", path)
+        .args(["exec", "tool"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("PATH-PHP"));
+}
+
+/// #397: `extra.viv.php` selects the matching build in place of the `php` on
+/// `PATH`.
+#[test]
+fn run_uses_the_extra_viv_php_build_over_the_path_php() {
+    let ctx = TestContext::new();
+    fake_php_install(ctx.cache.path(), "8.4.17");
+    write_pinned_composer_json(ctx.project.path(), "8.4");
+    let path = path_with_fake_php(&ctx);
+
+    ctx.viv()
+        .env("PATH", path)
+        .args(["run", "v"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("FAKE-PHP"))
+        .stdout(predicates::str::contains("PATH-PHP").not());
 }
 
 #[test]
@@ -295,7 +407,7 @@ fn run_and_exec_error_when_offline_and_the_pinned_php_is_not_installed() {
         "#!/bin/sh\necho TOOL\n",
     );
 
-    let not_installed = "php 8.5.0 is pinned in composer.json but not installed, and --offline \
+    let not_installed = "extra.viv.php names php 8.5.0, which is not installed, and --offline \
                           is set; run viv php install";
     ctx.viv()
         .args(["--offline", "run", "v"])
@@ -700,7 +812,7 @@ async fn x_resolves_against_the_projects_pinned_php() {
     fake_probing_php_install(ctx.cache.path(), "8.1.0");
     std::fs::write(
         ctx.project.path().join("composer.json"),
-        "{\n    \"config\": { \"platform\": { \"php\": \"8.1.0\" } }\n}\n",
+        "{\n    \"extra\": { \"viv\": { \"php\": \"8.1.0\" } }\n}\n",
     )
     .unwrap();
 
@@ -721,7 +833,7 @@ async fn x_resolves_against_the_projects_pinned_php() {
     fake_probing_php_install(ctx.cache.path(), "8.3.0");
     std::fs::write(
         ctx.project.path().join("composer.json"),
-        "{\n    \"config\": { \"platform\": { \"php\": \"8.3.0\" } }\n}\n",
+        "{\n    \"extra\": { \"viv\": { \"php\": \"8.3.0\" } }\n}\n",
     )
     .unwrap();
 

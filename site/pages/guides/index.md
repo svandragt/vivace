@@ -14,7 +14,7 @@ a whole project over from Composer.
 - [Cheat sheet](cheatsheet.html) — the common commands, one line each.
 - [Merging composer.lock without conflicts](lock-merge.html) — the merge driver and what it still can't resolve.
 - [viv.lock](viv-lock.html) — the conflict-less lock format on its own, without `composer.lock`.
-- [A PHP per project](php.html) — a self-contained PHP build pinned per project, no container.
+- [A PHP per project](php.html) — a self-contained PHP build set per project, no container.
 - [Running tools without installing them](tools.html) — `viv x`, npx-style.
 - [Workspaces](workspaces.html) — one resolve and one `vendor/` across several `composer.json` files.
 - [Scripts and running commands](scripts-and-run.html) — `viv run`, `viv exec`, and lifecycle scripts.

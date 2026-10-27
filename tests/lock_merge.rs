@@ -629,7 +629,7 @@ async fn escalate_resolve_reads_the_extensions_of_the_pinned_php() {
     let project = tempfile::tempdir().unwrap();
     let root = json!({
         "require": {"psr/log": "^3.0", "ext-viv-pinned-only": "*"},
-        "config": {"platform": {"php": "8.4"}},
+        "extra": {"viv": {"php": "8.4"}},
     });
     fs::write(project.path().join("composer.json"), root.to_string()).unwrap();
     let cache = tempfile::tempdir().unwrap();

@@ -15,16 +15,18 @@ unless you pass `--no-scripts`: the root's `pre-install-cmd`,
 ## viv run
 
 `viv run <name>` falls through from a `scripts` entry, to
-`vendor/bin/<name>`, to a command on `PATH`, with the pinned PHP's
-directory first on `PATH` for `run`, `exec` and every script the runner
-spawns — so `@php` and a plain `php` inside a script hit the pinned
-build. A pinned build not yet in the cache installs on first use, with one
-line on stderr; `--offline` keeps the error instead of downloading. See [A
-PHP per project](php.html) for pinning the build itself.
+`vendor/bin/<name>`, to a command on `PATH`. With `extra.viv.php` set in
+`composer.json`, the build it names comes first on `PATH` for `run`, `exec`
+and every script the runner spawns, so `@php` and a plain `php` inside a
+script hit that build. Without it, the `php` on `PATH` runs, as in
+Composer; `config.platform.php` never chooses the PHP that runs. A build
+not yet in the cache installs on first use, with one line on stderr;
+`--offline` keeps the error instead of downloading. See [A PHP per
+project](php.html) for setting the build itself.
 
 ```sh
-viv run phpunit --filter Foo # vendor/bin/phpunit on the pinned PHP
-viv run php -v               # the pinned build itself
+viv run phpunit --filter Foo # vendor/bin/phpunit on the project's PHP
+viv run php -v               # the extra.viv.php build itself
 ```
 
 ## viv exec

@@ -159,8 +159,8 @@ enum Command {
     /// inter-member requirements. `init`/`add` (#315): write the aggregate
     /// root composer.json from member glob patterns and resolve/install.
     Workspace(WorkspaceArgs),
-    /// Download a static-php-cli PHP build and pin `config.platform.php`
-    /// to it (#337), or list what's already installed.
+    /// Download a static-php-cli PHP build and set `extra.viv.php` to it
+    /// (#337), or list what's already installed.
     Php(PhpArgs),
     /// Prefix a plugin's bundled dependency tree with php-scoper so it can
     /// coexist with the site's own copy of the same library (#351):
