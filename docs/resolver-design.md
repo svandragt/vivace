@@ -81,10 +81,10 @@ lock. Skip the second solve when `require-dev` is empty (`Installer.php:703`).
 
 ## Constraints and versions
 
-Depend on `semver-php` 0.1.0 (MIT, `github.com/m1guelpf/semver-php`) behind a
-thin `src/semver.rs` facade. It ports `VersionParser`, `Constraint`,
-`MultiConstraint`, `Interval` and `Intervals`, the full surface the solver
-needs.
+Vendor `semver-php` 0.1.0 (MIT, `github.com/m1guelpf/semver-php`) into
+`src/semver/php/`, behind a thin `src/semver.rs` facade. It ports
+`VersionParser`, `Constraint`, `MultiConstraint`, `Interval` and `Intervals`,
+the full surface the solver needs.
 
 Rejected:
 
@@ -93,9 +93,18 @@ Rejected:
 - `riff-semver` is not published to crates.io; vendoring it from `shyim/riff`
   means owning it with no upstream.
 
-`semver-php` has one release and few downloads, so treat it as a fork
-candidate, not a dependency we trust. The facade makes replacement a one-file
-change, and MIT means we can vendor it into `src/semver/` if it goes stale.
+`semver-php` has one release and few downloads, so treat it as a fork, not a
+dependency we trust. The facade makes replacement a one-file change.
+
+The code is vendored at the revision of a fork that ranks a numbered
+pre-release such as `4.4.0-RC1` below `4.4.0`
+([#386](https://github.com/svandragt/vivace/issues/386)). viv first took the
+fork through `[patch.crates-io]`, but `cargo publish` drops that section, so
+the crates.io build still used the unfixed 0.1.0. The upstream pull request
+([m1guelpf/semver-php#1](https://github.com/m1guelpf/semver-php/pull/1)) has
+had no reply. The upstream licence text is in `src/semver/LICENSE` and the
+upstream tests run as `tests/semver_php/`. If upstream releases the fix, the
+vendored copy can go back to a crate dependency.
 
 Gate it on the corpus before writing a line of solver. Commit these under
 `tests/fixtures/composer/semver/`, generated from `composer/semver`'s tests:

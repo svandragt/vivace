@@ -288,8 +288,14 @@ fn sort() {
         let ascending: Vec<&str> = row[1].as_array().unwrap().iter().map(s).collect();
         let descending: Vec<&str> = row[2].as_array().unwrap().iter().map(s).collect();
 
-        assert_eq!(semver_php::Semver::sort(&versions).unwrap(), ascending);
-        assert_eq!(semver_php::Semver::rsort(&versions).unwrap(), descending);
+        assert_eq!(
+            vivace::semver::php::Semver::sort(&versions).unwrap(),
+            ascending
+        );
+        assert_eq!(
+            vivace::semver::php::Semver::rsort(&versions).unwrap(),
+            descending
+        );
     }
 }
 

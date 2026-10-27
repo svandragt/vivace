@@ -8,10 +8,10 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use semver_php::{
+use crate::semver::php::{
     Bound, Constraint, Interval, Intervals, MultiConstraint, Operator, VersionParser,
 };
+use anyhow::{Context, Result};
 use serde_json::{Map, Value, json};
 
 use super::php_string;
@@ -159,7 +159,7 @@ fn constraint_into_string(lower: &Bound, upper: &Bound) -> String {
 /// lower bound and highest upper bound (which is what `MultiConstraint`'s own
 /// `getLowerBound`/`getUpperBound` return, and diverges from the true
 /// intersection once two extensions' ranges overlap only partially). An AND
-/// of contiguous ranges stays contiguous, so `semver_php`'s `Intervals::get`
+/// of contiguous ranges stays contiguous, so `semver::php`'s `Intervals::get`
 /// — the crate's own port of `compactConstraint`'s interval algebra — always
 /// yields at most one interval here.
 fn merge_constraints(constraints: Vec<Box<dyn Constraint>>) -> Option<String> {
