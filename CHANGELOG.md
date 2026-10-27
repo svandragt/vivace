@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 ### Fixed
+- `viv lock merge` gives up after 10 minutes instead of blocking `git merge` for as long as it runs; one run hung for 87 minutes without a known cause. On timeout it prints one line on stderr that names `VIV_LOCK_MERGE_TIMEOUT`, exits 1 and leaves the `ours` file (`%A`) as git passed it, so git reports a conflict. Set `VIV_LOCK_MERGE_TIMEOUT` to a number of seconds to change the limit, or to `0` to turn it off; any other value is an error. The limit does not kill a child process such as the `php` that reads the platform extensions, which stays running after viv exits ([#368](https://github.com/svandragt/vivace/issues/368))
 - The `x86_64-unknown-linux-gnu` release binary, and the `.deb` built from it, runs on x86_64 CPUs without AVX. The 0.22.0 build died with SIGILL (exit 132) on `viv --version` on such a CPU, such as an Intel Pentium J5005, because the release runner's newer GCC compiled the C code of `aws-lc-sys` with AVX instructions. The release workflow now compiles that C code for baseline x86-64, builds on Ubuntu 24.04, and runs each x86_64 Linux binary under `qemu-x86_64 -cpu Nehalem` (SSE4.2, no AVX) before packaging it. The musl binary was not affected ([#396](https://github.com/svandragt/vivace/issues/396))
 
 ## [0.22.0] - 2026-10-27

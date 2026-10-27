@@ -70,6 +70,10 @@ pub enum LockCommand {
     /// chunk's job — see `docs/research.md` chapter 1). Git's merge-driver
     /// convention: `%O %A %B` (`git help gitattributes`'s "Defining a
     /// custom merge driver").
+    ///
+    /// Gives up with exit 1 and leaves `<ours>` unchanged when the merge is
+    /// still running after 10 minutes. Set `VIV_LOCK_MERGE_TIMEOUT` to a
+    /// number of seconds to change that, or to 0 to turn it off.
     Merge {
         /// The common ancestor's version of the lock (`%O`).
         base: PathBuf,

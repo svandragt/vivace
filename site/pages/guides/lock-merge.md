@@ -42,6 +42,12 @@ instead — `install` notices, resolves the lock straight from git's own
 index stages the same way, and wires the clone so the next merge doesn't
 need to.
 
+git waits for a merge driver for as long as it runs, so `viv lock merge`
+gives up after 10 minutes. It prints one line on stderr, exits `1` and
+leaves your version of the lock as it was, so git marks the file as
+conflicted. Set `VIV_LOCK_MERGE_TIMEOUT` to a number of seconds to change
+the limit, or to `0` to turn it off.
+
 `viv lock merge --offline-rung` (opt-in, off by default) is a last resort
 before conflict markers: once re-solving against the registry has already
 failed, it tries keeping one side's own pinned version for a package the

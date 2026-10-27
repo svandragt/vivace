@@ -1569,3 +1569,123 @@ fn missing_sibling_composer_lock_falls_back_to_markers_with_a_reason() {
         "stderr must name the composer.lock it looked for: {stderr}"
     );
 }
+
+/// #368: a merge driver that never finishes blocks `git merge` for as long
+/// as it runs. The `d/dep` fixture of
+/// [`max_scope_closure_caps_and_falls_back_to_markers_in_viv_lock`] reaches
+/// the re-solve's platform probe, which runs the `php` on `PATH` and waits
+/// for it synchronously. A fake `php` that sleeps blocks there, outside any
+/// `await`, so only a deadline that does not depend on the async runtime can
+/// end the run. The deadline must exit 1 (git's "conflicted") with the
+/// `ours` file (`%A`) as git handed it over.
+#[test]
+fn a_blocked_re_solve_hits_the_deadline_and_leaves_ours_untouched() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let ctx = TestContext::new();
+    let dir = ctx.project.path();
+    fs::write(
+        dir.join("composer.json"),
+        serde_json::to_vec(&json!({
+            "name": "vivace/fixture-deadline",
+            "repositories": [
+                {"packagist.org": false},
+                {"type": "package", "package": [
+                    {"name": "d/dep", "version": "1.0.0",
+                     "dist": {"type": "zip", "url": "https://example.invalid/d-dep-1.0.0.zip"}},
+                    {"name": "d/dep", "version": "2.0.0",
+                     "dist": {"type": "zip", "url": "https://example.invalid/d-dep-2.0.0.zip"}},
+                    {"name": "d/dep", "version": "2.0.1",
+                     "dist": {"type": "zip", "url": "https://example.invalid/d-dep-2.0.1.zip"}},
+                ]},
+            ],
+            "require": {"d/dep": "^2.0"},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("composer.lock"),
+        serde_json::to_vec(&json!({"packages": [], "packages-dev": []})).unwrap(),
+    )
+    .unwrap();
+    for (name, version) in [("base", "1.0.0"), ("ours", "2.0.0"), ("theirs", "2.0.1")] {
+        fs::write(
+            dir.join(format!("{name}.lock")),
+            viv_lock_body(&[("d/dep", version)]),
+        )
+        .unwrap();
+    }
+    let ours_before = fs::read(dir.join("ours.lock")).unwrap();
+
+    let bin = dir.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let php = bin.join("php");
+    fs::write(&php, "#!/bin/sh\nexec sleep 20\n").unwrap();
+    fs::set_permissions(&php, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+
+    let started = std::time::Instant::now();
+    let output = ctx
+        .viv()
+        .args(["lock", "merge"])
+        .arg(dir.join("base.lock"))
+        .arg(dir.join("ours.lock"))
+        .arg(dir.join("theirs.lock"))
+        .arg("-d")
+        .arg(dir)
+        .env("PATH", path)
+        .env("VIV_LOCK_MERGE_TIMEOUT", "1")
+        .output()
+        .expect("failed to run viv");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "a 1 second deadline must end a run blocked on php: took {:?}, stderr: {stderr}",
+        started.elapsed()
+    );
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("VIV_LOCK_MERGE_TIMEOUT") && stderr.contains("1s"),
+        "stderr must name the deadline and the env var that sets it: {stderr}"
+    );
+    assert_eq!(
+        fs::read(dir.join("ours.lock")).unwrap(),
+        ours_before,
+        "a timed-out merge must leave `ours` as git handed it over"
+    );
+}
+
+/// #368: an unusable `VIV_LOCK_MERGE_TIMEOUT` is an error, not a silently
+/// ignored value, and `ours` stays as it was.
+#[test]
+fn an_unparseable_lock_merge_timeout_is_a_clear_error() {
+    let ctx = TestContext::new();
+    let dir = ctx.project.path();
+    for name in ["composer.json", "base.lock", "ours.lock", "theirs.lock"] {
+        fs::copy(fixtures().join(name), dir.join(name)).unwrap();
+    }
+    let ours_before = fs::read(dir.join("ours.lock")).unwrap();
+
+    let output = ctx
+        .viv()
+        .args(["lock", "merge"])
+        .arg(dir.join("base.lock"))
+        .arg(dir.join("ours.lock"))
+        .arg(dir.join("theirs.lock"))
+        .arg("-d")
+        .arg(dir)
+        .arg("--no-resolve")
+        .env("VIV_LOCK_MERGE_TIMEOUT", "soon")
+        .output()
+        .expect("failed to run viv");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("VIV_LOCK_MERGE_TIMEOUT") && stderr.contains("\"soon\""),
+        "stderr: {stderr}"
+    );
+    assert_eq!(fs::read(dir.join("ours.lock")).unwrap(), ours_before);
+}
