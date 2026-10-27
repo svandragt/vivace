@@ -47,6 +47,13 @@ instead of by text line, and writes the result over `ours`. Configure it as
 a `merge=` driver in `.gitattributes` and git config, not run by hand
 day-to-day.
 
+git waits for a merge driver for as long as it runs, so `viv lock merge`
+stops itself after 10 minutes. It prints one line on stderr that names
+`VIV_LOCK_MERGE_TIMEOUT`, exits `1` and leaves `ours` as git passed it, so
+git reports the file as conflicted and you keep your own version. Set
+`VIV_LOCK_MERGE_TIMEOUT` to a number of seconds to change the limit, or to
+`0` to remove it. Any other value is an error.
+
 ```
 {{help:lock merge}}
 ```
@@ -65,7 +72,8 @@ day-to-day.
   finding the file already up to date).
 - `1` — `export --check` finding a difference, or a divergent name's
   re-solve in `merge` not finishing (conflict markers were written
-  instead), or a filesystem error.
+  instead), `merge` reaching its `VIV_LOCK_MERGE_TIMEOUT` deadline (`ours`
+  is unchanged), or a filesystem error.
 - `2` — as update, when `merge`'s re-solve is a genuine dependency-resolution
   failure rather than a divergent-name conflict.
 

@@ -52,6 +52,7 @@ viv's own:
 |---|---|---|
 | `VIV_METADATA_TTL` | Same as `--metadata-ttl`: skip revalidating cached metadata younger than this many seconds; the flag wins when both are set. | update, add, rm |
 | `VIV_MAX_INFLATED_BYTES` | Overrides the computed cap on how many bytes a single archive may inflate to, viv's zip-bomb guard. | install, update, add, rm |
+| `VIV_LOCK_MERGE_TIMEOUT` | Seconds a single `viv lock merge` may run before it exits 1 and leaves the `ours` file unchanged. Defaults to 600 (10 minutes); `0` turns the deadline off; a value that is not a whole number is an error. | lock merge |
 | `VIV_COMPOSER_PATH` | Points the `composer` shim at the real Composer binary, when it isn't first on PATH. | the composer shim |
 | `VIV_SHIM_STRICT` | Set to make the `composer` shim hard-error on an unrecognised command or flag, instead of falling back to the real Composer. | the composer shim |
 | `VIV_VIA_SHIM` | Set by the shim itself so `install --adopt`'s own detection can tell it's running under it. | install |

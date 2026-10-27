@@ -33,6 +33,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -341,9 +343,76 @@ fn detect_format(path: &Path) -> Result<Format> {
     Ok(Format::VivLock)
 }
 
+/// #368: `VIV_LOCK_MERGE_TIMEOUT` is the wall-clock limit on one `viv lock
+/// merge`, in seconds; `0` turns it off. Git waits for a merge driver without
+/// a limit of its own, and one run once sat blocked for 87 minutes.
+const DEADLINE_ENV: &str = "VIV_LOCK_MERGE_TIMEOUT";
+const DEFAULT_DEADLINE: Duration = Duration::from_mins(10);
+
+/// `value` is [`DEADLINE_ENV`]'s content, `None` when unset; `Ok(None)` means
+/// no deadline. A value that is not a whole number of seconds is an error,
+/// never a silent fall back to the default.
+fn parse_deadline(value: Option<&str>) -> Result<Option<Duration>> {
+    let Some(value) = value else {
+        return Ok(Some(DEFAULT_DEADLINE));
+    };
+    let secs: u64 = value.parse().with_context(|| {
+        format!(
+            "{DEADLINE_ENV}={value:?} is not a whole number of seconds (0 disables the deadline)"
+        )
+    })?;
+    Ok((secs > 0).then(|| Duration::from_secs(secs)))
+}
+
+/// A watchdog thread, not a `tokio::time::timeout`: the stall can sit in a
+/// synchronous wait (the platform probe's `wait_with_output` on `php`) that
+/// no async timeout interrupts. On expiry it exits 1 without touching any
+/// file, which is what the error path does too: git reads a non-zero exit as
+/// "conflicted" and keeps `ours` (`%A`) as it handed it over. It does not
+/// kill child processes: viv keeps no handle on them (shortcut: a hung `php`
+/// probe is orphaned, upgrade by recording child pids where they are spawned).
+struct Deadline(Arc<(Mutex<bool>, Condvar)>);
+
+impl Deadline {
+    fn start(limit: Option<Duration>) -> Self {
+        let disarmed = Arc::new((Mutex::new(false), Condvar::new()));
+        if let Some(limit) = limit {
+            let disarmed = Arc::clone(&disarmed);
+            std::thread::spawn(move || {
+                let (lock, cvar) = &*disarmed;
+                let guard = lock.lock().expect("deadline lock poisoned");
+                let (_guard, wait) = cvar
+                    .wait_timeout_while(guard, limit, |disarmed| !*disarmed)
+                    .expect("deadline lock poisoned");
+                if wait.timed_out() {
+                    warn_out(&format!(
+                        "viv lock merge: no result after {}s ({DEADLINE_ENV}), giving up and \
+                         leaving the `ours` file unchanged; set {DEADLINE_ENV} to a number of \
+                         seconds to change the deadline, or to 0 to turn it off",
+                        limit.as_secs()
+                    ));
+                    // Exits holding the lock, so a `disarm` racing with this blocks
+                    // until the process is gone and the write after it never starts.
+                    std::process::exit(1);
+                }
+            });
+        }
+        Self(disarmed)
+    }
+
+    /// Called before the first write of `ours`, so the deadline can never cut
+    /// a write short and leave a truncated lock behind.
+    fn disarm(&self) {
+        let (lock, cvar) = &*self.0;
+        *lock.lock().expect("deadline lock poisoned") = true;
+        cvar.notify_all();
+    }
+}
+
 /// `viv lock merge <base> <ours> <theirs> -d DIR`: 0 when the result is
 /// written clean (a re-solve included), 1 when it still holds conflict
-/// markers a human must resolve.
+/// markers a human must resolve, or when `VIV_LOCK_MERGE_TIMEOUT` seconds
+/// pass first (#368).
 #[expect(
     clippy::too_many_arguments,
     reason = "the three merge-driver paths plus --no-resolve/--as-of/--cache-dir/--offline/\
@@ -361,6 +430,9 @@ pub fn run(
     max_scope: Scope,
     offline_rung: bool,
 ) -> Result<u8> {
+    let env_value = std::env::var_os(DEADLINE_ENV).map(|v| v.to_string_lossy().into_owned());
+    let deadline = Deadline::start(parse_deadline(env_value.as_deref())?);
+
     let as_of = as_of
         .map(|value| {
             lock_writer::parse_time_to_epoch(value)
@@ -385,6 +457,7 @@ pub fn run(
 
     match base_format {
         Format::ComposerLock => merge_composer_lock(
+            &deadline,
             base,
             ours,
             theirs,
@@ -402,6 +475,7 @@ pub fn run(
         // rather than a refusal, the same tolerance `--max-scope` already
         // has for a flag that happens not to matter to this format.
         Format::VivLock => merge_viv_lock(
+            &deadline,
             base,
             ours,
             theirs,
@@ -583,9 +657,10 @@ pub(crate) fn merge_composer_lock_bytes(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors run's own --no-resolve/--as-of/--cache-dir/--offline/--max-scope/\
-              --offline-rung, plus the three paths"
+              --offline-rung, plus the three paths and the deadline"
 )]
 fn merge_composer_lock(
+    deadline: &Deadline,
     base: &Path,
     ours: &Path,
     theirs: &Path,
@@ -613,6 +688,7 @@ fn merge_composer_lock(
         max_scope,
         offline_rung,
     )?;
+    deadline.disarm();
     fs_err::write(ours, text)?;
     Ok(status)
 }
@@ -1647,9 +1723,10 @@ pub(crate) fn merge_viv_lock_bytes(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors merge_composer_lock's own --as-of/--cache-dir/--offline/--max-scope, plus \
-              the three merge-driver paths"
+              the three merge-driver paths and the deadline"
 )]
 fn merge_viv_lock(
+    deadline: &Deadline,
     base: &Path,
     ours: &Path,
     theirs: &Path,
@@ -1675,6 +1752,7 @@ fn merge_viv_lock(
         offline,
         max_scope,
     )?;
+    deadline.disarm();
     fs_err::write(ours, viv_text)?;
     if let Some(composer_text) = composer_text {
         fs_err::write(project_dir.join("composer.lock"), composer_text)?;
@@ -1685,6 +1763,30 @@ fn merge_viv_lock(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deadline_defaults_to_ten_minutes_and_zero_disables_it() {
+        assert_eq!(
+            parse_deadline(None).unwrap(),
+            Some(Duration::from_secs(600))
+        );
+        assert_eq!(
+            parse_deadline(Some("30")).unwrap(),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(parse_deadline(Some("0")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_deadline_that_is_not_whole_seconds_is_an_error_naming_the_variable() {
+        for bad in ["soon", "", "1.5", "-1", "10m"] {
+            let err = format!("{:#}", parse_deadline(Some(bad)).unwrap_err());
+            assert!(
+                err.contains("VIV_LOCK_MERGE_TIMEOUT") && err.contains(&format!("{bad:?}")),
+                "{bad:?}: {err}"
+            );
+        }
+    }
 
     fn entry(version: &str, source_ref: Option<&str>, dev: bool) -> Entry<&'static str> {
         Entry {
