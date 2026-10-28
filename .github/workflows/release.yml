@@ -90,6 +90,7 @@ jobs:
       - name: Check the binary runs on a CPU without AVX
         if: startsWith(matrix.target, 'x86_64-unknown-linux')
         run: |
+          sudo apt-get update -q
           sudo apt-get install -y qemu-user
           qemu-x86_64 -cpu Nehalem target/${{ matrix.target }}/release/viv --version
       - name: Package
