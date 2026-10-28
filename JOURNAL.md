@@ -1909,3 +1909,39 @@ what landed between 7 and 21 October (`composer <script>` in the shim,
 `install` and `dump-autoload` without a lock, `require` and `rm` reverting
 `composer.json`, the umask mode of `vendor/composer/` files, the jetpack
 adapter), so the release added those entries from the commit log.
+
+## 2026-10-28: 0.23, the project PHP and release fixes
+
+Three fixes since 0.22. #397: from 0.19 to 0.22, `viv run`, `viv exec` and
+`viv x` used the static PHP build matching `config.platform.php` even with a
+`php` on `PATH`, and the install commands read their extensions from it.
+Composer uses that key only to tell the solver which PHP to resolve for, so a
+CI job with its own PHP, such as Xdebug for coverage, lost that PHP's
+extensions. The build now comes from a new key, `extra.viv.php`, which
+`viv php install` writes, and `config.platform.php` is left alone. #368: one
+`viv lock merge` hung for 87 minutes with no known cause, and a `php` that
+does not answer the platform probe is one candidate. The merge now gives up
+after 10 minutes (`VIV_LOCK_MERGE_TIMEOUT`), and the probe kills a `php` that
+has not answered in 30 seconds (`VIV_PHP_PROBE_TIMEOUT`). #396: the 0.22.0
+gnu binary died with SIGILL on a CPU without AVX, because the release
+runner's newer GCC compiled the C code of `aws-lc-sys` with AVX. The release
+workflow now builds that C code for baseline x86-64 on ubuntu-24.04 and runs
+each x86_64 Linux binary under `qemu-x86_64 -cpu Nehalem` before packaging.
+
+The sweep (`compat/results/v0.23.0.md`) installs all 20 pinned rows
+byte-identical to Composer's, exports all 10 locks and, unlike 0.21 and 0.22,
+resolves the same lock on all 10: craftcms/craft no longer differs on
+`symfony/var-dumper`, so `compat/run.sh` exits 0. That is the #316 flip back
+that the issue predicts when the security-advisories feed changes, not a
+fix. The random sample (seed `20261028`) installs 7 of 10 projects
+identically; the other 3 are skipped because they have only `dev-master` or
+`1.x-dev` versions. The local bench gate failed warm twice, at ratio 0.036
+(viv 38 ms, Composer 1.045 s) and 0.035 (37 ms, 1.051 s) against the 0.026
+baseline. viv's warm time is the one 0.22 measured (37.7 and 39 ms); what
+moved is Composer's, which took 2.7 s in the 0.22 run and 1.05 s here, the
+number the 0.21 run and the September baseline table also had. The ratio
+gate therefore flattered viv in 0.22 and punishes it in 0.23 on the same
+code. bench-ab, which has no Composer in it, puts v0.22.0 and this build
+within 4.5 ms on laravel, drupal and symfony/demo (warm 36.8 to 36.4,
+294.1 to 289.6 and 48.2 to 45.4 ms; no-op 6.5 to 7.0, 6.0 to 6.0 and 9.6 to
+9.5 ms).

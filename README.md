@@ -54,10 +54,10 @@ for any other install.
 
 viv's contract is that its output matches Composer's byte for byte, and
 the [compatibility sweep](https://vivace.vandragt.com/reference/compatibility.html)
-checks it before every release: on v0.22.0, all 20 install rows of the
-pinned corpus and all 10 exported locks are identical, 9 of the 10
-resolved locks are identical, and every random-sample project Composer
-could install is identical too. One pinned project needs `--no-plugins`,
+checks it before every release: on v0.23.0, all 20 install rows of the
+pinned corpus, all 10 exported locks and all 10 resolved locks are
+identical, and every random-sample project Composer could install is
+identical too. One pinned project needs `--no-plugins`,
 for a plugin viv refuses by design.
 It stays 0.x; Windows is not supported; a plugin without a native adapter
 stops the install with an error naming it.

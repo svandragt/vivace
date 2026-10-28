@@ -30,6 +30,6 @@ Two things differ from the `composer:2` stage it replaces:
   Composer, the way it would on a machine that still has Composer installed.
   `composer --version` still works: it prints the shim's own version.
 
-Tags are `:0.22`, `:0.22.0` and `:0`. There is no `:latest`: a moving tag
+Tags are `:0.23`, `:0.23.0` and `:0`. There is no `:latest`: a moving tag
 that silently resolves to nothing breaks scripted installs, which is the
 mistake that kept `releases/latest` returning 404 for ten releases.

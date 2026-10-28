@@ -74,12 +74,12 @@ and how that's checked before every release.
 viv's contract is that its output matches Composer's byte for byte. Before
 every release, a compatibility sweep installs a mix of pinned popular
 projects and a random sample of Packagist packages with both Composer and
-viv, then compares the results.[^2] The v0.22.0 sweep: all 20 install rows of the
-pinned corpus are identical, 9 of the 10 pinned projects resolve the same
-lock (craftcms/craft differs[^20]), and `viv lock export` reproduces all 10
-committed locks byte for byte. In the random sample, all 16 rows that
-Composer could install are identical; the other 4 were skipped because
-Composer itself could not install the project.[^3]
+viv, then compares the results.[^2] The v0.23.0 sweep: all 20 install rows of the
+pinned corpus are identical, all 10 pinned projects resolve the same lock
+(craftcms/craft did not in v0.21.0 and v0.22.0[^20]), and `viv lock export`
+reproduces all 10 committed locks byte for byte. In the random sample, all 14
+rows that Composer could install are identical; the other 6 were skipped
+because Composer itself could not install the project.[^3]
 
 One pinned project still needs `--no-plugins`, for a plugin viv refuses by
 design rather than one it has yet to port.[^4] See [Plugins](#plugins)
@@ -110,6 +110,6 @@ renders inside it — the detail the sweep checks byte for byte.
 
 [^17]: [`docs/stability.md`](docs/stability.md) states what a minor release may and may not change.
 [^2]: See [`compat/README.md`](compat/README.md) for how the sweep works.
-[^20]: The v0.18.0 sweep had one lock differ, [#316](https://github.com/svandragt/vivace/issues/316): craftcms/craft's requirements are satisfied by `yii2-shell` `2.0.6` and by `dev-master`, and the two solvers search in a different order, so the security-advisories feed, by changing which versions of other packages are available, decides whether Composer's search ends on `dev-master`. The v0.19.0 and v0.20.0 sweeps resolved the same lock on all 10, and the v0.21.0 and v0.22.0 sweeps differ again, on `symfony/var-dumper` (v7.4.18 in Composer's lock and v5.4.48 in viv's in v0.21.0; v7.4.21 and v5.4.54 in v0.22.0). The issue stays open because the feed can flip the result.
-[^3]: The skips are packages Composer itself refuses to resolve, not something viv got wrong. In the v0.22.0 sweep, one of the 2 skipped projects has only a `dev-master` version, which the default `minimum-stability` excludes; the other requires PHP 8.5, and the sweep's host has 8.4. Earlier sweeps also skipped a project when Composer could not find a dependency, or security advisories blocked every matching version. Full results, including which projects and what was skipped, are in [`compat/results/v0.22.0.md`](compat/results/v0.22.0.md).
+[^20]: The v0.18.0 sweep had one lock differ, [#316](https://github.com/svandragt/vivace/issues/316): craftcms/craft's requirements are satisfied by `yii2-shell` `2.0.6` and by `dev-master`, and the two solvers search in a different order, so the security-advisories feed, by changing which versions of other packages are available, decides whether Composer's search ends on `dev-master`. The v0.19.0 and v0.20.0 sweeps resolved the same lock on all 10, the v0.21.0 and v0.22.0 sweeps differed again, on `symfony/var-dumper` (v7.4.18 in Composer's lock and v5.4.48 in viv's in v0.21.0; v7.4.21 and v5.4.54 in v0.22.0), and the v0.23.0 sweep resolved the same lock on all 10 again. The issue stays open because the feed can flip the result.
+[^3]: The skips are packages Composer itself refuses to resolve, not something viv got wrong. In the v0.23.0 sweep, all 3 skipped projects have only `dev-master` or `1.x-dev` versions, which the default `minimum-stability` excludes. Earlier sweeps also skipped a project when Composer could not find a dependency, when security advisories blocked every matching version, or when it required PHP 8.5 and the sweep's host had 8.4. Full results, including which projects and what was skipped, are in [`compat/results/v0.23.0.md`](compat/results/v0.23.0.md).
 [^4]: Of viv's 10 pinned compatibility projects, the one that needs `--no-plugins` is `symfony/demo`, for `symfony/flex`. Flex does its work in `composer require`, so installing from a committed lock loses nothing; see [`docs/plugin-strategy.md`](docs/plugin-strategy.md).
