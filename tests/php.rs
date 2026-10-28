@@ -471,3 +471,67 @@ fn diagnose_reports_the_path_php_for_config_platform_php() {
         .success()
         .stdout(predicates::str::contains("php: 8.3.1"));
 }
+
+/// #368: a `php` that never answers the platform probe is killed after
+/// `VIV_PHP_PROBE_TIMEOUT` seconds, and the command fails with a message
+/// instead of blocking for as long as the `php` runs.
+#[test]
+fn update_kills_a_php_that_never_answers_the_probe() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let ctx = TestContext::new();
+    let bin = ctx.cache.path().join("hung-bin");
+    fs_err::create_dir_all(&bin).unwrap();
+    let php = bin.join("php");
+    let pid_file = ctx.cache.path().join("php.pid");
+    fs_err::write(
+        &php,
+        format!(
+            "#!/bin/sh\necho $$ > {}\nexec sleep 20\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    fs_err::set_permissions(&php, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    fs_err::write(
+        ctx.project.path().join("composer.json"),
+        "{\n    \"repositories\": [{ \"packagist.org\": false }]\n}\n",
+    )
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    let output = ctx
+        .viv()
+        .env("PATH", path)
+        .env("VIV_PHP_PROBE_TIMEOUT", "1")
+        .arg("update")
+        .output()
+        .expect("failed to run viv");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "a 1 second probe timeout must end a run blocked on php: took {:?}, stderr: {stderr}",
+        started.elapsed()
+    );
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains(&php.display().to_string())
+            && stderr.contains("did not answer")
+            && stderr.contains("1s")
+            && stderr.contains("VIV_PHP_PROBE_TIMEOUT"),
+        "stderr must name the php, the timeout and the env var: {stderr}"
+    );
+    let pid = fs_err::read_to_string(&pid_file).unwrap();
+    let alive = std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "the hung php (pid {}) must be killed", pid.trim());
+}

@@ -95,3 +95,15 @@ autoload write, not the solve, so a package pinned to a PHP version this
 interpreter lacks can still fail to resolve; and a version filtered out by
 `minimum-stability` is reported as not found rather than as filtered, where
 Composer names the actual cause.
+
+## The php did not answer
+
+**Symptom:** `install`, `update`, `add` or `rm` stops with `<path> did not
+answer within 30s`, and `lock merge` includes that text in its warning
+before it falls back to conflict markers.
+
+viv runs `php` to read its version and extensions, and kills it when it
+does not answer in 30 seconds. A slow `php.ini` or a broken extension is the
+usual cause: run `<path> -v` to see whether the `php` hangs on its own. Set
+`VIV_PHP_PROBE_TIMEOUT` to a number of seconds to change the limit, or to
+`0` to turn it off.
