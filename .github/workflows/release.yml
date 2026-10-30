@@ -160,8 +160,14 @@ jobs:
           fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber vivace-*.tar.gz *.deb SHA256SUMS vivace.rb
       # #263: uses: svandragt/vivace/action@v0 follows the latest 0.x, the
-      # way official actions move their major tag.
+      # way official actions move their major tag. The workflow token cannot
+      # push a tag whose commit changes a workflow file since the old one, so
+      # RELEASE_TAG_TOKEN (Contents and Workflows write on this repository) is
+      # used when set. A rejected push warns instead of failing, so the tap
+      # step below still runs.
       - name: Move the major tag
+        env:
+          RELEASE_TAG_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -170,7 +176,19 @@ jobs:
           git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
           major="${TAG%%.*}"
           git tag -f "$major" "$TAG^{}"
-          git push -f origin "refs/tags/$major"
+          push=(git push -f origin "refs/tags/$major")
+          if [ -n "$RELEASE_TAG_TOKEN" ]; then
+            # checkout's extraheader carries the workflow token and would win
+            # over the token in the URL; an empty value clears it.
+            push=(git -c http.https://github.com/.extraheader= push -f
+              "https://x-access-token:${RELEASE_TAG_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+              "refs/tags/$major")
+          fi
+          if ! "${push[@]}"; then
+            msg="$major not moved to $TAG. Run: git tag -f -m $major $major '$TAG^{}' && git push -f origin refs/tags/$major"
+            echo "::warning::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
       # #222: the formula lands in the tap so `brew install svandragt/tap/vivace`
       # gets this release. Needs a token that can push to that repository; the
       # workflow token cannot. Skipped, visibly, when the secret is missing.
