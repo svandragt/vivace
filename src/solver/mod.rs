@@ -397,6 +397,7 @@ async fn solve_partial_update_seeded_inner<T: Transport, A: AdvisoriesTransport>
         .map(|k| k.to_ascii_lowercase())
         .collect();
     let allow_list: Vec<String> = allow_list.iter().map(|n| n.to_ascii_lowercase()).collect();
+    let allow_list = pool_builder::expand_allow_patterns(&allow_list, locked_by_name);
     let allow_names =
         pool_builder::expand_allow_list(&allow_list, &locked_requires, &root_require_names, mode);
 

@@ -53,7 +53,8 @@ use crate::solver::{
 pub struct UpdateArgs {
     /// Only these packages (and, with `-w`/`-W`, their dependencies) may
     /// change version; everything else stays at its locked version
-    /// (`Request::UPDATE_*`). Empty means a full update.
+    /// (`Request::UPDATE_*`). `*` matches any run of characters
+    /// (`vendor/*`). Empty means a full update.
     pub packages: Vec<String>,
     /// Also allow each listed package's dependencies to update, except ones
     /// also directly required by the root `composer.json`
@@ -647,9 +648,9 @@ fn read_locked_by_name(lock_path: &Path) -> Result<HashMap<String, Value>> {
 
 /// `--minimal-changes`'s pin set (`Installer::createPolicy`'s
 /// `$preferredVersions[$pkg->getName()] = $pkg->getVersion();` loop): every
-/// locked package's own normalized version, except ones on the literal
-/// (unexpanded) allow list — `Installer::setUpdateAllowList`'s own
-/// lowercased `$packages`, not `pool_builder::expand_allow_list`'s
+/// locked package's own normalized version, except ones the allow list as
+/// typed matches (`*` for "anything", as `Installer::setUpdateAllowList`'s
+/// own `$packages` are patterns), not `pool_builder::expand_allow_list`'s
 /// transitive expansion — since those are exactly the packages the user
 /// asked to move and must stay free to. `AliasPackage`s are skipped in PHP
 /// too, but never show up here: they come from the lock's separate
@@ -659,11 +660,13 @@ pub(crate) fn preferred_versions(
     locked_by_name: &HashMap<String, Value>,
     allow_list: &[String],
 ) -> Result<HashMap<String, crate::semver::NormalizedVersion>> {
-    let allow: std::collections::HashSet<String> =
-        allow_list.iter().map(|n| n.to_ascii_lowercase()).collect();
     locked_by_name
         .iter()
-        .filter(|(name, _)| !allow.contains(*name))
+        .filter(|(name, _)| {
+            !allow_list
+                .iter()
+                .any(|pattern| crate::lock::glob_match(pattern, name))
+        })
         .map(|(name, entry)| {
             let version = entry
                 .get("version")
@@ -838,4 +841,23 @@ pub(crate) fn default_cache_dir() -> Result<PathBuf> {
     }
     let home = std::env::var("HOME").context("HOME is not set; pass --cache-dir")?;
     Ok(PathBuf::from(home).join(".cache").join("vivace"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #399: `--minimal-changes` leaves the packages an allow-list pattern
+    /// matches unpinned, as it does for a literal name.
+    #[test]
+    fn preferred_versions_skips_names_an_allow_list_pattern_matches() {
+        let locked: HashMap<String, Value> = ["acme/widget", "acme/gadget", "other/lib"]
+            .into_iter()
+            .map(|name| (name.to_string(), serde_json::json!({"version": "1.0.0"})))
+            .collect();
+        let pinned = preferred_versions(&locked, &["ACME/w*".to_string()]).unwrap();
+        let mut names: Vec<&str> = pinned.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["acme/gadget", "other/lib"]);
+    }
 }

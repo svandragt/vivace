@@ -57,6 +57,10 @@ async fn update_lock() -> String {
     let result = vivace::solver::solve_update(&repo, &root, &fixture, false, false)
         .await
         .unwrap();
+    write_lock(&result, &composer_json)
+}
+
+fn write_lock(result: &vivace::solver::UpdateResult, composer_json: &[u8]) -> String {
     let options = vivace::lock_writer::LockOptions {
         minimum_stability: result.minimum_stability,
         stability_flags: &result.stability_flags,
@@ -67,8 +71,7 @@ async fn update_lock() -> String {
         platform_overrides: &result.platform_overrides,
         aliases: &result.aliases,
     };
-    vivace::lock_writer::write(&result.non_dev, Some(&result.dev), &options, &composer_json)
-        .unwrap()
+    vivace::lock_writer::write(&result.non_dev, Some(&result.dev), &options, composer_json).unwrap()
 }
 
 /// The contract test for #294: a root requiring one package declared as a
@@ -81,4 +84,69 @@ async fn package_repository_update_matches_composer_byte_for_byte() {
     let got = update_lock().await;
     let want = fs_err::read_to_string(fixture().join("composer.lock")).unwrap();
     assert_eq!(got, want, "viv's lock does not byte-match composer's");
+}
+
+/// #399: `viv update 'acme/w*'` took the allow list's `*` for part of a
+/// package name, so no locked package matched it and `acme/widget` kept its
+/// locked entry, which has no `dist.shasum`. Composer matches an allow-list
+/// entry as a pattern (`BasePackage::packageNameToRegexp`) and takes the
+/// repository's whole entry for each package it matches, shasum included.
+/// `acme/gadget`, which the pattern does not match, keeps its locked entry.
+#[tokio::test]
+async fn partial_update_with_a_pattern_takes_the_repository_dist_shasum() {
+    let sha = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+    let package = |name: &str, dist_extra: Value| {
+        let mut dist =
+            serde_json::json!({"type": "zip", "url": format!("https://example.com/{name}.zip")});
+        dist.as_object_mut()
+            .unwrap()
+            .extend(dist_extra.as_object().unwrap().clone());
+        serde_json::json!({"name": name, "version": "1.0.0", "dist": dist})
+    };
+    let root = serde_json::json!({
+        "repositories": [
+            {"packagist.org": false},
+            {"type": "package", "package": package("acme/widget", serde_json::json!({"shasum": sha}))},
+            {"type": "package", "package": package("acme/gadget", serde_json::json!({"shasum": sha}))},
+        ],
+        "require": {"acme/widget": "1.0.0", "acme/gadget": "1.0.0"},
+    });
+    let composer_json = serde_json::to_vec(&root).unwrap();
+    let locked_by_name: std::collections::HashMap<String, Value> = ["acme/widget", "acme/gadget"]
+        .into_iter()
+        .map(|name| (name.to_string(), package(name, serde_json::json!({}))))
+        .collect();
+
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let transport = PanicTransport;
+    let repo = Repository::from_composer_json(project.path(), &root, cache.path(), &transport)
+        .await
+        .unwrap();
+    let result = vivace::solver::solve_partial_update(
+        &repo,
+        &root,
+        project.path(),
+        false,
+        false,
+        &locked_by_name,
+        &["acme/w*".to_string()],
+        vivace::solver::pool_builder::UpdateAllowMode::OnlyListed,
+    )
+    .await
+    .unwrap();
+
+    let lock: Value = serde_json::from_str(&write_lock(&result, &composer_json)).unwrap();
+    let shasum_of = |name: &str| {
+        lock["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .unwrap()
+            .pointer("/dist/shasum")
+            .cloned()
+    };
+    assert_eq!(shasum_of("acme/widget"), Some(Value::String(sha.into())));
+    assert_eq!(shasum_of("acme/gadget"), None);
 }

@@ -450,6 +450,32 @@ pub enum UpdateAllowMode {
     WithTransitiveDeps,
 }
 
+/// `Request::setUpdateAllowList`'s entries are patterns
+/// (`BasePackage::packageNameToRegexp`, `*` for "anything"): swaps each entry
+/// with a `*` for the locked names it matches, so everything downstream
+/// (`expand_allow_list`, the locked-out set) compares plain names. An entry
+/// without a `*` stays as it is, locked or not. `allow_list` is lowercased
+/// and so is every key of `locked_by_name`.
+pub(crate) fn expand_allow_patterns(
+    allow_list: &[String],
+    locked_by_name: &HashMap<String, Value>,
+) -> Vec<String> {
+    allow_list
+        .iter()
+        .flat_map(|entry| {
+            if entry.contains('*') {
+                locked_by_name
+                    .keys()
+                    .filter(|name| crate::lock::glob_match(entry, name))
+                    .cloned()
+                    .collect()
+            } else {
+                vec![entry.clone()]
+            }
+        })
+        .collect()
+}
+
 /// `PoolBuilder::isUpdateAllowed`'s expansion, done once up front against
 /// the *locked* dependency graph rather than Composer's own live
 /// `unlockPackage` cascade during pool building
