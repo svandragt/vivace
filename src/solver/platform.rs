@@ -397,9 +397,70 @@ echo json_encode($out);
 
 /// #368: `VIV_PHP_PROBE_TIMEOUT` is how long the probe waits for `php`, in
 /// seconds; `0` waits without limit. A `php` stuck on a slow ini or a broken
-/// extension otherwise blocks every command that probes.
-const PROBE_TIMEOUT_ENV: &str = "VIV_PHP_PROBE_TIMEOUT";
+/// extension otherwise blocks every command that probes. #532: `viv diagnose`
+/// applies the same limit to its `php`, `git` and `composer` version lines.
+pub(crate) const PROBE_TIMEOUT_ENV: &str = "VIV_PHP_PROBE_TIMEOUT";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The limit [`PROBE_TIMEOUT_ENV`] sets, `None` for no limit; an error when
+/// the variable is not a whole number of seconds.
+pub(crate) fn probe_limit() -> Result<Option<Duration>> {
+    let env_value = std::env::var_os(PROBE_TIMEOUT_ENV).map(|v| v.to_string_lossy().into_owned());
+    parse_timeout(PROBE_TIMEOUT_ENV, env_value.as_deref(), PROBE_TIMEOUT)
+}
+
+/// How [`run_limited`] ended.
+pub(crate) enum Run {
+    /// The command exited; `success` is its exit status.
+    Answered { stdout: Vec<u8>, success: bool },
+    /// The command could not be spawned or its pipes failed.
+    Failed,
+    /// The command ran past the limit; it was killed and reaped.
+    TimedOut,
+}
+
+/// Runs `command` with `stdin` written to it and its stdout collected,
+/// killing it once `limit` (`None`: no limit) has passed. A thread does the
+/// pipe I/O so the wait can time out, and so a command that never reads its
+/// stdin cannot block the write either.
+pub(crate) fn run_limited(command: &mut Command, stdin: &[u8], limit: Option<Duration>) -> Run {
+    let Ok(mut child) = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Run::Failed;
+    };
+    let (Some(mut child_stdin), Some(mut child_stdout)) = (child.stdin.take(), child.stdout.take())
+    else {
+        return Run::Failed;
+    };
+    let input = stdin.to_vec();
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let read = child_stdin
+            .write_all(&input)
+            .and_then(|()| {
+                drop(child_stdin);
+                child_stdout.read_to_end(&mut out)
+            })
+            .map(|_| out);
+        let _ = sender.send(read);
+    });
+    // `Duration::MAX` (no limit) never elapses: `recv_timeout` waits unbounded.
+    let answer = receiver.recv_timeout(limit.unwrap_or(Duration::MAX));
+    if !matches!(answer, Ok(Ok(_))) {
+        let _ = child.kill();
+    }
+    let success = child.wait().is_ok_and(|status| status.success());
+    match answer {
+        Ok(Ok(stdout)) => Run::Answered { stdout, success },
+        Err(mpsc::RecvTimeoutError::Timeout) => Run::TimedOut,
+        _ => Run::Failed,
+    }
+}
 
 /// `php_path` is run directly (no PATH search of its own): #353's own
 /// override seam, so a project's pinned PHP (resolved by the caller) probes
@@ -411,53 +472,23 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// a `php` that exists would hide a broken installation, and a retry would
 /// wait the limit again.
 fn run_probe(php_path: &Path) -> Result<Option<Probe>> {
-    let env_value = std::env::var_os(PROBE_TIMEOUT_ENV).map(|v| v.to_string_lossy().into_owned());
-    let limit = parse_timeout(PROBE_TIMEOUT_ENV, env_value.as_deref(), PROBE_TIMEOUT)?;
+    let limit = probe_limit()?;
     // No `-r`/`-f -` argument: this build's CLI SAPI treats a literal `-`
     // as a filename ("Could not open input file: -") rather than "read the
     // script from stdin", but bare `php` with redirected stdin and no
     // arguments does read the script from there.
-    let Ok(mut child) = Command::new(php_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return Ok(None);
-    };
-    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
-        return Ok(None);
-    };
-    // A thread does the pipe I/O so the wait below can time out, and so a
-    // `php` that never reads its script cannot block the write either.
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let read = stdin
-            .write_all(PROBE_SCRIPT.as_bytes())
-            .and_then(|()| {
-                drop(stdin);
-                stdout.read_to_end(&mut out)
-            })
-            .map(|_| out);
-        let _ = sender.send(read);
-    });
-    // `Duration::MAX` (no limit) never elapses: `recv_timeout` waits unbounded.
-    let wait = limit.unwrap_or(Duration::MAX);
-    let answer = receiver.recv_timeout(wait);
-    if !matches!(answer, Ok(Ok(_))) {
-        let _ = child.kill();
-    }
-    let exited_ok = child.wait().is_ok_and(|status| status.success());
-    match answer {
-        Err(mpsc::RecvTimeoutError::Timeout) => bail!(
+    match run_limited(&mut Command::new(php_path), PROBE_SCRIPT.as_bytes(), limit) {
+        Run::TimedOut => bail!(
             "{} did not answer within {}s while reading its version and extensions \
              ({PROBE_TIMEOUT_ENV}), so it was killed; check its php.ini and extensions, or set \
              {PROBE_TIMEOUT_ENV} to a number of seconds to change the limit, or to 0 to turn it off",
             php_path.display(),
-            wait.as_secs()
+            limit.unwrap_or_default().as_secs()
         ),
-        Ok(Ok(stdout)) if exited_ok => Ok(serde_json::from_slice(&stdout).ok()),
+        Run::Answered {
+            stdout,
+            success: true,
+        } => Ok(serde_json::from_slice(&stdout).ok()),
         _ => Ok(None),
     }
 }

@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -15,7 +16,9 @@ use serde_json::Value;
 use crate::auth::composer_home;
 use crate::lock::{self, Lock, Root};
 use crate::plugins;
-use crate::solver::platform::platform_packages;
+use crate::solver::platform::{
+    PROBE_TIMEOUT_ENV, Run, platform_packages, probe_limit, run_limited,
+};
 use crate::store::Store;
 
 #[derive(Args)]
@@ -148,34 +151,52 @@ fn auth_hosts(value: &Value) -> Vec<String> {
 }
 
 fn diagnose_tools(php: Option<&Path>) {
+    // An unusable `VIV_PHP_PROBE_TIMEOUT` goes on each line instead of
+    // stopping the report: a report is what you run when something is wrong.
+    let limit = probe_limit();
+    let version = |command: &Path, args: &[&str]| match &limit {
+        Ok(limit) => tool_version(command, args, *limit),
+        Err(err) => format!("not run ({err})"),
+    };
     out(&format!(
         "php: {}",
-        tool_version(
+        version(
             php.unwrap_or_else(|| Path::new("php")),
             &["-r", "echo PHP_VERSION;"]
         )
     ));
-    out(&format!("git: {}", tool_version("git", &["--version"])));
+    out(&format!(
+        "git: {}",
+        version(Path::new("git"), &["--version"])
+    ));
     out(&format!(
         "composer: {}",
-        tool_version("composer", &["--version", "--no-ansi"])
+        version(Path::new("composer"), &["--version", "--no-ansi"])
     ));
 }
 
 /// Runs `command args` and returns its trimmed stdout, or `"not found"` when
 /// the command can't be run or exits non-zero (no PHP/git/Composer on
 /// `PATH`, same as the rest of vivace's own detection probes in
-/// `solver::pool_builder`/`tool.rs`).
-fn tool_version(command: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> String {
-    Command::new(command)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "not found".to_string())
+/// `solver::pool_builder`/`tool.rs`). #532: a command that runs past `limit`
+/// is killed and reported as such; composer is a PHP script, so it hangs with
+/// a `php` that does.
+fn tool_version(command: &Path, args: &[&str], limit: Option<Duration>) -> String {
+    match run_limited(Command::new(command).args(args), &[], limit) {
+        Run::TimedOut => format!(
+            "did not answer within {}s ({PROBE_TIMEOUT_ENV})",
+            limit.unwrap_or_default().as_secs()
+        ),
+        Run::Answered {
+            stdout,
+            success: true,
+        } => String::from_utf8(stdout)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "not found".to_string()),
+        _ => "not found".to_string(),
+    }
 }
 
 fn diagnose_project(project_dir: &Path, php: Option<&Path>) -> Result<()> {
@@ -193,7 +214,7 @@ fn diagnose_project(project_dir: &Path, php: Option<&Path>) -> Result<()> {
         serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let lock = lock::read_lock(&lock_path)?;
 
-    diagnose_platform(&root_json, php)?;
+    diagnose_platform(&root_json, php);
     diagnose_plugins(&lock, &root);
     Ok(())
 }
@@ -202,19 +223,26 @@ fn diagnose_project(project_dir: &Path, php: Option<&Path>) -> Result<()> {
 /// [`crate::solver::platform::cached_platform_packages`]: this module's own
 /// doc comment promises nothing on disk is written, and caching would write
 /// a `platform-v0` entry.
-fn diagnose_platform(root_json: &Value, php: Option<&Path>) -> Result<()> {
+///
+/// #532: a probe error (a `php` that does not answer in time) goes on a
+/// `platform:` line instead of ending the report.
+fn diagnose_platform(root_json: &Value, php: Option<&Path>) {
     let overrides = root_json
         .pointer("/config/platform")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    for package in platform_packages(&overrides, php)? {
-        out(&format!(
-            "platform: {} {}",
-            package.name, package.pretty_version
-        ));
+    match platform_packages(&overrides, php) {
+        Ok(packages) => {
+            for package in packages {
+                out(&format!(
+                    "platform: {} {}",
+                    package.name, package.pretty_version
+                ));
+            }
+        }
+        Err(err) => out(&format!("platform: {err:#}")),
     }
-    Ok(())
 }
 
 /// The decision `viv install` would make for each `composer-plugin` in the

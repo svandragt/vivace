@@ -107,3 +107,8 @@ does not answer in 30 seconds. A slow `php.ini` or a broken extension is the
 usual cause: run `<path> -v` to see whether the `php` hangs on its own. Set
 `VIV_PHP_PROBE_TIMEOUT` to a number of seconds to change the limit, or to
 `0` to turn it off.
+
+`viv diagnose` applies the same limit to its `php`, `git` and `composer`
+version lines. A tool that does not answer is killed, its line reads `did not
+answer within 30s (VIV_PHP_PROBE_TIMEOUT)`, and the report carries on. A
+platform probe error is printed on a `platform:` line in the same way.
