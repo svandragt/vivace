@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+- `viv add --no-normalize` and `viv rm --no-normalize` (and the `require` and `remove` aliases) change only the `require` or `require-dev` entries they touch and leave every other byte of `composer.json` as it was, as `composer require` and `composer remove` do. From 0.8 to 0.23 the flag did nothing and printed `--no-normalize is a no-op on add since 0.8`, so `viv rm` always reordered the sections and expanded the inline arrays of the whole file. Without the flag both commands still normalize `composer.json`. The edited `require` or `require-dev` section can change its own layout, as it does in Composer. `--sort-packages` and `config.sort-packages` apply to the edit again, and the flag cannot be combined with `viv add --repository`, which edits `repositories`. A failed `viv add` or `viv rm` still writes the original bytes back ([#400](https://github.com/svandragt/vivace/issues/400))
 
 ## [0.23.0] - 2026-10-28
 ### Changed

@@ -943,3 +943,228 @@ async fn viv_remove_link_mode_copy_installs_independent_files() {
 
     common::assert_is_independent_copy(&project.join("vendor/monolog/monolog/marker.txt"));
 }
+
+/// A hand-written `composer.json` in the shape #400 reports: sections out of
+/// Composer's order, inline arrays and objects, two-space indent, and a
+/// `require` list that is not sorted. The one entry `--no-normalize` is
+/// allowed to touch is `psr/log`.
+const HAND_WRITTEN: &str = "{
+  \"type\": \"project\",
+  \"keywords\": [\"one\", \"two\"],
+  \"name\": \"acme/app\",
+  \"require\": {
+    \"psr/log\": \"^3.0\",
+    \"monolog/monolog\": \"^3.0\"
+  },
+  \"autoload\": {\"psr-4\": {\"App\\\\\": \"src/\"}},
+  \"license\": \"proprietary\"
+}
+";
+
+/// #400: `viv rm --no-normalize` deletes only the removed entry's line. Every
+/// other byte (section order, inline arrays, indent) stays, and `viv` prints
+/// neither the "Normalized" line nor the old no-op deprecation notice.
+#[test]
+fn viv_remove_no_normalize_changes_only_the_removed_entry() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs_err::write(project.join("composer.json"), HAND_WRITTEN).unwrap();
+
+    let output = ctx
+        .viv()
+        .args(["rm", "psr/log", "--no-update", "--no-normalize"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "viv rm failed: {stderr}");
+    assert!(
+        !stderr.contains("Normalized") && !stderr.contains("no-op"),
+        "unexpected notice: {stderr}"
+    );
+    assert_eq!(
+        fs_err::read_to_string(project.join("composer.json")).unwrap(),
+        HAND_WRITTEN.replace("    \"psr/log\": \"^3.0\",\n", ""),
+    );
+}
+
+/// #400: removing the last entry drops the now-empty `require` key and the
+/// comma that led to it, and nothing else.
+#[test]
+fn viv_remove_no_normalize_drops_an_emptied_section_only() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    let original = "{\n  \"type\": \"project\",\n  \"keywords\": [\"a\", \"b\"],\n  \"name\": \"acme/app\",\n  \"require\": {\n    \"psr/log\": \"^3.0\"\n  }\n}\n";
+    fs_err::write(project.join("composer.json"), original).unwrap();
+
+    ctx.viv()
+        .args(["rm", "psr/log", "--no-update", "--no-normalize"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs_err::read_to_string(project.join("composer.json")).unwrap(),
+        "{\n  \"type\": \"project\",\n  \"keywords\": [\"a\", \"b\"],\n  \"name\": \"acme/app\"\n}\n"
+    );
+}
+
+/// #400: `viv add --no-normalize` appends one line to `require`, in the
+/// file's own indent (tabs here), and leaves the rest as it was, including a
+/// missing final newline.
+#[test]
+fn viv_add_no_normalize_inserts_only_the_new_entry() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    let original = HAND_WRITTEN.replace("  ", "\t");
+    let original = original.trim_end();
+    fs_err::write(project.join("composer.json"), original).unwrap();
+
+    let output = ctx
+        .viv()
+        .args([
+            "add",
+            "psr/container:^2.0",
+            "--no-update",
+            "--no-normalize",
+            "--offline",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "viv add failed: {stderr}");
+    assert!(
+        !stderr.contains("Normalized") && !stderr.contains("no-op"),
+        "unexpected notice: {stderr}"
+    );
+    assert_eq!(
+        fs_err::read_to_string(project.join("composer.json")).unwrap(),
+        original.replace(
+            "\"monolog/monolog\": \"^3.0\"",
+            "\"monolog/monolog\": \"^3.0\",\n\t\t\"psr/container\": \"^2.0\""
+        ),
+    );
+}
+
+/// #400: a package already in `require-dev` moves to `require`; each section
+/// keeps its own layout and no other key moves.
+#[test]
+fn viv_add_no_normalize_moves_a_package_out_of_the_other_section() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    let original = "{\n  \"require-dev\": {\n    \"psr/log\": \"^3.0\"\n  },\n  \"keywords\": [\"a\", \"b\"],\n  \"name\": \"acme/app\",\n  \"require\": {\n    \"php\": \">=8.1\"\n  }\n}\n";
+    fs_err::write(project.join("composer.json"), original).unwrap();
+
+    ctx.viv()
+        .args(["add", "psr/log:^3.0", "--no-update", "--no-normalize"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs_err::read_to_string(project.join("composer.json")).unwrap(),
+        "{\n  \"keywords\": [\"a\", \"b\"],\n  \"name\": \"acme/app\",\n  \"require\": {\n    \"php\": \">=8.1\",\n    \"psr/log\": \"^3.0\"\n  }\n}\n"
+    );
+}
+
+/// `--repository` appends to `repositories`, an edit outside `require`, so
+/// `--no-normalize` refuses it before it writes anything.
+#[test]
+fn viv_add_no_normalize_refuses_repository() {
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+    fs_err::write(project.join("composer.json"), HAND_WRITTEN).unwrap();
+
+    let output = ctx
+        .viv()
+        .args([
+            "add",
+            "psr/container:^2.0",
+            "--no-update",
+            "--no-normalize",
+            "--repository",
+            "path:packages/*",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("--repository"), "{stderr}");
+    assert_eq!(
+        fs_err::read_to_string(project.join("composer.json")).unwrap(),
+        HAND_WRITTEN
+    );
+}
+
+/// #288 with `--no-normalize`: a failed resolution still writes the original
+/// bytes back, for `composer.json` and `composer.lock`.
+#[tokio::test]
+async fn viv_add_no_normalize_restores_composer_json_and_lock_when_resolution_fails() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+
+    let original = br#"{"type":"project","license":"proprietary","name":"vivace/fixture-monolog","require":{"psr/log":"^3.0","monolog/monolog":"^3.0"},"require-dev":{"psr/container":"^2.0"}}"#;
+    fs_err::write(project.join("composer.json"), original).unwrap();
+    fs_err::copy(fixture.join("composer.lock"), project.join("composer.lock")).unwrap();
+    let original_lock = fs_err::read(project.join("composer.lock")).unwrap();
+
+    let output = ctx
+        .viv()
+        .args([
+            "require",
+            "psr/container:^99.0",
+            "--offline",
+            "--no-normalize",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "resolution should fail: {stderr}");
+    assert!(
+        stderr.contains("Installation failed, reverting"),
+        "viv should say it restored the files: {stderr}"
+    );
+    assert_eq!(
+        fs_err::read(project.join("composer.json")).unwrap(),
+        original
+    );
+    assert_eq!(
+        fs_err::read(project.join("composer.lock")).unwrap(),
+        original_lock
+    );
+}
+
+/// Same for `viv rm --no-normalize`: `composer.json` is restored.
+#[tokio::test]
+async fn viv_remove_no_normalize_restores_composer_json_when_resolution_fails() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/monolog");
+    let ctx = TestContext::new();
+    let project = ctx.project.path();
+
+    warm_monolog_cache_and_store(&ctx, &fixture).await;
+
+    let original = br#"{"type":"project","name":"vivace/fixture-monolog","license":"proprietary","require":{"psr/log":"^99.0"},"require-dev":{"psr/container":"^2.0"}}"#;
+    fs_err::write(project.join("composer.json"), original).unwrap();
+
+    let output = ctx
+        .viv()
+        .args([
+            "remove",
+            "psr/container",
+            "--dev",
+            "--offline",
+            "--no-normalize",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "resolution should fail: {stderr}");
+    assert!(
+        stderr.contains("Removal failed, reverting"),
+        "viv should say it restored the file: {stderr}"
+    );
+    assert_eq!(
+        fs_err::read(project.join("composer.json")).unwrap(),
+        original
+    );
+}
