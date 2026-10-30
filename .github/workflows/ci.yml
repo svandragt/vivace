@@ -117,7 +117,10 @@ jobs:
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: "8.4"
-          tools: composer:2
+          # Same Composer as the Linux gate (devbox.lock): `composer:2` floats
+          # to the newest release, whose plugin API differs from the one viv
+          # targets (docs/stability.md). Move both pins together.
+          tools: composer:2.10.2
       - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: nextest
