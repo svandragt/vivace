@@ -188,3 +188,58 @@ fn diagnose_prints_an_invalid_probe_timeout_instead_of_failing() {
     );
     assert!(stdout.contains("project: none"), "{stdout}");
 }
+
+/// #532: in a project with a `composer.lock`, the `platform:` section runs the
+/// platform probe. Its timeout error goes on a `platform:` line and the report
+/// goes on to the plugin lines, with the exit status of a successful run.
+#[test]
+fn diagnose_prints_the_platform_probe_error_and_carries_on() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let ctx = TestContext::new();
+    for name in ["composer.json", "composer.lock"] {
+        fs::copy(phpstan_fixture().join(name), ctx.project.path().join(name)).unwrap();
+    }
+    let bin = ctx.cache.path().join("hung-bin");
+    fs::create_dir_all(&bin).unwrap();
+    let php = bin.join("php");
+    fs::write(&php, "#!/bin/sh\nexec sleep 20\n").unwrap();
+    fs::set_permissions(&php, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    let output = ctx
+        .viv()
+        .env("PATH", path)
+        .env("VIV_PHP_PROBE_TIMEOUT", "1")
+        .arg("diagnose")
+        .output()
+        .expect("failed to run viv diagnose");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "took {:?}, stdout: {stdout}",
+        started.elapsed()
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}, stderr: {stderr}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.starts_with("platform: ") && l.contains("did not answer within 1s")),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.starts_with("plugins: phpstan/extension-installer:")),
+        "{stdout}"
+    );
+}

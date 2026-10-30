@@ -110,4 +110,5 @@ usual cause: run `<path> -v` to see whether the `php` hangs on its own. Set
 
 `viv diagnose` applies the same limit to its `php`, `git` and `composer`
 version lines. A tool that does not answer is killed, its line reads `did not
-answer within 30s (VIV_PHP_PROBE_TIMEOUT)`, and the report carries on.
+answer within 30s (VIV_PHP_PROBE_TIMEOUT)`, and the report carries on. A
+platform probe error is printed on a `platform:` line in the same way.

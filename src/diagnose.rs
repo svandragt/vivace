@@ -214,7 +214,7 @@ fn diagnose_project(project_dir: &Path, php: Option<&Path>) -> Result<()> {
         serde_json::from_slice(&composer_json).context("parsing composer.json")?;
     let lock = lock::read_lock(&lock_path)?;
 
-    diagnose_platform(&root_json, php)?;
+    diagnose_platform(&root_json, php);
     diagnose_plugins(&lock, &root);
     Ok(())
 }
@@ -223,19 +223,26 @@ fn diagnose_project(project_dir: &Path, php: Option<&Path>) -> Result<()> {
 /// [`crate::solver::platform::cached_platform_packages`]: this module's own
 /// doc comment promises nothing on disk is written, and caching would write
 /// a `platform-v0` entry.
-fn diagnose_platform(root_json: &Value, php: Option<&Path>) -> Result<()> {
+///
+/// #532: a probe error (a `php` that does not answer in time) goes on a
+/// `platform:` line instead of ending the report.
+fn diagnose_platform(root_json: &Value, php: Option<&Path>) {
     let overrides = root_json
         .pointer("/config/platform")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    for package in platform_packages(&overrides, php)? {
-        out(&format!(
-            "platform: {} {}",
-            package.name, package.pretty_version
-        ));
+    match platform_packages(&overrides, php) {
+        Ok(packages) => {
+            for package in packages {
+                out(&format!(
+                    "platform: {} {}",
+                    package.name, package.pretty_version
+                ));
+            }
+        }
+        Err(err) => out(&format!("platform: {err:#}")),
     }
-    Ok(())
 }
 
 /// The decision `viv install` would make for each `composer-plugin` in the
