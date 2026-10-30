@@ -1945,3 +1945,33 @@ code. bench-ab, which has no Composer in it, puts v0.22.0 and this build
 within 4.5 ms on laravel, drupal and symfony/demo (warm 36.8 to 36.4,
 294.1 to 289.6 and 48.2 to 45.4 ms; no-op 6.5 to 7.0, 6.0 to 6.0 and 9.6 to
 9.5 ms).
+
+## 2026-10-30: wildcards, minimal edits and the project PHP on demand
+
+#399 looked like a lost `dist.shasum`, and the first guess was that a partial
+update reuses the old locked entry. The red test disproved it: a literal
+`viv update acme/widget` already wrote the shasum. The `*` in `'vendor/*'` was
+read as part of a package name, so the argument matched nothing and every
+package kept its locked entry. Each pattern now expands to the locked names it
+matches before the allow list is built, as `packageNameToRegexp` does in
+Composer.
+
+#400: `add` and `rm` keep normalising `composer.json`, because a normalised
+file without an extra step is the point. `--no-normalize`, a no-op since 0.8,
+again edits only the `require` section, through the `JsonManipulator` port
+restored from `ed69dcd`. Its fuzz target was not restored (parked).
+
+CI on macOS went red without a code cause: `setup-php` with `composer:2`
+installed Composer 2.11.0, whose plugin API (2.11.0) no longer matches the
+2.9.0 that viv writes for Composer 2.10. The macOS jobs now pin 2.10.2, the
+version devbox gives Linux; the two pins have to move together.
+
+`viv diagnose` now stops waiting on a hung `php`, `git` or `composer` after
+`VIV_PHP_PROBE_TIMEOUT`, through one helper shared with the platform probe,
+and prints a platform error on its own line instead of exiting. #392: with
+`extra.viv.php` set, `update`, `install`, `add`, `rm` and `new` install a
+missing build before the platform check, as `viv run` does; `--offline` keeps
+the fallback to PATH. bench-ab of main against that branch put every warm and
+no-op time within tolerance (laravel warm 41.1 to 37.4 ms, no-op 6.9 to
+6.9 ms). The release's `v0` move now uses a `RELEASE_TAG_TOKEN` secret and
+warns instead of failing; it is untested until a release edits a workflow.
