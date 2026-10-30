@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+- `viv update 'vendor/*'` treats the `*` in a package argument as a wildcard, as Composer does, and `--minimal-changes` leaves the packages it matches unpinned. viv used to read `*` as part of a name, so the argument matched no locked package, the update changed nothing, and a `dist.shasum` declared by a `package` repository stayed out of `composer.lock`. A following `viv install` therefore had no shasum to check the download against. `viv update --lock` still keeps the locked entries, as Composer does ([#399](https://github.com/svandragt/vivace/issues/399))
 
 ## [0.23.0] - 2026-10-28
 ### Changed
