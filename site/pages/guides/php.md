@@ -14,7 +14,8 @@ manager. With `extra.viv.php` set, viv uses that build in place of the
 binary or any command on `PATH` with that PHP first, and installs the build
 on first use, so `phpunit`, `phpcs` or a git hook run on the project's PHP
 version without booting a container. `viv x`, `viv install`, `viv update`
-and the other commands that read the PHP's extensions use the same build:
+and the other commands that read the PHP's extensions use the same build,
+and install it on first use unless `--offline` is set:
 
 ```sh
 viv php install 8.4          # newest 8.4.x, once per machine

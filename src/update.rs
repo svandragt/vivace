@@ -278,8 +278,10 @@ pub(crate) fn run_impl(
         scripts.dispatch("pre-update-cmd")?;
     }
 
-    // #385: the solve reads the pinned php `viv run` uses, not `PATH`'s.
-    let php_override = crate::php::platform_php(php_override, &project_dir, cache_dir);
+    // #385: the solve reads the pinned php `viv run` uses, not `PATH`'s; #392: online, a
+    // missing build is installed first.
+    let php_override =
+        crate::php::platform_php_installing(php_override, &project_dir, cache_dir, offline)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

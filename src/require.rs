@@ -476,8 +476,10 @@ pub(crate) fn partial_update(
         Some(dir) => dir.to_path_buf(),
         None => crate::update::default_cache_dir()?,
     };
-    // #385: the solve reads the pinned php `viv run` uses, not `PATH`'s.
-    let php_override = crate::php::platform_php(None, project_dir, Some(&cache_dir));
+    // #385: the solve reads the pinned php `viv run` uses, not `PATH`'s; #392: online, a
+    // missing build is installed first.
+    let php_override =
+        crate::php::platform_php_installing(None, project_dir, Some(&cache_dir), offline)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

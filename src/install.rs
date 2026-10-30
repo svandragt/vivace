@@ -897,8 +897,10 @@ pub(crate) fn run_impl(
         Some(dir) => dir.to_path_buf(),
         None => crate::update::default_cache_dir()?,
     };
-    // #385: the check reads the pinned php `viv run` uses, not `PATH`'s.
-    let pinned_php = crate::php::platform_php(php_override, &project_dir, Some(&cache_dir));
+    // #385: the check reads the pinned php `viv run` uses, not `PATH`'s; #392: online, a
+    // missing build is installed first.
+    let pinned_php =
+        crate::php::platform_php_installing(php_override, &project_dir, Some(&cache_dir), offline)?;
     verify_platform_requirements(
         &root,
         &lock,
