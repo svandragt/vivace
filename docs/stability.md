@@ -118,11 +118,13 @@ this list from 0.8: it stops normalizing `composer.json` itself (only
 `--no-normalize is a no-op on update since 0.8; update no longer touches
 composer.json`.
 
-As of 0.8, `add`/`rm` (and their `require`/`remove` aliases) join that list
-under a different reason (#145): both always normalize `composer.json`
-after editing it now, so `--no-normalize` prints `--no-normalize is a no-op
-on add since 0.8; add always normalizes composer.json now` (or the `rm`
-equivalent) once and otherwise does nothing.
+`add`/`rm` (and their `require`/`remove` aliases) are not on that list. They
+normalize `composer.json` after editing it, and `--no-normalize` turns that
+off: the edit then changes only the `require`/`require-dev` entries it
+touches and leaves every other byte as it was, as Composer's
+`JsonManipulator` does (#400). From 0.8 to 0.23 the flag did nothing on
+these two commands (#145). `--no-normalize` cannot be combined with
+`add --repository`, which edits `repositories`.
 
 ## How to report a contract break
 
