@@ -350,11 +350,156 @@ fn update_with_no_php_and_no_php_setting_hints_at_extra_viv_php() {
         ));
 }
 
-/// An `extra.viv.php` with no installed build (here 8.5; only 8.4 is cached)
-/// neither installs anything nor fails the check: it reads the `PATH` php and
-/// names how to get the build.
+/// A dist server (`VIV_PHP_DIST_URL`) offering php 8.4.7, whose probe reports
+/// `dom`: the build `viv` has to download when `extra.viv.php` names it.
+fn spawn_fake_php_dist_server() -> (String, Arc<Mutex<Vec<String>>>) {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    // Reads stdin with `read`, not `cat`: the test runs it with no tools on `PATH`.
+    let tarball = build_php_tarball(
+        b"#!/bin/sh\nif [ \"$1\" = \"-r\" ]; then printf 8.4.7; exit 0; fi\n\
+          while read -r _; do :; done\n\
+          printf '{\"php_version\":\"8.4.7\",\"int_size\":8,\"extensions\":{\"dom\":\"8.4.7\"}}'\n",
+    );
+    let listing = format!(
+        "<a href=\"php-8.4.7-cli-{os}-{arch}.tar.gz\">php-8.4.7-cli-{os}-{arch}.tar.gz</a>\n"
+    );
+    let (addr, requests) = spawn_php_dist_server(
+        "/",
+        listing,
+        format!("/php-8.4.7-cli-{os}-{arch}.tar.gz"),
+        tarball,
+    );
+    (format!("http://{addr}"), requests)
+}
+
+/// One inline package, `acme/widget`, that needs `ext-dom`, `pin` as
+/// `extra.viv.php`, and a lock written without any platform check (a partial
+/// update needs one); no network is needed to solve it.
+fn write_widget_project(ctx: &TestContext, pin: &str) {
+    fs_err::write(
+        ctx.project.path().join("composer.json"),
+        format!(
+            r#"{{
+    "require": {{ "acme/widget": "1.0.0" }},
+    "extra": {{ "viv": {{ "php": "{pin}" }} }},
+    "repositories": [
+        {{ "packagist.org": false }},
+        {{ "type": "package", "package": {{
+            "name": "acme/widget", "version": "1.0.0", "require": {{ "ext-dom": "*" }},
+            "dist": {{ "type": "zip", "url": "https://example.invalid/widget.zip" }}
+        }} }}
+    ]
+}}
+"#
+        ),
+    )
+    .unwrap();
+    ctx.viv()
+        .args([
+            "update",
+            "--no-install",
+            "--offline",
+            "--ignore-platform-reqs",
+        ])
+        .assert()
+        .success();
+}
+
+/// #392: with no `php` on `PATH` and the `extra.viv.php` build not yet
+/// downloaded, `viv update <pkg>` installs the build (as `viv run` does) and
+/// checks `ext-*` against it, instead of assuming a php with no extensions.
 #[test]
-fn update_with_an_uninstalled_extra_viv_php_uses_the_path_php_and_installs_nothing() {
+fn update_installs_a_missing_extra_viv_php_build_and_checks_extensions_against_it() {
+    let (dist_url, _requests) = spawn_fake_php_dist_server();
+    let ctx = TestContext::new();
+    let empty_path = tempfile::tempdir().unwrap();
+    write_widget_project(&ctx, "8.4");
+
+    ctx.viv()
+        .env("PATH", empty_path.path())
+        .env("VIV_PHP_DIST_URL", &dist_url)
+        .args(["update", "acme/widget", "--no-install"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("installing php 8.4.7"));
+
+    let marker = ctx
+        .cache
+        .path()
+        .join("php-v0")
+        .join(format!(
+            "8.4.7-{}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ))
+        .join(".ok");
+    assert!(marker.is_file(), "{}", marker.display());
+    assert!(ctx.project.path().join("composer.lock").is_file());
+}
+
+/// #392: `--offline` never installs the build, so the check keeps falling
+/// back to `PATH` and refuses, naming how to get the build.
+#[test]
+fn update_offline_does_not_install_a_missing_extra_viv_php_build() {
+    let (dist_url, requests) = spawn_fake_php_dist_server();
+    let ctx = TestContext::new();
+    let empty_path = tempfile::tempdir().unwrap();
+    write_widget_project(&ctx, "8.4");
+
+    let output = ctx
+        .viv()
+        .env("PATH", empty_path.path())
+        .env("VIV_PHP_DIST_URL", &dist_url)
+        .args(["update", "acme/widget", "--no-install", "--offline"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("ext-dom"), "{stderr}");
+    assert!(
+        stderr.contains("extra.viv.php names php 8.4, which is not installed"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("installing php"), "{stderr}");
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "no request to the dist server"
+    );
+}
+
+/// #392: a build that cannot be downloaded fails the command and names the
+/// version, instead of checking against a different `php` than the project
+/// asked for.
+#[test]
+fn update_fails_naming_the_version_when_the_extra_viv_php_build_cannot_be_installed() {
+    let ctx = TestContext::new();
+    let path = build_with_dom_and_a_path_php_without(&ctx);
+    write_widget_project(&ctx, "8.5");
+
+    let output = ctx
+        .viv()
+        .env("PATH", path)
+        .env("VIV_PHP_DIST_URL", "http://127.0.0.1:9")
+        .args(["update", "acme/widget", "--no-install"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("could not install php 8.5, which extra.viv.php names"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Platform packages were read"), "{stderr}");
+}
+
+/// With `--offline`, an `extra.viv.php` with no installed build (here 8.5;
+/// only 8.4 is cached) neither installs anything nor fails the check: it reads
+/// the `PATH` php and names how to get the build.
+#[test]
+fn update_offline_with_an_uninstalled_extra_viv_php_uses_the_path_php_and_installs_nothing() {
     let ctx = TestContext::new();
     let path = build_with_dom_and_a_path_php_without(&ctx);
     write_ext_dom_project(ctx.project.path(), VIV_PHP);
@@ -369,7 +514,7 @@ fn update_with_an_uninstalled_extra_viv_php_uses_the_path_php_and_installs_nothi
         .viv()
         .env("PATH", path)
         .env("VIV_PHP_DIST_URL", "http://127.0.0.1:9")
-        .arg("update")
+        .args(["update", "--offline"])
         .output()
         .unwrap();
 

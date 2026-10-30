@@ -267,7 +267,8 @@ pub fn project_php_dir(
 
     let (_, dest, _) = ensure_installed(&cache_dir, spec, os, arch, |resolved| {
         warn_out(&format!("installing php {resolved} ({os}-{arch})…"));
-    })?;
+    })
+    .with_context(|| format!("could not install php {pin}, which extra.viv.php names"))?;
     Ok(Some(dest))
 }
 
@@ -278,7 +279,9 @@ pub fn project_php_dir(
 /// on `PATH`. Never installs a build (`offline: true` is `project_php_dir`'s
 /// no-install switch): a version that is not installed or does not parse
 /// falls back to `PATH` like a project with none set. `config.platform.php`
-/// plays no part (#397).
+/// plays no part (#397). `diagnose` and `lock merge` call this one, a report
+/// and a merge driver having no business downloading a build; the commands
+/// that solve or verify a lock call [`platform_php_installing`].
 pub(crate) fn platform_php(
     explicit: Option<&Path>,
     project_dir: &Path,
@@ -290,6 +293,24 @@ pub(crate) fn platform_php(
             .flatten()
             .map(|dir| dir.join("php"))
     })
+}
+
+/// [`platform_php`] for the commands that solve or verify a lock (`update`,
+/// `install`, `add`, `rm`, `new`): unless `offline` or `explicit` is set, a
+/// build `extra.viv.php` names that is not installed is installed first, as
+/// `viv run` does (#392), and a failed install is an error, since the project
+/// asked for that php and `PATH`'s is no stand-in. With `offline` the pick is
+/// [`platform_php`]'s, which falls back to `PATH`.
+pub(crate) fn platform_php_installing(
+    explicit: Option<&Path>,
+    project_dir: &Path,
+    cache_dir: Option<&Path>,
+    offline: bool,
+) -> Result<Option<PathBuf>> {
+    if offline || explicit.is_some() {
+        return Ok(platform_php(explicit, project_dir, cache_dir));
+    }
+    Ok(project_php_dir(project_dir, cache_dir, false)?.map(|dir| dir.join("php")))
 }
 
 /// The line a refused platform requirement prints (#385) saying which `php`
