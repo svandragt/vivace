@@ -121,7 +121,7 @@ jobs:
           # to the newest release, whose plugin API differs from the one viv
           # targets (docs/stability.md). Move both pins together.
           tools: composer:2.10.2
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: nextest
       # Offline: the 54 network tests fetch real dists and took the longest
