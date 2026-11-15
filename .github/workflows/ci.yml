@@ -33,7 +33,7 @@ jobs:
           # v1: caches saved before the line-tables-only dev profile (#334) restore stale build scripts.
           prefix-key: v1-rust
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+      - uses: jetify-com/devbox-install-action@05e954310554b6122a26b4880d69937f61b1eb2e # v0.16.0
         with:
           enable-cache: true
       - run: devbox run -- cargo fmt --check
@@ -62,7 +62,7 @@ jobs:
           # v1: caches saved before the line-tables-only dev profile (#334) restore stale build scripts.
           prefix-key: v1-rust
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+      - uses: jetify-com/devbox-install-action@05e954310554b6122a26b4880d69937f61b1eb2e # v0.16.0
         with:
           enable-cache: true
       - run: devbox run -- cargo nextest run -E 'test(plugin) | binary(plugins_*)'
@@ -121,7 +121,7 @@ jobs:
           # to the newest release, whose plugin API differs from the one viv
           # targets (docs/stability.md). Move both pins together.
           tools: composer:2.10.2
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: nextest
       # Offline: the 54 network tests fetch real dists and took the longest
@@ -143,7 +143,7 @@ jobs:
           # v1: caches saved before the line-tables-only dev profile (#334) restore stale build scripts.
           prefix-key: v1-rust
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+      - uses: jetify-com/devbox-install-action@05e954310554b6122a26b4880d69937f61b1eb2e # v0.16.0
         with:
           enable-cache: true
       - run: mkdir -p target/coverage
@@ -190,7 +190,7 @@ jobs:
         with:
           shared-key: bench
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.project == 'monolog' }}
-      - uses: jetify-com/devbox-install-action@8c6a66ed6273138b1915457069de78cb52fe3bd7 # v0.15.0
+      - uses: jetify-com/devbox-install-action@05e954310554b6122a26b4880d69937f61b1eb2e # v0.16.0
         with:
           enable-cache: true
       - run: devbox run -- cargo build --release
