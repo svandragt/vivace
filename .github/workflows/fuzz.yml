@@ -42,7 +42,7 @@ jobs:
       # libraries: libstdc++.so.6" (exit 127) — every nightly run did, from
       # the day this workflow landed. Off devbox the runner's own libstdc++
       # is found, and both jobs then build the same runnable binary.
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-fuzz
       # `--target` is explicit because cargo-fuzz defaults to the triple it
@@ -80,7 +80,7 @@ jobs:
       # directly rather than devbox.json.
       - run: rustup toolchain install nightly --profile minimal
       # Off devbox for the libstdc++ reason in fuzz-build above (#194).
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-fuzz
       # Only `seeds/` is passed: it's tracked, whereas `corpus/` is
